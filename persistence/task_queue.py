@@ -23,6 +23,18 @@ from services.task_queue import (
 
 
 def _as_utc(value: datetime) -> datetime:
+    """把数据库时间转换为带 UTC 时区的时间。
+
+    参数：
+        value: SQLAlchemy 返回的时间；不同驱动可能返回带时区或不带时区的对象。
+
+    返回：
+        带 ``UTC`` 的时间。无时区值按项目约定解释为 UTC；已有其他时区的值会
+        换算到同一绝对时刻，而不是简单替换时区标签。
+
+    统一时间后，租约过期和心跳新鲜度比较就不会因为 PostgreSQL/SQLite 驱动差异
+    触发 naive/aware ``datetime`` 的运行时异常。
+    """
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
@@ -40,6 +52,24 @@ class SqlAlchemyReviewTaskQueue:
         retry_base_seconds: int = 5,
         retry_cap_seconds: int = 300,
     ) -> None:
+        """初始化持久化队列及重试策略。
+
+        队列不依赖内存消息代理，而是直接使用数据库行锁；因此进程重启后任务
+        仍然存在。重试延迟默认从 5 秒开始指数增长，最高不超过 300 秒。时钟和
+        UUID 工厂可注入，便于测试确定性地模拟过期和检查事件内容。
+
+        参数：
+            sessions: 目标数据库的 SQLAlchemy 会话工厂。
+            clock: 可选当前时间函数；所有本次操作的时间戳都从它读取。
+            uuid_factory: 可选事件 ID 生成器，测试可注入固定 UUID。
+            retry_base_seconds: 第一次重试的基础延迟，必须为正数。
+            retry_cap_seconds: 指数退避的最大延迟，不能小于基础延迟。
+
+        异常：
+            ValueError: 两个退避参数不满足正数/上限关系。
+
+        构造过程不创建数据库事务；会话只在具体队列操作开始时短暂打开。
+        """
         if retry_base_seconds <= 0:
             raise ValueError("retry_base_seconds must be positive")
         if retry_cap_seconds < retry_base_seconds:
@@ -56,6 +86,25 @@ class SqlAlchemyReviewTaskQueue:
         worker_status: WorkerStatus,
         current_task_id: str | None = None,
     ) -> None:
+        """记录 Worker 心跳。
+
+        第一次看到某个 Worker 时创建记录并保存启动时间；后续调用只更新状态、
+        当前任务和最后心跳时间。写入失败会回滚事务并转换成队列层异常，避免
+        Dashboard 把不可确认的状态当成健康状态。
+
+        参数：
+            worker_id: 稳定 Worker ID；相同 ID 会更新同一行，而不是新建心跳。
+            worker_status: 当前生命周期状态。
+            current_task_id: ``busy`` 时正在处理的任务 ID；空闲、启动或停止时
+                通常传 ``None``。
+
+        异常：
+            TaskQueueError: 查询、插入、更新或提交失败。事务会先回滚，调用方
+            不应把失败的心跳当成在线信号。
+
+        ``started_at`` 只在首次插入时设置；固定 Worker ID 重启后不会自动重置，
+        因而它表示数据库第一次见到该 ID 的时间，而非进程最近一次启动时间。
+        """
         now = self._clock()
         with self._sessions() as session:
             try:
@@ -79,6 +128,22 @@ class SqlAlchemyReviewTaskQueue:
                 raise TaskQueueError("worker heartbeat could not be persisted") from exc
 
     def recover_expired_leases(self) -> int:
+        """恢复所有已过期的运行中任务租约。
+
+        查询使用 ``FOR UPDATE SKIP LOCKED``，多个 Worker 并行恢复时不会互相等待
+        或重复处理同一任务。每个任务根据剩余尝试次数回到 ``queued`` 并设置退避，
+        或进入 ``failed``；状态变化和 Outbox 事件在同一事务中提交。
+
+        返回：
+            本次事务成功处理的过期任务数量。
+
+        异常：
+            TaskQueueError: 查询、状态转换或事务提交失败；整个批次会回滚，避免
+            只恢复一部分任务。
+
+        任务状态筛选只接受 ``running`` 且 ``lease_expires_at <= now`` 的行。锁定
+        后会再次读取关联运行；如果运行缺失，事务失败而不会静默删除孤儿任务。
+        """
         now = self._clock()
         with self._sessions() as session:
             try:
@@ -113,6 +178,28 @@ class SqlAlchemyReviewTaskQueue:
         worker_id: str,
         lease_duration: timedelta,
     ) -> ReviewTaskLease | None:
+        """原子领取一个当前可执行的任务。
+
+        只选择状态为 ``queued`` 且 ``available_at`` 已到期的任务，并按优先级、
+        可用时间和创建时间排序。锁定后同时更新任务和运行状态、尝试次数、租约
+        所有者及过期时间，再写入 ``review.task.running`` 事件；没有可领取任务时
+        返回 ``None``。
+
+        参数：
+            worker_id: 领取者的稳定身份，会写入 ``lease_owner``。
+            lease_duration: 从当前时钟到租约到期的时长，必须大于零。
+
+        返回：
+            成功时返回包含数据库主键、运行 ID、尝试次数和到期时间的租约快照；
+            没有合资格任务时返回 ``None``，此时只提交一个空事务并释放锁。
+
+        异常：
+            ValueError: 租约时长不大于零。
+            TaskQueueError: 关联运行不存在、数据库锁定/更新/提交失败。
+
+        领取时会把 ``attempt_count`` 先加一，再把运行和任务同时改为 ``running``；
+        因此重试判断可以用“本次已经是第几次尝试”而不用额外计数器。
+        """
         if lease_duration.total_seconds() <= 0:
             raise ValueError("lease_duration must be positive")
         now = self._clock()
@@ -134,6 +221,7 @@ class SqlAlchemyReviewTaskQueue:
                     .limit(1)
                     .with_for_update(skip_locked=True)
                 )
+                # 行锁保证多个 Worker 同时轮询时，只有一个能拿到这条任务。
                 task = session.scalar(statement)
                 if task is None:
                     session.commit()
@@ -178,6 +266,27 @@ class SqlAlchemyReviewTaskQueue:
         lease: ReviewTaskLease,
         lease_duration: timedelta,
     ) -> ReviewTaskLease:
+        """延长当前租约并返回新的租约对象。
+
+        更新前会再次按任务 ID、运行 ID、Worker ID、尝试次数和未过期条件加锁
+        校验。任何一项不匹配都意味着旧 Worker 已失去所有权，此时抛出
+        ``TaskLeaseLostError``，阻止过期 Worker 覆盖新 Worker 的状态。
+
+        参数：
+            lease: 之前领取任务时保存的所有权快照。
+            lease_duration: 从本次续租时刻重新计算的有效期，必须大于零。
+
+        返回：
+            与旧租约身份相同、``lease_expires_at`` 更新后的新快照。
+
+        异常：
+            ValueError: 续租时长不大于零。
+            TaskLeaseLostError: 任务已被恢复/重新领取，或租约已过期。
+            TaskQueueError: 数据库更新或提交失败。
+
+        更新使用行锁并在事务中提交；失败时回滚，所以不会留下“内存认为续租成功、
+        数据库仍是旧到期时间”的半完成状态。
+        """
         if lease_duration.total_seconds() <= 0:
             raise ValueError("lease_duration must be positive")
         now = self._clock()
@@ -203,6 +312,21 @@ class SqlAlchemyReviewTaskQueue:
                 raise TaskQueueError("the review task lease could not be renewed") from exc
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
+        """完成当前 M2 准备步骤并把任务推进到 ``waiting_for_ci``。
+
+        这个状态是有意保留的能力边界：当前项目还没有 GitHub CI 回调和模型审查，
+        因此这里清除租约、同步更新运行状态并写事件，但绝不会伪造 ``completed``。
+
+        参数：
+            lease: 当前 Worker 领取任务时获得的、尚未过期的租约。
+
+        异常：
+            TaskLeaseLostError: 任务不再属于该 Worker。
+            TaskQueueError: 关联运行不存在，或状态/事件事务无法提交。
+
+        成功后任务不再有租约，后续需要真实 CI/模型事件才能继续推进；本方法不会
+        调用 GitHub、模型或外部消息系统。
+        """
         now = self._clock()
         with self._sessions() as session:
             try:
@@ -235,6 +359,24 @@ class SqlAlchemyReviewTaskQueue:
                 ) from exc
 
     def retry_or_fail(self, lease: ReviewTaskLease, error: str) -> None:
+        """记录本次处理失败，并根据尝试次数安排重试或最终失败。
+
+        错误文本会去除首尾空格并截断到 4000 字符，避免异常堆栈无限膨胀数据库。
+        只有仍持有有效租约的 Worker 才能执行此更新；状态、错误信息和事件一次性
+        提交，失败时整体回滚。
+
+        参数：
+            lease: 发生异常的那次领取操作对应的租约。
+            error: 要保存到 ``last_error`` 的说明；当前实现只做首尾清理和长度
+                截断，不做 Token、密码或 URL 凭据脱敏。
+
+        异常：
+            TaskLeaseLostError: 上报时租约已经失效，旧 Worker 不得覆盖新状态。
+            TaskQueueError: 任务/运行读取或事务提交失败。
+
+        当 ``attempt_count < max_attempts`` 时按指数退避重新排队；达到上限时把
+        任务和运行都改为 ``failed``。两种结果都会写唯一 Outbox 事件。
+        """
         now = self._clock()
         safe_error = error.strip()[:4000] or "Worker 处理任务时发生未知错误"
         with self._sessions() as session:
@@ -256,6 +398,20 @@ class SqlAlchemyReviewTaskQueue:
                 raise TaskQueueError("the failed review task could not be recorded") from exc
 
     def heartbeat_is_fresh(self, worker_id: str, max_age: timedelta) -> bool:
+        """判断 Worker 最近一次心跳是否仍在新鲜度窗口内。
+
+        参数：
+            worker_id: 要检查的 Worker 稳定 ID。
+            max_age: 允许的最大心跳年龄；调用方应传正数时间窗口。
+
+        返回：
+            找到记录且 ``now - last_seen_at <= max_age`` 时返回 ``True``；没有记录
+            或心跳过旧返回 ``False``。
+
+        异常：
+            TaskQueueError: 查询数据库失败。方法不会把数据库错误误报为离线，
+            而是让健康检查进程以失败退出。
+        """
         now = self._clock()
         with self._sessions() as session:
             try:
@@ -272,6 +428,27 @@ class SqlAlchemyReviewTaskQueue:
         lease: ReviewTaskLease,
         now: datetime,
     ) -> ReviewTaskRecord:
+        """锁定并验证租约所属的任务。
+
+        这是所有“修改运行中任务”操作共用的所有权检查。除了 ID 关联外，还会
+        校验状态、Worker、尝试次数和租约过期时间；任一条件失败都视为租约丢失。
+
+        参数：
+            session: 已在事务中的 SQLAlchemy 会话。
+            lease: 调用方持有的租约快照。
+            now: 本次操作统一使用的当前 UTC 时间。
+
+        返回：
+            被 ``FOR UPDATE`` 锁定且通过所有权检查的任务 ORM 对象；调用方可以在
+            同一事务中安全修改它。
+
+        异常：
+            TaskLeaseLostError: 任务不存在、状态不是 ``running``、Worker/运行/尝试
+            次数不匹配，或租约为空/已过期。
+
+        这个私有方法故意集中所有权条件，避免续租、成功推进和失败上报各自漏掉
+        某个检查而产生旧 Worker 覆盖新 Worker 的竞态。
+        """
         statement = (
             select(ReviewTaskRecord)
             .where(
@@ -299,6 +476,26 @@ class SqlAlchemyReviewTaskQueue:
         *,
         event_suffix: str,
     ) -> None:
+        """在当前事务内选择重试或最终失败，并追加对应 Outbox 事件。
+
+        ``attempt_count`` 已在领取时递增，因此达到 ``max_attempts`` 就直接失败；
+        否则把任务放回队列，并按指数退避计算下一次可用时间。调用者负责在外层
+        事务中提交或回滚。
+
+        参数：
+            session: 当前外层事务会话。
+            task: 已锁定且确认属于当前操作的运行中任务。
+            now: 本次状态变化统一使用的时间。
+            error: 要写入任务 ``last_error`` 的已截断错误说明。
+            event_suffix: 附加到事件唯一键的尝试/恢复标识，防止同一状态事件重复。
+
+        副作用：
+            清除租约并更新任务和关联运行；未耗尽尝试时设置下一次
+            ``available_at``，耗尽时设置 ``failed``；最后把事件对象加入当前会话。
+
+        异常：
+            TaskQueueError: 找不到关联运行。此方法不提交事务，异常由调用方负责回滚。
+        """
         run = session.get(ReviewRunRecord, task.review_run_id)
         if run is None:
             raise TaskQueueError("review task points to a missing review run")
@@ -322,6 +519,18 @@ class SqlAlchemyReviewTaskQueue:
         self._add_event(session, task, event_type, event_key, now)
 
     def _retry_delay(self, attempt_count: int) -> timedelta:
+        """根据已消耗的尝试次数计算指数退避时长。
+
+        参数：
+            attempt_count: 领取时已经递增后的尝试次数；第一次失败传 1。
+
+        返回：
+            ``base * 2 ** (attempt_count - 1)`` 秒，但不会超过配置的 cap。即默认
+            产生 5、10、20 秒等延迟，直到上限 300 秒。
+
+        负数或零不会产生负延迟：指数使用 ``max(0, attempt_count - 1)``，便于
+        数据修复或测试传入边界值时保持安全。
+        """
         exponent = max(0, attempt_count - 1)
         seconds = min(
             self._retry_cap_seconds,
@@ -337,6 +546,25 @@ class SqlAlchemyReviewTaskQueue:
         key_suffix: str,
         occurred_at: datetime,
     ) -> None:
+        """在当前事务中追加一条不可重复的任务状态 Outbox 事件。
+
+        事件只携带运行 ID、任务 ID 和尝试次数等非敏感元数据；具体发布器可以在
+        后续阶段读取 ``outbox_events``，而不会影响任务状态事务的原子性。
+
+        参数：
+            session: 当前状态事务使用的会话；事件只加入会话，不在此处单独提交。
+            task: 事件关联的任务记录。
+            event_type: 稳定的事件类型，例如 ``review.task.running``。
+            key_suffix: 与任务 ID 拼接成唯一 ``event_key`` 的后缀。
+            occurred_at: 事件发生时间，由调用方统一提供。
+
+        副作用：
+            向会话加入一条尚未发布的 ``OutboxEventRecord``，发布尝试次数初始化为
+            0。外部发布器稍后可以读取并投影到 SSE、通知或其他系统。
+
+        该方法不会访问网络，也不会把 ``last_error`` 放入事件 payload，避免事件
+        总线携带可能敏感的异常文本。
+        """
         session.add(
             OutboxEventRecord(
                 id=str(self._uuid_factory()),

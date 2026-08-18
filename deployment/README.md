@@ -8,6 +8,14 @@
 - `worker`：单并发数据库任务 Worker，无公网端口；
 - `web`：React 静态文件、HTTPS 和 API 反向代理，公开宿主机 `18443`。
 
+当前测试环境前端入口：
+
+```text
+https://107.175.221.182:18443
+```
+
+该入口使用自签名 HTTPS 证书，仅用于测试和验收；浏览器首次访问时会显示证书警告。
+
 当前仍不包含 GitHub Webhook、PR 上下文、CI 回调或模型调用。任务会从 `queued` 经过
 `running` 进入 `waiting_for_ci`，不会伪装为 `completed`。
 
@@ -109,7 +117,7 @@ TLS 目录本身保持 `0700 root:root`，所以宿主机普通用户不能读�
 ## 网络和安全边界
 
 ```text
-浏览器 https://<公网 IP>:18443
+浏览器 https://107.175.221.182:18443
         -> Web Nginx :8443
             -> 允许的 /api/v1 管理路径 -> API :18090
             -> React 静态文件

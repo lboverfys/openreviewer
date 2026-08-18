@@ -36,9 +36,23 @@ deployment/         niuma-2 Compose 部署配置
   指数退避。
 - Worker 启动、空闲、忙碌和停止心跳；Dashboard 可区分空闲与离线。
 - Argon2id 管理员密码校验、HMAC 签名会话、HttpOnly/SameSite Cookie 和登录限流。
+- 登录页可选调用浏览器密码管理器记住账号密码；应用不把明文凭据写入 localStorage。
 - 受保护的 Dashboard、任务列表和 SSE 实时事件接口。
 - React 登录页、实时状态卡、Worker 状态、最近任务和手工任务创建表单。
 - Nginx 自签名 HTTPS 测试入口；API 仍只绑定服务器回环地址，PostgreSQL 不映射端口。
+
+## 当前前端入口
+
+当前 `niuma-2` 测试环境的 React 管理前端地址为：
+
+```text
+https://107.175.221.182:18443
+```
+
+这是测试环境的自签名 HTTPS 证书，浏览器首次访问会显示证书警告；确认地址无误后再继续访问。
+公网只开放 Web 的 `18443` 端口，API 和 PostgreSQL 不直接对公网开放。
+登录页勾选“记住账号密码”后，Chrome/Edge 等支持 Credential Management API 的浏览器会
+把凭据保存到自己的密码库；证书尚未被浏览器接受或使用无痕窗口时，自动保存可能不可用。
 
 ## 本地启动
 

@@ -21,13 +21,35 @@ from tests.support import (
 
 class MutableClock:
     def __init__(self, value: datetime) -> None:
+        """创建可由测试手工推进的时钟。
+
+        参数：
+            value: 初始“当前时间”，通常使用带 UTC 时区的固定值。
+
+        生产代码只依赖无参数 callable，因此测试直接修改 ``value`` 就能模拟会话
+        过期和限流窗口流逝，无需真实等待。
+        """
         self.value = value
 
     def __call__(self) -> datetime:
+        """返回当前测试时间，匹配生产代码的时钟 callable 协议。
+
+        返回：
+            当前保存的 ``datetime``，不自动前进。只有测试显式修改 ``value`` 时
+            时间才变化，因此同一断言阶段内所有时间计算完全确定。
+        """
         return self.value
 
 
 def settings() -> AuthSettings:
+    """构造一个 TTL 为 30 分钟的测试认证配置。
+
+    返回：
+        使用共享测试用户名、预先计算的 Argon2id 哈希、固定签名密钥和非 Secure
+        Cookie 的 ``AuthSettings``。
+
+    该辅助函数只减少测试样板；所有值都是测试专用数据，不从真实环境变量读取。
+    """
     return AuthSettings(
         username=TEST_USERNAME,
         password_hash=TEST_PASSWORD_HASH,
@@ -38,6 +60,13 @@ def settings() -> AuthSettings:
 
 
 def test_credentials_and_signed_session_round_trip() -> None:
+    """验证凭据校验和签名会话的完整成功/失败路径。
+
+    前提：固定管理员配置和固定 UTC 时钟。
+    动作：分别校验正确账号、错误账号、错误密码，再创建并重新验证会话 Token。
+    预期：只有完整正确凭据通过；会话主体和 30 分钟到期时间保持一致，且 Token
+    文本不包含管理员明文密码。
+    """
     now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
     clock = MutableClock(now)
     service = AuthService(settings(), password_hasher=TEST_HASHER, clock=clock)
@@ -56,6 +85,13 @@ def test_credentials_and_signed_session_round_trip() -> None:
 
 
 def test_tampered_and_expired_sessions_are_rejected() -> None:
+    """验证签名篡改和时间过期都会使会话失效。
+
+    前提：在固定时刻创建一个有效 Token。
+    动作：先改动 Token 最后一个字符，再把测试时钟推进到 TTL 之后验证原 Token。
+    预期：两种情况都抛出 ``InvalidSessionError``，证明签名完整性和有效期是两个
+    独立门槛，不能仅靠客户端 Cookie 到期属性保证安全。
+    """
     now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
     clock = MutableClock(now)
     service = AuthService(settings(), password_hasher=TEST_HASHER, clock=clock)
@@ -70,6 +106,15 @@ def test_tampered_and_expired_sessions_are_rejected() -> None:
 
 
 def test_auth_settings_load_secrets_from_files(tmp_path: Path) -> None:
+    """验证容器 secret 文件可以提供密码哈希和会话密钥。
+
+    参数：
+        tmp_path: pytest 为本用例创建的隔离临时目录。
+
+    前提：分别写入 Argon2id 哈希和 48 字节签名密钥文件。
+    动作：只配置两个 ``*_FILE`` 环境字段并关闭 Secure Cookie。
+    预期：读取结果与文件内容一致，且 Cookie 名切换成本地 HTTP 测试使用的普通名称。
+    """
     hash_file = tmp_path / "password-hash"
     secret_file = tmp_path / "session-secret"
     hash_file.write_text(TEST_PASSWORD_HASH, encoding="utf-8")
@@ -90,6 +135,13 @@ def test_auth_settings_load_secrets_from_files(tmp_path: Path) -> None:
 
 
 def test_auth_settings_reject_plaintext_password_configuration() -> None:
+    """验证认证配置不会把明文密码误当成哈希接受。
+
+    前提：用户名和会话密钥合法，但密码字段不带 ``$argon2id$`` 前缀。
+    动作：调用 ``AuthSettings.from_environment``。
+    预期：在应用启动配置阶段抛出包含 Argon2id 提示的
+    ``AuthConfigurationError``，而不是等到第一次登录才失败。
+    """
     with pytest.raises(AuthConfigurationError, match="Argon2id"):
         AuthSettings.from_environment(
             {
@@ -101,6 +153,13 @@ def test_auth_settings_reject_plaintext_password_configuration() -> None:
 
 
 def test_login_failures_are_limited_by_sliding_window() -> None:
+    """验证进程内滑动窗口会限流，并在旧记录过期后自动恢复。
+
+    前提：限制为 10 分钟内最多 3 次失败，使用可推进时钟。
+    动作：连续检查并记录 3 次失败，再执行第 4 次检查；随后把时间推进 11 分钟。
+    预期：第 4 次检查抛出 ``LoginRateLimitError``，窗口过去后同一键重新允许尝试，
+    证明清理逻辑依据时间窗口而不是永久封禁。
+    """
     now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
     clock = MutableClock(now)
     limiter = LoginAttemptLimiter(

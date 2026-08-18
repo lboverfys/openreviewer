@@ -38,10 +38,35 @@ COVERAGE_STATUSES = ("complete", "partial", "unknown", "stale")
 
 
 def quoted(values: tuple[str, ...]) -> str:
+    """把固定的允许值转换为 CHECK 约束所需的 SQL 片段。
+
+    参数：
+        values: 迁移脚本内定义的状态/结论元组，不来自用户输入。
+
+    返回：
+        每个值单引号包裹、以逗号分隔的字符串，供 f-string 拼接到约束表达式。
+
+    这里没有实现通用 SQL 转义，因为调用方只传入源码中固定的枚举常量；如果
+    允许值改成外部输入，必须改用 SQLAlchemy 的参数化构造方式。
+    """
     return ", ".join(f"'{value}'" for value in values)
 
 
 def upgrade() -> None:
+    """创建审查运行、任务和 Outbox 三张基础表及其约束索引。
+
+    这些表共同保证任务接受的原子性：一个审查请求要么同时拥有运行记录、任务
+    记录和事件，要么一条都没有。唯一键和 CHECK 约束把幂等、状态值及正数 ID
+    等关键规则下沉到数据库，避免只依赖 API 进程校验。
+
+    创建顺序：
+        先建 ``review_runs`` 作为运行主表，再建通过外键关联它的
+        ``review_tasks``，最后建保存状态事件的 ``outbox_events``。同时创建查询
+        所需索引和唯一约束，保证领取任务、幂等查找和事件去重不会依赖全表扫描。
+
+    该函数由 Alembic 调用，不应在应用启动时手工导入执行；重复执行由 Alembic
+    版本表阻止，回滚由 :func:`downgrade` 按依赖逆序处理。
+    """
     op.create_table(
         "review_runs",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -236,6 +261,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """按外键依赖逆序删除本次迁移创建的索引和表。
+
+    删除顺序是 Outbox、任务、运行：先去掉没有外部引用的事件，再删除引用运行
+    的任务，最后删除被任务引用的运行。该操作会删除这次迁移创建的结构和其中
+    数据，因此生产发布流程默认只向前迁移，不应把它当作日常“撤销代码”工具。
+    """
     op.drop_index("ix_outbox_events_pending", table_name="outbox_events")
     op.drop_table("outbox_events")
     op.drop_index("ix_review_tasks_claimable", table_name="review_tasks")

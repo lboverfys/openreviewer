@@ -94,6 +94,18 @@ class ReviewItemResponse(BaseModel):
 
     @classmethod
     def from_item(cls, item: ReviewListItem) -> "ReviewItemResponse":
+        """把服务层任务读模型转换为严格的 API 响应模型。
+
+        参数：
+            item: Dashboard 服务层返回的不可变 ``ReviewListItem``。字段名必须与
+                响应模型一致，避免在每个路由里重复手写映射。
+
+        返回：
+            只包含公开字段的 ``ReviewItemResponse``；Pydantic 会再次执行类型和
+            枚举序列化校验。
+
+        该方法不访问数据库、不改变 ``item``，也不会把 ORM 对象直接暴露给 FastAPI。
+        """
         return cls(**{field: getattr(item, field) for field in cls.model_fields})
 
 
@@ -127,6 +139,19 @@ class DashboardResponse(BaseModel):
 
     @classmethod
     def from_snapshot(cls, snapshot: DashboardSnapshot) -> "DashboardResponse":
+        """把服务层 Dashboard 快照转换为稳定的 JSON 响应结构。
+
+        参数：
+            snapshot: ``DashboardService`` 组装的不可变快照，包含状态计数、Worker
+                状态和最近任务。
+
+        返回：
+            FastAPI 可以直接序列化的 ``DashboardResponse``。映射会把只读映射复制
+            成普通字典，并逐条转换最近任务，避免响应依赖服务层对象的可变行为。
+
+        该方法只做边界适配，不重新计算在线状态、不补查数据库，也不隐藏任务错误
+        文本；敏感错误的安全处理必须在持久化/服务边界完成。
+        """
         return cls(
             generated_at=snapshot.generated_at,
             total_reviews=snapshot.total_reviews,
@@ -150,10 +175,38 @@ def create_app(
     dashboard_service: DashboardService | None = None,
     login_limiter: LoginAttemptLimiter | None = None,
 ) -> FastAPI:
-    """Create an API instance with injectable application boundaries."""
+    """创建带依赖注入边界的 FastAPI 应用实例。
+
+    参数：
+        review_service: 可选审查提交服务；不传时在第一次创建任务时懒加载数据库
+            仓储。测试通常传入 SQLite 仓储，避免依赖真实 PostgreSQL。
+        auth_service: 可选认证服务；不传时在第一次需要认证的请求时读取环境配置。
+        dashboard_service: 可选 Dashboard 查询服务；不传时按需创建数据库适配器。
+        login_limiter: 可选登录失败限流器；不传时创建当前 API 进程专用实例。
+
+    返回：
+        已注册健康检查、认证、Dashboard、SSE 和任务创建路由的 ``FastAPI`` 应用。
+
+    依赖初始化采用懒加载：只访问 ``/healthz`` 不会触发数据库或认证配置读取；
+    应用关闭时只释放本函数自己创建的数据库，不会销毁调用方注入的测试资源。
+    各路由内部把配置/持久化异常转换成稳定 HTTP 状态，避免泄露底层凭据。
+    """
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        """管理 FastAPI 应用生命周期。
+
+        数据库采用延迟初始化，只有真正访问需要持久化的接口时才建立连接。应用
+        关闭时从 ``state`` 取出由本实例拥有的数据库并释放连接池，注入的测试
+        服务不会被错误地销毁。
+
+        参数：
+            application: FastAPI 传入的当前应用对象，用于读取本实例的状态容器。
+
+        生命周期：
+            进入时不主动连接数据库；路由完成后先让应用退出，再释放懒加载的
+            ``owned_database``。异常不会吞掉，仍交由 ASGI 服务器报告。
+        """
         yield
         database: Database | None = application.state.owned_database
         if database is not None:
@@ -175,6 +228,20 @@ def create_app(
     initialization_lock = RLock()
 
     def get_database() -> Database:
+        """懒加载并缓存数据库连接。
+
+        使用进程内锁避免并发请求同时创建多个引擎；配置缺失时转换为 503，让
+        ``/healthz`` 仍可用于存活检查，同时不泄露数据库凭据或具体配置细节。
+
+        返回：
+            当前应用缓存的 ``Database`` 实例；第一次调用成功后复用同一连接池。
+
+        异常：
+            HTTPException(503): 数据库配置缺失或无效。底层配置异常被保留为原因，
+            但响应只返回稳定的“持久化未配置”提示。
+
+        进程内锁只防止同一 API 副本重复初始化，不能替代数据库连接池或跨进程锁。
+        """
         configured_database: Database | None = application.state.owned_database
         if configured_database is not None:
             return configured_database
@@ -193,6 +260,16 @@ def create_app(
             return configured_database
 
     def get_review_service() -> ReviewService:
+        """返回注入的或按需构造的审查提交服务。
+
+        返回：
+            优先返回 ``create_app`` 调用方注入的服务；否则用懒加载数据库会话工厂
+            创建 ``SqlAlchemyReviewRepository`` 和 ``ReviewService``，并缓存到应用状态。
+
+        该函数不提交任务；真正的请求校验、指纹计算和事务写入发生在 POST 路由
+        调用服务的 ``submit`` 方法时。初始化数据库失败会通过 ``get_database``
+        转换为 503。
+        """
         configured_service: ReviewService | None = application.state.review_service
         if configured_service is not None:
             return configured_service
@@ -206,6 +283,17 @@ def create_app(
             return configured_service
 
     def get_auth_service() -> AuthService:
+        """返回认证服务，并在首次使用时校验所有安全配置。
+
+        返回：
+            注入的认证服务，或根据环境变量创建并缓存的 ``AuthService``。
+
+        异常：
+            HTTPException(503): 管理员用户名、Argon2id 哈希、会话密钥或 TTL 配置
+            缺失/非法。具体配置错误不会直接返回给客户端。
+
+        健康检查不依赖该函数，因此认证配置故障不会阻止容器报告进程存活。
+        """
         configured_service: AuthService | None = application.state.auth_service
         if configured_service is not None:
             return configured_service
@@ -223,6 +311,15 @@ def create_app(
             return configured_service
 
     def get_dashboard_service() -> DashboardService:
+        """返回注入的或按需构造的 Dashboard 查询服务。
+
+        返回：
+            注入的服务，或使用懒加载数据库会话工厂创建并缓存的
+            ``DashboardService``。
+
+        该函数只准备查询边界，不执行 Dashboard 查询；数据库读取错误由调用方
+        ``dashboard_snapshot`` 统一转换为 503。
+        """
         configured_service: DashboardService | None = (
             application.state.dashboard_service
         )
@@ -238,6 +335,20 @@ def create_app(
             return configured_service
 
     def require_principal(request: Request) -> SessionPrincipal:
+        """从请求 Cookie 验证当前管理员身份。
+
+        参数：
+            request: FastAPI 当前 HTTP 请求，用于读取认证服务决定的 Cookie 名称。
+
+        返回：
+            经过 HMAC、主体和有效期校验的 ``SessionPrincipal``，供路由作为认证
+            依赖使用。
+
+        异常：
+            HTTPException(401): Cookie 缺失、签名错误、主体不匹配或会话已过期；
+            响应同时禁止缓存并带 ``WWW-Authenticate: Session``。
+            HTTPException(503): 认证服务配置无法加载。
+        """
         service = get_auth_service()
         try:
             return service.verify_session(
@@ -254,6 +365,25 @@ def create_app(
             ) from exc
 
     def require_same_origin(request: Request) -> None:
+        """校验带副作用请求的 Origin 与当前代理入口一致。
+
+        没有 Origin 的非浏览器调用保持兼容；有 Origin 时优先使用反向代理传入
+        的协议，并只比较 scheme 和 host，防止跨站页面借用管理员 Cookie 发起
+        登录、登出或创建任务请求。
+
+        参数：
+            request: 要检查的请求。只读取 ``Origin``、``Host`` 和可选的
+                ``X-Forwarded-Proto`` 请求头。
+
+        返回：
+            校验通过时返回 ``None``。
+
+        异常：
+            HTTPException(403): Origin 的 scheme/host 与当前代理入口不一致。
+
+        该依赖不验证登录身份，也不检查 CSRF Token；身份验证由
+        ``require_principal`` 单独负责。没有 Origin 的请求不会被此函数拦截。
+        """
         origin = request.headers.get("origin")
         if not origin:
             return
@@ -268,6 +398,19 @@ def create_app(
             )
 
     def dashboard_snapshot(limit: int) -> DashboardResponse:
+        """读取 Dashboard 快照并把持久化故障转换为统一的 503。
+
+        参数：
+            limit: 最近任务数量，路由层的 ``Query`` 已限制为 1 到 100；SSE 使用
+                固定值 50。
+
+        返回：
+            由服务层生成并映射后的 ``DashboardResponse``。
+
+        异常：
+            HTTPException(503): 数据库不可用、状态值损坏或其他 Dashboard 持久化
+            错误。不会把数据库连接串、堆栈或凭据放入响应体。
+        """
         try:
             snapshot = get_dashboard_service().snapshot(limit)
         except DashboardPersistenceError as exc:
@@ -279,6 +422,22 @@ def create_app(
 
     @application.middleware("http")
     async def add_security_headers(request: Request, call_next):
+        """为每个响应补充基础安全响应头。
+
+        认证接口额外禁止缓存，避免浏览器或中间代理保留登录结果和会话相关
+        响应。更完整的 CSP、TLS 和路径白名单由外层 Nginx 负责。
+
+        参数：
+            request: 当前请求，用于判断是否为认证路径。
+            call_next: Starlette 提供的下一个处理器，负责真正执行路由。
+
+        返回：
+            下游响应对象，附加 ``nosniff``、防点击劫持和 Referrer 策略；认证路径
+            额外覆盖为 ``Cache-Control: no-store``。
+
+        中间件不改变响应体，也不承担认证或限流逻辑；异常仍交给 FastAPI/ASGI
+        错误处理链处理。
+        """
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
@@ -293,6 +452,14 @@ def create_app(
         include_in_schema=False,
     )
     async def healthz() -> HealthResponse:
+        """返回最小化的进程存活响应。
+
+        返回：
+            固定的 ``{"status": "ok", "service": "openreviewer"}`` 模型。
+
+        该路由故意不读取数据库、不验证管理员配置，也不检查 Worker；它只证明
+        API 进程和 ASGI 路由仍能响应。数据库/认证可用性由受保护业务接口另行体现。
+        """
         return HealthResponse()
 
     @application.post(
@@ -305,6 +472,27 @@ def create_app(
         response: Response,
         _: Annotated[None, Depends(require_same_origin)],
     ) -> AuthResponse:
+        """验证管理员凭据并设置 HttpOnly、SameSite 会话 Cookie。
+
+        限流键由客户端地址和大小写折叠后的用户名组成；失败返回统一 401，成功
+        后清除失败记录并生成服务端签名会话。密码和 Token 都不会写入响应体之外
+        的持久化存储。
+
+        参数：
+            credentials: 已经过字段长度、去空白和额外字段校验的用户名/密码体。
+            request: 用于提取客户端地址并参与同源校验。
+            response: FastAPI 响应对象，用于设置签名会话 Cookie。
+
+        返回：
+            ``AuthResponse``，只包含管理员用户名和会话到期时间；Token 仅通过
+            HttpOnly Cookie 下发。
+
+        异常：
+            HTTPException(403): Origin 与当前入口不一致。
+            HTTPException(429): 当前客户端/账号在 15 分钟窗口内失败次数达到上限。
+            HTTPException(401): 用户名或密码不匹配，故意不区分具体原因。
+            HTTPException(503): 认证配置无法加载。
+        """
         client_address = request.headers.get("x-real-ip") or (
             request.client.host if request.client is not None else "unknown"
         )
@@ -353,6 +541,21 @@ def create_app(
         response: Response,
         _: Annotated[None, Depends(require_same_origin)],
     ) -> None:
+        """要求浏览器删除当前会话 Cookie。
+
+        参数：
+            request: 当前请求，保留在签名中以便同源依赖读取其 Origin。
+            response: 用于写入过期的 ``Set-Cookie``。
+
+        返回：
+            无响应体的 204；即使客户端没有有效 Cookie，删除操作也保持幂等。
+
+        异常：
+            HTTPException(403): 请求带有不匹配的 Origin。
+
+        当前服务不维护 Token 吊销表，因此注销的直接效果是浏览器不再发送该
+        Cookie；已经复制出的旧 Token 在自然到期前仍可被密码学验证。
+        """
         service = get_auth_service()
         response.delete_cookie(
             key=service.settings.cookie_name,
@@ -369,6 +572,16 @@ def create_app(
     def current_user(
         principal: Annotated[SessionPrincipal, Depends(require_principal)],
     ) -> AuthResponse:
+        """返回当前已验证管理员的公开会话信息。
+
+        参数：
+            principal: ``require_principal`` 已验证的会话主体。
+
+        返回：
+            用户名和绝对到期时间；不返回签名 Token、密码哈希或签名密钥。
+
+        无额外数据库访问，调用失败只可能来自认证依赖或响应模型转换。
+        """
         return AuthResponse(
             username=principal.username,
             expires_at=principal.expires_at,
@@ -382,6 +595,20 @@ def create_app(
         _: Annotated[SessionPrincipal, Depends(require_principal)],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> DashboardResponse:
+        """返回认证后的任务统计、最近任务和 Worker 状态。
+
+        参数：
+            _: 仅用于触发管理员会话校验的依赖结果。
+            limit: 最近任务数量，范围 1 到 100，默认 50。
+
+        返回：
+            当前数据库快照；Worker 没有心跳时会明确标记为未配置/离线，而不是
+            猜测健康状态。
+
+        异常：
+            HTTPException(401): 会话无效。
+            HTTPException(503): Dashboard 数据无法读取。
+        """
         return dashboard_snapshot(limit)
 
     @application.get(
@@ -392,6 +619,20 @@ def create_app(
         _: Annotated[SessionPrincipal, Depends(require_principal)],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> ReviewListResponse:
+        """返回认证后的最近审查任务列表。
+
+        参数：
+            _: 管理员会话依赖。
+            limit: 返回条数，范围 1 到 100，默认 50。
+
+        返回：
+            包含数据库中的总运行数和按创建时间倒序排列的最近任务；任务状态、
+            尝试次数和最后错误来自同一次 Dashboard 读取。
+
+        异常：
+            HTTPException(401): 会话无效。
+            HTTPException(503): 查询失败。
+        """
         snapshot = dashboard_snapshot(limit)
         return ReviewListResponse(
             total=snapshot.total_reviews,
@@ -403,7 +644,32 @@ def create_app(
         request: Request,
         _: Annotated[SessionPrincipal, Depends(require_principal)],
     ) -> StreamingResponse:
+        """建立认证后的 Server-Sent Events 实时 Dashboard 流。
+
+        内部生成器每两秒读取一次完整快照并发送 ``dashboard`` 事件；客户端断开
+        后循环自然结束。读取暂时失败只发送 ``unavailable`` 事件，不把错误数据
+        伪装成正常快照；响应头关闭 Nginx 缓冲，确保前端及时收到更新。
+
+        参数：
+            request: 用于检测浏览器是否已断开连接。
+            _: 建立流之前执行一次的管理员会话依赖。
+
+        返回：
+            ``text/event-stream`` 响应。每条正常事件包含哈希事件 ID、事件名和
+            完整 Dashboard JSON；暂时读取失败时发送稳定的 ``unavailable`` 事件。
+
+        注意：
+            会话只在建立连接时验证一次；长连接已经建立后不会在 Cookie 到期瞬间
+            被主动关闭。浏览器断线重连时 FastAPI 会重新执行认证依赖。
+        """
         async def events():
+            """每两秒生成一条 Dashboard SSE 事件，直到浏览器断开。
+
+            生成器先检查 ``request.is_disconnected``，避免客户端离开后继续查询
+            数据库；正常快照的 JSON 内容同时用于计算短事件 ID，便于浏览器识别
+            重复数据。Dashboard 临时不可用时只发送不含内部异常的 ``unavailable``
+            事件，随后等待下一轮恢复，不会结束整个连接。
+            """
             while not await request.is_disconnected():
                 try:
                     response_model = await run_in_threadpool(dashboard_snapshot, 50)
@@ -449,6 +715,27 @@ def create_app(
         _: Annotated[SessionPrincipal, Depends(require_principal)],
         __: Annotated[None, Depends(require_same_origin)],
     ) -> ReviewAcceptedResponse:
+        """校验幂等键并接受一个异步审查任务。
+
+        请求必须先通过会话和同源检查；仓储层保证运行、任务和 Outbox 事件在同
+        一个事务中持久化。相同键重复提交返回原任务，不同内容复用同一键则返回
+        409，数据库暂时不可用则返回可安全重试的 503。
+
+        参数：
+            request_body: 已通过 Pydantic 严格字段校验的审查请求。
+            idempotency_key: HTTP ``Idempotency-Key``，长度 1 到 200；函数会再去掉
+                首尾空白，空白键返回 422。
+            _: 管理员会话依赖结果，仅用于确认调用方已登录。
+            __: 同源依赖结果，仅用于阻止带恶意 Origin 的浏览器副作用请求。
+
+        返回：
+            202 响应，包含运行/任务 ID、版本键、当前执行状态、首次接受时间和
+            ``created`` 标志。重复请求的状态可能已经从 ``queued`` 推进到其他状态。
+
+        异常：
+            HTTPException(401/403/422/409/503): 分别对应会话无效、Origin 不匹配、
+            请求或幂等键不合法、键指向不同内容、持久化不可用。
+        """
         normalized_key = idempotency_key.strip()
         if not normalized_key:
             raise HTTPException(

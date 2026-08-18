@@ -21,9 +21,38 @@ from services.dashboard import (
 
 class SqlAlchemyDashboardRepository:
     def __init__(self, sessions: sessionmaker[Session]) -> None:
+        """保存 Dashboard 只读查询所需的 SQLAlchemy 会话工厂。
+
+        参数：
+            sessions: 已绑定数据库引擎的 ``sessionmaker``。仓储不会在构造时打开
+                连接，实际会话由 :meth:`load` 创建并在退出上下文后释放。
+        """
         self._sessions = sessions
 
     def load(self, limit: int) -> DashboardData:
+        """从数据库读取 Dashboard 所需的聚合数据。
+
+        查询一次任务总数和按状态分组的数量，再读取最近任务及最近一次心跳。
+        这里只负责把 ORM 记录转换成服务层读模型，不做在线判定；在线窗口和
+        缺省状态由 ``DashboardService`` 统一处理。任何 SQLAlchemy 或枚举转换
+        错误都会包装成 ``DashboardPersistenceError``。
+
+        参数：
+            limit: 最近任务查询的最大行数。调用方通常已校验 1 到 100，但 SQL
+                仓储仍把它原样传给数据库的 ``LIMIT``。
+
+        返回：
+            按创建时间倒序排列的最近任务、所有状态计数、总运行数和最后心跳。
+            没有心跳时 ``latest_worker`` 为 ``None``。
+
+        异常：
+            DashboardPersistenceError: SQL 查询失败、记录里的状态字符串无法映射
+            到领域枚举，或时间/记录转换失败。底层异常作为原因保留，但对 API 只
+            暴露稳定的服务不可用信息。
+
+        该方法执行多个只读查询，调用方看到的是同一会话内的近似快照，不提供跨
+        查询的强一致锁；实时一致性由 SSE 下一次轮询补齐。
+        """
         with self._sessions() as session:
             try:
                 total_reviews = int(
