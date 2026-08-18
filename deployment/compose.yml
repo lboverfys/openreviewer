@@ -78,16 +78,75 @@ services:
     <<: *openreviewer-container
     container_name: openreviewer-api
     restart: unless-stopped
+    environment:
+      <<: *openreviewer-environment
+      OPENREVIEWER_ADMIN_USERNAME: "${OPENREVIEWER_ADMIN_USERNAME:?Set the administrator username}"
+      OPENREVIEWER_ADMIN_PASSWORD_HASH: "${OPENREVIEWER_ADMIN_PASSWORD_HASH:?Set an Argon2id hash}"
+      OPENREVIEWER_SESSION_SECRET: "${OPENREVIEWER_SESSION_SECRET:?Set a random session secret}"
+      OPENREVIEWER_SESSION_TTL_SECONDS: "${OPENREVIEWER_SESSION_TTL_SECONDS:-28800}"
+      OPENREVIEWER_COOKIE_SECURE: "true"
     networks:
       - backend
       - edge
     ports:
-      - "127.0.0.1:${OPENREVIEWER_HOST_PORT:-18090}:18090"
+      - "127.0.0.1:${OPENREVIEWER_API_HOST_PORT:-18090}:18090"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+
+  worker:
+    <<: *openreviewer-container
+    container_name: openreviewer-worker
+    restart: unless-stopped
+    command: ["python", "-m", "apps.worker.main"]
+    environment:
+      <<: *openreviewer-environment
+      OPENREVIEWER_WORKER_ID: openreviewer-worker-1
+      OPENREVIEWER_WORKER_POLL_SECONDS: "${OPENREVIEWER_WORKER_POLL_SECONDS:-2}"
+      OPENREVIEWER_WORKER_LEASE_SECONDS: "${OPENREVIEWER_WORKER_LEASE_SECONDS:-30}"
+    healthcheck:
+      test: ["CMD", "python", "-m", "apps.worker.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    image: "${OPENREVIEWER_WEB_IMAGE:?Set OPENREVIEWER_WEB_IMAGE to a full SHA-tagged GHCR image}"
+    container_name: openreviewer-web
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=32m"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    networks:
+      - edge
+    ports:
+      - "0.0.0.0:${OPENREVIEWER_WEB_HOST_PORT:-18443}:8443"
+    volumes:
+      - "${OPENREVIEWER_TLS_CERT_FILE:?Set OPENREVIEWER_TLS_CERT_FILE}:/etc/nginx/tls/openreviewer.crt:ro"
+      - "${OPENREVIEWER_TLS_KEY_FILE:?Set OPENREVIEWER_TLS_KEY_FILE}:/etc/nginx/tls/openreviewer.key:ro"
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   postgres_data:

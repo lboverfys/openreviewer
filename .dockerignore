@@ -16,4 +16,6 @@ htmlcov/
 tests/
 docs/
 deployment/
+web/
+web/node_modules/
 *.log

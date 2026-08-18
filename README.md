@@ -2,85 +2,113 @@
 
 OpenReviewer 是独立的 AI 代码审查编排平台，首个接入项目是 NiuMa。
 
-当前仓库处于 M1 持久化入口阶段：已经固定 Python 3.12 运行时约定、第一版审查契约和可测试的领域模型，并实现可幂等创建异步审查任务的内部 API。Webhook、GitHub App、Worker、模型调用和 LangGraph 工作流将在后续阶段逐步加入。
+当前仓库处于 M2 可观察任务执行阶段：已经实现 PostgreSQL 持久化入口、单并发 Worker、
+租约恢复与重试、管理员登录、实时 Dashboard 和 React 管理前端。GitHub App、Webhook、
+CI 状态接入、模型调用和 LangGraph 工作流将在后续里程碑逐步加入。
 
 ## 目录
 
 ```text
-apps/api/       API 与 Webhook 入口
-domain/         审查领域模型
-persistence/    SQLAlchemy 数据模型与数据库适配器
-services/       应用用例与持久化边界
-migrations/     Alembic 数据库迁移
-tests/unit/     单元测试
-tests/integration/ 适配器与迁移集成测试
-docs/           架构和契约文档
+apps/api/           登录、任务和实时 Dashboard API
+apps/worker/        单并发数据库 Worker 与心跳健康检查
+domain/             审查领域模型和稳定枚举
+persistence/        SQLAlchemy 数据模型、队列与查询适配器
+services/           认证、任务和管理用例
+migrations/         Alembic 数据库迁移
+web/                React + TypeScript 管理前端和 Nginx 入口
+tests/              单元测试与集成测试
+docs/               架构和契约文档
+deployment/         niuma-2 Compose 部署配置
 ```
 
 ## 开发边界
 
 - Agent 服务与 NiuMa 业务服务独立部署、独立存储。
 - Agent 只读取受限的 PR 上下文，不执行 PR 提供的脚本或构建命令。
-- 不在仓库提交 Token、私钥、Webhook Secret 或真实部署配置。
+- 不在仓库提交 Token、私钥、明文密码、密码哈希或真实部署配置。
+- 当前 Worker 只把任务推进到 `waiting_for_ci`；没有 GitHub/模型结果时不会伪装成
+  `completed`。
 
-## 当前状态
+## M2 已实现能力
 
-- 已初始化独立 Git 仓库。
-- 已创建项目骨架和 Python 项目元数据。
-- 已实现审查契约、Pydantic 领域模型和单元测试。
-- 已实现不依赖外部服务的 FastAPI `/healthz` 健康检查。
-- 已实现 `POST /api/v1/reviews` 内部任务创建接口。
-- 已实现 PostgreSQL `ReviewRun`、`ReviewTask`、`OutboxEvent` 首个迁移。
-- 同一幂等键重试不会重复创建任务，同键不同内容会返回冲突。
+- `POST /api/v1/reviews` 幂等创建 `ReviewRun`、`ReviewTask` 和 Outbox 事件。
+- PostgreSQL `FOR UPDATE SKIP LOCKED` 单任务领取、租约续期、超时恢复、最多三次尝试和
+  指数退避。
+- Worker 启动、空闲、忙碌和停止心跳；Dashboard 可区分空闲与离线。
+- Argon2id 管理员密码校验、HMAC 签名会话、HttpOnly/SameSite Cookie 和登录限流。
+- 受保护的 Dashboard、任务列表和 SSE 实时事件接口。
+- React 登录页、实时状态卡、Worker 状态、最近任务和手工任务创建表单。
+- Nginx 自签名 HTTPS 测试入口；API 仍只绑定服务器回环地址，PostgreSQL 不映射端口。
 
 ## 本地启动
 
-激活项目专用 Python 环境后执行：
+使用 Python 3.12 项目环境安装并迁移数据库：
 
 ```shell
-python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 18090
-```
-
-健康检查地址为 `http://127.0.0.1:18090/healthz`。当前版本不公开 OpenAPI、Swagger 或 ReDoc 页面。
-
-## 创建审查任务
-
-`POST /api/v1/reviews` 是内部管理接口，调用前必须配置 PostgreSQL，并先执行：
-
-```shell
+python -m pip install -e ".[dev]"
 python -m alembic upgrade head
 ```
 
-请求示例：
+本地配置需要数据库连接、管理员用户名、Argon2id 密码哈希和至少 32 字节的会话密钥。
+可以使用交互式输入生成哈希，明文不会写入命令历史：
 
-```http
-POST /api/v1/reviews HTTP/1.1
-Content-Type: application/json
-Idempotency-Key: manual-review-001
-
-{
-  "installation_id": 10,
-  "repository_id": 42,
-  "repository": "lboverfys/NiuMa",
-  "pull_request_number": 128,
-  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-}
+```shell
+python -c "from getpass import getpass; from argon2 import PasswordHasher; print(PasswordHasher().hash(getpass('Password: ')))"
 ```
 
-接口返回 `202 Accepted` 和持久化后的 `review_run_id`、`review_task_id`。同一个
-`Idempotency-Key` 携带相同内容重试时返回原有 ID；携带不同内容时返回 `409 Conflict`。
-当前还没有 Worker，因此任务会保持 `queued`，不会伪装成已经完成审查。
+分别启动 API 和 Worker：
+
+```shell
+python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 18090
+python -m apps.worker.main
+```
+
+React 开发入口由 Vite 代理同源 API：
+
+```shell
+cd web
+npm install --no-audit --no-fund
+npm run dev
+```
+
+生产环境不运行 Vite，静态文件由 Web 镜像中的 Nginx 提供。
+
+## 管理接口
+
+除 `/healthz` 外，M2 管理接口都要求先登录：
+
+- `POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`；
+- `GET /api/v1/dashboard`；
+- `GET /api/v1/reviews`、`POST /api/v1/reviews`；
+- `GET /api/v1/reviews/stream`，使用 SSE 推送最新 Dashboard 快照。
+
+任务创建仍要求 `Idempotency-Key`。相同键和相同内容返回原任务；相同键但内容不同返回
+`409 Conflict`。
+
+详细契约见 [docs/contracts](docs/contracts/README.md)。
 
 ## 容器交付
 
-GitHub Actions 会在 Python 3.12 测试通过后构建镜像，并发布到 GHCR。部署必须使用完整 commit SHA 对应的不可变镜像标签，不能使用可移动的 `main` 标签判断实际版本。
+GitHub Actions 分别验证 Python 3.12 后端和 Node.js 22.19 React 前端，并发布两个不可变
+镜像：
 
-服务器部署说明见 [deployment/README.md](deployment/README.md)。Compose 会启动内部 PostgreSQL、一次性迁移容器和 API；API 仍只绑定服务器本机，尚未部署 Worker、Webhook 或模型调用。
+```text
+ghcr.io/lboverfys/openreviewer:<完整 commit SHA>
+ghcr.io/lboverfys/openreviewer-web:<完整 commit SHA>
+```
+
+服务器只能部署完整 SHA 标签，不能用可移动的 `main` 标签判断实际版本。Compose 启动
+PostgreSQL、一次性迁移、API、Worker 和 Web；公网只开放 Web HTTPS 端口。
+
+完整服务器步骤见 [deployment/README.md](deployment/README.md)。
 
 ## 验证
 
-使用项目专用 Python 环境执行：
-
 ```shell
-python -m pytest
+python -m pytest -q -W error
+python -m pip check
+cd web
+npm run typecheck
+npm test
+npm run build
 ```

@@ -12,6 +12,7 @@ from persistence.database import Database
 from persistence.models import Base, OutboxEventRecord, ReviewRunRecord, ReviewTaskRecord
 from persistence.repositories import SqlAlchemyReviewRepository
 from services.reviews import ReviewService
+from tests.support import TEST_PASSWORD, TEST_USERNAME, make_auth_service
 
 
 HEAD_SHA = "a" * 40
@@ -55,6 +56,11 @@ async def post_review(
         transport=transport,
         base_url="http://testserver",
     ) as client:
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+        )
+        assert login.status_code == 200
         return await client.post(
             "/api/v1/reviews",
             json=payload,
@@ -64,7 +70,10 @@ async def post_review(
 
 def app_for(database: Database):
     repository = SqlAlchemyReviewRepository(database.sessions)
-    return create_app(ReviewService(repository))
+    return create_app(
+        ReviewService(repository),
+        auth_service=make_auth_service(),
+    )
 
 
 def test_create_review_persists_run_task_and_outbox_atomically(
@@ -189,7 +198,11 @@ def test_unconfigured_persistence_returns_service_unavailable(
         monkeypatch.delenv(variable, raising=False)
 
     response = asyncio.run(
-        post_review(create_app(), review_payload(), "no-database")
+        post_review(
+            create_app(auth_service=make_auth_service()),
+            review_payload(),
+            "no-database",
+        )
     )
 
     assert response.status_code == 503

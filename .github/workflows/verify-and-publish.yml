@@ -24,9 +24,31 @@ jobs:
       - name: Run tests
         run: python -m pytest -q -W error
 
+  web-test:
+    name: Test React on Node 22.19
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run typecheck
+        run: npm run typecheck
+      - name: Run tests
+        run: npm test
+      - name: Build frontend
+        run: npm run build
+
   publish:
-    name: Publish GHCR image
-    needs: test
+    name: Publish GHCR images
+    needs: [test, web-test]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
@@ -40,7 +62,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Publish API and Worker image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
@@ -48,6 +71,19 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.sha }}
             ghcr.io/${{ github.repository }}:main
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Publish web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-web:${{ github.sha }}
+            ghcr.io/${{ github.repository }}-web:main
           provenance: false
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

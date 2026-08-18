@@ -46,6 +46,15 @@ class ExecutionStatus(str, Enum):
     SUPERSEDED = "superseded"
 
 
+class WorkerStatus(str, Enum):
+    """Small, observable lifecycle for a queue worker process."""
+
+    STARTING = "starting"
+    IDLE = "idle"
+    BUSY = "busy"
+    STOPPING = "stopping"
+
+
 class ReviewConclusion(str, Enum):
     NO_CONFIRMED_FINDINGS = "no_confirmed_findings"
     FINDINGS_PRESENT = "findings_present"

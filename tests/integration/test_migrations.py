@@ -26,6 +26,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "outbox_events",
             "review_runs",
             "review_tasks",
+            "worker_heartbeats",
         }
         assert {
             constraint["name"]
@@ -37,6 +38,6 @@ def test_initial_migration_creates_durable_review_task_schema(
         } == {"uq_review_tasks_review_run_id"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "20260818_0001"
+        assert revision == "20260818_0002"
     finally:
         engine.dispose()

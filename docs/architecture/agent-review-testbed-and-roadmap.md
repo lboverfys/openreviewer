@@ -283,9 +283,12 @@ HTTPS、专用部署账号、主机防火墙和 SSH 加固，但这只是测试�
 
 ## 4. 当前明确没有实现的内容
 
-以下能力仍为零实现，属于 Agent 代码审查项目，而不是 NiuMa 的 CI/CD：
+截至 2026-08-18，OpenReviewer 已完成独立仓库、Python 3.12 项目骨架、PostgreSQL
+持久化任务、单并发 Worker、租约恢复、管理员登录和 React 实时管理界面。Worker 当前会
+把任务可靠地推进到 `waiting_for_ci`，不会把后续未实现节点伪装为成功。
 
-- 已有独立的 `openreviewer` 目录和设计文档，但还没有独立 Git 仓库、项目骨架或源码；
+以下能力仍未实现，属于后续 Agent 代码审查闭环，而不是 NiuMa 的 CI/CD：
+
 - 没有 GitHub App、webhook 接收端或 webhook 签名校验；
 - 没有 GitHub installation token 获取和权限最小化配置；
 - 没有 PR 元数据、changed files、patch 或完整 diff 获取逻辑；
@@ -294,10 +297,10 @@ HTTPS、专用部署账号、主机防火墙和 SSH 加固，但这只是测试�
 - 没有模型调用、提示词版本、结构化输出 Schema 或结果校验；
 - 没有把审查结果发布为 Check Run、PR Review 或 inline comment；
 - 没有增量审查、旧评论消解、重复评论抑制和 stale SHA 防护；
-- 没有任务队列、幂等、重试、限流、审计日志和成本统计；
+- 尚未实现 GitHub API 和模型 API 的分类重试、全链路审计日志与成本统计；
 - 没有真阳性、误报率、可执行性和审查耗时的评测数据集。
-- `niuma-2` 目前只完成资源和连通性检查，尚未创建 Agent 部署目录、容器、PostgreSQL
-  数据卷或 `18090` Webhook 监听端口。
+- `niuma-2` 已运行 M1 API 与 PostgreSQL；M2 Worker 和 Web 管理入口完成本地验证后再按
+  完整 commit SHA 发布。
 
 现有 `PR CI` 不会调用 AI，也不会产生 Agent 审查意见。后续 NiuMa 功能 PR 可以作为
 真实评测输入，但必须先实现 Agent 审查系统的最小闭环。

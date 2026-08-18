@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 from sqlalchemy import URL, Engine, create_engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,6 +11,30 @@ from sqlalchemy.orm import Session, sessionmaker
 
 class DatabaseConfigurationError(RuntimeError):
     """Required database configuration is missing or invalid."""
+
+
+def _password_from_environment(values: Mapping[str, str]) -> str:
+    direct_password = values.get("OPENREVIEWER_DB_PASSWORD")
+    password_file = values.get("OPENREVIEWER_DB_PASSWORD_FILE", "").strip()
+    if direct_password and password_file:
+        raise DatabaseConfigurationError(
+            "configure only one of OPENREVIEWER_DB_PASSWORD and "
+            "OPENREVIEWER_DB_PASSWORD_FILE"
+        )
+    if password_file:
+        try:
+            password = Path(password_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise DatabaseConfigurationError(
+                "OPENREVIEWER_DB_PASSWORD_FILE could not be read"
+            ) from exc
+    else:
+        password = direct_password or ""
+    if not password:
+        raise DatabaseConfigurationError(
+            "OPENREVIEWER_DB_PASSWORD or OPENREVIEWER_DB_PASSWORD_FILE is required"
+        )
+    return password
 
 
 def database_url_from_environment(
@@ -25,11 +50,7 @@ def database_url_from_environment(
                 "OPENREVIEWER_DATABASE_URL is invalid"
             ) from exc
 
-    password = values.get("OPENREVIEWER_DB_PASSWORD")
-    if password is None or not password:
-        raise DatabaseConfigurationError(
-            "OPENREVIEWER_DB_PASSWORD is required"
-        )
+    password = _password_from_environment(values)
 
     port_value = values.get("OPENREVIEWER_DB_PORT", "5432")
     try:

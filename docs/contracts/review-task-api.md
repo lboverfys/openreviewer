@@ -1,12 +1,13 @@
 # 审查任务创建接口 v1
 
-本文档固定 M1 阶段内部任务创建接口的语义。该接口不是 GitHub Webhook，也不直接执行
-审查；它只负责可靠地接受请求并创建待处理任务。
+本文档固定 M1 建立、M2 继续沿用的内部任务创建接口语义。该接口不是 GitHub Webhook，
+也不直接执行审查；它只负责可靠地接受请求并创建待处理任务。
 
 ## 1. 请求
 
 ```http
 POST /api/v1/reviews
+Cookie: <已登录管理员会话>
 Idempotency-Key: <1 到 200 个字符>
 Content-Type: application/json
 ```
@@ -31,8 +32,9 @@ Content-Type: application/json
 2. 一个与该运行一一对应、状态为 `queued` 的 `ReviewTask`；
 3. 一个类型为 `review.requested` 的 `OutboxEvent`。
 
-只有事务整体提交成功才返回接受结果。当前 M1 还没有 Worker，任务不会自动变成
-`running` 或 `completed`。
+只有事务整体提交成功才返回接受结果。M2 Worker 可以把任务从 `queued` 推进到
+`running`，完成当前准备阶段后进入 `waiting_for_ci`。GitHub 和模型尚未接入，因此不能
+进入 `completed`。
 
 ## 3. 幂等行为
 
@@ -63,6 +65,7 @@ Content-Type: application/json
 
 | HTTP 状态 | 含义 |
 | --- | --- |
+| `401` | 没有有效管理员会话 |
 | `422` | 缺少幂等键，或请求字段不符合契约 |
 | `409` | 幂等键已经被不同内容使用 |
 | `503` | 数据库未配置或暂时不可用，不能保证任务已经持久化 |
@@ -71,5 +74,6 @@ Content-Type: application/json
 
 ## 6. 暴露边界
 
-该接口属于内部管理 API。当前仅通过宿主机 `127.0.0.1:18090` 访问。后续开放 GitHub
-Webhook 公网入口时，不得顺带把该接口直接暴露到公网。
+该接口属于认证后的管理 API。API 容器仍只映射宿主机 `127.0.0.1:18090`；公网 Web
+入口只通过同源 Nginx 代理允许的管理路径，并依赖 Secure、HttpOnly、SameSite=Strict
+会话 Cookie。后续开放 GitHub Webhook 时必须使用独立验签入口。

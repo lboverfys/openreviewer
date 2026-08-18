@@ -19,7 +19,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from domain.enums import CoverageStatus, ExecutionStatus, ReviewConclusion
+from domain.enums import (
+    CoverageStatus,
+    ExecutionStatus,
+    ReviewConclusion,
+    WorkerStatus,
+)
 
 
 NAMING_CONVENTION = {
@@ -144,6 +149,41 @@ class ReviewTaskRecord(Base):
         nullable=False,
         default=utc_now,
         onupdate=utc_now,
+    )
+
+
+class WorkerHeartbeatRecord(Base):
+    """Last known state for one worker process.
+
+    Heartbeats are deliberately durable so the dashboard can distinguish an
+    idle worker from a crashed or disconnected worker without introducing
+    Redis merely for presence tracking.
+    """
+
+    __tablename__ = "worker_heartbeats"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({enum_values(WorkerStatus)})",
+            name="status_value",
+        ),
+        Index("ix_worker_heartbeats_last_seen", "last_seen_at"),
+    )
+
+    worker_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_task_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("review_tasks.id", ondelete="SET NULL"),
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
     )
 
 
