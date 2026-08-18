@@ -14,6 +14,10 @@ WORKDIR /app
 COPY --chown=openreviewer:openreviewer pyproject.toml README.md ./
 COPY --chown=openreviewer:openreviewer apps ./apps
 COPY --chown=openreviewer:openreviewer domain ./domain
+COPY --chown=openreviewer:openreviewer persistence ./persistence
+COPY --chown=openreviewer:openreviewer services ./services
+COPY --chown=openreviewer:openreviewer alembic.ini ./alembic.ini
+COPY --chown=openreviewer:openreviewer migrations ./migrations
 
 RUN python -m pip install --no-cache-dir .
 

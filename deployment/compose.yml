@@ -1,25 +1,96 @@
+name: openreviewer
+
+x-openreviewer-environment: &openreviewer-environment
+  OPENREVIEWER_ENV: "${OPENREVIEWER_ENV:-test}"
+  OPENREVIEWER_LOG_LEVEL: "${OPENREVIEWER_LOG_LEVEL:-INFO}"
+  OPENREVIEWER_DB_HOST: postgres
+  OPENREVIEWER_DB_PORT: "5432"
+  OPENREVIEWER_DB_NAME: openreviewer
+  OPENREVIEWER_DB_USER: openreviewer
+  OPENREVIEWER_DB_PASSWORD: "${OPENREVIEWER_POSTGRES_PASSWORD:?Set OPENREVIEWER_POSTGRES_PASSWORD}"
+
+x-openreviewer-container: &openreviewer-container
+  image: "${OPENREVIEWER_IMAGE:?Set OPENREVIEWER_IMAGE to a full SHA-tagged GHCR image}"
+  environment: *openreviewer-environment
+  read_only: true
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=64m"
+  security_opt:
+    - "no-new-privileges:true"
+  cap_drop:
+    - ALL
+  mem_limit: 512m
+  cpus: 1.0
+  pids_limit: 128
+  networks:
+    - backend
+  logging:
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
-  api:
-    image: "${OPENREVIEWER_IMAGE:?Set OPENREVIEWER_IMAGE to a full SHA-tagged GHCR image}"
-    container_name: openreviewer-api
+  postgres:
+    image: "${OPENREVIEWER_POSTGRES_IMAGE:-postgres:16.10-bookworm}"
+    container_name: openreviewer-postgres
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${OPENREVIEWER_HOST_PORT:-18090}:18090"
     environment:
-      OPENREVIEWER_ENV: "${OPENREVIEWER_ENV:-test}"
-      OPENREVIEWER_LOG_LEVEL: "${OPENREVIEWER_LOG_LEVEL:-INFO}"
-    read_only: true
-    tmpfs:
-      - "/tmp:rw,noexec,nosuid,size=64m"
+      POSTGRES_DB: openreviewer
+      POSTGRES_USER: openreviewer
+      POSTGRES_PASSWORD: "${OPENREVIEWER_POSTGRES_PASSWORD:?Set OPENREVIEWER_POSTGRES_PASSWORD}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     security_opt:
       - "no-new-privileges:true"
-    cap_drop:
-      - ALL
+    shm_size: 128m
     mem_limit: 512m
     cpus: 1.0
     pids_limit: 128
+    networks:
+      - backend
     logging:
       driver: local
       options:
         max-size: "10m"
         max-file: "3"
+
+  migrate:
+    <<: *openreviewer-container
+    container_name: openreviewer-migrate
+    restart: "no"
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *openreviewer-container
+    container_name: openreviewer-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OPENREVIEWER_HOST_PORT:-18090}:18090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+    name: openreviewer-postgres-data
+
+networks:
+  backend:
+    name: openreviewer-backend
+    internal: true

@@ -78,6 +78,33 @@ class PullRequestWebhook(ContractModel):
         return self.delivery_id
 
 
+class ReviewRequest(ContractModel):
+    """Internal request for one asynchronous pull-request review."""
+
+    installation_id: int = Field(gt=0)
+    repository_id: int = Field(gt=0)
+    repository: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+    )
+    pull_request_number: int = Field(gt=0)
+    head_sha: str = Field(min_length=40, max_length=64)
+
+    @field_validator("head_sha")
+    @classmethod
+    def validate_sha(cls, value: str) -> str:
+        return normalize_sha(value)
+
+    @property
+    def review_version_key(self) -> str:
+        return build_review_version_key(
+            self.repository_id,
+            self.pull_request_number,
+            self.head_sha,
+        )
+
+
 class FindingLocation(ContractModel):
     file: str = Field(min_length=1, max_length=1024)
     blob_sha: str | None = Field(default=None, min_length=40, max_length=64)

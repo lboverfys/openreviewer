@@ -31,3 +31,6 @@ Thumbs.db
 
 # Local logs
 *.log
+
+# Disposable local databases
+*.sqlite3

@@ -9,9 +9,12 @@ description = "A recoverable and auditable AI code review orchestration platform
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.14,<2",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
+    "psycopg[binary]>=3.2,<4",
     "pydantic>=2.10,<3",
+    "sqlalchemy>=2.0,<3",
     "uvicorn>=0.34,<1",
 ]
 
@@ -21,7 +24,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["apps*", "domain*"]
+include = ["apps*", "domain*", "persistence*", "services*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
