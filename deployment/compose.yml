@@ -78,6 +78,9 @@ services:
     <<: *openreviewer-container
     container_name: openreviewer-api
     restart: unless-stopped
+    networks:
+      - backend
+      - edge
     ports:
       - "127.0.0.1:${OPENREVIEWER_HOST_PORT:-18090}:18090"
     depends_on:
@@ -94,3 +97,5 @@ networks:
   backend:
     name: openreviewer-backend
     internal: true
+  edge:
+    name: openreviewer-edge

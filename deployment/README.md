@@ -35,6 +35,9 @@ OPENREVIEWER_LOG_LEVEL=INFO
 `.env` 必须设置为仅 root 可读，不得提交到 Git。数据库密码只用于 OpenReviewer 自己的
 PostgreSQL，不能复用 NiuMa 或其他服务的密码。
 
+配置校验必须使用 `docker compose config --quiet`。不要在日志或共享终端中输出完整的
+`docker compose config`，因为 Compose 会把 `.env` 中的数据库密码展开到解析结果里。
+
 ## 发布步骤
 
 1. 创建独立发布目录，例如 `/opt/openreviewer/releases/<commit-sha>`；
@@ -57,7 +60,9 @@ API 当前仅监听：
 127.0.0.1:18090
 ```
 
-PostgreSQL 只存在于 Docker 内部网络，没有宿主机端口。可以通过 SSH 在服务器内部验证：
+PostgreSQL 只连接内部 `backend` 网络，没有宿主机端口。API 同时连接 `backend` 和
+`edge` 网络；`edge` 用于把 API 端口发布到宿主机回环地址，不会改变只监听
+`127.0.0.1` 的限制。可以通过 SSH 在服务器内部验证：
 
 ```shell
 curl --fail http://127.0.0.1:18090/healthz
