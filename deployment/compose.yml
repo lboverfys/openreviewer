@@ -1,0 +1,25 @@
+services:
+  api:
+    image: "${OPENREVIEWER_IMAGE:?Set OPENREVIEWER_IMAGE to a full SHA-tagged GHCR image}"
+    container_name: openreviewer-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OPENREVIEWER_HOST_PORT:-18090}:18090"
+    environment:
+      OPENREVIEWER_ENV: "${OPENREVIEWER_ENV:-test}"
+      OPENREVIEWER_LOG_LEVEL: "${OPENREVIEWER_LOG_LEVEL:-INFO}"
+    read_only: true
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=64m"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
