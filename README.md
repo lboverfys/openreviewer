@@ -114,6 +114,10 @@ ghcr.io/lboverfys/openreviewer-web:<完整 commit SHA>
 服务器只能部署完整 SHA 标签，不能用可移动的 `main` 标签判断实际版本。Compose 启动
 PostgreSQL、一次性迁移、API、Worker 和 Web；公网只开放 Web HTTPS 端口。
 
+`main` 分支 push 会在测试和 GHCR 发布成功后自动部署到 `niuma-2`。部署通过 `niuma`
+跳板机使用受限 SSH key 完成，服务器私有 `.env` 不离开服务器；失败版本不会切换
+`current`，数据库迁移也不会自动回退。
+
 完整服务器步骤见 [deployment/README.md](deployment/README.md)。
 
 ## 验证

@@ -31,6 +31,58 @@ ghcr.io/lboverfys/openreviewer-web:<完整 commit SHA>
 服务器必须使用完整 SHA 标签。可移动的 `main` 标签只用于查看，不能作为发布版本依据。
 同时记录镜像摘要，才能在标签之外确认实际运行内容。
 
+## 推送后的自动部署
+
+`.github/workflows/verify-and-publish.yml` 在 `main` 分支收到 push 后按下面的顺序运行：
+
+1. 运行 Python 后端测试、React 类型检查、前端测试和生产构建；
+2. 将 API/Worker 与 Web 镜像分别发布到 GHCR，并同时写入完整 commit SHA 标签；
+3. 通过 `niuma` 跳板机连接 `niuma-2`，执行服务器上的
+   `/usr/local/libexec/openreviewer-deploy`；
+4. 将本次提交的 `deployment/compose.yml` 通过 SSH 标准输入传给部署入口。
+
+部署 Job 使用 `niuma-2` GitHub Environment，并以
+`openreviewer-niuma-2` 为并发组。同一时间只允许一个发布过程，排队中的发布不会互相
+覆盖。Pull Request 只验证代码，不会连接生产测试机；`workflow_dispatch` 仅在推送后的
+完整提交上运行发布链路。
+
+### GitHub Environment Secrets
+
+以下值应配置在仓库的 `niuma-2` Environment 中。它们只供部署 Job 使用，不要写入仓库：
+
+| Secret | 用途 |
+| --- | --- |
+| `OPENREVIEWER_DEPLOY_SSH_PRIVATE_KEY` | 仅用于自动部署的 ED25519 私钥，不能复用个人 root 私钥 |
+| `OPENREVIEWER_DEPLOY_KNOWN_HOSTS` | `niuma` 跳板机和 `niuma-2` 目标机的固定 SSH 主机指纹 |
+| `OPENREVIEWER_DEPLOY_BASTION_HOST` | 跳板机地址（当前为 `niuma` 的公网地址） |
+| `OPENREVIEWER_DEPLOY_HOST` | `niuma-2` 目标地址 |
+| `OPENREVIEWER_DEPLOY_USER` | 目标登录用户（当前部署入口由 root 执行） |
+
+服务器端对应的公钥必须分别写入跳板机和目标机的 `authorized_keys`。跳板机的条目只允许
+转发到 `niuma-2:22`；目标机的条目使用 forced command，只允许执行
+`openreviewer-deploy <40 位 SHA>`，并关闭伪终端、Agent 转发、X11 转发和端口转发。这样
+GitHub Actions 即使拿到私钥，也不能取得服务器交互式 shell。
+
+一次性安装部署入口时，将本文件中的 `deployment/deploy.sh` 以 `root:root`、`0755` 安装
+到 `/usr/local/libexec/openreviewer-deploy`。服务器上的 `/opt/openreviewer/current/.env`
+仍由管理员维护，权限保持 `0600`，不会上传到 GitHub；每个新 release 只从上一可用版本
+复制它，并强制改写两个完整 SHA 镜像值。
+
+### 发布失败和回退
+
+部署脚本用 `/opt/openreviewer/deploy.lock` 串行化发布，在切换 `current` 前依次完成 Compose
+校验、镜像拉取、PostgreSQL 健康检查、Alembic 向前迁移、API/Worker/Web 健康检查和本机
+`/healthz` 检查。所有检查通过后，才原子更新：
+
+```text
+/opt/openreviewer/current -> releases/<commit-sha>
+```
+
+候选版本失败时不会更新 `current`；如果应用容器已经被新版本替换，脚本会恢复上一发布的
+API、Worker 和 Web 镜像。数据库迁移只向前执行，绝不自动 `downgrade`，因此需要人工确认
+迁移兼容性后再处理数据库问题。每个成功版本的镜像 digest、迁移版本和部署时间写入该
+release 的 `release.info`，不包含任何密码或会话密钥。
+
 ## 服务器目录
 
 ```text
@@ -38,7 +90,8 @@ ghcr.io/lboverfys/openreviewer-web:<完整 commit SHA>
 ├── current -> releases/<commit-sha>
 ├── releases/<commit-sha>/
 │   ├── compose.yml
-│   └── .env                 # 0600 root:root
+│   ├── .env                 # 0600 root:root，由服务器复制
+│   └── release.info         # 成功发布后生成，不含敏感值
 └── shared/
     ├── postgres-password    # 已有数据库密码，仅用于生成发布 .env
     └── tls/                 # 0700 root:root
@@ -98,18 +151,17 @@ TLS 目录本身保持 `0700 root:root`，所以宿主机普通用户不能读�
 单独挂载后，非 root Nginx 才能读取。自签名证书仍会让浏览器首次访问显示“不受信任”警告，
 测试人员核对 IP 和证书后手工继续即可。正式入口应换成受信任证书和域名。
 
-## 发布步骤
+## 手工发布和排障
 
-1. 创建 `/opt/openreviewer/releases/<commit-sha>`，不覆盖已有发布目录；
-2. 上传 `compose.yml`，创建权限为 `0600` 的 `.env`；
-3. 只执行 `docker compose config --quiet` 校验，禁止输出完整展开配置；
-4. 拉取完整 SHA 的 API/Worker 和 Web 镜像以及固定 PostgreSQL 镜像；
-5. 启动 PostgreSQL并等待健康；
-6. 执行一次性迁移并确认退出码为 `0`；
-7. 启动 API、Worker 和 Web，等待三个长期容器健康；
-8. 从服务器本机验证 API 健康、Web HTTPS、迁移版本和 Worker 心跳；
-9. 验证管理员登录、任务创建和 `queued -> running -> waiting_for_ci`；
-10. 记录镜像摘要并原子更新 `/opt/openreviewer/current` 符号链接。
+正常情况下只需向 `main` 推送，Actions 会自动执行上一节的发布流程。首次安装或排障时，
+管理员可以在 `niuma-2` 上以 root 身份手工调用：
+
+```shell
+/usr/local/libexec/openreviewer-deploy <40 位 commit SHA> < deployment/compose.yml
+```
+
+手工调用仍会使用当前 release 的服务器 `.env`，不会接受命令行传入密码。执行前应确认
+目标 SHA 的两个 GHCR 镜像已经存在，并保留当前容器和数据库备份信息。
 
 候选版本失败时，不更新 `current`；若它影响现有服务，恢复上一发布的完整 SHA 镜像。数据库
 迁移只向前执行，不自动降级。

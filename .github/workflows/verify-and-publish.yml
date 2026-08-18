@@ -88,3 +88,74 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+  deploy:
+    name: Deploy to niuma-2
+    needs: [publish]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    environment: niuma-2
+    concurrency:
+      group: openreviewer-niuma-2
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure restricted SSH connection
+        env:
+          DEPLOY_PRIVATE_KEY: ${{ secrets.OPENREVIEWER_DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.OPENREVIEWER_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_BASTION_HOST: ${{ secrets.OPENREVIEWER_DEPLOY_BASTION_HOST }}
+          DEPLOY_TARGET_HOST: ${{ secrets.OPENREVIEWER_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.OPENREVIEWER_DEPLOY_USER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_PRIVATE_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          test -n "$DEPLOY_BASTION_HOST"
+          test -n "$DEPLOY_TARGET_HOST"
+          test -n "$DEPLOY_USER"
+          case "$DEPLOY_USER" in
+            *[!A-Za-z0-9._-]*) echo "部署用户包含非法字符" >&2; exit 1 ;;
+          esac
+          case "$DEPLOY_BASTION_HOST" in
+            *[!A-Za-z0-9.:%-]*) echo "跳板机地址包含非法字符" >&2; exit 1 ;;
+          esac
+          case "$DEPLOY_TARGET_HOST" in
+            *[!A-Za-z0-9.:%-]*) echo "目标机地址包含非法字符" >&2; exit 1 ;;
+          esac
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_PRIVATE_KEY" > "$HOME/.ssh/openreviewer-deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/openreviewer-known-hosts"
+          chmod 600 "$HOME/.ssh/openreviewer-deploy"
+          chmod 644 "$HOME/.ssh/openreviewer-known-hosts"
+          cat > "$HOME/.ssh/config" <<EOF
+          Host openreviewer-deploy-bastion
+            HostName $DEPLOY_BASTION_HOST
+            User $DEPLOY_USER
+            IdentityFile $HOME/.ssh/openreviewer-deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $HOME/.ssh/openreviewer-known-hosts
+
+          Host openreviewer-deploy-target
+            HostName $DEPLOY_TARGET_HOST
+            User $DEPLOY_USER
+            IdentityFile $HOME/.ssh/openreviewer-deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $HOME/.ssh/openreviewer-known-hosts
+            ProxyJump openreviewer-deploy-bastion
+          EOF
+          chmod 600 "$HOME/.ssh/config"
+
+      - name: Deploy immutable commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -o ConnectTimeout=20 openreviewer-deploy-target \
+            "openreviewer-deploy ${GITHUB_SHA}" < deployment/compose.yml
