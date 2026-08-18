@@ -29,6 +29,9 @@ class MutableClock:
         return self.value
 
 
+TEST_TASK_AVAILABLE_AT = datetime(2000, 1, 1, tzinfo=UTC)
+
+
 @pytest.fixture
 def database(tmp_path: Path):
     path = (tmp_path / "worker.sqlite3").as_posix()
@@ -53,6 +56,12 @@ def submit_review(database: Database, key: str = "worker-test") -> str:
         ),
         key,
     )
+    # Keep task availability independent of the wall clock used by CI.
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, result.review_task_id)
+        assert task is not None
+        task.available_at = TEST_TASK_AVAILABLE_AT
+        session.commit()
     return result.review_task_id
 
 
