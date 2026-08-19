@@ -1,4 +1,10 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import { api, ApiError } from "./api";
 import { loadSavedCredentials, saveCredentials } from "./credentials";
@@ -32,41 +38,38 @@ const statusOrder: ExecutionStatus[] = [
 ];
 
 function Brand() {
-  /**
-   * 渲染全站复用的品牌标识和控制台副标题。
-   *
-   * 组件没有输入参数，也不持有状态；它只输出静态可访问标记。图形装饰通过
-   * `aria-hidden` 隐藏，真正的品牌名称保留为文本，便于屏幕阅读器和测试定位。
-   */
   return (
     <div className="brand" aria-label="OpenReviewer">
-      <span className="brand-mark" aria-hidden="true">
-        <span>&lt;</span>
-        <i />
-        <span>/&gt;</span>
-      </span>
-      <span>
-        <strong>OpenReviewer</strong>
-        <small>审查运行控制台</small>
-      </span>
+      <div className="brand-mark-wrapper">
+        <span className="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+            <line x1="14" y1="4" x2="10" y2="20" />
+          </svg>
+        </span>
+        <span className="brand-pulse-ring" />
+      </div>
+      <div className="brand-titles">
+        <div className="brand-row">
+          <strong>OpenReviewer</strong>
+          <span className="brand-tag">v0.2.0</span>
+        </div>
+        <small>AI 代码审查调度引擎</small>
+      </div>
     </div>
   );
 }
 
 function LoadingScreen() {
-  /**
-   * 在首次查询会话期间展示稳定尺寸的加载画面。
-   *
-   * 根组件在 `api.me()` 返回前只渲染这里，避免登录页和控制台先后闪烁。该组件
-   * 没有网络请求或定时器，加载动画完全由 CSS 驱动，尺寸稳定后再交给下一阶段页面。
-   */
   return (
     <main className="loading-screen">
-      <Brand />
-      <div className="loader" aria-label="正在确认登录状态">
-        <span />
-        <span />
-        <span />
+      <div className="loading-content">
+        <Brand />
+        <div className="loading-bar-wrap">
+          <div className="loading-bar-progress" />
+        </div>
+        <p className="loading-text">正在同步控制台运行状态…</p>
       </div>
     </main>
   );
@@ -78,21 +81,6 @@ interface LoginProps {
 }
 
 function Login({ initialMessage, onAuthenticated }: LoginProps) {
-  /**
-   * 管理员登录表单。
-   *
-   * 密码只在组件状态中短暂存在；用户勾选“记住账号密码”后，提交成功的凭据会
-   * 交给浏览器 PasswordCredential 密码库保存，应用本身不写入 localStorage，也不
-   * 保存会话 Token。组件重新挂载时会向浏览器密码库请求自动填充。
-   *
-   * 参数：
-   * - `initialMessage`：从会话检查或注销流程传来的首次提示，可选。
-   * - `onAuthenticated`：登录成功后由父组件提供的状态切换回调。
-   *
-   * 组件状态只控制输入、提交中、记住开关和错误提示；真正的身份验证、限流和
-   * 会话 Cookie 设置由后端完成。浏览器不支持凭据管理 API 时，用户仍可手动登录，
-   * 只是无法由本应用主动触发自动填充。
-   */
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState(initialMessage ?? "");
@@ -100,12 +88,6 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
   const [rememberCredentials, setRememberCredentials] = useState(true);
 
   useEffect(() => {
-    /**
-     * 首次显示登录页时读取浏览器密码库。
-     *
-     * 使用函数式状态更新是为了不覆盖用户在异步读取期间已经开始输入的内容；
-     * 凭据读取失败只代表浏览器策略不允许，不影响普通登录流程。
-     */
     let active = true;
     void loadSavedCredentials().then((saved) => {
       if (!active || !saved) return;
@@ -118,26 +100,13 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
   }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
-    /**
-     * 处理登录表单提交并把后端结果转换为页面状态。
-     *
-     * 参数：
-     * - `event`：浏览器表单提交事件；调用 `preventDefault` 防止整页刷新。
-     *
-     * 流程：先锁定按钮并清空旧提示，再调用 API；成功后按开关异步把凭据交给浏览器
-     * 密码库，不等待这个可选动作完成，然后清除 React 中的密码并通知父组件；失败
-     * 时按 401/429/其他错误显示不同文案。密码在成功和失败分支都会清空，避免继续
-     * 留在页面状态中。
-     */
     event.preventDefault();
     setSubmitting(true);
     setMessage("");
     try {
-      // 后端契约会去掉账号两端空白；前端先统一格式，避免浏览器密码库保存出带空格的账号。
       const normalizedUsername = username.trim();
       const user = await api.login(normalizedUsername, password);
       if (rememberCredentials) {
-        // 保存动作只触碰浏览器密码库；失败不会回滚已经成功的服务端登录。
         void saveCredentials(normalizedUsername, password);
       }
       setPassword("");
@@ -158,157 +127,292 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
 
   return (
     <main className="login-page">
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
-      <section className="login-story">
-        <Brand />
-        <div className="story-copy">
-          <p className="eyebrow">REVIEW OPERATIONS / M2</p>
+      {/* Dynamic Ambient Backdrops */}
+      <div className="login-glow-1" />
+      <div className="login-glow-2" />
+      <div className="login-grid-bg" />
+
+      {/* Left Showcase Side */}
+      <section className="login-showcase">
+        <div className="showcase-header">
+          <Brand />
+          <div className="system-pill">
+            <span className="live-dot-pulse" />
+            <span>M2 MILESTONE ACTIVE</span>
+          </div>
+        </div>
+
+        <div className="showcase-hero">
+          <div className="hero-badge">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </svg>
+            下一代自动化 PR 审查调度系统
+          </div>
           <h1>
             让每一次代码审查
             <br />
-            <em>都有迹可循</em>
+            <span className="gradient-text">清晰可见 · 稳如磐石</span>
           </h1>
-          <p>
-            查看任务流转、Worker 心跳与重试状态。当前版本会在 CI 边界前停下，
-            不会把尚未执行的模型审查标记为完成。
+          <p className="hero-desc">
+            全流程状态流转追踪、Worker 心跳感知与幂等任务隔离。
+            在 CI 构建边界前严密把控，为高可靠大模型审查奠定基石。
           </p>
+
+          {/* Interactive Pipeline Showcase Mock */}
+          <div className="showcase-pipeline">
+            <div className="pipeline-title-bar">
+              <span className="code-dot red" />
+              <span className="code-dot yellow" />
+              <span className="code-dot green" />
+              <span className="pipeline-title-text">Review Pipeline Flow</span>
+            </div>
+            <div className="pipeline-steps">
+              <div className="pipeline-node done">
+                <span className="node-icon">✓</span>
+                <div>
+                  <strong>任务入队</strong>
+                  <small>Idempotent Key</small>
+                </div>
+              </div>
+              <div className="pipeline-arrow">➔</div>
+              <div className="pipeline-node active">
+                <span className="node-icon spin">⚙</span>
+                <div>
+                  <strong>Worker 调度</strong>
+                  <small>Task Claim</small>
+                </div>
+              </div>
+              <div className="pipeline-arrow">➔</div>
+              <div className="pipeline-node waiting">
+                <span className="node-icon">⏳</span>
+                <div>
+                  <strong>等待 CI 结果</strong>
+                  <small>Waiting for CI</small>
+                </div>
+              </div>
+              <div className="pipeline-arrow">➔</div>
+              <div className="pipeline-node future">
+                <span className="node-icon">✨</span>
+                <div>
+                  <strong>模型深度审查</strong>
+                  <small>AI Review (M3)</small>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="story-status">
-          <span className="pulse-dot" />
-          <span>系统入口已加密</span>
-          <span className="story-divider" />
-          <span>单 Worker 模式</span>
+
+        <div className="showcase-footer">
+          <div className="showcase-metric">
+            <span className="metric-val">0ms</span>
+            <span className="metric-lbl">SSE 流式同步延迟</span>
+          </div>
+          <div className="metric-divider" />
+          <div className="showcase-metric">
+            <span className="metric-val">100%</span>
+            <span className="metric-lbl">幂等重放保护</span>
+          </div>
+          <div className="metric-divider" />
+          <div className="showcase-metric">
+            <span className="metric-val">AES-GCM</span>
+            <span className="metric-lbl">凭据隔离保护</span>
+          </div>
         </div>
       </section>
 
-      <section className="login-panel">
-        <form className="login-card" onSubmit={submit} autoComplete="on">
-          <div className="login-heading">
-            <p className="eyebrow">AUTHORIZED ACCESS</p>
-            <h2>欢迎回来</h2>
-            <p>请使用管理员账号进入审查控制台</p>
-          </div>
+      {/* Right Login Form Side */}
+      <section className="login-form-side">
+        <div className="login-card-container">
+          <form className="modern-auth-card" onSubmit={submit} autoComplete="on">
+            <div className="auth-card-header">
+              <div className="auth-icon-box">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zM9 7a3 3 0 0 1 6 0v3H9V7z"/>
+                </svg>
+              </div>
+              <h2>控制台登录</h2>
+              <p>请输入管理员身份凭据进入审查运行控制台</p>
+            </div>
 
-          <label className="field">
-            <span>账号</span>
-            <span className="input-shell">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z" />
-              </svg>
+            <div className="auth-fields">
+              <label className="modern-field">
+                <span className="field-label">账号 / Username</span>
+                <div className="modern-input-shell">
+                  <svg className="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
+                  <input
+                    name="username"
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    autoComplete="username"
+                    maxLength={100}
+                    placeholder="输入管理员账号"
+                    required
+                    autoFocus
+                  />
+                </div>
+              </label>
+
+              <label className="modern-field">
+                <span className="field-label">密码 / Password</span>
+                <div className="modern-input-shell">
+                  <svg className="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  <input
+                    name="password"
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    autoComplete="current-password"
+                    maxLength={512}
+                    placeholder="••••••••••••"
+                    required
+                  />
+                </div>
+              </label>
+            </div>
+
+            <label className="modern-checkbox-row">
               <input
-                name="username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                autoComplete="username"
-                maxLength={100}
-                required
-                autoFocus
+                type="checkbox"
+                checked={rememberCredentials}
+                onChange={(event) => setRememberCredentials(event.target.checked)}
               />
-            </span>
-          </label>
+              <span className="custom-checkbox" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </span>
+              <span className="checkbox-labels">
+                <strong>记住登录状态</strong>
+                <small>通过浏览器原生凭据库安全保存</small>
+              </span>
+            </label>
 
-          <label className="field">
-            <span>密码</span>
-            <span className="input-shell">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 10V8a5 5 0 0 1 10 0v2m-11 0h12a2 2 0 0 1 2 2v8H4v-8a2 2 0 0 1 2-2Z" />
+            {message && (
+              <div className="auth-alert" role="alert" aria-live="polite">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <span>{message}</span>
+              </div>
+            )}
+
+            <button className="modern-primary-button" disabled={submitting}>
+              {submitting ? (
+                <>
+                  <span className="btn-spinner" />
+                  正在验证身份…
+                </>
+              ) : (
+                <>
+                  <span>进入审查控制台</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                    <polyline points="12 5 19 12 12 19" />
+                  </svg>
+                </>
+              )}
+            </button>
+
+            <div className="auth-card-footer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
-              <input
-                name="password"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="current-password"
-                maxLength={512}
-                required
-              />
-            </span>
-          </label>
-
-          <label className="remember-field">
-            <input
-              type="checkbox"
-              checked={rememberCredentials}
-              onChange={(event) => setRememberCredentials(event.target.checked)}
-            />
-            <span className="remember-box" aria-hidden="true" />
-            <span className="remember-copy">
-              <strong>记住账号密码</strong>
-              <small>由浏览器密码库安全保存</small>
-            </span>
-          </label>
-
-          <div className="form-message" role="alert" aria-live="polite">
-            {message}
-          </div>
-
-          <button className="primary-button login-button" disabled={submitting}>
-            {submitting ? "正在验证…" : "进入控制台"}
-            {!submitting && <span aria-hidden="true">→</span>}
-          </button>
-
-          <p className="security-note">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="m12 3 8 4v5c0 5-3.4 8-8 9-4.6-1-8-4-8-9V7l8-4Z" />
-              <path d="m9 12 2 2 4-4" />
-            </svg>
-            凭据交由浏览器密码库管理，应用不会写入本地存储
-          </p>
-        </form>
-        <p className="login-footer">OpenReviewer · Internal review infrastructure</p>
+              <span>端到端安全隔离 · 密码不写入 localStorage</span>
+            </div>
+          </form>
+          <p className="auth-footnote">OpenReviewer Infrastructure · Powered by NiuMa</p>
+        </div>
       </section>
     </main>
   );
 }
 
 function StatusBadge({ status }: { status: ExecutionStatus }) {
-  /**
-   * 将机器状态值映射为带颜色语义的可读徽标。
-   *
-   * 参数：
-   * - `status`：后端返回的受限 `ExecutionStatus` 枚举值。
-   *
-   * CSS 类名保留机器值，文本从 `statusLabels` 读取；如果状态枚举扩展，TypeScript
-   * 会提示同步更新标签和样式。组件不修改状态，也不触发网络请求。
-   */
-  return <span className={`status-badge status-${status}`}>{statusLabels[status]}</span>;
+  return (
+    <span className={`status-badge-chip status-${status}`}>
+      <span className="badge-glow-dot" />
+      {statusLabels[status]}
+    </span>
+  );
 }
 
 function ReviewRow({ review }: { review: ReviewItem }) {
-  /**
-   * 把单条任务读模型渲染成 Dashboard 表格行。
-   *
-   * 参数：
-   * - `review`：服务端 Dashboard 快照中的一条任务，包含仓库、PR、SHA、状态、
-   *   尝试次数和更新时间。
-   *
-   * 仅缩短 SHA 和运行 ID 供视觉展示，原始数据没有被修改；状态徽标委托给
-   * `StatusBadge`，日期委托给 `formatDate`，保证表格各行使用同一套格式规则。
-   */
   return (
-    <tr>
+    <tr className="review-table-row">
       <td>
-        <div className="repo-cell">
-          <strong>{review.repository}</strong>
-          <span>运行 {review.review_run_id.slice(0, 8)}</span>
+        <div className="repo-info-cell">
+          <div className="repo-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+          </div>
+          <div>
+            <strong>{review.repository}</strong>
+            <span className="run-id-tag">
+              RUN-{review.review_run_id.slice(0, 8).toUpperCase()}
+            </span>
+          </div>
         </div>
       </td>
       <td>
-        <span className="pr-number">#{review.pull_request_number}</span>
+        <span className="pr-badge">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="18" cy="18" r="3"/>
+            <circle cx="6" cy="6" r="3"/>
+            <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
+            <line x1="6" y1="9" x2="6" y2="21"/>
+          </svg>
+          #{review.pull_request_number}
+        </span>
       </td>
       <td>
-        <code>{shortSha(review.head_sha)}</code>
+        <span className="sha-code-pill" title={review.head_sha}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="4" />
+            <line x1="1.05" y1="12" x2="7" y2="12" />
+            <line x1="17.01" y1="12" x2="22.96" y2="12" />
+          </svg>
+          <code>{shortSha(review.head_sha)}</code>
+        </span>
       </td>
       <td>
         <StatusBadge status={review.execution_status} />
       </td>
       <td>
-        <span className="attempts">
-          {review.attempt_count}/{review.max_attempts}
+        <div className="attempts-cell">
+          <span className="attempts-text">
+            {review.attempt_count} / {review.max_attempts}
+          </span>
+          <div className="attempts-bar-track">
+            <div
+              className="attempts-bar-fill"
+              style={{
+                width: `${Math.min(100, (review.attempt_count / Math.max(1, review.max_attempts)) * 100)}%`,
+              }}
+            />
+          </div>
+        </div>
+      </td>
+      <td>
+        <span className="time-cell">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+          {formatDate(review.updated_at)}
         </span>
       </td>
-      <td>{formatDate(review.updated_at)}</td>
     </tr>
   );
 }
@@ -319,19 +423,6 @@ interface CreateReviewFormProps {
 }
 
 function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) {
-  /**
-   * 手工创建审查任务的表单。
-   *
-   * 表单只收集后端任务契约要求的五个字段，并为每次点击生成新的幂等键。
-   * 成功后清空容易填错的 PR 编号和 SHA，同时通知父组件刷新 Dashboard。
-   *
-   * 参数：
-   * - `onCreated`：任务被 API 接受后传回成功提示，父组件用它更新页面消息并刷新。
-   * - `onUnauthorized`：API 返回 401 时通知父组件清除当前会话。
-   *
-   * 文本输入先保存在本地状态，提交时才转换为数字并交给后端 Pydantic 契约做最终
-   * 校验；前端约束用于尽早提示，不能替代服务器校验。
-   */
   const [installationId, setInstallationId] = useState("");
   const [repositoryId, setRepositoryId] = useState("");
   const [repository, setRepository] = useState("lboverfys/NiuMa");
@@ -340,18 +431,24 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Quick Preset Helper
+  function applyPreset(type: "niuma" | "demo") {
+    if (type === "niuma") {
+      setInstallationId("10001");
+      setRepositoryId("20001");
+      setRepository("lboverfys/NiuMa");
+      setPullRequest("42");
+      setHeadSha("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678");
+    } else {
+      setInstallationId("10002");
+      setRepositoryId("20002");
+      setRepository("test-org/code-review-demo");
+      setPullRequest("108");
+      setHeadSha("fe98dc76ba543210fe98dc76ba543210fe98dc76");
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
-    /**
-     * 将表单字符串转换为任务请求并提交。
-     *
-     * 参数：
-     * - `event`：表单提交事件，阻止浏览器默认跳转。
-     *
-     * 每次提交使用 `manual:<UUID>` 作为新的幂等键，因此用户明确再次点击会创建
-     * 新运行；网络重试应复用同一个键才不会重复。成功只代表任务进入队列，不代表
-     * Worker 已完成审查；401 交给父组件退出，422 显示契约提示，其他错误保留安全
-     * 的统一消息。无论结果如何都会恢复按钮可用状态。
-     */
     event.preventDefault();
     setSubmitting(true);
     setMessage("");
@@ -368,7 +465,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
       );
       setPullRequest("");
       setHeadSha("");
-      const successMessage = `任务 ${result.review_task_id.slice(0, 8)} 已进入队列`;
+      const successMessage = `任务 ${result.review_task_id.slice(0, 8)} 已成功推入调度队列`;
       setMessage(successMessage);
       onCreated(successMessage);
     } catch (error) {
@@ -378,7 +475,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
       }
       const friendly =
         error instanceof ApiError && error.status === 422
-          ? "输入内容不符合任务契约，请检查 ID、仓库名和完整 SHA"
+          ? "输入内容不符合契约规范，请检查 ID 数值、仓库命名与 40 位 SHA"
           : errorMessage(error);
       setMessage(friendly);
     } finally {
@@ -387,89 +484,133 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
   }
 
   return (
-    <form className="create-form" onSubmit={submit}>
-      <div className="section-heading compact">
-        <div>
-          <p className="eyebrow">NEW REVIEW</p>
-          <h2>创建审查任务</h2>
+    <form className="create-review-card" onSubmit={submit}>
+      <div className="card-top-title">
+        <div className="title-with-badge">
+          <span className="card-icon-chip">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </span>
+          <div>
+            <h3>手动发起审查</h3>
+            <p>向 Worker 分配新的 PR 审查任务</p>
+          </div>
         </div>
-        <span className="queue-icon" aria-hidden="true">＋</span>
       </div>
 
-      <div className="form-grid two-columns">
-        <label className="field small">
-          <span>Installation ID</span>
+      {/* Fast fill presets */}
+      <div className="presets-row">
+        <span className="preset-label">快捷填入:</span>
+        <button
+          type="button"
+          className="preset-pill"
+          onClick={() => applyPreset("niuma")}
+        >
+          ⚡ NiuMa 主库
+        </button>
+        <button
+          type="button"
+          className="preset-pill"
+          onClick={() => applyPreset("demo")}
+        >
+          🧪 Demo 样例
+        </button>
+      </div>
+
+      <div className="form-fields-stack">
+        <div className="two-cols-row">
+          <label className="form-input-group">
+            <span className="input-group-label">Installation ID</span>
+            <input
+              name="installation_id"
+              type="number"
+              min="1"
+              step="1"
+              placeholder="例如 10001"
+              value={installationId}
+              onChange={(event) => setInstallationId(event.target.value)}
+              required
+            />
+          </label>
+          <label className="form-input-group">
+            <span className="input-group-label">Repository ID</span>
+            <input
+              name="repository_id"
+              type="number"
+              min="1"
+              step="1"
+              placeholder="例如 20001"
+              value={repositoryId}
+              onChange={(event) => setRepositoryId(event.target.value)}
+              required
+            />
+          </label>
+        </div>
+
+        <label className="form-input-group">
+          <span className="input-group-label">仓库名称 (Owner/Repo)</span>
           <input
-            name="installation_id"
-            type="number"
-            min="1"
-            step="1"
-            value={installationId}
-            onChange={(event) => setInstallationId(event.target.value)}
+            name="repository"
+            value={repository}
+            onChange={(event) => setRepository(event.target.value)}
+            placeholder="如 lboverfys/NiuMa"
+            pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"}
             required
           />
         </label>
-        <label className="field small">
-          <span>Repository ID</span>
+
+        <label className="form-input-group">
+          <span className="input-group-label">Pull Request 编号</span>
           <input
-            name="repository_id"
+            name="pull_request_number"
             type="number"
             min="1"
             step="1"
-            value={repositoryId}
-            onChange={(event) => setRepositoryId(event.target.value)}
+            placeholder="例如 42"
+            value={pullRequest}
+            onChange={(event) => setPullRequest(event.target.value)}
+            required
+          />
+        </label>
+
+        <label className="form-input-group">
+          <span className="input-group-label">Head SHA (40位哈希)</span>
+          <input
+            name="head_sha"
+            className="code-font"
+            value={headSha}
+            onChange={(event) => setHeadSha(event.target.value)}
+            minLength={40}
+            maxLength={64}
+            pattern="[0-9a-fA-F]{40,64}"
+            placeholder="例如 a1b2c3d4..."
             required
           />
         </label>
       </div>
 
-      <label className="field small">
-        <span>仓库</span>
-        <input
-          name="repository"
-          value={repository}
-          onChange={(event) => setRepository(event.target.value)}
-          placeholder="owner/repository"
-          pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"}
-          required
-        />
-      </label>
-
-      <label className="field small">
-        <span>Pull Request 编号</span>
-        <input
-          name="pull_request_number"
-          type="number"
-          min="1"
-          step="1"
-          value={pullRequest}
-          onChange={(event) => setPullRequest(event.target.value)}
-          required
-        />
-      </label>
-
-      <label className="field small">
-        <span>Head SHA</span>
-        <input
-          name="head_sha"
-          className="mono-input"
-          value={headSha}
-          onChange={(event) => setHeadSha(event.target.value)}
-          minLength={40}
-          maxLength={64}
-          pattern="[0-9a-fA-F]{40,64}"
-          placeholder="40 位提交哈希"
-          required
-        />
-      </label>
-
-      <button className="primary-button create-button" disabled={submitting}>
-        {submitting ? "正在提交…" : "提交到任务队列"}
-        {!submitting && <span aria-hidden="true">↗</span>}
+      <button className="submit-action-button" disabled={submitting}>
+        {submitting ? (
+          <>
+            <span className="btn-spinner" />
+            正在入队…
+          </>
+        ) : (
+          <>
+            <span>提交到审查队列</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M5 12h14M12 5l7 7-7 7" />
+            </svg>
+          </>
+        )}
       </button>
-      <div className="inline-message" role="status" aria-live="polite">
-        {message}
-      </div>
+
+      {message && (
+        <div className="submit-feedback-toast" role="status" aria-live="polite">
+          {message}
+        </div>
+      )}
     </form>
   );
 }
@@ -480,34 +621,14 @@ interface DashboardProps {
 }
 
 function Dashboard({ user, onSignedOut }: DashboardProps) {
-  /**
-   * 认证后的运行控制台。
-   *
-   * 首次进入先请求一次快照，再打开 SSE 长连接接收后续更新；连接断开时依靠
-   * 浏览器 EventSource 自动重连，并在界面上显示当前连接状态。所有 401 都
-   * 交给父组件切回登录页，避免继续展示可能已经过期的数据。
-   *
-   * 参数：
-   * - `user`：根组件已经验证过的管理员信息，用于顶部身份展示。
-   * - `onSignedOut`：会话失效或用户注销时切回登录阶段的回调。
-   *
-   * 数据来源有两条：`refresh` 负责首屏/手工完整快照，SSE 负责后续增量式快照。
-   * SSE 断开时保留最后一份快照但显示重连状态；只有新的 401 才清空登录阶段，避免
-   * 短暂网络抖动把用户强制登出。
-   */
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [streamState, setStreamState] = useState<StreamState>("connecting");
   const [pageMessage, setPageMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<string>("all");
+  const [searchKeyword, setSearchKeyword] = useState<string>("");
 
   const refresh = useCallback(async () => {
-    /**
-     * 手工或首屏读取最新 Dashboard 快照。
-     *
-     * 成功时替换快照并清除旧提示；401 说明 Cookie 已失效，交给父组件切回登录；
-     * 其他错误保留旧快照并显示“稍后重试”，避免暂时的数据库故障把页面清空。
-     * `finally` 会解除加载状态，因此按钮和空状态不会永久停留在 loading。
-     */
     try {
       setSnapshot(await api.dashboard());
       setPageMessage("");
@@ -516,44 +637,37 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
       }
-      setPageMessage("暂时无法读取仪表盘，系统会继续自动重试");
+      setPageMessage("暂时无法读取仪表盘，系统正在自动重试连接");
     } finally {
       setLoading(false);
     }
   }, [onSignedOut]);
 
   useEffect(() => {
-    // 首次请求负责填充页面，SSE 负责后续实时更新；清理函数关闭长连接。
     void refresh();
     const source = new EventSource("/api/v1/reviews/stream");
     source.onopen = () => {
-      // 浏览器完成连接或自动重连后，先把顶部状态恢复为实时连接。
       setStreamState("live");
     };
     source.addEventListener("dashboard", (event) => {
       try {
-        // 服务端发送的是完整快照，因此直接替换而不是合并旧字段。
         setSnapshot(JSON.parse((event as MessageEvent<string>).data));
         setStreamState("live");
         setLoading(false);
       } catch {
-        // 单条事件 JSON 损坏时保留旧快照，等待 EventSource 下一次重连/事件。
         setStreamState("reconnecting");
       }
     });
     source.addEventListener("unavailable", () => {
-      // 后端暂时读不到数据库时连接仍在，页面只显示重连状态而不覆盖快照。
       setStreamState("reconnecting");
     });
     source.onerror = () => {
-      // EventSource 会自行重试；这里仅同步可见状态，不额外创建定时器。
       setStreamState("reconnecting");
     };
     return () => source.close();
   }, [refresh]);
 
   const statusCards = useMemo(
-    // 让所有后端状态都拥有固定卡片位置，缺失计数按 0 显示，避免布局跳动。
     () =>
       statusOrder.map((status) => ({
         status,
@@ -562,13 +676,22 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
     [snapshot],
   );
 
+  // Filter reviews by status and search keyword
+  const filteredReviews = useMemo(() => {
+    if (!snapshot?.recent_reviews) return [];
+    return snapshot.recent_reviews.filter((review) => {
+      const matchStatus =
+        activeFilter === "all" || review.execution_status === activeFilter;
+      const matchKeyword =
+        !searchKeyword.trim() ||
+        review.repository.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+        String(review.pull_request_number).includes(searchKeyword) ||
+        review.head_sha.toLowerCase().includes(searchKeyword.toLowerCase());
+      return matchStatus && matchKeyword;
+    });
+  }, [snapshot, activeFilter, searchKeyword]);
+
   async function logout() {
-    /**
-     * 注销当前浏览器会话并切回登录界面。
-     *
-     * 先尽力调用后端删除 Cookie；即使网络失败也执行父组件回调，防止用户继续
-     * 操作可能已经失效的页面。后端 Token 没有写入前端，因此不需要额外清理缓存。
-     */
     try {
       await api.logout();
     } finally {
@@ -580,173 +703,435 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
   const workerHealthy = Boolean(worker?.configured && worker.online);
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <Brand />
-        <div className="topbar-actions">
-          <div className={`live-indicator live-${streamState}`}>
-            <span />
-            {streamState === "live"
-              ? "实时连接"
-              : streamState === "connecting"
-                ? "正在连接"
-                : "正在重连"}
+    <div className="dashboard-layout">
+      {/* Top Navbar */}
+      <header className="dashboard-navbar">
+        <div className="nav-left-section">
+          <Brand />
+          <div className="nav-workspace-chip">
+            <span className="slash-divider">/</span>
+            <span className="workspace-icon">⚡</span>
+            <span>Cluster: Default</span>
           </div>
-          <div className="user-chip">
-            <span>{user.username.slice(0, 1).toUpperCase()}</span>
-            <div>
-              <strong>{user.username}</strong>
-              <small>管理员</small>
+        </div>
+
+        <div className="nav-right-section">
+          {/* Live SSE Stream Badge */}
+          <div className={`live-telemetry-badge is-${streamState}`}>
+            <span className="pulse-beacon" />
+            <span className="telemetry-text">
+              {streamState === "live"
+                ? "SSE 实时流在线"
+                : streamState === "connecting"
+                  ? "正在建立连接"
+                  : "正在尝试重连"}
+            </span>
+          </div>
+
+          <div className="nav-separator" />
+
+          {/* User Profile Chip */}
+          <div className="user-profile-pill">
+            <div className="user-avatar-gradient">
+              {user.username.slice(0, 1).toUpperCase()}
+            </div>
+            <div className="user-meta">
+              <span className="user-name">{user.username}</span>
+              <span className="user-role">SUPER ADMIN</span>
             </div>
           </div>
-          <button className="ghost-button" onClick={logout} aria-label="退出登录">
-            退出
+
+          <button className="nav-icon-btn" onClick={logout} title="退出登录">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
           </button>
         </div>
       </header>
 
-      <main className="dashboard-page">
-        <section className="page-intro">
-          <div>
-            <p className="eyebrow">OPERATIONS OVERVIEW</p>
-            <h1>审查任务总览</h1>
-            <p>观察任务从排队、领取到等待 CI 的真实状态。</p>
+      <main className="dashboard-main-container">
+        {/* Header Hero Section */}
+        <section className="dashboard-hero-header">
+          <div className="hero-text-block">
+            <div className="hero-eyebrow-tag">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 14 14" />
+              </svg>
+              CONTROL TOWER
+            </div>
+            <h1>审查任务总控大厅</h1>
+            <p>实时监控代码审查流水线、Worker 心跳探测、任务分发与重试状态</p>
           </div>
-          <div className="last-sync">
-            <span>最近同步</span>
-            <strong>{formatDate(snapshot?.generated_at ?? null)}</strong>
+
+          <div className="hero-actions-block">
+            <div className="sync-clock-card">
+              <span className="clock-lbl">最近数据同步时间</span>
+              <span className="clock-val">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                </svg>
+                {formatDate(snapshot?.generated_at ?? null)}
+              </span>
+            </div>
+
+            <button
+              className="refresh-circle-button"
+              onClick={() => void refresh()}
+              title="立即刷新仪表盘"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              <span>刷新</span>
+            </button>
           </div>
         </section>
 
-        {pageMessage && <div className="page-alert" role="alert">{pageMessage}</div>}
+        {pageMessage && (
+          <div className="dashboard-toast-alert" role="alert">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>{pageMessage}</span>
+          </div>
+        )}
 
-        <section className="dashboard-grid">
-          <div className="main-column">
-            <div className="metrics-grid" aria-busy={loading}>
-              <article className="metric-card total-card">
-                <span className="metric-label">全部任务</span>
-                <strong>{snapshot?.total_reviews ?? "—"}</strong>
-                <small>累计提交的审查运行</small>
-                <i aria-hidden="true">Σ</i>
-              </article>
-              {statusCards.map(({ status, count }) => (
-                <article className={`metric-card metric-${status}`} key={status}>
-                  <span className="metric-label">{statusLabels[status]}</span>
-                  <strong>{loading ? "—" : count}</strong>
-                  <span className="metric-line" />
-                </article>
-              ))}
+        {/* Visual Pipeline Stage Topology */}
+        <section className="pipeline-topology-bar">
+          <div className="topology-step-item">
+            <div className="step-circle queued">1</div>
+            <div className="step-text">
+              <span className="step-name">排队中 (Queued)</span>
+              <span className="step-count">{snapshot?.status_counts.queued ?? 0} 个任务</span>
             </div>
+          </div>
+          <div className="topology-line active" />
+          <div className="topology-step-item">
+            <div className="step-circle running">2</div>
+            <div className="step-text">
+              <span className="step-name">处理中 (Running)</span>
+              <span className="step-count">{snapshot?.status_counts.running ?? 0} 个任务</span>
+            </div>
+          </div>
+          <div className="topology-line active" />
+          <div className="topology-step-item">
+            <div className="step-circle waiting">3</div>
+            <div className="step-text">
+              <span className="step-name">等待 CI (Waiting CI)</span>
+              <span className="step-count">{snapshot?.status_counts.waiting_for_ci ?? 0} 个任务</span>
+            </div>
+          </div>
+          <div className="topology-line" />
+          <div className="topology-step-item">
+            <div className="step-circle completed">4</div>
+            <div className="step-text">
+              <span className="step-name">完成 / 归档 (Done)</span>
+              <span className="step-count">{snapshot?.status_counts.completed ?? 0} 个任务</span>
+            </div>
+          </div>
+        </section>
 
-            <section className="panel worker-panel">
-              <div className="worker-main">
-                <div className={`worker-orb ${workerHealthy ? "healthy" : "offline"}`}>
-                  <span>&lt;/&gt;</span>
+        {/* Telemetry Metrics Deck */}
+        <section className="telemetry-deck" aria-busy={loading}>
+          {/* Hero Metric Card */}
+          <div
+            className={`metric-glass-card hero-total ${activeFilter === "all" ? "is-filter-active" : ""}`}
+            onClick={() => setActiveFilter("all")}
+          >
+            <div className="card-header-line">
+              <span className="metric-chip-tag">TOTAL TASKS</span>
+              <div className="metric-icon-bubble">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                  <polyline points="2 17 12 22 22 17"/>
+                  <polyline points="2 12 12 17 22 12"/>
+                </svg>
+              </div>
+            </div>
+            <div className="metric-number-hero">
+              {loading ? "—" : snapshot?.total_reviews ?? 0}
+            </div>
+            <div className="metric-sub-footer">
+              <span>全生命周期审查任务</span>
+              <span className="filter-hint">点击重置筛选</span>
+            </div>
+          </div>
+
+          {/* 5 Status Mini Cards */}
+          {statusCards.map(({ status, count }) => (
+            <div
+              key={status}
+              className={`metric-glass-card status-${status} ${activeFilter === status ? "is-filter-active" : ""}`}
+              onClick={() =>
+                setActiveFilter(activeFilter === status ? "all" : status)
+              }
+              title={`点击筛选 ${statusLabels[status]} 状态`}
+            >
+              <div className="card-header-line">
+                <span className="status-dot-indicator" />
+                <span className="metric-title">{statusLabels[status]}</span>
+              </div>
+              <div className="metric-number-value">{loading ? "—" : count}</div>
+              <div className="metric-mini-bar">
+                <div
+                  className="mini-bar-fill"
+                  style={{
+                    width: `${Math.min(100, ((count || 0) / Math.max(1, snapshot?.total_reviews || 1)) * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </section>
+
+        {/* Main Grid: 2 Columns */}
+        <div className="dashboard-grid-layout">
+          {/* Left Large Column */}
+          <div className="left-stream-column">
+            {/* Worker Health Radar Panel */}
+            <section className={`worker-radar-panel ${workerHealthy ? "is-online" : "is-offline"}`}>
+              <div className="radar-left-side">
+                <div className="orbital-node-container">
+                  <div className="orbital-spinner-ring" />
+                  <div className="orbital-core-chip">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="4" y="4" width="16" height="16" rx="2" />
+                      <rect x="9" y="9" width="6" height="6" />
+                      <line x1="9" y1="1" x2="9" y2="4" />
+                      <line x1="15" y1="1" x2="15" y2="4" />
+                      <line x1="9" y1="20" x2="9" y2="23" />
+                      <line x1="15" y1="20" x2="15" y2="23" />
+                      <line x1="20" y1="9" x2="23" y2="9" />
+                      <line x1="20" y1="14" x2="23" y2="14" />
+                      <line x1="1" y1="9" x2="4" y2="9" />
+                      <line x1="1" y1="14" x2="4" y2="14" />
+                    </svg>
+                  </div>
                 </div>
-                <div>
-                  <p className="eyebrow">WORKER STATUS</p>
-                  <h2>
-                    {workerHealthy ? "Worker 在线" : "Worker 离线"}
-                    <span className={workerHealthy ? "online-dot" : "offline-dot"} />
-                  </h2>
-                  <p>
-                    {worker?.worker_id ?? "尚未收到任何 Worker 心跳"}
+
+                <div className="worker-header-copy">
+                  <div className="status-title-row">
+                    <h3>{workerHealthy ? "Worker 节点在线" : "Worker 节点离线"}</h3>
+                    <span className="live-status-pill">
+                      <span className="dot" />
+                      {workerHealthy ? "READY & POLLING" : "DISCONNECTED"}
+                    </span>
+                  </div>
+                  <p className="worker-id-code">
+                    <span>NODE ID:</span>
+                    <code>{worker?.worker_id ?? "未接入任何 Worker 实例"}</code>
                   </p>
                 </div>
               </div>
-              <div className="worker-facts">
-                <div>
-                  <span>当前状态</span>
-                  <strong>
-                    {worker?.status ? workerLabels[worker.status] : "未连接"}
+
+              <div className="radar-telemetry-cells">
+                <div className="telemetry-item">
+                  <span className="t-label">节点工作状态</span>
+                  <strong className="t-val highlight">
+                    {worker?.status ? workerLabels[worker.status] : "未就绪"}
                   </strong>
                 </div>
-                <div>
-                  <span>当前任务</span>
-                  <strong>{worker?.current_task_id?.slice(0, 8) ?? "—"}</strong>
+                <div className="telemetry-item">
+                  <span className="t-label">当前执行任务</span>
+                  <strong className="t-val code-font">
+                    {worker?.current_task_id
+                      ? `TASK-${worker.current_task_id.slice(0, 8)}`
+                      : "IDLE (无活跃任务)"}
+                  </strong>
                 </div>
-                <div>
-                  <span>最后心跳</span>
-                  <strong>{formatDate(worker?.last_seen_at ?? null)}</strong>
+                <div className="telemetry-item">
+                  <span className="t-label">最近心跳回报</span>
+                  <strong className="t-val">
+                    {formatDate(worker?.last_seen_at ?? null)}
+                  </strong>
                 </div>
               </div>
             </section>
 
-            <section className="panel reviews-panel">
-              <div className="section-heading">
-                <div>
-                  <p className="eyebrow">RECENT RUNS</p>
-                  <h2>最近审查任务</h2>
+            {/* Task Stream Table Panel */}
+            <section className="reviews-table-panel">
+              <div className="table-action-toolbar">
+                <div className="toolbar-left">
+                  <div className="toolbar-heading">
+                    <h3>实时审查任务流</h3>
+                    <span className="total-badge">{filteredReviews.length} 条记录</span>
+                  </div>
+
+                  {/* Filter Pills */}
+                  <div className="filter-pill-group">
+                    <button
+                      className={`filter-btn ${activeFilter === "all" ? "active" : ""}`}
+                      onClick={() => setActiveFilter("all")}
+                    >
+                      全部
+                    </button>
+                    <button
+                      className={`filter-btn ${activeFilter === "running" ? "active" : ""}`}
+                      onClick={() => setActiveFilter("running")}
+                    >
+                      处理中
+                    </button>
+                    <button
+                      className={`filter-btn ${activeFilter === "waiting_for_ci" ? "active" : ""}`}
+                      onClick={() => setActiveFilter("waiting_for_ci")}
+                    >
+                      等待 CI
+                    </button>
+                    <button
+                      className={`filter-btn ${activeFilter === "queued" ? "active" : ""}`}
+                      onClick={() => setActiveFilter("queued")}
+                    >
+                      排队中
+                    </button>
+                    <button
+                      className={`filter-btn ${activeFilter === "completed" ? "active" : ""}`}
+                      onClick={() => setActiveFilter("completed")}
+                    >
+                      已完成
+                    </button>
+                  </div>
                 </div>
-                <button className="text-button" onClick={() => void refresh()}>
-                  立即刷新 <span aria-hidden="true">↻</span>
-                </button>
+
+                <div className="toolbar-right">
+                  {/* Search Bar */}
+                  <div className="table-search-box">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="8"/>
+                      <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <input
+                      type="text"
+                      placeholder="搜索仓库、PR、SHA…"
+                      value={searchKeyword}
+                      onChange={(e) => setSearchKeyword(e.target.value)}
+                    />
+                    {searchKeyword && (
+                      <button
+                        className="clear-search-btn"
+                        onClick={() => setSearchKeyword("")}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="table-wrap">
-                <table>
+
+              <div className="table-scroll-container">
+                <table className="modern-data-table">
                   <thead>
                     <tr>
-                      <th>仓库 / 运行</th>
-                      <th>PR</th>
-                      <th>Head SHA</th>
-                      <th>状态</th>
-                      <th>尝试</th>
-                      <th>更新时间</th>
+                      <th>仓库 / 运行批次</th>
+                      <th>PR 编号</th>
+                      <th>Head Commit SHA</th>
+                      <th>流转状态</th>
+                      <th>重试次数</th>
+                      <th>最后更新</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {snapshot?.recent_reviews.map((review) => (
+                    {filteredReviews.map((review) => (
                       <ReviewRow review={review} key={review.review_run_id} />
                     ))}
                   </tbody>
                 </table>
-                {!loading && !snapshot?.recent_reviews.length && (
-                  <div className="empty-state">
-                    <span aria-hidden="true">{`{ }`}</span>
-                    <strong>还没有审查任务</strong>
-                    <p>从右侧表单创建第一条任务，它会实时出现在这里。</p>
+
+                {!loading && filteredReviews.length === 0 && (
+                  <div className="table-empty-hero">
+                    <div className="empty-icon-orbit">
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <circle cx="12" cy="12" r="10" />
+                        <path d="M16 16s-1.5-2-4-2-4 2-4 2" />
+                        <line x1="9" y1="9" x2="9.01" y2="9" />
+                        <line x1="15" y1="9" x2="15.01" y2="9" />
+                      </svg>
+                    </div>
+                    <h4>暂无匹配的审查任务</h4>
+                    <p>
+                      {searchKeyword || activeFilter !== "all"
+                        ? "当前筛选条件无结果，请尝试清除搜索词或切换状态分类。"
+                        : "调度队列目前为空。请在右侧控制板提交第一条任务！"}
+                    </p>
+                    {(searchKeyword || activeFilter !== "all") && (
+                      <button
+                        className="clear-all-filters-btn"
+                        onClick={() => {
+                          setSearchKeyword("");
+                          setActiveFilter("all");
+                        }}
+                      >
+                        重置所有筛选
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
             </section>
           </div>
 
-          <aside className="side-column">
-            <section className="panel create-panel">
-              <CreateReviewForm
-                onCreated={(message) => {
-                  setPageMessage(message);
-                  void refresh();
-                }}
-                onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
-              />
-            </section>
-            <section className="boundary-card">
-              <span className="boundary-icon" aria-hidden="true">i</span>
-              <div>
-                <strong>M2 能力边界</strong>
-                <p>
-                  Worker 会领取并恢复任务，目前在 <code>waiting_for_ci</code>
-                  停下。GitHub、模型与审查结果将在后续里程碑接入。
-                </p>
+          {/* Right Sidebar Column */}
+          <aside className="right-sidebar-column">
+            {/* Create Task Form */}
+            <CreateReviewForm
+              onCreated={(message) => {
+                setPageMessage(message);
+                void refresh();
+              }}
+              onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
+            />
+
+            {/* Architecture Boundary Card */}
+            <div className="architecture-boundary-card">
+              <div className="boundary-card-top">
+                <div className="shield-icon-badge">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
+                </div>
+                <div>
+                  <h4>M2 里程碑系统契约</h4>
+                  <span className="contract-tag">SAFETY PROTOCOL</span>
+                </div>
               </div>
-            </section>
+
+              <div className="contract-points">
+                <div className="contract-point">
+                  <span className="point-dot green" />
+                  <div>
+                    <strong>Worker 容灾与恢复</strong>
+                    <p>自动检测超时并触发指数退避重试</p>
+                  </div>
+                </div>
+                <div className="contract-point">
+                  <span className="point-dot yellow" />
+                  <div>
+                    <strong>CI 门禁等待安全区</strong>
+                    <p>任务在 <code>waiting_for_ci</code> 挂起等待 GitHub 验证</p>
+                  </div>
+                </div>
+                <div className="contract-point">
+                  <span className="point-dot purple" />
+                  <div>
+                    <strong>M3 路线图规划</strong>
+                    <p>接入 LLM 模型推理与 GitHub Comment 自动回写</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           </aside>
-        </section>
+        </div>
       </main>
     </div>
   );
 }
 
 export default function App() {
-  /**
-   * 应用根组件，负责在“检查会话 / 未登录 / 已登录”三个阶段之间切换。
-   * 初始阶段不直接显示登录表单，避免已经登录的用户先看到错误页面闪烁。
-   *
-   * 会话检查只在组件挂载时执行一次；清理函数通过 `active` 标志忽略组件卸载后
-   * 才到达的异步结果，避免 React 警告或旧请求覆盖新页面。登录成功和注销都只
-   * 修改这里的 `SessionState`，具体表单与 Dashboard 逻辑由子组件负责。
-   */
   const [session, setSession] = useState<SessionState>({ phase: "checking" });
 
   useEffect(() => {
@@ -754,11 +1139,9 @@ export default function App() {
     api
       .me()
       .then((user) => {
-        // 组件仍挂载且会话有效时才进入控制台。
         if (active) setSession({ phase: "authenticated", user });
       })
       .catch((error) => {
-        // 401 是正常的未登录分支，其他状态显示服务暂不可用提示。
         if (!active) return;
         setSession({
           phase: "guest",
@@ -769,7 +1152,6 @@ export default function App() {
         });
       });
     return () => {
-      // 阻止卸载后异步响应再次写入状态。
       active = false;
     };
   }, []);
