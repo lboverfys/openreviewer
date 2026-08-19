@@ -39,21 +39,18 @@ const statusOrder: ExecutionStatus[] = [
 
 function Brand() {
   return (
-    <div className="brand" aria-label="OpenReviewer">
-      <div className="brand-icon-sunburst">
-        <span className="brand-core-icon" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="16 18 22 12 16 6" />
-            <polyline points="8 6 2 12 8 18" />
-            <line x1="14" y1="4" x2="10" y2="20" />
-          </svg>
-        </span>
-        <span className="sunburst-ring" />
+    <div className="brand-logo-unit" aria-label="OpenReviewer">
+      <div className="brand-sunburst-badge">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="16 18 22 12 16 6" />
+          <polyline points="8 6 2 12 8 18" />
+          <line x1="14" y1="4" x2="10" y2="20" />
+        </svg>
       </div>
-      <div className="brand-text-block">
-        <div className="brand-main-row">
+      <div className="brand-name-group">
+        <div className="brand-header-line">
           <strong>OpenReviewer</strong>
-          <span className="brand-version-badge">v0.2.0</span>
+          <span className="brand-v-pill">v0.2.0</span>
         </div>
         <small>AI 代码审查与调度中枢</small>
       </div>
@@ -127,10 +124,8 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
 
   return (
     <main className="warm-login-page">
-      {/* Background Animated Blobs */}
       <div className="blob-warm-1" />
       <div className="blob-warm-2" />
-      <div className="blob-warm-3" />
       <div className="warm-dot-pattern" />
 
       {/* Left Showcase Side */}
@@ -160,7 +155,6 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
             为自动化 PR 审查、模型推理与协同反馈提供坚实稳定的工程底座。
           </p>
 
-          {/* Interactive Visual Pipeline Flow */}
           <div className="pipeline-interactive-card">
             <div className="pipeline-header">
               <div className="mac-dots">
@@ -226,7 +220,7 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
         </div>
       </section>
 
-      {/* Right Login Card Side */}
+      {/* Right Login Form Side */}
       <section className="warm-login-form-side">
         <div className="warm-auth-wrapper">
           <form className="warm-glass-auth-card" onSubmit={submit} autoComplete="on">
@@ -236,8 +230,8 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
                   <path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zM9 7a3 3 0 0 1 6 0v3H9V7z"/>
                 </svg>
               </div>
-              <h2>欢迎回来</h2>
-              <p>请登录管理员账号进入控制台</p>
+              <h2>欢迎登录</h2>
+              <p>请使用管理员凭据进入审查调度控制台</p>
             </div>
 
             <div className="auth-form-body">
@@ -356,7 +350,7 @@ function ReviewRow({ review }: { review: ReviewItem }) {
       <td>
         <div className="table-repo-block">
           <div className="repo-avatar-icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
             </svg>
@@ -364,14 +358,14 @@ function ReviewRow({ review }: { review: ReviewItem }) {
           <div className="repo-name-stack">
             <strong>{review.repository}</strong>
             <span className="run-id-pill">
-              RUN #{review.review_run_id.slice(0, 8).toUpperCase()}
+              #{review.review_run_id.slice(0, 8).toUpperCase()}
             </span>
           </div>
         </div>
       </td>
       <td>
         <span className="warm-pr-badge">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="18" cy="18" r="3"/>
             <circle cx="6" cy="6" r="3"/>
             <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
@@ -382,11 +376,6 @@ function ReviewRow({ review }: { review: ReviewItem }) {
       </td>
       <td>
         <span className="warm-sha-chip" title={review.head_sha}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="4" />
-            <line x1="1.05" y1="12" x2="7" y2="12" />
-            <line x1="17.01" y1="12" x2="22.96" y2="12" />
-          </svg>
           <code>{shortSha(review.head_sha)}</code>
         </span>
       </td>
@@ -396,7 +385,7 @@ function ReviewRow({ review }: { review: ReviewItem }) {
       <td>
         <div className="warm-attempts-track-block">
           <div className="attempts-num">
-            <span>{review.attempt_count}</span> / {review.max_attempts}
+            <span>{review.attempt_count}</span>/{review.max_attempts}
           </div>
           <div className="warm-progress-bar-bg">
             <div
@@ -410,10 +399,6 @@ function ReviewRow({ review }: { review: ReviewItem }) {
       </td>
       <td>
         <span className="warm-time-badge">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
           {formatDate(review.updated_at)}
         </span>
       </td>
@@ -487,22 +472,22 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
   }
 
   return (
-    <form className="warm-create-card" onSubmit={submit}>
-      <div className="create-card-header">
+    <form className="bento-launchpad-card" onSubmit={submit}>
+      <div className="launchpad-head">
         <div className="icon-badge-warm">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
             <path d="M12 5v14M5 12h14" />
           </svg>
         </div>
         <div>
-          <h3>发起审查任务</h3>
+          <h3>手动发起审查</h3>
           <p>提交 PR 请求至 Worker 调度队列</p>
         </div>
       </div>
 
       {/* Quick Fill Presets */}
       <div className="preset-quick-row">
-        <span className="preset-lead-tag">一键填入:</span>
+        <span className="preset-lead-tag">预设:</span>
         <button
           type="button"
           className="preset-btn"
@@ -519,9 +504,9 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
         </button>
       </div>
 
-      <div className="form-inputs-group">
+      <div className="launchpad-form-grid">
         <div className="two-cols-inputs">
-          <label className="warm-input-control">
+          <label className="compact-input-control">
             <span>Installation ID</span>
             <input
               name="installation_id"
@@ -534,7 +519,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
               required
             />
           </label>
-          <label className="warm-input-control">
+          <label className="compact-input-control">
             <span>Repository ID</span>
             <input
               name="repository_id"
@@ -549,7 +534,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
           </label>
         </div>
 
-        <label className="warm-input-control">
+        <label className="compact-input-control">
           <span>目标仓库 (Owner/Repository)</span>
           <input
             name="repository"
@@ -561,7 +546,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
           />
         </label>
 
-        <label className="warm-input-control">
+        <label className="compact-input-control">
           <span>Pull Request 编号</span>
           <input
             name="pull_request_number"
@@ -575,7 +560,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
           />
         </label>
 
-        <label className="warm-input-control">
+        <label className="compact-input-control">
           <span>Head Commit SHA (40位哈希)</span>
           <input
             name="head_sha"
@@ -585,7 +570,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
             minLength={40}
             maxLength={64}
             pattern="[0-9a-fA-F]{40,64}"
-            placeholder="例如: a1b2c3d4e5f6..."
+            placeholder="40 位完整 Git 哈希"
             required
           />
         </label>
@@ -600,7 +585,7 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
         ) : (
           <>
             <span>提交审查任务</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <path d="M5 12h14M12 5l7 7-7 7" />
             </svg>
           </>
@@ -703,97 +688,83 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
   const workerHealthy = Boolean(worker?.configured && worker.online);
 
   return (
-    <div className="warm-dashboard-app">
-      {/* Top Navbar */}
-      <header className="warm-topbar">
-        <div className="topbar-brand-section">
+    <div className="bento-dashboard-layout">
+      {/* Consolidated High-Efficiency Top Navigation */}
+      <header className="bento-top-navbar">
+        <div className="top-nav-left">
           <Brand />
-          <div className="topbar-cluster-tag">
-            <span className="tag-sparkle">⚡</span>
-            <span>Default Cluster</span>
+          <div className="cluster-tag-chip">
+            <span className="sparkle-symbol">⚡</span>
+            <span>Cluster: Default</span>
           </div>
         </div>
 
-        <div className="topbar-right-controls">
+        <div className="top-nav-center">
+          <div className="page-crumb-tag">
+            <span className="crumb-dot" />
+            <strong>审查控制台</strong>
+            <span className="crumb-slash">/</span>
+            <span>任务监控</span>
+          </div>
+        </div>
+
+        <div className="top-nav-right">
           {/* Live Telemetry Pill */}
-          <div className={`warm-telemetry-indicator stream-${streamState}`}>
-            <span className="telemetry-beacon-glow" />
-            <span className="telemetry-label">
+          <div className={`bento-stream-pill state-${streamState}`}>
+            <span className="beacon-circle" />
+            <span className="beacon-label">
               {streamState === "live"
-                ? "SSE 实时流在线"
+                ? "SSE 实时同步中"
                 : streamState === "connecting"
-                  ? "正在建立流连接"
-                  : "正在重连中"}
+                  ? "建立连接中"
+                  : "正在重连"}
             </span>
           </div>
 
-          <div className="warm-topbar-divider" />
-
-          {/* User Badge */}
-          <div className="warm-user-capsule">
-            <div className="warm-user-avatar">
-              {user.username.slice(0, 1).toUpperCase()}
-            </div>
-            <div className="warm-user-details">
-              <span className="user-title">{user.username}</span>
-              <span className="user-badge">ADMIN</span>
-            </div>
+          <div className="nav-clock-tag" title="最近快照同步时间">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            <span>{formatDate(snapshot?.generated_at ?? null)}</span>
           </div>
 
-          <button className="warm-logout-btn" onClick={logout} title="退出登录">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <button
+            className="bento-refresh-icon-btn"
+            onClick={() => void refresh()}
+            title="刷新数据快照"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <polyline points="23 4 23 10 17 10"/>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            <span>刷新</span>
+          </button>
+
+          <div className="bento-nav-divider" />
+
+          {/* User Profile */}
+          <div className="bento-user-pill">
+            <div className="user-avatar-sun">
+              {user.username.slice(0, 1).toUpperCase()}
+            </div>
+            <span className="user-username">{user.username}</span>
+          </div>
+
+          <button className="bento-exit-btn" onClick={logout} title="退出登录">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
               <polyline points="16 17 21 12 16 7"/>
               <line x1="21" y1="12" x2="9" y2="12"/>
             </svg>
-            <span>退出</span>
           </button>
         </div>
       </header>
 
-      <main className="warm-dashboard-viewport">
-        {/* Hero Header Section */}
-        <section className="warm-hero-section">
-          <div className="hero-titles-wrap">
-            <div className="hero-orange-eyebrow">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                <circle cx="12" cy="12" r="10" />
-                <polyline points="12 6 12 12 14 14" />
-              </svg>
-              <span>OPERATIONS DASHBOARD</span>
-            </div>
-            <h1>审查任务总控大厅</h1>
-            <p>实时掌控智能代码审查流程、Worker 心跳探测、任务分发与重试状态</p>
-          </div>
-
-          <div className="hero-right-cards">
-            <div className="sync-timestamp-box">
-              <span className="sync-label">最近同步时间</span>
-              <strong className="sync-time-str">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-                </svg>
-                {formatDate(snapshot?.generated_at ?? null)}
-              </strong>
-            </div>
-
-            <button
-              className="warm-refresh-btn"
-              onClick={() => void refresh()}
-              title="立即刷新快照"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                <polyline points="23 4 23 10 17 10"/>
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-              </svg>
-              <span>刷新快照</span>
-            </button>
-          </div>
-        </section>
-
+      <main className="bento-main-viewport">
         {pageMessage && (
-          <div className="warm-page-toast" role="alert">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <div className="bento-toast-banner" role="alert">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10" />
               <line x1="12" y1="8" x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -802,205 +773,158 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
           </div>
         )}
 
-        {/* Visual Pipeline Topology Flow Track */}
-        <section className="warm-topology-card">
-          <div className="topology-step-cell step-queued">
-            <div className="step-num-bubble">1</div>
-            <div className="step-content">
-              <strong>1. 排队中 (Queued)</strong>
-              <small>{snapshot?.status_counts.queued ?? 0} 个任务等待处理</small>
-            </div>
-          </div>
-          <div className="topology-line-active" />
-          <div className="topology-step-cell step-running">
-            <div className="step-num-bubble">2</div>
-            <div className="step-content">
-              <strong>2. 处理中 (Running)</strong>
-              <small>{snapshot?.status_counts.running ?? 0} 个任务正在执行</small>
-            </div>
-          </div>
-          <div className="topology-line-active" />
-          <div className="topology-step-cell step-waiting">
-            <div className="step-num-bubble">3</div>
-            <div className="step-content">
-              <strong>3. 等待 CI (Waiting CI)</strong>
-              <small>{snapshot?.status_counts.waiting_for_ci ?? 0} 个任务等待 CI</small>
-            </div>
-          </div>
-          <div className="topology-line-subtle" />
-          <div className="topology-step-cell step-completed">
-            <div className="step-num-bubble">4</div>
-            <div className="step-content">
-              <strong>4. 完成归档 (Done)</strong>
-              <small>{snapshot?.status_counts.completed ?? 0} 个任务已完成</small>
-            </div>
-          </div>
-        </section>
+        {/* Top Bento Deck: Worker Node + Interactive Telemetry Pipeline */}
+        <section className="bento-deck-row">
+          {/* Worker Node Card (Left 32%) */}
+          <div className={`bento-worker-unit ${workerHealthy ? "is-ready" : "is-offline"}`}>
+            <div className="worker-header-bar">
+              <div className="worker-core-badge">
+                <div className="core-orbit-halo" />
+                <div className="core-chip-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="4" y="4" width="16" height="16" rx="2" />
+                    <rect x="9" y="9" width="6" height="6" />
+                    <line x1="9" y1="1" x2="9" y2="4" />
+                    <line x1="15" y1="1" x2="15" y2="4" />
+                    <line x1="9" y1="20" x2="9" y2="23" />
+                    <line x1="15" y1="20" x2="15" y2="23" />
+                    <line x1="20" y1="9" x2="23" y2="9" />
+                    <line x1="20" y1="14" x2="23" y2="14" />
+                    <line x1="1" y1="9" x2="4" y2="9" />
+                    <line x1="1" y1="14" x2="4" y2="14" />
+                  </svg>
+                </div>
+              </div>
 
-        {/* Telemetry Metric Cards Deck */}
-        <section className="warm-metrics-deck" aria-busy={loading}>
-          {/* Main Total Card */}
-          <div
-            className={`metric-interactive-card card-total ${activeFilter === "all" ? "is-selected" : ""}`}
-            onClick={() => setActiveFilter("all")}
-          >
-            <div className="card-top-tag">
-              <span className="tag-text">TOTAL REVIEWS</span>
-              <div className="icon-pill-warm">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polygon points="12 2 2 7 12 12 22 7 12 2"/>
-                  <polyline points="2 17 12 22 22 17"/>
-                  <polyline points="2 12 12 17 22 12"/>
-                </svg>
+              <div className="worker-title-area">
+                <div className="worker-name-line">
+                  <h4>Worker 智能执行节点</h4>
+                  <span className="worker-status-badge">
+                    <span className="status-ping-dot" />
+                    {workerHealthy ? "READY" : "OFFLINE"}
+                  </span>
+                </div>
+                <span className="worker-node-id">
+                  {worker?.worker_id ?? "未接入节点实例"}
+                </span>
               </div>
             </div>
-            <div className="metric-large-number">
-              {loading ? "—" : snapshot?.total_reviews ?? 0}
-            </div>
-            <div className="metric-footer-note">
-              <span>全量生命周期任务</span>
-              <span className="reset-hint">点击显示全部</span>
+
+            <div className="worker-specs-grid">
+              <div className="spec-cell">
+                <span className="spec-label">当前运行状态</span>
+                <strong className="spec-val highlight-orange">
+                  {worker?.status ? workerLabels[worker.status] : "未就绪"}
+                </strong>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-label">当前执行任务</span>
+                <strong className="spec-val code-font">
+                  {worker?.current_task_id
+                    ? `TASK #${worker.current_task_id.slice(0, 8)}`
+                    : "IDLE (空闲)"}
+                </strong>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-label">最近心跳时间</span>
+                <strong className="spec-val">
+                  {formatDate(worker?.last_seen_at ?? null)}
+                </strong>
+              </div>
             </div>
           </div>
 
-          {/* 5 Status Mini Cards */}
-          {statusCards.map(({ status, count }) => (
-            <div
-              key={status}
-              className={`metric-interactive-card status-card-${status} ${activeFilter === status ? "is-selected" : ""}`}
-              onClick={() =>
-                setActiveFilter(activeFilter === status ? "all" : status)
-              }
-              title={`点击联动筛选 ${statusLabels[status]} 任务`}
-            >
-              <div className="card-top-tag">
-                <span className="status-orb" />
-                <span className="tag-title">{statusLabels[status]}</span>
+          {/* Unified Pipeline & Metrics Deck (Right 68%) */}
+          <div className="bento-telemetry-unit">
+            <div className="telemetry-unit-header">
+              <div className="th-heading">
+                <h4>全流水线任务状态</h4>
+                <span className="total-count-pill">
+                  总计 <strong>{snapshot?.total_reviews ?? 0}</strong> 个任务
+                </span>
               </div>
-              <div className="metric-status-number">{loading ? "—" : count}</div>
-              <div className="status-progress-track">
+              <span className="th-click-hint">点击卡片可快速筛选表格</span>
+            </div>
+
+            <div className="telemetry-cards-row">
+              {/* All Total Card */}
+              <div
+                className={`telemetry-pill-box total-box ${activeFilter === "all" ? "is-active-tab" : ""}`}
+                onClick={() => setActiveFilter("all")}
+              >
+                <div className="box-top">
+                  <span className="box-tag">ALL</span>
+                  <span className="box-name">全部任务</span>
+                </div>
+                <div className="box-number">{loading ? "—" : snapshot?.total_reviews ?? 0}</div>
+              </div>
+
+              {/* 5 Status Mini Cards */}
+              {statusCards.map(({ status, count }) => (
                 <div
-                  className="status-progress-fill"
-                  style={{
-                    width: `${Math.min(100, ((count || 0) / Math.max(1, snapshot?.total_reviews || 1)) * 100)}%`,
-                  }}
-                />
-              </div>
+                  key={status}
+                  className={`telemetry-pill-box status-pill-${status} ${activeFilter === status ? "is-active-tab" : ""}`}
+                  onClick={() =>
+                    setActiveFilter(activeFilter === status ? "all" : status)
+                  }
+                  title={`筛选 ${statusLabels[status]} 状态`}
+                >
+                  <div className="box-top">
+                    <span className="status-mini-orb" />
+                    <span className="box-name">{statusLabels[status]}</span>
+                  </div>
+                  <div className="box-number">{loading ? "—" : count}</div>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </section>
 
-        {/* 2-Column Responsive Main Grid */}
-        <div className="warm-main-grid">
-          {/* Left Column: Worker Node & Table */}
-          <div className="warm-left-col">
-            {/* Worker Node Telemetry Deck */}
-            <section className={`warm-worker-card ${workerHealthy ? "node-healthy" : "node-offline"}`}>
-              <div className="worker-left-block">
-                <div className="worker-sunburst-node">
-                  <div className="node-orbit-ring" />
-                  <div className="node-center-chip">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="4" y="4" width="16" height="16" rx="2" />
-                      <rect x="9" y="9" width="6" height="6" />
-                      <line x1="9" y1="1" x2="9" y2="4" />
-                      <line x1="15" y1="1" x2="15" y2="4" />
-                      <line x1="9" y1="20" x2="9" y2="23" />
-                      <line x1="15" y1="20" x2="15" y2="23" />
-                      <line x1="20" y1="9" x2="23" y2="9" />
-                      <line x1="20" y1="14" x2="23" y2="14" />
-                      <line x1="1" y1="9" x2="4" y2="9" />
-                      <line x1="1" y1="14" x2="4" y2="14" />
-                    </svg>
-                  </div>
-                </div>
-
-                <div className="worker-title-copy">
-                  <div className="worker-status-header">
-                    <h3>{workerHealthy ? "Worker 智能节点在线" : "Worker 智能节点离线"}</h3>
-                    <span className="worker-state-tag">
-                      <span className="live-mini-dot" />
-                      {workerHealthy ? "POLLING & READY" : "OFFLINE"}
-                    </span>
-                  </div>
-                  <p className="worker-node-id-str">
-                    <span>NODE ID:</span>
-                    <code>{worker?.worker_id ?? "未接入任何 Worker 实例"}</code>
-                  </p>
-                </div>
-              </div>
-
-              <div className="worker-right-metrics">
-                <div className="worker-metric-item">
-                  <span className="wm-label">节点运行状态</span>
-                  <strong className="wm-val highlight-orange">
-                    {worker?.status ? workerLabels[worker.status] : "未就绪"}
-                  </strong>
-                </div>
-                <div className="worker-metric-item">
-                  <span className="wm-label">当前执行任务</span>
-                  <strong className="wm-val code-font">
-                    {worker?.current_task_id
-                      ? `TASK-${worker.current_task_id.slice(0, 8)}`
-                      : "IDLE (空闲)"}
-                  </strong>
-                </div>
-                <div className="worker-metric-item">
-                  <span className="wm-label">最近心跳回报</span>
-                  <strong className="wm-val">
-                    {formatDate(worker?.last_seen_at ?? null)}
-                  </strong>
-                </div>
-              </div>
-            </section>
-
-            {/* Task Stream Table Deck */}
-            <section className="warm-table-card">
-              <div className="table-header-toolbar">
-                <div className="th-left">
-                  <div className="th-title-group">
-                    <h3>实时审查流水线</h3>
-                    <span className="th-count-pill">{filteredReviews.length} 条</span>
-                  </div>
-
-                  {/* Filter Pills */}
-                  <div className="th-filter-tabs">
+        {/* Main Content: 70% Table + 30% Sidebar Form */}
+        <div className="bento-content-columns">
+          {/* Left Table Section */}
+          <div className="bento-table-column">
+            <section className="bento-table-card">
+              {/* Integrated Toolbar */}
+              <div className="bento-table-toolbar">
+                <div className="toolbar-left-group">
+                  <h3>实时审查流水线</h3>
+                  <div className="filter-pill-capsules">
                     <button
-                      className={`tab-btn ${activeFilter === "all" ? "is-active" : ""}`}
+                      className={`pill-btn ${activeFilter === "all" ? "active" : ""}`}
                       onClick={() => setActiveFilter("all")}
                     >
-                      全部
+                      全部 ({snapshot?.total_reviews ?? 0})
                     </button>
                     <button
-                      className={`tab-btn ${activeFilter === "running" ? "is-active" : ""}`}
+                      className={`pill-btn ${activeFilter === "running" ? "active" : ""}`}
                       onClick={() => setActiveFilter("running")}
                     >
-                      处理中
+                      处理中 ({snapshot?.status_counts.running ?? 0})
                     </button>
                     <button
-                      className={`tab-btn ${activeFilter === "waiting_for_ci" ? "is-active" : ""}`}
+                      className={`pill-btn ${activeFilter === "waiting_for_ci" ? "active" : ""}`}
                       onClick={() => setActiveFilter("waiting_for_ci")}
                     >
-                      等待 CI
+                      等待 CI ({snapshot?.status_counts.waiting_for_ci ?? 0})
                     </button>
                     <button
-                      className={`tab-btn ${activeFilter === "queued" ? "is-active" : ""}`}
+                      className={`pill-btn ${activeFilter === "queued" ? "active" : ""}`}
                       onClick={() => setActiveFilter("queued")}
                     >
-                      排队中
+                      排队中 ({snapshot?.status_counts.queued ?? 0})
                     </button>
                     <button
-                      className={`tab-btn ${activeFilter === "completed" ? "is-active" : ""}`}
+                      className={`pill-btn ${activeFilter === "completed" ? "active" : ""}`}
                       onClick={() => setActiveFilter("completed")}
                     >
-                      已完成
+                      已完成 ({snapshot?.status_counts.completed ?? 0})
                     </button>
                   </div>
                 </div>
 
-                <div className="th-right">
-                  {/* Search Box */}
-                  <div className="warm-search-input-box">
+                <div className="toolbar-right-group">
+                  <div className="bento-search-box">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                       <circle cx="11" cy="11" r="8"/>
                       <line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -1013,7 +937,7 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
                     />
                     {searchKeyword && (
                       <button
-                        className="clear-search-x"
+                        className="clear-x-btn"
                         onClick={() => setSearchKeyword("")}
                       >
                         ✕
@@ -1023,14 +947,15 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
                 </div>
               </div>
 
-              <div className="warm-table-scroller">
-                <table className="warm-clean-table">
+              {/* Scroller Table */}
+              <div className="bento-table-wrap">
+                <table className="bento-data-table">
                   <thead>
                     <tr>
                       <th>仓库 / 批次 ID</th>
                       <th>PR 编号</th>
                       <th>Head Commit SHA</th>
-                      <th>执行状态</th>
+                      <th>流转状态</th>
                       <th>重试次数</th>
                       <th>更新时间</th>
                     </tr>
@@ -1043,9 +968,9 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
                 </table>
 
                 {!loading && filteredReviews.length === 0 && (
-                  <div className="warm-empty-state">
-                    <div className="empty-sun-icon">
-                      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <div className="bento-empty-view">
+                    <div className="empty-sun-bubble">
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                         <circle cx="12" cy="12" r="10" />
                         <path d="M16 16s-1.5-2-4-2-4 2-4 2" />
                         <line x1="9" y1="9" x2="9.01" y2="9" />
@@ -1055,12 +980,12 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
                     <h4>暂无匹配的审查任务</h4>
                     <p>
                       {searchKeyword || activeFilter !== "all"
-                        ? "当前筛选条件下未查询到任务，您可以尝试重置筛选或清除搜索词。"
-                        : "调度任务队列当前为空，请在右侧面板提交一条新的审查任务！"}
+                        ? "当前筛选条件下无记录，您可以重置筛选或清除搜索关键词。"
+                        : "调度队列当前为空，请在右侧提交一条新的审查任务！"}
                     </p>
                     {(searchKeyword || activeFilter !== "all") && (
                       <button
-                        className="reset-filter-action-btn"
+                        className="reset-pill-btn"
                         onClick={() => {
                           setSearchKeyword("");
                           setActiveFilter("all");
@@ -1075,8 +1000,8 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
             </section>
           </div>
 
-          {/* Right Column: Create Task & Protocols */}
-          <aside className="warm-right-col">
+          {/* Right Launchpad Sidebar */}
+          <aside className="bento-sidebar-column">
             <CreateReviewForm
               onCreated={(message) => {
                 setPageMessage(message);
@@ -1085,43 +1010,28 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
               onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
             />
 
-            {/* Architecture Protocol Card */}
-            <div className="warm-protocol-card">
-              <div className="protocol-card-head">
-                <div className="protocol-icon-bubble">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                  </svg>
-                </div>
-                <div>
-                  <h4>M2 里程碑系统契约</h4>
-                  <span className="protocol-badge">SAFETY & RELIABILITY</span>
-                </div>
+            {/* M2 Protocol Card */}
+            <div className="bento-protocol-card">
+              <div className="protocol-head">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                </svg>
+                <span>M2 里程碑系统契约</span>
               </div>
-
-              <div className="protocol-points-list">
-                <div className="protocol-point-row">
-                  <span className="protocol-dot orange" />
-                  <div>
-                    <strong>Worker 容灾重试</strong>
-                    <p>超时未响应自动触发重试，保障调度不丢单</p>
-                  </div>
-                </div>
-                <div className="protocol-point-row">
-                  <span className="protocol-dot caramel" />
-                  <div>
-                    <strong>CI 门禁安全区</strong>
-                    <p>任务在 <code>waiting_for_ci</code> 阶段安全等待 GitHub 状态</p>
-                  </div>
-                </div>
-                <div className="protocol-point-row">
-                  <span className="protocol-dot green" />
-                  <div>
-                    <strong>M3 大模型接入</strong>
-                    <p>支持深度代码语义审查与 GitHub Comment 自动回写</p>
-                  </div>
-                </div>
-              </div>
+              <ul className="protocol-checklist">
+                <li>
+                  <span className="dot-orange" />
+                  <span><strong>自动故障重试</strong>：超时任务自动指数退避重派</span>
+                </li>
+                <li>
+                  <span className="dot-caramel" />
+                  <span><strong>CI 门禁保护</strong>：在 <code>waiting_for_ci</code> 安全阻断</span>
+                </li>
+                <li>
+                  <span className="dot-green" />
+                  <span><strong>M3 路线展望</strong>：接入大模型深度审查与回写</span>
+                </li>
+              </ul>
             </div>
           </aside>
         </div>
