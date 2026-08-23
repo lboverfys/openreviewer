@@ -357,6 +357,7 @@ code, .code-font {
 
 .warm-gradient-title {
   background: linear-gradient(115deg, #ff6b00 0%, #ff8e3c 50%, #d97706 100%);
+  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
