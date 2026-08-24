@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from apps.api.main import create_app
 from persistence.database import Database
@@ -31,6 +31,13 @@ FAKE_PAYLOAD_TOKEN = "github_pat_FAKE_PAYLOAD_TOKEN_123456789"
 def database(tmp_path: Path):
     database_path = (tmp_path / "webhooks.sqlite3").as_posix()
     configured = Database.connect(f"sqlite:///{database_path}")
+
+    @event.listens_for(configured.engine, "connect")
+    def enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     Base.metadata.create_all(configured.engine)
     try:
         yield configured

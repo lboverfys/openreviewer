@@ -7,12 +7,18 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
-from domain.enums import ExecutionStatus
-from domain.models import ReviewRequest
+from domain.enums import ExecutionStatus, PullRequestAction
+from domain.models import PullRequestWebhook, ReviewRequest
 from persistence.database import Database
-from persistence.models import Base, ReviewTaskRecord
+from persistence.models import (
+    Base,
+    GitHubWebhookDeliveryRecord,
+    ReviewRunRecord,
+    ReviewTaskRecord,
+)
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
+from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.reviews import ReviewService
 
 
@@ -78,3 +84,51 @@ def test_postgres_migrations_and_skip_locked_claim(postgres_database: Database) 
     with postgres_database.sessions() as session:
         task = session.get(ReviewTaskRecord, submission.review_task_id)
         assert task.execution_status == ExecutionStatus.RUNNING.value
+
+
+def test_postgres_webhook_creation_respects_foreign_keys(
+    postgres_database: Database,
+) -> None:
+    repository = SqlAlchemyGitHubWebhookRepository(postgres_database.sessions)
+    event = PullRequestWebhook(
+        action=PullRequestAction.OPENED,
+        delivery_id="postgres-delivery-001",
+        installation_id=20,
+        repository_id=43,
+        repository="lboverfys/NiuMa",
+        pull_request_number=129,
+        head_sha="b" * 40,
+    )
+
+    created = repository.create_or_get(event, "c" * 64)
+    repeated = repository.create_or_get(event, "c" * 64)
+
+    assert created.created is True
+    assert repeated.created is False
+    assert repeated.review_run_id == created.review_run_id
+    assert repeated.review_task_id == created.review_task_id
+    with postgres_database.sessions() as session:
+        persisted = session.execute(
+            select(
+                GitHubWebhookDeliveryRecord.delivery_id,
+                ReviewRunRecord.id,
+                ReviewTaskRecord.id,
+            )
+            .join(
+                ReviewRunRecord,
+                ReviewRunRecord.id == GitHubWebhookDeliveryRecord.review_run_id,
+            )
+            .join(
+                ReviewTaskRecord,
+                ReviewTaskRecord.id == GitHubWebhookDeliveryRecord.review_task_id,
+            )
+            .where(
+                GitHubWebhookDeliveryRecord.delivery_id
+                == "postgres-delivery-001"
+            )
+        ).one()
+    assert persisted == (
+        "postgres-delivery-001",
+        created.review_run_id,
+        created.review_task_id,
+    )

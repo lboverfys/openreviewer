@@ -64,24 +64,28 @@ class SqlAlchemyGitHubWebhookRepository:
                 self._upsert_installation(session, event.installation_id, now)
                 self._upsert_version(session, version_id, event, now)
 
+                session.add(
+                    ReviewRunRecord(
+                        id=review_run_id,
+                        review_version_key=event.review_version_key,
+                        installation_id=event.installation_id,
+                        repository_id=event.repository_id,
+                        repository=event.repository,
+                        pull_request_number=event.pull_request_number,
+                        head_sha=event.head_sha,
+                        execution_status=ExecutionStatus.QUEUED.value,
+                        review_conclusion=None,
+                        coverage_status=CoverageStatus.UNKNOWN.value,
+                        idempotency_key=self._idempotency_key(event.delivery_id),
+                        request_fingerprint=payload_sha256,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                # 这些模型没有 ORM relationship，显式刷新才能保证外键父记录先落库。
+                session.flush()
                 session.add_all(
                     [
-                        ReviewRunRecord(
-                            id=review_run_id,
-                            review_version_key=event.review_version_key,
-                            installation_id=event.installation_id,
-                            repository_id=event.repository_id,
-                            repository=event.repository,
-                            pull_request_number=event.pull_request_number,
-                            head_sha=event.head_sha,
-                            execution_status=ExecutionStatus.QUEUED.value,
-                            review_conclusion=None,
-                            coverage_status=CoverageStatus.UNKNOWN.value,
-                            idempotency_key=self._idempotency_key(event.delivery_id),
-                            request_fingerprint=payload_sha256,
-                            created_at=now,
-                            updated_at=now,
-                        ),
                         ReviewTaskRecord(
                             id=review_task_id,
                             review_run_id=review_run_id,
@@ -108,18 +112,21 @@ class SqlAlchemyGitHubWebhookRepository:
                             occurred_at=now,
                             publish_attempts=0,
                         ),
-                        GitHubWebhookDeliveryRecord(
-                            delivery_id=event.delivery_id,
-                            event_type=event.event_type,
-                            action=event.action.value,
-                            payload_sha256=payload_sha256,
-                            installation_id=event.installation_id,
-                            pull_request_version_id=version_id,
-                            review_run_id=review_run_id,
-                            review_task_id=review_task_id,
-                            received_at=now,
-                        ),
                     ]
+                )
+                session.flush()
+                session.add(
+                    GitHubWebhookDeliveryRecord(
+                        delivery_id=event.delivery_id,
+                        event_type=event.event_type,
+                        action=event.action.value,
+                        payload_sha256=payload_sha256,
+                        installation_id=event.installation_id,
+                        pull_request_version_id=version_id,
+                        review_run_id=review_run_id,
+                        review_task_id=review_task_id,
+                        received_at=now,
+                    )
                 )
                 session.commit()
                 return WebhookSubmissionResult(
