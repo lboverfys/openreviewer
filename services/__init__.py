@@ -1,1 +1,1 @@
-"""Application services for OpenReviewer use cases."""
+"""OpenReviewer 用例的应用服务。"""

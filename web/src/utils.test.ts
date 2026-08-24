@@ -5,7 +5,7 @@ import { formatDate, shortSha, statusLabels } from "./utils";
 describe("dashboard formatting", () => {
   // 每个用例只验证一个展示契约，避免把日期、SHA 和状态标签失败混在一起。
   it("shortens a full commit SHA without changing its prefix", () => {
-    // Given：一个长度大于八位的提交 SHA；When：交给表格短显示函数；Then：只截取前缀。
+    // 给定一个长度大于八位的提交 SHA，交给表格短显示函数后只截取前缀。
     expect(shortSha("abcdef0123456789")).toBe("abcdef01");
   });
 

@@ -1,4 +1,4 @@
-"""Application service for accepting asynchronous review requests."""
+"""接受异步审查请求的应用服务。"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,11 +11,11 @@ from domain.models import ReviewRequest
 
 
 class IdempotencyConflictError(ValueError):
-    """The same idempotency key was reused for different request content."""
+    """同一个幂等键被复用于不同的请求内容。"""
 
 
 class ReviewPersistenceError(RuntimeError):
-    """The review request could not be durably persisted."""
+    """审查请求无法持久化保存。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +29,7 @@ class ReviewSubmissionResult:
 
 
 class ReviewRepository(Protocol):
-    """Persistence boundary used by the review submission use case."""
+    """审查提交用例使用的持久化边界。"""
 
     def create_or_get(
         self,

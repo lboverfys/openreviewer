@@ -1,18 +1,38 @@
-"""Application boundary for leasing and advancing review tasks."""
+"""租用和推进审查任务的应用边界。"""
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
 from domain.enums import WorkerStatus
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 
 
-class TaskQueueError(RuntimeError):
-    """A durable queue operation could not be completed."""
+class TaskQueueError(SafeApplicationError):
+    """持久化队列操作无法完成。"""
+
+    def __init__(self, message: str = "任务队列暂时不可用") -> None:
+        super().__init__(
+            SafeError(
+                code=ErrorCode.TASK_QUEUE_UNAVAILABLE,
+                safe_message=message,
+                retryable=True,
+            )
+        )
 
 
 class TaskLeaseLostError(TaskQueueError):
-    """A worker tried to mutate a task after losing its lease."""
+    """Worker 失去租约后仍尝试修改任务。"""
+
+    def __init__(self, message: str = "Worker 已失去任务租约") -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.TASK_LEASE_LOST,
+                safe_message=message,
+                retryable=False,
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,13 +132,12 @@ class ReviewTaskQueue(Protocol):
         """
         ...
 
-    def retry_or_fail(self, lease: ReviewTaskLease, error: str) -> None:
+    def retry_or_fail(self, lease: ReviewTaskLease, error: SafeError) -> None:
         """记录本次处理错误，并按剩余尝试次数选择重试或失败。
 
         参数：
             lease: 发生错误时 Worker 仍持有的任务租约。
-            error: 要保存供运维排查的错误说明；实现可以限制长度，但调用方不应
-                传入 Token、密码或其他凭据。
+            error: 已分类、已脱敏且带稳定错误码的安全错误对象。
 
         副作用：
             清除当前租约；任务可能带退避时间回到 ``queued``，也可能与运行一起

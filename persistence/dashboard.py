@@ -1,10 +1,11 @@
-"""SQLAlchemy queries for the operational dashboard read model."""
+"""运维 Dashboard 只读模型使用的 SQLAlchemy 查询。"""
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.enums import ExecutionStatus, WorkerStatus
+from domain.security import redact_sensitive
 from persistence.models import (
     ReviewRunRecord,
     ReviewTaskRecord,
@@ -73,7 +74,22 @@ class SqlAlchemyDashboardRepository:
                 }
 
                 rows = session.execute(
-                    select(ReviewRunRecord, ReviewTaskRecord)
+                    select(
+                        ReviewRunRecord.id.label("review_run_id"),
+                        ReviewTaskRecord.id.label("review_task_id"),
+                        ReviewRunRecord.repository,
+                        ReviewRunRecord.pull_request_number,
+                        ReviewRunRecord.head_sha,
+                        ReviewRunRecord.execution_status,
+                        ReviewTaskRecord.attempt_count,
+                        ReviewTaskRecord.max_attempts,
+                        ReviewTaskRecord.last_error,
+                        ReviewTaskRecord.last_error_code,
+                        ReviewTaskRecord.last_error_retryable,
+                        ReviewTaskRecord.last_error_details,
+                        ReviewRunRecord.created_at,
+                        ReviewRunRecord.updated_at,
+                    )
                     .join(
                         ReviewTaskRecord,
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
@@ -81,22 +97,56 @@ class SqlAlchemyDashboardRepository:
                     .order_by(ReviewRunRecord.created_at.desc())
                     .limit(limit)
                 )
-                reviews = tuple(
-                    ReviewListItem(
-                        review_run_id=run.id,
-                        review_task_id=task.id,
-                        repository=run.repository,
-                        pull_request_number=run.pull_request_number,
-                        head_sha=run.head_sha,
-                        execution_status=ExecutionStatus(run.execution_status),
-                        attempt_count=task.attempt_count,
-                        max_attempts=task.max_attempts,
-                        last_error=task.last_error,
-                        created_at=as_utc(run.created_at),
-                        updated_at=as_utc(run.updated_at),
+                review_items: list[ReviewListItem] = []
+                for row in rows:
+                    safe_last_error = (
+                        redact_sensitive(row.last_error)
+                        if row.last_error is not None
+                        else None
                     )
-                    for run, task in rows
-                )
+                    safe_error_code = (
+                        redact_sensitive(row.last_error_code)
+                        if row.last_error_code is not None
+                        else None
+                    )
+                    safe_error_details = (
+                        redact_sensitive(row.last_error_details)
+                        if row.last_error_details is not None
+                        else None
+                    )
+                    review_items.append(
+                        ReviewListItem(
+                            review_run_id=row.review_run_id,
+                            review_task_id=row.review_task_id,
+                            repository=row.repository,
+                            pull_request_number=row.pull_request_number,
+                            head_sha=row.head_sha,
+                            execution_status=ExecutionStatus(
+                                row.execution_status
+                            ),
+                            attempt_count=row.attempt_count,
+                            max_attempts=row.max_attempts,
+                            last_error=(
+                                safe_last_error
+                                if isinstance(safe_last_error, str)
+                                else None
+                            ),
+                            last_error_code=(
+                                safe_error_code
+                                if isinstance(safe_error_code, str)
+                                else None
+                            ),
+                            last_error_retryable=row.last_error_retryable,
+                            last_error_details=(
+                                safe_error_details
+                                if isinstance(safe_error_details, dict)
+                                else None
+                            ),
+                            created_at=as_utc(row.created_at),
+                            updated_at=as_utc(row.updated_at),
+                        )
+                    )
+                reviews = tuple(review_items)
 
                 heartbeat = session.scalar(
                     select(WorkerHeartbeatRecord)

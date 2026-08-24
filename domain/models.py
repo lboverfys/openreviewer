@@ -1,4 +1,4 @@
-"""Pydantic models for the first version of the review contract."""
+"""第一版审查契约使用的 Pydantic 模型。"""
 
 from typing import Literal, Self
 
@@ -16,10 +16,11 @@ from domain.enums import (
     VerificationStatus,
 )
 from domain.identifiers import build_review_version_key, normalize_sha
+from domain.paths import normalize_repository_path
 
 
 class ContractModel(BaseModel):
-    """Base model with strict fields and predictable string handling."""
+    """字段严格且字符串处理行为可预测的基础模型。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -79,14 +80,22 @@ class ReviewVersion(ContractModel):
 
 
 class PullRequestWebhook(ContractModel):
-    """Minimal trusted data extracted from an accepted GitHub event."""
+    """从已接受的 GitHub 事件中提取的最小可信数据。"""
 
     event_type: Literal["pull_request"] = "pull_request"
     action: PullRequestAction
-    delivery_id: str = Field(min_length=1, max_length=200)
+    delivery_id: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
     installation_id: int = Field(gt=0)
     repository_id: int = Field(gt=0)
-    repository: str = Field(min_length=1, max_length=255)
+    repository: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+    )
     pull_request_number: int = Field(gt=0)
     head_sha: str = Field(min_length=40, max_length=64)
 
@@ -135,7 +144,7 @@ class PullRequestWebhook(ContractModel):
 
 
 class ReviewRequest(ContractModel):
-    """Internal request for one asynchronous pull-request review."""
+    """一次异步 Pull Request 审查使用的内部请求。"""
 
     installation_id: int = Field(gt=0)
     repository_id: int = Field(gt=0)
@@ -211,9 +220,8 @@ class FindingLocation(ContractModel):
         """规范化 Finding 文件路径并拦截已知的目录穿越形式。
 
         Finding 的文件路径来自模型或外部适配器，必须限制在仓库根目录内，避免
-        后续读取代码或生成评论时误触宿主机文件。当前实现把反斜杠换成正斜杠，
-        拒绝以 ``/`` 开头的路径和任意 ``..`` 路径段；它尚未单独识别
-        ``C:/...`` 形式的 Windows 盘符绝对路径。
+        后续读取代码或生成评论时误触宿主机文件。统一校验会规范化分隔符，并拒绝
+        Linux 绝对路径、Windows 盘符/UNC、控制字符、空路径段和目录穿越。
 
         参数：
             value: Finding 中的原始文件路径。
@@ -222,13 +230,9 @@ class FindingLocation(ContractModel):
             使用正斜杠的路径文本，便于跨平台比较和生成 GitHub 定位。
 
         异常：
-            ValueError: 路径以 ``/`` 开头或包含完整的 ``..`` 路径段。
+            ValueError: 路径不是规范的仓库相对路径。
         """
-        normalized = value.replace("\\", "/")
-        parts = normalized.split("/")
-        if normalized.startswith("/") or ".." in parts:
-            raise ValueError("file must be a repository-relative path")
-        return normalized
+        return normalize_repository_path(value)
 
     @model_validator(mode="after")
     def validate_line_range(self) -> Self:
@@ -332,13 +336,9 @@ class FileCoverageItem(ContractModel):
             把反斜杠替换为正斜杠后的路径。
 
         异常：
-            ValueError: 路径以 ``/`` 开头或包含 ``..`` 段。与 Finding 路径校验
-            一样，当前实现尚未专门拒绝 Windows 盘符形式。
+            ValueError: 路径不是规范的仓库相对路径；规则与 Finding 完全一致。
         """
-        normalized = value.replace("\\", "/")
-        if normalized.startswith("/") or ".." in normalized.split("/"):
-            raise ValueError("file must be a repository-relative path")
-        return normalized
+        return normalize_repository_path(value)
 
 
 class ReviewRunState(ContractModel):

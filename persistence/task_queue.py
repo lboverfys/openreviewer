@@ -1,4 +1,4 @@
-"""PostgreSQL-backed task leasing, recovery, retry and heartbeat storage."""
+"""基于 PostgreSQL 的任务租约、恢复、重试与心跳存储。"""
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -6,9 +6,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Load, Session, sessionmaker
 
 from domain.enums import ExecutionStatus, WorkerStatus
+from domain.security import ErrorCode, SafeError
 from persistence.models import (
     OutboxEventRecord,
     ReviewRunRecord,
@@ -40,8 +41,26 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _task_run_mutation_load_options() -> tuple[Load, Load]:
+    """只加载任务和运行状态转换代码实际读取的列。"""
+
+    return (
+        Load(ReviewTaskRecord).load_only(
+            ReviewTaskRecord.id,
+            ReviewTaskRecord.review_run_id,
+            ReviewTaskRecord.attempt_count,
+            ReviewTaskRecord.max_attempts,
+            raiseload=True,
+        ),
+        Load(ReviewRunRecord).load_only(
+            ReviewRunRecord.id,
+            raiseload=True,
+        ),
+    )
+
+
 class SqlAlchemyReviewTaskQueue:
-    """Durable queue that uses row locks instead of an in-memory broker."""
+    """使用数据库行锁而非内存消息代理的持久化队列。"""
 
     def __init__(
         self,
@@ -51,6 +70,7 @@ class SqlAlchemyReviewTaskQueue:
         uuid_factory: Callable[[], UUID] | None = None,
         retry_base_seconds: int = 5,
         retry_cap_seconds: int = 300,
+        recovery_batch_size: int = 100,
     ) -> None:
         """初始化持久化队列及重试策略。
 
@@ -74,11 +94,14 @@ class SqlAlchemyReviewTaskQueue:
             raise ValueError("retry_base_seconds must be positive")
         if retry_cap_seconds < retry_base_seconds:
             raise ValueError("retry_cap_seconds must not be less than the base")
+        if not 1 <= recovery_batch_size <= 1000:
+            raise ValueError("recovery_batch_size must be between 1 and 1000")
         self._sessions = sessions
         self._clock = clock or (lambda: datetime.now(UTC))
         self._uuid_factory = uuid_factory or uuid4
         self._retry_base_seconds = retry_base_seconds
         self._retry_cap_seconds = retry_cap_seconds
+        self._recovery_batch_size = recovery_batch_size
 
     def record_heartbeat(
         self,
@@ -128,7 +151,7 @@ class SqlAlchemyReviewTaskQueue:
                 raise TaskQueueError("worker heartbeat could not be persisted") from exc
 
     def recover_expired_leases(self) -> int:
-        """恢复所有已过期的运行中任务租约。
+        """恢复一批已过期的运行中任务租约。
 
         查询使用 ``FOR UPDATE SKIP LOCKED``，多个 Worker 并行恢复时不会互相等待
         或重复处理同一任务。每个任务根据剩余尝试次数回到 ``queued`` 并设置退避，
@@ -141,14 +164,19 @@ class SqlAlchemyReviewTaskQueue:
             TaskQueueError: 查询、状态转换或事务提交失败；整个批次会回滚，避免
             只恢复一部分任务。
 
-        任务状态筛选只接受 ``running`` 且 ``lease_expires_at <= now`` 的行。锁定
-        后会再次读取关联运行；如果运行缺失，事务失败而不会静默删除孤儿任务。
+        任务状态筛选只接受 ``running`` 且 ``lease_expires_at <= now`` 的行，
+        每批最多处理配置的 ``recovery_batch_size`` 条。任务与关联运行通过同一
+        JOIN 读取；如果运行缺失，该任务不会被误当成可恢复记录。
         """
         now = self._clock()
         with self._sessions() as session:
             try:
                 statement = (
-                    select(ReviewTaskRecord)
+                    select(ReviewTaskRecord, ReviewRunRecord)
+                    .join(
+                        ReviewRunRecord,
+                        ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
+                    )
                     .where(
                         ReviewTaskRecord.execution_status
                         == ExecutionStatus.RUNNING.value,
@@ -156,16 +184,24 @@ class SqlAlchemyReviewTaskQueue:
                         ReviewTaskRecord.lease_expires_at <= now,
                     )
                     .order_by(ReviewTaskRecord.lease_expires_at.asc())
+                    .limit(self._recovery_batch_size)
+                    .options(*_task_run_mutation_load_options())
                     .with_for_update(skip_locked=True)
                 )
-                expired_tasks = list(session.scalars(statement))
-                for task in expired_tasks:
+                expired_tasks = list(session.execute(statement))
+                lease_error = SafeError(
+                    code=ErrorCode.TASK_LEASE_EXPIRED,
+                    safe_message="Worker 租约超时，任务已进入恢复流程",
+                    retryable=True,
+                )
+                for task, run in expired_tasks:
                     self._reschedule_or_fail(
                         session,
                         task,
+                        run,
                         now,
-                        "Worker 租约超时，任务已进入恢复流程",
-                        event_suffix="lease-expired",
+                        lease_error,
+                        event_suffix=f"lease-expired-{task.attempt_count}",
                     )
                 session.commit()
                 return len(expired_tasks)
@@ -207,7 +243,11 @@ class SqlAlchemyReviewTaskQueue:
         with self._sessions() as session:
             try:
                 statement = (
-                    select(ReviewTaskRecord)
+                    select(ReviewTaskRecord, ReviewRunRecord)
+                    .join(
+                        ReviewRunRecord,
+                        ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
+                    )
                     .where(
                         ReviewTaskRecord.execution_status
                         == ExecutionStatus.QUEUED.value,
@@ -219,23 +259,24 @@ class SqlAlchemyReviewTaskQueue:
                         ReviewTaskRecord.created_at.asc(),
                     )
                     .limit(1)
+                    .options(*_task_run_mutation_load_options())
                     .with_for_update(skip_locked=True)
                 )
                 # 行锁保证多个 Worker 同时轮询时，只有一个能拿到这条任务。
-                task = session.scalar(statement)
-                if task is None:
+                row = session.execute(statement).one_or_none()
+                if row is None:
                     session.commit()
                     return None
-
-                run = session.get(ReviewRunRecord, task.review_run_id)
-                if run is None:
-                    raise TaskQueueError("review task points to a missing review run")
+                task, run = row
 
                 task.execution_status = ExecutionStatus.RUNNING.value
                 task.attempt_count += 1
                 task.lease_owner = worker_id
                 task.lease_expires_at = lease_expires_at
                 task.last_error = None
+                task.last_error_code = None
+                task.last_error_retryable = None
+                task.last_error_details = None
                 task.updated_at = now
                 run.execution_status = ExecutionStatus.RUNNING.value
                 run.updated_at = now
@@ -330,10 +371,7 @@ class SqlAlchemyReviewTaskQueue:
         now = self._clock()
         with self._sessions() as session:
             try:
-                task = self._locked_owned_task(session, lease, now)
-                run = session.get(ReviewRunRecord, task.review_run_id)
-                if run is None:
-                    raise TaskQueueError("review task points to a missing review run")
+                task, run = self._locked_owned_task_with_run(session, lease, now)
 
                 task.execution_status = ExecutionStatus.WAITING_FOR_CI.value
                 task.lease_owner = None
@@ -358,17 +396,16 @@ class SqlAlchemyReviewTaskQueue:
                     "the review task could not enter the CI waiting state"
                 ) from exc
 
-    def retry_or_fail(self, lease: ReviewTaskLease, error: str) -> None:
+    def retry_or_fail(self, lease: ReviewTaskLease, error: SafeError) -> None:
         """记录本次处理失败，并根据尝试次数安排重试或最终失败。
 
-        错误文本会去除首尾空格并截断到 4000 字符，避免异常堆栈无限膨胀数据库。
-        只有仍持有有效租约的 Worker 才能执行此更新；状态、错误信息和事件一次性
-        提交，失败时整体回滚。
+        错误对象已经包含稳定代码、重试属性、脱敏说明和安全详情；持久化层再次
+        限制说明长度。只有仍持有有效租约的 Worker 才能执行此更新；状态、错误
+        信息和事件一次性提交，失败时整体回滚。
 
         参数：
             lease: 发生异常的那次领取操作对应的租约。
-            error: 要保存到 ``last_error`` 的说明；当前实现只做首尾清理和长度
-                截断，不做 Token、密码或 URL 凭据脱敏。
+            error: 已完成分类和统一脱敏的安全错误对象。
 
         异常：
             TaskLeaseLostError: 上报时租约已经失效，旧 Worker 不得覆盖新状态。
@@ -378,15 +415,15 @@ class SqlAlchemyReviewTaskQueue:
         任务和运行都改为 ``failed``。两种结果都会写唯一 Outbox 事件。
         """
         now = self._clock()
-        safe_error = error.strip()[:4000] or "Worker 处理任务时发生未知错误"
         with self._sessions() as session:
             try:
-                task = self._locked_owned_task(session, lease, now)
+                task, run = self._locked_owned_task_with_run(session, lease, now)
                 self._reschedule_or_fail(
                     session,
                     task,
+                    run,
                     now,
-                    safe_error,
+                    error,
                     event_suffix=f"attempt-{task.attempt_count}",
                 )
                 session.commit()
@@ -460,6 +497,12 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
             )
+            .options(
+                Load(ReviewTaskRecord).load_only(
+                    ReviewTaskRecord.id,
+                    raiseload=True,
+                )
+            )
             .with_for_update()
         )
         task = session.scalar(statement)
@@ -467,12 +510,44 @@ class SqlAlchemyReviewTaskQueue:
             raise TaskLeaseLostError("the worker no longer owns this review task")
         return task
 
+    @staticmethod
+    def _locked_owned_task_with_run(
+        session: Session,
+        lease: ReviewTaskLease,
+        now: datetime,
+    ) -> tuple[ReviewTaskRecord, ReviewRunRecord]:
+        """通过一次命中索引的 JOIN 查询锁定所属任务及其运行记录。"""
+
+        statement = (
+            select(ReviewTaskRecord, ReviewRunRecord)
+            .join(
+                ReviewRunRecord,
+                ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
+            )
+            .where(
+                ReviewTaskRecord.id == lease.task_id,
+                ReviewTaskRecord.review_run_id == lease.review_run_id,
+                ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
+                ReviewTaskRecord.lease_owner == lease.worker_id,
+                ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.lease_expires_at.is_not(None),
+                ReviewTaskRecord.lease_expires_at > now,
+            )
+            .options(*_task_run_mutation_load_options())
+            .with_for_update()
+        )
+        row = session.execute(statement).one_or_none()
+        if row is None:
+            raise TaskLeaseLostError("the worker no longer owns this review task")
+        return row[0], row[1]
+
     def _reschedule_or_fail(
         self,
         session: Session,
         task: ReviewTaskRecord,
+        run: ReviewRunRecord,
         now: datetime,
-        error: str,
+        error: SafeError,
         *,
         event_suffix: str,
     ) -> None:
@@ -486,7 +561,7 @@ class SqlAlchemyReviewTaskQueue:
             session: 当前外层事务会话。
             task: 已锁定且确认属于当前操作的运行中任务。
             now: 本次状态变化统一使用的时间。
-            error: 要写入任务 ``last_error`` 的已截断错误说明。
+            error: 要拆分写入结构化错误字段的安全错误对象。
             event_suffix: 附加到事件唯一键的尝试/恢复标识，防止同一状态事件重复。
 
         副作用：
@@ -496,15 +571,14 @@ class SqlAlchemyReviewTaskQueue:
         异常：
             TaskQueueError: 找不到关联运行。此方法不提交事务，异常由调用方负责回滚。
         """
-        run = session.get(ReviewRunRecord, task.review_run_id)
-        if run is None:
-            raise TaskQueueError("review task points to a missing review run")
-
-        task.last_error = error
+        task.last_error = error.safe_message[:4000]
+        task.last_error_code = error.code.value
+        task.last_error_retryable = error.retryable
+        task.last_error_details = dict(error.details)
         task.lease_owner = None
         task.lease_expires_at = None
         task.updated_at = now
-        if task.attempt_count >= task.max_attempts:
+        if not error.retryable or task.attempt_count >= task.max_attempts:
             task.execution_status = ExecutionStatus.FAILED.value
             run.execution_status = ExecutionStatus.FAILED.value
             event_type = "review.task.failed"
@@ -516,7 +590,14 @@ class SqlAlchemyReviewTaskQueue:
             event_type = "review.task.retry_scheduled"
             event_key = f"retry:{event_suffix}"
         run.updated_at = now
-        self._add_event(session, task, event_type, event_key, now)
+        self._add_event(
+            session,
+            task,
+            event_type,
+            event_key,
+            now,
+            error=error,
+        )
 
     def _retry_delay(self, attempt_count: int) -> timedelta:
         """根据已消耗的尝试次数计算指数退避时长。
@@ -545,6 +626,8 @@ class SqlAlchemyReviewTaskQueue:
         event_type: str,
         key_suffix: str,
         occurred_at: datetime,
+        *,
+        error: SafeError | None = None,
     ) -> None:
         """在当前事务中追加一条不可重复的任务状态 Outbox 事件。
 
@@ -565,6 +648,18 @@ class SqlAlchemyReviewTaskQueue:
         该方法不会访问网络，也不会把 ``last_error`` 放入事件 payload，避免事件
         总线携带可能敏感的异常文本。
         """
+        payload: dict[str, object] = {
+            "review_run_id": task.review_run_id,
+            "review_task_id": task.id,
+            "attempt_count": task.attempt_count,
+        }
+        if error is not None:
+            payload.update(
+                {
+                    "error_code": error.code.value,
+                    "error_retryable": error.retryable,
+                }
+            )
         session.add(
             OutboxEventRecord(
                 id=str(self._uuid_factory()),
@@ -572,11 +667,7 @@ class SqlAlchemyReviewTaskQueue:
                 aggregate_type="review_run",
                 aggregate_id=task.review_run_id,
                 event_type=event_type,
-                payload={
-                    "review_run_id": task.review_run_id,
-                    "review_task_id": task.id,
-                    "attempt_count": task.attempt_count,
-                },
+                payload=payload,
                 occurred_at=occurred_at,
                 publish_attempts=0,
             )

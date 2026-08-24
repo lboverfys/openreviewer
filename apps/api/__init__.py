@@ -1,4 +1,4 @@
-"""HTTP API application package."""
+"""HTTP API 应用包。"""
 
 from apps.api.main import app, create_app
 

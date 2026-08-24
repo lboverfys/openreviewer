@@ -28,18 +28,23 @@ Worker ID、任务 ID、运行 ID 和尝试次数都与当前记录一致时，�
 
 - 仍有尝试次数：清除租约，回到 `queued`，按指数退避设置下一次 `available_at`；
 - 已达到 `max_attempts`：任务和运行都改为 `failed`；
-- 两种情况都保存错误说明并追加 Outbox 事件。
+- 两种情况都保存结构化安全错误并追加 Outbox 事件。
 
 默认退避从 5 秒开始，每次翻倍，最多 300 秒。默认最多尝试 3 次。
 
-当前实现只会去掉错误文本首尾空白并截断到 4000 个字符，还没有通用的凭据识别和脱敏机制。
-M2 Worker 尚未调用 GitHub、CI 或模型接口；接入这些外部服务前，必须先增加结构化安全错误码
-或统一脱敏层，不能把可能包含 Token、密码或带凭据 URL 的原始异常直接传给任务队列。
+任务错误拆分为稳定错误码、安全说明、是否可重试和经过递归脱敏的详情。日志、数据库、
+Dashboard/API 使用同一脱敏规则；未知异常也必须先转换为 `SafeError`，不能把可能包含 Token、
+密码或带凭据 URL 的原始异常直接传给任务队列。不可重试错误会立即失败，可重试错误才按
+剩余尝试次数退避。
+
+过期租约恢复每批最多处理 100 条，并在一个 JOIN 查询中取回任务与运行；查询使用
+`execution_status + lease_expires_at` 索引，循环内不执行数据库查询。
 
 ## 3. M2 状态边界
 
-M2 尚未接入 GitHub PR、Actions CI 或模型。Worker 领取任务并完成当前本地准备步骤后，把任务
-和运行改为 `waiting_for_ci`，清除租约并追加 `review.waiting_for_ci` 事件。
+Webhook 已能创建 GitHub PR 任务，但 Worker 尚未获取 PR 上下文、Actions CI 或调用模型。
+Worker 领取任务并完成当前本地准备步骤后，把任务和运行改为 `waiting_for_ci`，清除租约并
+追加 `review.waiting_for_ci` 事件。
 
 `waiting_for_ci` 是明确的未完成状态，不等于“审查成功”。在真实 CI、模型调用和结果发布
 实现之前，Worker 不得写入 `completed`。

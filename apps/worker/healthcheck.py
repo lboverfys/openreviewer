@@ -1,4 +1,4 @@
-"""Container healthcheck for the database worker heartbeat."""
+"""基于数据库 Worker 心跳的容器健康检查。"""
 
 from datetime import timedelta
 import os

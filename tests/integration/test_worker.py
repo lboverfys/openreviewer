@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from apps.worker.main import WorkerRuntime, WorkerSettings
 from domain.enums import ExecutionStatus, WorkerStatus
+from domain.security import ErrorCode, SafeError
 from domain.models import ReviewRequest
 from persistence.database import Database
 from persistence.models import (
@@ -91,7 +92,7 @@ def submit_review(database: Database, key: str = "worker-test") -> str:
         ),
         key,
     )
-    # Keep task availability independent of the wall clock used by CI.
+    # 让任务可用时间不受 CI 使用的真实时钟影响。
     with database.sessions() as session:
         task = session.get(ReviewTaskRecord, result.review_task_id)
         assert task is not None
@@ -166,11 +167,20 @@ def test_failed_attempt_is_retried_with_backoff_and_old_lease_is_rejected(
     first = queue.claim_next("worker-1", timedelta(seconds=30))
     assert first is not None
 
-    queue.retry_or_fail(first, "temporary failure")
+    queue.retry_or_fail(
+        first,
+        SafeError(
+            code=ErrorCode.GITHUB_TIMEOUT,
+            safe_message="temporary failure",
+            retryable=True,
+        ),
+    )
     with database.sessions() as session:
         task = session.get(ReviewTaskRecord, task_id)
         assert task.execution_status == ExecutionStatus.QUEUED.value
         assert task.last_error == "temporary failure"
+        assert task.last_error_code == ErrorCode.GITHUB_TIMEOUT.value
+        assert task.last_error_retryable is True
 
     assert queue.claim_next("worker-1", timedelta(seconds=30)) is None
     clock.value += timedelta(seconds=5)
@@ -215,6 +225,90 @@ def test_expired_final_lease_marks_task_and_run_failed(database: Database) -> No
         assert task.execution_status == ExecutionStatus.FAILED.value
         assert run.execution_status == ExecutionStatus.FAILED.value
         assert "租约超时" in task.last_error
+        assert task.last_error_code == ErrorCode.TASK_LEASE_EXPIRED.value
+        assert task.last_error_retryable is True
+
+
+def test_repeated_expired_leases_use_distinct_outbox_event_keys(
+    database: Database,
+) -> None:
+    """验证同一任务连续超时不会因 Outbox 唯一键冲突而卡死。"""
+
+    task_id = submit_review(database, "repeated-expired-leases")
+    clock = MutableClock(datetime(2026, 8, 18, 12, 0, tzinfo=UTC))
+    queue = SqlAlchemyReviewTaskQueue(database.sessions, clock=clock)
+
+    first = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert first is not None
+    clock.value += timedelta(seconds=31)
+    assert queue.recover_expired_leases() == 1
+
+    clock.value += timedelta(seconds=5)
+    second = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert second is not None
+    assert second.attempt_count == 2
+    clock.value += timedelta(seconds=31)
+    assert queue.recover_expired_leases() == 1
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        retry_events = list(
+            session.scalars(
+                select(OutboxEventRecord).where(
+                    OutboxEventRecord.event_type
+                    == "review.task.retry_scheduled"
+                )
+            )
+        )
+        assert task.execution_status == ExecutionStatus.QUEUED.value
+        assert task.attempt_count == 2
+        assert len(retry_events) == 2
+        assert len({event.event_key for event in retry_events}) == 2
+
+
+def test_expired_lease_recovery_respects_the_configured_batch_size(
+    database: Database,
+) -> None:
+    """验证大量过期任务会按有界批次恢复。"""
+
+    for index in range(3):
+        submit_review(database, f"recovery-batch-{index}")
+    clock = MutableClock(datetime(2026, 8, 18, 12, 0, tzinfo=UTC))
+    queue = SqlAlchemyReviewTaskQueue(
+        database.sessions,
+        clock=clock,
+        recovery_batch_size=2,
+    )
+    for index in range(3):
+        assert queue.claim_next(
+            f"worker-{index}",
+            timedelta(seconds=30),
+        ) is not None
+    clock.value += timedelta(seconds=31)
+
+    assert queue.recover_expired_leases() == 2
+    with database.sessions() as session:
+        still_running = session.scalar(
+            select(func.count())
+            .select_from(ReviewTaskRecord)
+            .where(
+                ReviewTaskRecord.execution_status
+                == ExecutionStatus.RUNNING.value
+            )
+        )
+        assert still_running == 1
+
+    assert queue.recover_expired_leases() == 1
+    with database.sessions() as session:
+        still_running = session.scalar(
+            select(func.count())
+            .select_from(ReviewTaskRecord)
+            .where(
+                ReviewTaskRecord.execution_status
+                == ExecutionStatus.RUNNING.value
+            )
+        )
+        assert still_running == 0
 
 
 def test_worker_heartbeat_freshness_is_observable(database: Database) -> None:
@@ -234,3 +328,37 @@ def test_worker_heartbeat_freshness_is_observable(database: Database) -> None:
     assert queue.heartbeat_is_fresh("worker-1", timedelta(seconds=15)) is True
     clock.value += timedelta(seconds=16)
     assert queue.heartbeat_is_fresh("worker-1", timedelta(seconds=15)) is False
+
+
+def test_non_retryable_error_is_sanitized_and_fails_without_requeue(
+    database: Database,
+) -> None:
+    fake_token = "ghp_FAKE_WORKER_TOKEN_123456789012345"
+    task_id = submit_review(database, "non-retryable-error")
+    clock = MutableClock(datetime(2026, 8, 18, 12, 0, tzinfo=UTC))
+    queue = SqlAlchemyReviewTaskQueue(database.sessions, clock=clock)
+    lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert lease is not None
+
+    queue.retry_or_fail(
+        lease,
+        SafeError(
+            code=ErrorCode.GITHUB_PERMISSION_DENIED,
+            safe_message=f"Authorization: Bearer {fake_token}",
+            retryable=False,
+            details={"password": "plain-password", "endpoint": "/repos/example"},
+        ),
+    )
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, task.review_run_id)
+        assert task.execution_status == ExecutionStatus.FAILED.value
+        assert run.execution_status == ExecutionStatus.FAILED.value
+        assert task.attempt_count == 1
+        assert task.last_error_code == ErrorCode.GITHUB_PERMISSION_DENIED.value
+        assert task.last_error_retryable is False
+        persisted = f"{task.last_error} {task.last_error_details}"
+        assert fake_token not in persisted
+        assert "plain-password" not in persisted
+        assert "<redacted>" in persisted

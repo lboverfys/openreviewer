@@ -7,7 +7,7 @@ import pytest
 from apps.api.main import create_app
 from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database
-from persistence.models import Base
+from persistence.models import Base, ReviewTaskRecord
 from persistence.repositories import SqlAlchemyReviewRepository
 from services.dashboard import DashboardService
 from services.reviews import ReviewService
@@ -179,3 +179,59 @@ def test_cross_origin_login_is_rejected(database: Database) -> None:
 
     response = asyncio.run(request())
     assert response.status_code == 403
+
+
+def test_dashboard_redacts_legacy_error_text_and_details(database: Database) -> None:
+    fake_token = "ghp_FAKE_DASHBOARD_TOKEN_1234567890123"
+    application = application_for(database)
+
+    async def request() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+            )
+            assert login.status_code == 200
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "dashboard-redaction"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 129,
+                    "head_sha": "b" * 40,
+                },
+            )
+            assert created.status_code == 202
+            with database.sessions() as session:
+                task = session.get(
+                    ReviewTaskRecord, created.json()["review_task_id"]
+                )
+                task.last_error = f"Authorization: Bearer {fake_token}"
+                task.last_error_code = "future_worker_error"
+                task.last_error_retryable = True
+                task.last_error_details = {"password": "plain-password"}
+                session.commit()
+            return (
+                await client.get("/api/v1/dashboard"),
+                await client.get("/api/v1/reviews?limit=10"),
+            )
+
+    dashboard, listed = asyncio.run(request())
+    assert dashboard.status_code == listed.status_code == 200
+    for response in (dashboard, listed):
+        assert fake_token not in response.text
+        assert "plain-password" not in response.text
+        item = (
+            response.json()["recent_reviews"][0]
+            if "recent_reviews" in response.json()
+            else response.json()["items"][0]
+        )
+        assert item["last_error_code"] == "future_worker_error"
+        assert item["last_error_retryable"] is True
+        assert "<redacted>" in str(item)

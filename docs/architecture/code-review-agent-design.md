@@ -17,8 +17,9 @@ OpenReviewer 是独立于被审查业务系统的代码审查平台，首个接�
 平台不替代普通 CI，也不直接决定是否合并主分支。编译、测试、静态检查继续由 GitHub Actions
 执行；AI 只处理需要语义理解的内容。
 
-当前仓库处于 M2：任务持久化、单并发 Worker、租约恢复、管理员登录、实时 Dashboard 和
-React 管理前端已经实现；GitHub App、Webhook、CI 状态、模型调用和 LangGraph 工作流尚未接入。
+当前仓库已完成 M2，并实现结构化安全错误、路径边界、Webhook 原始请求体验签、事件过滤、
+delivery 去重与原子入库。GitHub App installation token、PR/CI 获取、模型调用和 LangGraph
+工作流尚未接入；Webhook 入队不等于已经完成 PR 审查。
 
 ## 2. 核心决策
 

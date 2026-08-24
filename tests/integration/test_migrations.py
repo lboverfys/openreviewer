@@ -35,7 +35,11 @@ def test_initial_migration_creates_durable_review_task_schema(
         inspector = inspect(engine)
         assert set(inspector.get_table_names()) == {
             "alembic_version",
+            "external_actions",
+            "github_installations",
+            "github_webhook_deliveries",
             "outbox_events",
+            "pull_request_versions",
             "review_runs",
             "review_tasks",
             "worker_heartbeats",
@@ -50,6 +54,58 @@ def test_initial_migration_creates_durable_review_task_schema(
         } == {"uq_review_tasks_review_run_id"}
         with engine.connect() as connection:
             revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "20260818_0002"
+        task_columns = {
+            column["name"] for column in inspector.get_columns("review_tasks")
+        }
+        assert {
+            "last_error_code",
+            "last_error_retryable",
+            "last_error_details",
+        } <= task_columns
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints(
+                "pull_request_versions"
+            )
+        } == {"uq_pull_request_versions_review_version_key"}
+        assert "ix_review_tasks_expired_lease" in {
+            index["name"] for index in inspector.get_indexes("review_tasks")
+        }
+        assert {
+            "ix_review_runs_created_at",
+            "ix_review_runs_execution_status",
+        } <= {index["name"] for index in inspector.get_indexes("review_runs")}
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("review_runs")
+        } == {
+            "ck_review_runs_coverage_status_value",
+            "ck_review_runs_execution_status_value",
+            "ck_review_runs_installation_id_positive",
+            "ck_review_runs_pull_request_number_positive",
+            "ck_review_runs_repository_id_positive",
+            "ck_review_runs_review_conclusion_value",
+        }
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("review_tasks")
+        } == {
+            "ck_review_tasks_attempt_count_nonnegative",
+            "ck_review_tasks_execution_status_value",
+            "ck_review_tasks_max_attempts_positive",
+        }
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("outbox_events")
+        } == {"ck_outbox_events_publish_attempts_nonnegative"}
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints(
+                "worker_heartbeats"
+            )
+        } == {"ck_worker_heartbeats_status_value"}
+        assert revision == "20260824_0003"
     finally:
         engine.dispose()
+
+    command.check(configuration)

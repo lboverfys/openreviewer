@@ -1,1 +1,1 @@
-"""Integration tests using real adapters with local disposable resources."""
+"""使用本地一次性资源和真实适配器的集成测试。"""

@@ -1,4 +1,4 @@
-"""Read models used by the authenticated operational dashboard."""
+"""认证运维 Dashboard 使用的只读模型。"""
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -9,7 +9,7 @@ from domain.enums import ExecutionStatus, WorkerStatus
 
 
 class DashboardPersistenceError(RuntimeError):
-    """Dashboard data could not be read from durable storage."""
+    """无法从持久化存储读取 Dashboard 数据。"""
 
 
 def as_utc(value: datetime) -> datetime:
@@ -43,6 +43,9 @@ class ReviewListItem:
     attempt_count: int
     max_attempts: int
     last_error: str | None
+    last_error_code: str | None
+    last_error_retryable: bool | None
+    last_error_details: Mapping[str, object] | None
     created_at: datetime
     updated_at: datetime
 

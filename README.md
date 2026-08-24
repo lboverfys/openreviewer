@@ -2,9 +2,10 @@
 
 OpenReviewer 是独立的 AI 代码审查编排平台，首个接入项目是 NiuMa。
 
-当前仓库处于 M2 可观察任务执行阶段：已经实现 PostgreSQL 持久化入口、单并发 Worker、
-租约恢复与重试、管理员登录、实时 Dashboard 和 React 管理前端。GitHub App、Webhook、
-CI 状态接入、模型调用和 LangGraph 工作流将在后续里程碑逐步加入。
+当前仓库已完成 M2 可观察任务执行和首批 GitHub 安全入口：除 PostgreSQL 任务、单并发
+Worker、管理员登录、实时 Dashboard 和 React 管理前端外，已经具备 Webhook 原始请求体验签、
+事件过滤、delivery 去重与原子入库。GitHub App installation token、PR/CI 获取、模型调用和
+LangGraph 工作流仍将在后续里程碑加入。
 
 ## 目录
 
@@ -29,7 +30,7 @@ deployment/         niuma-2 Compose 部署配置
 - 当前 Worker 只把任务推进到 `waiting_for_ci`；没有 GitHub/模型结果时不会伪装成
   `completed`。
 
-## M2 已实现能力
+## 已实现能力
 
 - `POST /api/v1/reviews` 幂等创建 `ReviewRun`、`ReviewTask` 和 Outbox 事件。
 - PostgreSQL `FOR UPDATE SKIP LOCKED` 单任务领取、租约续期、超时恢复、最多三次尝试和
@@ -40,6 +41,9 @@ deployment/         niuma-2 Compose 部署配置
 - 受保护的 Dashboard、任务列表和 SSE 实时事件接口。
 - React 登录页、实时状态卡、Worker 状态、最近任务和手工任务创建表单。
 - Nginx 自签名 HTTPS 测试入口；API 仍只绑定服务器回环地址，PostgreSQL 不映射端口。
+- 结构化任务错误、日志/数据库/API 统一脱敏和跨平台仓库路径边界校验。
+- `POST /webhooks/github` HMAC-SHA256 验签、256 KiB 请求限制、PR 事件白名单和 delivery 幂等。
+- GitHub installation、PR 版本、Webhook delivery 与外部动作审计数据模型。
 
 ## 当前前端入口
 
@@ -63,7 +67,8 @@ python -m pip install -e ".[dev]"
 python -m alembic upgrade head
 ```
 
-本地配置需要数据库连接、管理员用户名、Argon2id 密码哈希和至少 32 字节的会话密钥。
+本地配置需要数据库连接、管理员用户名、Argon2id 密码哈希、至少 32 字节的会话密钥和
+至少 32 字节的 GitHub Webhook secret。
 可以使用交互式输入生成哈希，明文不会写入命令历史：
 
 ```shell
@@ -89,7 +94,7 @@ npm run dev
 
 ## 管理接口
 
-除 `/healthz` 外，M2 管理接口都要求先登录：
+除 `/healthz` 和经过 GitHub 签名验证的 `/webhooks/github` 外，管理接口都要求先登录：
 
 - `POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`；
 - `GET /api/v1/dashboard`；
@@ -103,8 +108,8 @@ npm run dev
 
 ## 容器交付
 
-GitHub Actions 分别验证 Python 3.12 后端和 Node.js 22.19 React 前端，并发布两个不可变
-镜像：
+GitHub Actions 使用 Python 3.12、隔离 PostgreSQL 16 和 Node.js 22.19 验证后端与前端，
+并发布两个不可变镜像：
 
 ```text
 ghcr.io/lboverfys/openreviewer:<完整 commit SHA>

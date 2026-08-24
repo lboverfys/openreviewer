@@ -1,1 +1,1 @@
-"""Database configuration, records, and repositories."""
+"""数据库配置、记录和仓储。"""

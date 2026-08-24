@@ -16,8 +16,9 @@ https://107.175.221.182:18443
 
 该入口使用自签名 HTTPS 证书，仅用于测试和验收；浏览器首次访问时会显示证书警告。
 
-当前仍不包含 GitHub Webhook、PR 上下文、CI 回调或模型调用。任务会从 `queued` 经过
-`running` 进入 `waiting_for_ci`，不会伪装为 `completed`。
+当前已包含 GitHub Webhook 验签、过滤和入队，但仍不包含 installation token、PR 上下文、
+CI 回调或模型调用。任务会从 `queued` 经过 `running` 进入 `waiting_for_ci`，不会伪装为
+`completed`。
 
 ## 镜像规则
 
@@ -122,6 +123,8 @@ OPENREVIEWER_POSTGRES_PASSWORD=<服务器数据库密码>
 OPENREVIEWER_ADMIN_USERNAME=<管理员用户名>
 OPENREVIEWER_ADMIN_PASSWORD_HASH='<Argon2id 哈希>'
 OPENREVIEWER_SESSION_SECRET=<随机会话签名密钥>
+OPENREVIEWER_GITHUB_WEBHOOK_SECRET=<至少 32 字节的 Webhook 密钥>
+OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES=262144
 OPENREVIEWER_API_HOST_PORT=18090
 OPENREVIEWER_WEB_HOST_PORT=18443
 OPENREVIEWER_TLS_CERT_FILE=/opt/openreviewer/shared/tls/openreviewer.crt
@@ -172,6 +175,7 @@ TLS 目录本身保持 `0700 root:root`，所以宿主机普通用户不能读�
 浏览器 https://107.175.221.182:18443
         -> Web Nginx :8443
             -> 允许的 /api/v1 管理路径 -> API :18090
+            -> /webhooks/github（GitHub HMAC 验签）-> API :18090
             -> React 静态文件
 
 宿主机 127.0.0.1:18090 -> API :18090

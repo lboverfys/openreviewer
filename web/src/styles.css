@@ -9,32 +9,32 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  /* Warm White & Sunset Orange Palette */
+  /* 暖白与落日橙配色 */
   --bg-main: #fbf9f5;
   --bg-card: #ffffff;
   --bg-card-subtle: #f8f5ee;
   --bg-input: #ffffff;
 
-  /* Borders */
+  /* 边框 */
   --border-soft: rgba(0, 0, 0, 0.06);
   --border-subtle: rgba(234, 88, 12, 0.1);
   --border-orange: #fed7aa;
   --border-orange-active: #ff6b00;
 
-  /* Text colors */
+  /* 文本颜色 */
   --text-main: #181512;
   --text-secondary: #595045;
   --text-muted: #8e8376;
   --text-light: #bcb2a4;
 
-  /* Orange Brand System */
+  /* 橙色品牌色体系 */
   --orange-primary: #ff6b00;
   --orange-hover: #ff8533;
   --orange-light: #fff7ed;
   --orange-border: #fed7aa;
   --orange-glow: rgba(255, 107, 0, 0.2);
 
-  /* Status Colors */
+  /* 状态颜色 */
   --color-queued: #d97706;
   --color-queued-bg: #fffbeb;
   --color-queued-border: #fde68a;
@@ -55,7 +55,7 @@
   --color-failed-bg: #fff1f2;
   --color-failed-border: #fecdd3;
 
-  /* Shadows */
+  /* 阴影 */
   --shadow-bento: 0 4px 20px -2px rgba(234, 88, 12, 0.04), 0 2px 6px rgba(0, 0, 0, 0.02);
   --shadow-hover: 0 10px 28px -4px rgba(234, 88, 12, 0.1), 0 2px 8px rgba(0, 0, 0, 0.04);
 }
@@ -82,7 +82,7 @@ body {
   background-attachment: fixed;
 }
 
-/* Custom Scrollbar */
+/* 自定义滚动条 */
 ::-webkit-scrollbar {
   width: 7px;
   height: 7px;
@@ -495,7 +495,7 @@ code, .code-font {
   background: var(--border-soft);
 }
 
-/* Warm Login Form Side */
+/* 暖色登录表单区域 */
 .warm-login-form-side {
   position: relative;
   z-index: 2;
@@ -726,7 +726,7 @@ code, .code-font {
   flex-direction: column;
 }
 
-/* Consolidated Top Navigation */
+/* 整合后的顶部导航 */
 .bento-top-navbar {
   position: sticky;
   top: 0;
@@ -939,7 +939,7 @@ code, .code-font {
   font-weight: 600;
 }
 
-/* Top Bento Deck: Worker + Telemetry */
+/* 顶部便当盒面板：Worker 与遥测 */
 .bento-deck-row {
   display: grid;
   grid-template-columns: minmax(320px, 34%) minmax(0, 66%);
@@ -947,7 +947,7 @@ code, .code-font {
   margin-bottom: 18px;
 }
 
-/* Worker Node Card */
+/* Worker 节点卡片 */
 .bento-worker-unit {
   display: flex;
   flex-direction: column;
@@ -1079,7 +1079,7 @@ code, .code-font {
   color: var(--orange-primary);
 }
 
-/* Telemetry Deck */
+/* 遥测面板 */
 .bento-telemetry-unit {
   display: flex;
   flex-direction: column;
@@ -1680,7 +1680,7 @@ code, .code-font {
   text-align: center;
 }
 
-/* Protocol Card */
+/* 协议卡片 */
 .bento-protocol-card {
   padding: 16px 18px;
   border-radius: 16px;

@@ -1,4 +1,4 @@
-"""Alembic runtime configuration sourced from OpenReviewer settings."""
+"""从 OpenReviewer 配置加载的 Alembic 运行时设置。"""
 
 from logging.config import fileConfig
 

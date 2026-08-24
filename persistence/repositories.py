@@ -1,4 +1,4 @@
-"""SQLAlchemy implementation of the review persistence boundary."""
+"""审查持久化边界的 SQLAlchemy 实现。"""
 
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -168,7 +168,7 @@ class SqlAlchemyReviewRepository:
     def _find_existing(
         session: Session,
         idempotency_key: str,
-    ) -> tuple[ReviewRunRecord, ReviewTaskRecord] | None:
+    ) -> tuple[str, datetime, str, str, str, str] | None:
         """按幂等键联表查找已有运行及其唯一任务。
 
         参数：
@@ -176,15 +176,22 @@ class SqlAlchemyReviewRepository:
             idempotency_key: 要查找的唯一幂等键。
 
         返回：
-            找到时返回 ``(ReviewRunRecord, ReviewTaskRecord)``；没有记录时返回
-            ``None``。任务表对 ``review_run_id`` 有唯一约束，因此这里预期每个
-            运行只有一条任务，``one_or_none`` 也能暴露意外重复数据。
+            找到时只返回组装幂等响应需要的指纹、时间、运行/任务 ID、版本键和
+            状态；没有记录时返回 ``None``。任务表对 ``review_run_id`` 有唯一
+            约束，因此 ``one_or_none`` 也能暴露意外重复数据。
 
         异常：
             SQLAlchemy 查询异常会原样向上抛出，由外层事务方法统一包装。
         """
         statement = (
-            select(ReviewRunRecord, ReviewTaskRecord)
+            select(
+                ReviewRunRecord.request_fingerprint,
+                ReviewRunRecord.created_at,
+                ReviewRunRecord.id,
+                ReviewTaskRecord.id,
+                ReviewRunRecord.review_version_key,
+                ReviewRunRecord.execution_status,
+            )
             .join(
                 ReviewTaskRecord,
                 ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
@@ -194,11 +201,11 @@ class SqlAlchemyReviewRepository:
         row = session.execute(statement).one_or_none()
         if row is None:
             return None
-        return row[0], row[1]
+        return tuple(row)
 
     @staticmethod
     def _existing_result(
-        existing: tuple[ReviewRunRecord, ReviewTaskRecord],
+        existing: tuple[str, datetime, str, str, str, str],
         request_fingerprint: str,
     ) -> ReviewSubmissionResult:
         """把已存在的 ORM 记录转换成幂等接口的返回对象。
@@ -207,7 +214,7 @@ class SqlAlchemyReviewRepository:
         返回的 naive 时间会补上 UTC 时区，保证 API 输出格式稳定。
 
         参数：
-            existing: ``_find_existing`` 返回的运行/任务 ORM 记录二元组。
+            existing: ``_find_existing`` 返回的六个明确数据库字段。
             request_fingerprint: 本次请求按规范 JSON 计算的摘要。
 
         返回：
@@ -219,19 +226,25 @@ class SqlAlchemyReviewRepository:
             ValueError: 数据库里的执行状态不属于领域枚举，表示数据与代码契约
             已经不一致。
         """
-        review_run, review_task = existing
-        if review_run.request_fingerprint != request_fingerprint:
+        (
+            stored_fingerprint,
+            accepted_at,
+            review_run_id,
+            review_task_id,
+            review_version_key,
+            execution_status,
+        ) = existing
+        if stored_fingerprint != request_fingerprint:
             raise IdempotencyConflictError(
                 "idempotency key was already used for another request"
             )
-        accepted_at = review_run.created_at
         if accepted_at.tzinfo is None:
             accepted_at = accepted_at.replace(tzinfo=UTC)
         return ReviewSubmissionResult(
-            review_run_id=review_run.id,
-            review_task_id=review_task.id,
-            review_version_key=review_run.review_version_key,
-            execution_status=ExecutionStatus(review_run.execution_status),
+            review_run_id=review_run_id,
+            review_task_id=review_task_id,
+            review_version_key=review_version_key,
+            execution_status=ExecutionStatus(execution_status),
             accepted_at=accepted_at,
             created=False,
         )

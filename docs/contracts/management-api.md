@@ -33,10 +33,9 @@ API 进程按客户端和账号记录 15 分钟滑动失败窗口；Nginx 还对
 | `GET /api/v1/reviews?limit=50` | 最近审查任务列表，`limit` 范围为 1 到 100 |
 | `POST /api/v1/reviews` | 创建幂等审查任务，详细规则见任务接口契约 |
 
-响应模型不会直接暴露数据库密码、会话密钥、密码哈希或任务幂等键。不过，任务列表和
-Dashboard 当前会返回 Worker 保存的 `last_error`，而这段文本还没有通用脱敏机制。因此，
-现有代码不能严格保证 `last_error` 永远不含凭据；接入 GitHub、CI 或模型接口前，必须先
-完成统一脱敏，或者只保存可公开展示的结构化错误码。
+响应模型不会直接暴露数据库密码、会话密钥、密码哈希或任务幂等键。任务列表和 Dashboard
+返回 `last_error`、`last_error_code`、`last_error_retryable` 和安全详情；错误在 Worker 入库前
+统一脱敏，读取时再次执行防御性脱敏。原始异常、Token、密码和带凭据 URL 不属于响应契约。
 
 ## 3. 实时事件
 

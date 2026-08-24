@@ -1,4 +1,4 @@
-"""Identifiers used to make review runs stable and replayable."""
+"""用于确保审查运行稳定且可重放的标识符。"""
 
 import re
 

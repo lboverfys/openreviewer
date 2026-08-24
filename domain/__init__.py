@@ -1,8 +1,9 @@
-"""Core review domain package."""
+"""代码审查核心领域包。"""
 
 from domain.enums import (
     CoverageStatus,
     ExecutionStatus,
+    ExternalActionState,
     FileDisposition,
     FindingCategory,
     LocationSide,
@@ -19,10 +20,18 @@ from domain.models import (
     ReviewRunState,
     ReviewVersion,
 )
+from domain.paths import (
+    RepositoryPathError,
+    normalize_repository_path,
+    resolve_repository_path,
+)
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 
 __all__ = [
     "CoverageStatus",
     "ExecutionStatus",
+    "ExternalActionState",
+    "ErrorCode",
     "FileCoverageItem",
     "FileDisposition",
     "FindingCategory",
@@ -34,6 +43,11 @@ __all__ = [
     "ReviewFinding",
     "ReviewRunState",
     "ReviewVersion",
+    "RepositoryPathError",
+    "SafeApplicationError",
+    "SafeError",
     "Severity",
     "VerificationStatus",
+    "normalize_repository_path",
+    "resolve_repository_path",
 ]

@@ -1,4 +1,4 @@
-"""Process entry point for the single-concurrency database worker."""
+"""单并发数据库 Worker 的进程入口。"""
 
 from dataclasses import dataclass
 from datetime import timedelta
@@ -9,6 +9,7 @@ import socket
 from threading import Event
 
 from domain.enums import WorkerStatus
+from domain.security import SafeError, install_redacting_log_filters
 from persistence.database import Database
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.task_queue import ReviewTaskLease, ReviewTaskQueue, TaskQueueError
@@ -194,11 +195,22 @@ class WorkerRuntime:
             self._advance_to_supported_boundary(lease)
             LOGGER.info("任务 %s 已进入 waiting_for_ci", lease.task_id)
         except Exception as exc:
-            LOGGER.exception("任务 %s 处理失败", lease.task_id)
+            safe_error = SafeError.from_exception(exc)
+            LOGGER.error(
+                "任务 %s 处理失败，错误码=%s，说明=%s",
+                lease.task_id,
+                safe_error.code.value,
+                safe_error.safe_message,
+            )
             try:
-                self._queue.retry_or_fail(lease, str(exc))
-            except TaskQueueError:
-                LOGGER.exception("任务 %s 的失败状态无法持久化", lease.task_id)
+                self._queue.retry_or_fail(lease, safe_error)
+            except TaskQueueError as persistence_error:
+                persisted_error = SafeError.from_exception(persistence_error)
+                LOGGER.error(
+                    "任务 %s 的失败状态无法持久化，错误码=%s",
+                    lease.task_id,
+                    persisted_error.code.value,
+                )
         finally:
             self._queue.record_heartbeat(worker_id, WorkerStatus.IDLE)
         return True
@@ -242,6 +254,7 @@ def main() -> None:
         level=os.environ.get("OPENREVIEWER_LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    install_redacting_log_filters()
     settings = WorkerSettings.from_environment()
     database = Database.from_environment()
     runtime = WorkerRuntime(

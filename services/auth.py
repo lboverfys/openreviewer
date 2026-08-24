@@ -1,4 +1,4 @@
-"""Password verification, signed sessions and login throttling."""
+"""密码校验、签名会话与登录限流。"""
 
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping
@@ -18,11 +18,11 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 
 class AuthConfigurationError(RuntimeError):
-    """Required authentication settings are absent or invalid."""
+    """必需的认证配置缺失或无效。"""
 
 
 class InvalidSessionError(ValueError):
-    """The supplied browser session is missing, invalid or expired."""
+    """浏览器会话缺失、无效或已经过期。"""
 
 
 class LoginRateLimitError(RuntimeError):
@@ -418,7 +418,7 @@ class AuthService:
 
 
 class LoginAttemptLimiter:
-    """Process-local sliding window suitable for the single API replica in M2."""
+    """适用于 M2 单 API 副本的进程内滑动窗口限流器。"""
 
     def __init__(
         self,

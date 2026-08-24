@@ -62,7 +62,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const body = (await response.json()) as { detail?: string };
       if (body.detail) message = body.detail;
     } catch {
-      // Keep the safe HTTP fallback when a proxy returns a non-JSON error page.
+      // 代理返回非 JSON 错误页面时，保留安全的 HTTP 兜底信息。
     }
     throw new ApiError(message, response.status);
   }

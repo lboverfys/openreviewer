@@ -1,10 +1,10 @@
-"""Stable values shared by the review contract."""
+"""审查契约共享的稳定枚举值。"""
 
 from enum import Enum
 
 
 class PullRequestAction(str, Enum):
-    """GitHub pull request actions that can start or refresh a review."""
+    """可以启动或刷新审查的 GitHub Pull Request 动作。"""
 
     OPENED = "opened"
     SYNCHRONIZE = "synchronize"
@@ -47,12 +47,21 @@ class ExecutionStatus(str, Enum):
 
 
 class WorkerStatus(str, Enum):
-    """Small, observable lifecycle for a queue worker process."""
+    """队列 Worker 进程使用的精简可观察生命周期。"""
 
     STARTING = "starting"
     IDLE = "idle"
     BUSY = "busy"
     STOPPING = "stopping"
+
+
+class ExternalActionState(str, Enum):
+    """一次幂等外部副作用使用的持久化生命周期。"""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
 
 
 class ReviewConclusion(str, Enum):

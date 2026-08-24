@@ -26,6 +26,9 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - 管理员登录、会话保护、Dashboard、任务列表和 SSE 实时更新。
 - React 管理前端和 Nginx HTTPS 测试入口。
 - 后端/前端 CI、SHA 镜像发布和 `niuma-2` 自动部署配置。
+- 结构化安全错误、统一脱敏、跨平台路径与符号链接越界校验。
+- GitHub Webhook 原始请求体验签、大小/事件限制、delivery 去重和原子任务入库。
+- installation、PR 版本、Webhook delivery、外部动作审计模型和 GitHub API 客户端骨架。
 
 稳定语义已经拆分到以下契约中：
 
@@ -33,6 +36,7 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - [`review-task-api.md`](../contracts/review-task-api.md)：幂等任务创建；
 - [`review-worker.md`](../contracts/review-worker.md)：领取、租约、恢复和 M2 状态边界；
 - [`management-api.md`](../contracts/management-api.md)：登录、Dashboard 和实时事件。
+- [`github-webhook.md`](../contracts/github-webhook.md)：验签、过滤、去重和原子入库。
 
 ### NiuMa 测试场
 
@@ -50,8 +54,7 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ### GitHub 接入
 
-- GitHub App、安装 Token 和最小权限配置；
-- Webhook 接收、原始请求体验签、事件白名单和 delivery 去重；
+- GitHub App 实例注册、安装范围、私钥签发和 installation token；
 - PR 元数据、changed files、完整 diff 和 CI Check 获取；
 - 新提交使旧运行失效，以及 stale SHA 副作用保护。
 
@@ -61,7 +64,7 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 - 文件筛选、Review Unit 构建和上下文预算；
 - 模型适配、结构化输出、证据复核和失败降级；
 - GitHub Check、行内评论、问题指纹和跨提交消解；
-- Token、成本、耗时和结构化安全错误记录。
+- Token、成本和模型调用耗时记录。
 
 ### 反馈与平台能力
 
@@ -76,6 +79,8 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ### 阶段 A：接入前安全补强
 
+状态：代码与自动化测试已完成，尚未随本次工作区修改部署。
+
 先完成外部服务接入所需的底座：
 
 1. 为任务错误增加结构化错误码和统一脱敏，避免 Token、密码或带凭据 URL 进入数据库与 Dashboard。
@@ -86,6 +91,8 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 验收条件：用包含模拟凭据的异常测试证明敏感值不会进入日志、数据库或 API 响应。
 
 ### 阶段 B：GitHub App 与 Webhook
+
+状态：Webhook 入口代码已完成；GitHub App 的真实注册、安装和密钥配置仍待执行。
 
 实现最小可信入口：
 
@@ -191,15 +198,13 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ## 7. 下一批具体产物
 
-按当前状态，下一批实现应集中在阶段 A 和 B：
+按当前状态，下一批实现应集中在阶段 C：
 
-1. 结构化错误与统一脱敏组件及测试；
-2. GitHub App 配置说明和最小权限清单；
-3. Webhook delivery、installation 与 PR 版本数据库迁移；
-4. 原始请求体验签、事件过滤和请求大小限制；
-5. delivery 幂等入库与任务创建；
-6. GitHub API 客户端骨架、超时和错误分类；
-7. 不写真实 PR 的 Webhook/PR 固定样本回放测试。
+1. 注册测试 GitHub App，按契约配置最小权限、Webhook secret 和 NiuMa 测试仓库安装范围；
+2. 实现 App JWT 与短期 installation token 获取，不持久化访问 Token；
+3. 分页获取 PR 元数据、changed files、完整 diff 和匹配 `head_sha` 的 CI 状态；
+4. 处理截断 patch、大文件、二进制、删除、重命名、限流和超时；
+5. 新提交到达时把旧运行标记为 `superseded`，副作用前重新校验当前 SHA；
+6. 增加 PR/CI 固定样本回放和乱序事件测试，仍不写真实 PR。
 
-完成这些产物后，再进入 PR/CI 获取和模型审查，避免在身份、幂等和敏感信息边界未稳定时扩大
-外部调用范围。
+这些产物完成后再进入模型审查和 GitHub Check，避免在提交生命周期未稳定时扩大外部副作用。

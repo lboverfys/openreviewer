@@ -1,1 +1,1 @@
-"""Application entry points."""
+"""应用入口。"""

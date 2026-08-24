@@ -1,1 +1,1 @@
-"""Single-concurrency OpenReviewer worker."""
+"""OpenReviewer 单并发 Worker。"""

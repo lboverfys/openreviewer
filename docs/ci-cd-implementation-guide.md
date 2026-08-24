@@ -60,8 +60,9 @@ python -m pip install ".[dev]"
 python -m pytest -q -W error
 ```
 
-`-W error` 会把警告视为失败。当前测试以 SQLite 为主，没有在 CI 中启动真实 PostgreSQL；
-同时也没有依赖锁文件、类型检查、覆盖率门槛或独立 Lint。
+`-W error` 会把警告视为失败。CI 同时启动隔离的 PostgreSQL 16，执行 Alembic 迁移并验证
+`FOR UPDATE SKIP LOCKED` 锁语义；其余快速 API/服务测试使用 SQLite。当前仍没有 Python
+依赖锁文件、类型检查、覆盖率门槛或独立 Lint。
 
 ### 前端
 

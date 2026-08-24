@@ -1,4 +1,4 @@
-"""FastAPI entry point for OpenReviewer."""
+"""OpenReviewer 的 FastAPI 入口。"""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,15 +9,22 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from domain.enums import ExecutionStatus, WorkerStatus
+from domain.security import (
+    ErrorCode,
+    SafeApplicationError,
+    SafeError,
+    install_redacting_log_filters,
+)
 from domain.models import ReviewRequest
 from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database, DatabaseConfigurationError
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.auth import (
     AuthConfigurationError,
     AuthService,
@@ -38,10 +45,17 @@ from services.reviews import (
     ReviewPersistenceError,
     ReviewService,
 )
+from services.webhooks import (
+    GitHubWebhookService,
+    GitHubWebhookSettings,
+    WebhookConfigurationError,
+    WebhookReceipt,
+    WebhookRequestError,
+)
 
 
 class HealthResponse(BaseModel):
-    """Public liveness response without configuration details."""
+    """不包含配置详情的公开存活探针响应。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -65,7 +79,7 @@ class AuthResponse(BaseModel):
 
 
 class ReviewAcceptedResponse(BaseModel):
-    """Stable acknowledgement for an asynchronously queued review."""
+    """异步审查任务入队后的稳定确认响应。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -75,6 +89,39 @@ class ReviewAcceptedResponse(BaseModel):
     execution_status: ExecutionStatus
     accepted_at: datetime
     created: bool
+
+
+class WebhookReceiptResponse(BaseModel):
+    """GitHub 投递通过身份校验后的稳定确认响应。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    accepted: bool
+    delivery_id: str
+    created: bool
+    reason: str | None = None
+    review_run_id: str | None = None
+    review_task_id: str | None = None
+    review_version_key: str | None = None
+    execution_status: ExecutionStatus | None = None
+    accepted_at: datetime | None = None
+
+    @classmethod
+    def from_receipt(cls, receipt: WebhookReceipt) -> "WebhookReceiptResponse":
+        submission = receipt.submission
+        return cls(
+            accepted=receipt.accepted,
+            delivery_id=receipt.delivery_id,
+            created=receipt.created,
+            reason=receipt.reason,
+            review_run_id=(submission.review_run_id if submission else None),
+            review_task_id=(submission.review_task_id if submission else None),
+            review_version_key=(
+                submission.review_version_key if submission else None
+            ),
+            execution_status=(submission.execution_status if submission else None),
+            accepted_at=(submission.accepted_at if submission else None),
+        )
 
 
 class ReviewItemResponse(BaseModel):
@@ -89,6 +136,9 @@ class ReviewItemResponse(BaseModel):
     attempt_count: int
     max_attempts: int
     last_error: str | None
+    last_error_code: str | None = Field(max_length=64)
+    last_error_retryable: bool | None
+    last_error_details: dict[str, object] | None
     created_at: datetime
     updated_at: datetime
 
@@ -174,6 +224,7 @@ def create_app(
     auth_service: AuthService | None = None,
     dashboard_service: DashboardService | None = None,
     login_limiter: LoginAttemptLimiter | None = None,
+    webhook_service: GitHubWebhookService | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -207,6 +258,7 @@ def create_app(
             进入时不主动连接数据库；路由完成后先让应用退出，再释放懒加载的
             ``owned_database``。异常不会吞掉，仍交由 ASGI 服务器报告。
         """
+        install_redacting_log_filters()
         yield
         database: Database | None = application.state.owned_database
         if database is not None:
@@ -223,6 +275,7 @@ def create_app(
     application.state.review_service = review_service
     application.state.auth_service = auth_service
     application.state.dashboard_service = dashboard_service
+    application.state.webhook_service = webhook_service
     application.state.login_limiter = login_limiter or LoginAttemptLimiter()
     application.state.owned_database = None
     initialization_lock = RLock()
@@ -332,6 +385,35 @@ def create_app(
                     SqlAlchemyDashboardRepository(get_database().sessions)
                 )
                 application.state.dashboard_service = configured_service
+            return configured_service
+
+    def get_webhook_service() -> GitHubWebhookService:
+        """返回注入的服务，或按需配置验签接入服务。"""
+
+        configured_service: GitHubWebhookService | None = (
+            application.state.webhook_service
+        )
+        if configured_service is not None:
+            return configured_service
+        with initialization_lock:
+            configured_service = application.state.webhook_service
+            if configured_service is None:
+                try:
+                    settings = GitHubWebhookSettings.from_environment()
+                    database = get_database()
+                except (WebhookConfigurationError, HTTPException) as exc:
+                    raise SafeApplicationError(
+                        SafeError(
+                            code=ErrorCode.WEBHOOK_NOT_CONFIGURED,
+                            safe_message="GitHub Webhook 接入尚未完成配置",
+                            retryable=True,
+                        )
+                    ) from exc
+                configured_service = GitHubWebhookService(
+                    SqlAlchemyGitHubWebhookRepository(database.sessions),
+                    settings,
+                )
+                application.state.webhook_service = configured_service
             return configured_service
 
     def require_principal(request: Request) -> SessionPrincipal:
@@ -446,6 +528,32 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    error_statuses = {
+        ErrorCode.WEBHOOK_INVALID_SIGNATURE: status.HTTP_401_UNAUTHORIZED,
+        ErrorCode.WEBHOOK_INVALID_PAYLOAD: status.HTTP_400_BAD_REQUEST,
+        ErrorCode.WEBHOOK_PAYLOAD_TOO_LARGE: status.HTTP_413_CONTENT_TOO_LARGE,
+        ErrorCode.WEBHOOK_DELIVERY_CONFLICT: status.HTTP_409_CONFLICT,
+        ErrorCode.WEBHOOK_NOT_CONFIGURED: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.WEBHOOK_PERSISTENCE_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    }
+
+    @application.exception_handler(SafeApplicationError)
+    async def safe_application_error_handler(
+        _request: Request,
+        error: SafeApplicationError,
+    ) -> JSONResponse:
+        """只公开稳定且已脱敏的错误契约。"""
+
+        response_status = error_statuses.get(
+            error.error.code,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        return JSONResponse(
+            status_code=response_status,
+            content={"error": error.error.public_payload()},
+            headers={"Cache-Control": "no-store"},
+        )
+
     @application.get(
         "/healthz",
         response_model=HealthResponse,
@@ -461,6 +569,76 @@ def create_app(
         API 进程和 ASGI 路由仍能响应。数据库/认证可用性由受保护业务接口另行体现。
         """
         return HealthResponse()
+
+    @application.post(
+        "/webhooks/github",
+        response_model=WebhookReceiptResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def receive_github_webhook(request: Request) -> WebhookReceiptResponse:
+        """限制大小、验签并原子入队一条受支持的 GitHub 投递。"""
+
+        service = get_webhook_service()
+        content_type = request.headers.get("content-type", "")
+        if content_type.split(";", 1)[0].strip().casefold() != "application/json":
+            raise WebhookRequestError(
+                SafeError(
+                    code=ErrorCode.WEBHOOK_INVALID_PAYLOAD,
+                    safe_message="GitHub Webhook 必须使用 application/json",
+                    retryable=False,
+                )
+            )
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                declared_size = int(content_length)
+            except ValueError as exc:
+                raise WebhookRequestError(
+                    SafeError(
+                        code=ErrorCode.WEBHOOK_INVALID_PAYLOAD,
+                        safe_message="Webhook Content-Length 格式无效",
+                        retryable=False,
+                    )
+                ) from exc
+            if declared_size < 0:
+                raise WebhookRequestError(
+                    SafeError(
+                        code=ErrorCode.WEBHOOK_INVALID_PAYLOAD,
+                        safe_message="Webhook Content-Length 格式无效",
+                        retryable=False,
+                    )
+                )
+            if declared_size > service.settings.max_body_bytes:
+                raise WebhookRequestError(
+                    SafeError(
+                        code=ErrorCode.WEBHOOK_PAYLOAD_TOO_LARGE,
+                        safe_message="GitHub Webhook 请求体超过允许大小",
+                        retryable=False,
+                    )
+                )
+
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(chunk) > service.settings.max_body_bytes - len(body):
+                raise WebhookRequestError(
+                    SafeError(
+                        code=ErrorCode.WEBHOOK_PAYLOAD_TOO_LARGE,
+                        safe_message="GitHub Webhook 请求体超过允许大小",
+                        retryable=False,
+                    )
+                )
+            body.extend(chunk)
+        event_name = request.headers.get("x-github-event", "")
+        delivery_id = request.headers.get("x-github-delivery", "")
+        signature = request.headers.get("x-hub-signature-256", "")
+        receipt = await run_in_threadpool(
+            service.receive,
+            event_name=event_name,
+            delivery_id=delivery_id,
+            signature=signature,
+            body=bytes(body),
+        )
+        return WebhookReceiptResponse.from_receipt(receipt)
 
     @application.post(
         "/api/v1/auth/login",

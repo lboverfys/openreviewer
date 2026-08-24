@@ -1,4 +1,4 @@
-"""Shared non-production credentials and factories for tests."""
+"""测试共用的非生产凭据与工厂。"""
 
 from argon2 import PasswordHasher
 

@@ -1,4 +1,4 @@
-"""SQLAlchemy engine configuration without hard-coded credentials."""
+"""不硬编码凭据的 SQLAlchemy 数据库引擎配置。"""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 
 class DatabaseConfigurationError(RuntimeError):
-    """Required database configuration is missing or invalid."""
+    """必需的数据库配置缺失或无效。"""
 
 
 def _password_from_environment(values: Mapping[str, str]) -> str:
@@ -83,7 +83,7 @@ def database_url_from_environment(
     if explicit_url:
         try:
             return make_url(explicit_url)
-        except Exception as exc:  # SQLAlchemy exposes multiple parse errors.
+        except Exception as exc:  # SQLAlchemy 可能抛出多种解析异常。
             raise DatabaseConfigurationError(
                 "OPENREVIEWER_DATABASE_URL is invalid"
             ) from exc
