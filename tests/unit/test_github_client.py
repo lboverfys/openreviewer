@@ -33,7 +33,7 @@ def test_github_client_returns_bounded_payload_and_audit() -> None:
     result = client.request_json(
         "GET",
         "/repos/example/project/pulls/12",
-        installation_token=FAKE_TOKEN,
+        bearer_token=FAKE_TOKEN,
     )
 
     assert result.payload == {"number": 12}
@@ -63,7 +63,7 @@ def test_github_client_classifies_rate_limit_without_leaking_token() -> None:
         client.request_json(
             "GET",
             "/rate-limited",
-            installation_token=FAKE_TOKEN,
+            bearer_token=FAKE_TOKEN,
         )
 
     safe_error = captured.value.error
@@ -88,7 +88,7 @@ def test_github_client_rejects_absolute_target_before_sending_token() -> None:
         client.request_json(
             "GET",
             "https://attacker.example/token",
-            installation_token=FAKE_TOKEN,
+            bearer_token=FAKE_TOKEN,
         )
 
 
@@ -122,9 +122,31 @@ def test_github_client_classifies_transport_timeout_as_retryable() -> None:
         client.request_json(
             "GET",
             "/slow",
-            installation_token=FAKE_TOKEN,
+            bearer_token=FAKE_TOKEN,
         )
 
     assert captured.value.error.code is ErrorCode.GITHUB_TIMEOUT
     assert captured.value.error.retryable is True
     assert FAKE_TOKEN not in str(captured.value.error.public_payload())
+
+
+def test_github_client_rejects_zero_response_limit_instead_of_using_default() -> None:
+    """验证显式零上限不会被 ``or`` 逻辑误当成未配置。"""
+
+    client = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(
+                lambda _request: pytest.fail("invalid limit must be rejected first")
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError):
+        client.request_json(
+            "GET",
+            "/bounded",
+            bearer_token=FAKE_TOKEN,
+            max_response_bytes=0,
+        )

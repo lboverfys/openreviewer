@@ -21,9 +21,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from domain.enums import (
+    ChangedFileStatus,
+    CiCheckKind,
+    CiState,
     CoverageStatus,
     ExecutionStatus,
     ExternalActionState,
+    PatchState,
+    PullRequestState,
     ReviewConclusion,
     WorkerStatus,
 )
@@ -103,6 +108,12 @@ class ReviewRunRecord(Base):
         ),
         Index("ix_review_runs_created_at", "created_at"),
         Index("ix_review_runs_execution_status", "execution_status"),
+        Index(
+            "ix_review_runs_repository_pr_status",
+            "repository_id",
+            "pull_request_number",
+            "execution_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -139,6 +150,7 @@ class ReviewTaskRecord(Base):
         ),
         CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
         CheckConstraint("max_attempts > 0", name="max_attempts_positive"),
+        CheckConstraint("ci_poll_count >= 0", name="ci_poll_count_nonnegative"),
         UniqueConstraint("review_run_id"),
         Index(
             "ix_review_tasks_claimable",
@@ -170,6 +182,9 @@ class ReviewTaskRecord(Base):
     )
     lease_owner: Mapped[str | None] = mapped_column(String(200))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ci_wait_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ci_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ci_poll_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
     last_error_code: Mapped[str | None] = mapped_column(String(64))
     last_error_retryable: Mapped[bool | None] = mapped_column(Boolean)
@@ -282,6 +297,20 @@ class PullRequestVersionRecord(Base):
             "pull_request_number",
             "last_seen_at",
         ),
+        CheckConstraint(
+            "changed_files_count IS NULL OR changed_files_count >= 0",
+            name="changed_files_count_nonnegative",
+        ),
+        CheckConstraint(
+            "pr_state IS NULL OR "
+            f"pr_state IN ({enum_values(PullRequestState)})",
+            name="pr_state_value",
+        ),
+        CheckConstraint(
+            "ci_state IS NULL OR "
+            f"ci_state IN ({enum_values(CiState)})",
+            name="ci_state_value",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -299,10 +328,98 @@ class PullRequestVersionRecord(Base):
     repository: Mapped[str] = mapped_column(String(255), nullable=False)
     pull_request_number: Mapped[int] = mapped_column(Integer, nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_sha: Mapped[str | None] = mapped_column(String(64))
+    pr_state: Mapped[str | None] = mapped_column(String(16))
+    is_draft: Mapped[bool | None] = mapped_column(Boolean)
+    title: Mapped[str | None] = mapped_column(String(1000))
+    changed_files_count: Mapped[int | None] = mapped_column(Integer)
+    files_complete: Mapped[bool | None] = mapped_column(Boolean)
+    diff_complete: Mapped[bool | None] = mapped_column(Boolean)
+    context_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pr_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ci_state: Mapped[str | None] = mapped_column(String(32))
+    ci_checks_complete: Mapped[bool | None] = mapped_column(Boolean)
+    ci_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
     last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class PullRequestFileRecord(Base):
+    """某个不可变 PR head SHA 下的有界变更文件快照。"""
+
+    __tablename__ = "pull_request_files"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({enum_values(ChangedFileStatus)})",
+            name="status_value",
+        ),
+        CheckConstraint(
+            f"patch_state IN ({enum_values(PatchState)})",
+            name="patch_state_value",
+        ),
+        CheckConstraint("additions >= 0", name="additions_nonnegative"),
+        CheckConstraint("deletions >= 0", name="deletions_nonnegative"),
+        CheckConstraint("changes >= 0", name="changes_nonnegative"),
+        UniqueConstraint("pull_request_version_id", "path"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    pull_request_version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "pull_request_versions.id",
+            name="fk_pr_files_version",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    previous_path: Mapped[str | None] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    blob_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    additions: Mapped[int] = mapped_column(Integer, nullable=False)
+    deletions: Mapped[int] = mapped_column(Integer, nullable=False)
+    changes: Mapped[int] = mapped_column(Integer, nullable=False)
+    patch_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    patch: Mapped[str | None] = mapped_column(Text)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class PullRequestCiCheckRecord(Base):
+    """某个 PR 版本最近一次观察到的 CI 检查或提交状态。"""
+
+    __tablename__ = "pull_request_ci_checks"
+    __table_args__ = (
+        CheckConstraint(
+            f"kind IN ({enum_values(CiCheckKind)})",
+            name="kind_value",
+        ),
+        UniqueConstraint("pull_request_version_id", "kind", "external_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    pull_request_version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "pull_request_versions.id",
+            name="fk_pr_ci_checks_version",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    conclusion: Mapped[str | None] = mapped_column(String(50))
+    app_id: Mapped[int | None] = mapped_column(BigInteger)
+    observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
 

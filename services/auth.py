@@ -418,7 +418,7 @@ class AuthService:
 
 
 class LoginAttemptLimiter:
-    """适用于 M2 单 API 副本的进程内滑动窗口限流器。"""
+    """适用于当前单 API 副本的进程内滑动窗口限流器。"""
 
     def __init__(
         self,
@@ -429,7 +429,7 @@ class LoginAttemptLimiter:
     ) -> None:
         """初始化进程内登录失败滑动窗口。
 
-        M2 只有一个 API 副本，因此用带锁的内存队列即可限制同一客户端/账号的
+        当前只有一个 API 副本，因此用带锁的内存队列即可限制同一客户端/账号的
         连续失败次数；如果未来横向扩容，需要把这个边界替换为共享存储。
 
         参数：

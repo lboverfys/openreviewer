@@ -37,11 +37,13 @@ Nginx 的专用 location 使用相同上限。超限请求返回 `413`，不会�
 | 权限 | 级别 | 用途 |
 | --- | --- | --- |
 | Metadata | Read-only | GitHub App 默认仓库身份信息 |
-| Pull requests | Read-only | 接收 PR 事件并在下一阶段读取 PR 元数据 |
+| Pull requests | Read-only | 接收事件并读取 PR 元数据、文件列表和完整 diff |
+| Checks | Read-only | 读取当前 `head_sha` 的 Check Runs |
+| Commit statuses | Read-only | 读取当前 `head_sha` 的 Commit Statuses |
 
-在真正获取文件内容时再增加 `Contents: Read-only`；读取 CI 时按实际接口增加
-`Checks: Read-only` 或 `Commit statuses: Read-only`；发布 Check 时才把 Checks 提升为
-`Read and write`。当前阶段不申请 Contents 写权限、Administration、Workflows 或 Secrets。
+后续使用 Blob API 补充大文件时再增加 `Contents: Read-only`；发布 Check 时才把 Checks
+提升为 `Read and write`。当前阶段不申请 Contents 写权限、Administration、Workflows 或
+Secrets。
 
 订阅事件仅启用 Pull request。GitHub App 私钥、Webhook secret 和 installation token
 不得写入仓库、日志、任务错误、Dashboard 或 API 响应。

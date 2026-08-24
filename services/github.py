@@ -1,4 +1,4 @@
-"""带安全错误分类和审计数据的有界 GitHub REST 客户端。"""
+"""带安全错误分类、大小限制和审计数据的 GitHub REST 客户端。"""
 
 from dataclasses import dataclass
 import json
@@ -11,6 +11,12 @@ import httpx
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 
 
+_ALLOWED_ACCEPT_HEADERS = {
+    "application/vnd.github+json",
+    "application/vnd.github.v3.diff",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class GitHubClientSettings:
     api_base_url: str = "https://api.github.com"
@@ -18,7 +24,7 @@ class GitHubClientSettings:
     read_timeout_seconds: float = 20.0
     write_timeout_seconds: float = 10.0
     pool_timeout_seconds: float = 5.0
-    max_response_bytes: int = 2 * 1024 * 1024
+    max_response_bytes: int = 10 * 1024 * 1024
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.api_base_url)
@@ -71,6 +77,16 @@ class GitHubApiResult:
     audit: GitHubCallAudit
 
 
+@dataclass(frozen=True, slots=True)
+class GitHubBytesResult:
+    payload: bytes
+    audit: GitHubCallAudit
+
+
+class GitHubResponseTooLargeError(SafeApplicationError):
+    """GitHub 响应超过调用方允许大小，调用方可以选择降级覆盖范围。"""
+
+
 class GitHubApiClient:
     """执行一次有界请求；持久化任务重试由客户端外部负责。"""
 
@@ -99,9 +115,74 @@ class GitHubApiClient:
         method: str,
         path: str,
         *,
-        installation_token: str,
+        bearer_token: str,
         params: dict[str, str | int] | None = None,
+        max_response_bytes: int | None = None,
     ) -> GitHubApiResult:
+        result = self.request_bytes(
+            method,
+            path,
+            bearer_token=bearer_token,
+            params=params,
+            accept="application/vnd.github+json",
+            max_response_bytes=max_response_bytes,
+        )
+        if result.audit.response_status == 204 or not result.payload:
+            payload: object = None
+        else:
+            try:
+                payload = json.loads(result.payload)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SafeApplicationError(
+                    SafeError(
+                        code=ErrorCode.GITHUB_INVALID_RESPONSE,
+                        safe_message="GitHub API 返回了无法解析的 JSON",
+                        retryable=False,
+                        details=self._audit_details(result.audit),
+                    )
+                ) from exc
+        return GitHubApiResult(payload=payload, audit=result.audit)
+
+    def request_text(
+        self,
+        method: str,
+        path: str,
+        *,
+        bearer_token: str,
+        accept: str,
+        params: dict[str, str | int] | None = None,
+        max_response_bytes: int | None = None,
+    ) -> tuple[str, GitHubCallAudit]:
+        result = self.request_bytes(
+            method,
+            path,
+            bearer_token=bearer_token,
+            params=params,
+            accept=accept,
+            max_response_bytes=max_response_bytes,
+        )
+        try:
+            return result.payload.decode("utf-8"), result.audit
+        except UnicodeDecodeError as exc:
+            raise SafeApplicationError(
+                SafeError(
+                    code=ErrorCode.GITHUB_INVALID_RESPONSE,
+                    safe_message="GitHub API 返回了无法解码的文本",
+                    retryable=False,
+                    details=self._audit_details(result.audit),
+                )
+            ) from exc
+
+    def request_bytes(
+        self,
+        method: str,
+        path: str,
+        *,
+        bearer_token: str,
+        params: dict[str, str | int] | None = None,
+        accept: str = "application/vnd.github+json",
+        max_response_bytes: int | None = None,
+    ) -> GitHubBytesResult:
         normalized_method = method.strip().upper()
         parsed_path = urlsplit(path)
         if (
@@ -115,8 +196,21 @@ class GitHubApiClient:
             or len(path) > 1000
         ):
             raise ValueError("GitHub request must use a supported method and relative path")
-        if not installation_token:
-            raise ValueError("GitHub installation token must not be empty")
+        if (
+            not bearer_token
+            or bearer_token != bearer_token.strip()
+            or any(character.isspace() for character in bearer_token)
+        ):
+            raise ValueError("GitHub bearer token must not be empty or contain whitespace")
+        if accept not in _ALLOWED_ACCEPT_HEADERS:
+            raise ValueError("unsupported GitHub Accept header")
+        response_limit = (
+            self.settings.max_response_bytes
+            if max_response_bytes is None
+            else max_response_bytes
+        )
+        if not 1 <= response_limit <= self.settings.max_response_bytes:
+            raise ValueError("GitHub response limit exceeds the configured maximum")
 
         started = self._monotonic()
         try:
@@ -125,27 +219,22 @@ class GitHubApiClient:
                 path,
                 params=params,
                 headers={
-                    "Accept": "application/vnd.github+json",
-                    "Authorization": f"Bearer {installation_token}",
+                    "Accept": accept,
+                    "Authorization": f"Bearer {bearer_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
                 timeout=self.settings.timeout,
             ) as response:
                 if not 200 <= response.status_code < 300:
                     audit = self._audit(normalized_method, path, response, started)
-                    raise SafeApplicationError(
-                        self._classify_response(response, audit)
-                    )
-                response_status = response.status_code
+                    raise SafeApplicationError(self._classify_response(response, audit))
                 content = bytearray()
                 for chunk in response.iter_bytes():
-                    if len(content) + len(chunk) > self.settings.max_response_bytes:
-                        audit = self._audit(
-                            normalized_method, path, response, started
-                        )
-                        raise SafeApplicationError(
+                    if len(content) + len(chunk) > response_limit:
+                        audit = self._audit(normalized_method, path, response, started)
+                        raise GitHubResponseTooLargeError(
                             SafeError(
-                                code=ErrorCode.GITHUB_INVALID_RESPONSE,
+                                code=ErrorCode.GITHUB_RESPONSE_TOO_LARGE,
                                 safe_message="GitHub API 响应超过允许大小",
                                 retryable=False,
                                 details=self._audit_details(audit),
@@ -161,10 +250,7 @@ class GitHubApiClient:
                     code=ErrorCode.GITHUB_TIMEOUT,
                     safe_message="GitHub API 请求超时",
                     retryable=True,
-                    details={
-                        "method": normalized_method,
-                        "path": path,
-                    },
+                    details={"method": normalized_method, "path": path},
                 )
             ) from exc
         except httpx.RequestError as exc:
@@ -180,22 +266,7 @@ class GitHubApiClient:
                     },
                 )
             ) from exc
-
-        if response_status == 204 or not content:
-            payload: object = None
-        else:
-            try:
-                payload = json.loads(content)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise SafeApplicationError(
-                    SafeError(
-                        code=ErrorCode.GITHUB_INVALID_RESPONSE,
-                        safe_message="GitHub API 返回了无法解析的 JSON",
-                        retryable=False,
-                        details=self._audit_details(audit),
-                    )
-                ) from exc
-        return GitHubApiResult(payload=payload, audit=audit)
+        return GitHubBytesResult(payload=bytes(content), audit=audit)
 
     def _audit(
         self,
@@ -226,7 +297,7 @@ class GitHubApiClient:
         status_code = response.status_code
         if status_code == 401:
             code = ErrorCode.GITHUB_AUTHENTICATION_FAILED
-            message = "GitHub installation token 无效或已过期"
+            message = "GitHub 身份令牌无效或已过期"
             retryable = False
         elif status_code == 429 or (
             status_code == 403

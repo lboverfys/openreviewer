@@ -1,28 +1,30 @@
-# 审查任务 Worker 契约 v1
+# 审查任务 Worker 契约 v2
 
-本文档固定 M2 单并发 Worker 的可靠性语义。当前只部署一个执行槽，但数据库领取协议允许
+本文档固定单并发 Worker 的可靠性语义。当前只部署一个执行槽，但数据库领取协议允许
 后续增加 Worker 时不重复领取同一条任务。
 
 ## 1. 领取
 
 Worker 在一个事务内查询满足以下条件的任务：
 
-- `execution_status = queued`；
+- `execution_status = queued` 或 `waiting_for_ci`；
 - `available_at <= 当前时间`；
 - 按优先级、可用时间和创建时间排序。
 
 PostgreSQL 查询使用 `FOR UPDATE SKIP LOCKED`。领取成功时，在同一事务内：
 
 1. 任务和运行状态都改为 `running`；
-2. `attempt_count` 加一；
+2. 从 `queued` 领取时 `attempt_count` 加一，从 `waiting_for_ci` 领取时只增加
+   `ci_poll_count`；
 3. 写入 `lease_owner` 和 `lease_expires_at`；
 4. 追加 `review.task.running` Outbox 事件。
 
 ## 2. 租约与恢复
 
 租约表示某个 Worker 在有限时间内拥有任务。只有任务仍处于 `running`、租约尚未过期，且
-Worker ID、任务 ID、运行 ID 和尝试次数都与当前记录一致时，才能续租或更新状态；旧租约
-或已过期租约的操作必须失败。
+Worker ID、任务 ID、运行 ID、失败尝试次数和 CI 轮询代次都与当前记录一致时，才能续租或
+更新状态；旧租约或已过期租约的操作必须失败。CI 轮询代次独立于失败尝试次数，因此同一
+Worker 的旧轮询租约也不能覆盖新一轮结果。
 
 发现 `running` 任务的租约已过期时：
 
@@ -40,14 +42,17 @@ Dashboard/API 使用同一脱敏规则；未知异常也必须先转换为 `Safe
 过期租约恢复每批最多处理 100 条，并在一个 JOIN 查询中取回任务与运行；查询使用
 `execution_status + lease_expires_at` 索引，循环内不执行数据库查询。
 
-## 3. M2 状态边界
+## 3. PR 与 CI 状态边界
 
-Webhook 已能创建 GitHub PR 任务，但 Worker 尚未获取 PR 上下文、Actions CI 或调用模型。
-Worker 领取任务并完成当前本地准备步骤后，把任务和运行改为 `waiting_for_ci`，清除租约并
-追加 `review.waiting_for_ci` 事件。
+Worker 已能使用短期 GitHub App installation token 获取 PR 上下文和与精确 `head_sha`
+匹配的 CI。首次读取会保存变更文件和有界 diff；后续 CI 轮询只刷新 PR 身份和 CI，不重复
+下载文件。正常轮询使用单独的 `ci_poll_count`，不消耗最多三次的错误重试次数。GitHub
+读取期间由独立短生命周期线程刷新 `busy` 心跳，外部请求不持有数据库事务。
 
-`waiting_for_ci` 是明确的未完成状态，不等于“审查成功”。在真实 CI、模型调用和结果发布
-实现之前，Worker 不得写入 `completed`。
+`waiting_for_ci` 是明确的未完成状态，不等于“审查成功”。CI 进入任意终态后，任务进入
+`ready_for_review`；这个状态只表示后续模型审查可以开始。模型调用和结果发布尚未实现，
+因此 Worker 仍不得写入 `completed`。旧 SHA、关闭/Draft PR 和 CI 超时分别进入
+`superseded`、`cancelled` 和 `timed_out`。
 
 ## 4. 心跳
 

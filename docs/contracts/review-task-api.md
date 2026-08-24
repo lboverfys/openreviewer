@@ -1,6 +1,6 @@
 # 审查任务创建接口 v1
 
-本文档固定 M1 建立、M2 继续沿用的内部任务创建接口语义。该接口不是 GitHub Webhook，
+本文档固定项目持续沿用的内部任务创建接口语义。该接口不是 GitHub Webhook，
 也不直接执行审查；它只负责可靠地接受请求并创建待处理任务。
 
 ## 1. 请求
@@ -32,9 +32,8 @@ Content-Type: application/json
 2. 一个与该运行一一对应、状态为 `queued` 的 `ReviewTask`；
 3. 一个类型为 `review.requested` 的 `OutboxEvent`。
 
-只有事务整体提交成功才返回接受结果。M2 Worker 可以把任务从 `queued` 推进到
-`running`，完成当前准备阶段后进入 `waiting_for_ci`。GitHub 和模型尚未接入，因此不能
-进入 `completed`。
+只有事务整体提交成功才返回接受结果。当前 Worker 可以把任务从 `queued` 推进到
+`waiting_for_ci` 或 `ready_for_review`。模型审查尚未接入，因此不能进入 `completed`。
 
 ## 3. 幂等行为
 

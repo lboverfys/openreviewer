@@ -6,13 +6,16 @@ import logging
 import os
 import signal
 import socket
-from threading import Event
+from threading import Event, Thread
 
-from domain.enums import WorkerStatus
+from domain.enums import ExecutionStatus, WorkerStatus
 from domain.security import SafeError, install_redacting_log_filters
 from persistence.database import Database
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.task_queue import ReviewTaskLease, ReviewTaskQueue, TaskQueueError
+from services.github import GitHubApiClient
+from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
+from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
 
 
 LOGGER = logging.getLogger("openreviewer.worker")
@@ -48,6 +51,23 @@ class WorkerSettings:
     worker_id: str
     poll_interval: timedelta
     lease_duration: timedelta
+    ci_poll_interval: timedelta = timedelta(seconds=30)
+    ci_wait_timeout: timedelta = timedelta(hours=1)
+    github_context_lease_duration: timedelta = timedelta(minutes=10)
+
+    def __post_init__(self) -> None:
+        if not self.worker_id or len(self.worker_id) > 200:
+            raise ValueError("worker ID must contain 1 to 200 characters")
+        if self.poll_interval.total_seconds() <= 0:
+            raise ValueError("worker poll interval must be positive")
+        if self.lease_duration <= self.poll_interval * 2:
+            raise ValueError("worker lease duration must exceed twice the poll interval")
+        if self.ci_poll_interval.total_seconds() <= 0:
+            raise ValueError("CI poll interval must be positive")
+        if self.ci_wait_timeout <= self.ci_poll_interval:
+            raise ValueError("CI wait timeout must exceed the poll interval")
+        if self.github_context_lease_duration <= self.lease_duration:
+            raise ValueError("GitHub context lease must exceed the normal lease")
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
@@ -84,11 +104,100 @@ class WorkerSettings:
         )
         if lease_seconds <= poll_seconds * 2:
             raise ValueError("worker lease duration must exceed twice the poll interval")
+        ci_poll_seconds = _positive_float(
+            os.environ.get("OPENREVIEWER_CI_POLL_SECONDS", "30"),
+            "OPENREVIEWER_CI_POLL_SECONDS",
+        )
+        ci_wait_seconds = _positive_float(
+            os.environ.get("OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS", "3600"),
+            "OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS",
+        )
+        if ci_wait_seconds <= ci_poll_seconds:
+            raise ValueError("CI wait timeout must exceed the poll interval")
+        context_lease_seconds = _positive_float(
+            os.environ.get("OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS", "600"),
+            "OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS",
+        )
+        if context_lease_seconds <= lease_seconds:
+            raise ValueError("GitHub context lease must exceed the normal lease")
         return cls(
             worker_id=worker_id,
             poll_interval=timedelta(seconds=poll_seconds),
             lease_duration=timedelta(seconds=lease_seconds),
+            ci_poll_interval=timedelta(seconds=ci_poll_seconds),
+            ci_wait_timeout=timedelta(seconds=ci_wait_seconds),
+            github_context_lease_duration=timedelta(
+                seconds=context_lease_seconds
+            ),
         )
+
+
+class _LeaseCursor:
+    """在多次外部请求之间保存最近一次成功续期的租约。"""
+
+    def __init__(
+        self,
+        queue: ReviewTaskQueue,
+        lease: ReviewTaskLease,
+        duration: timedelta,
+    ) -> None:
+        self._queue = queue
+        self._duration = duration
+        self.lease = lease
+
+    def renew(self, duration: timedelta | None = None) -> None:
+        self.lease = self._queue.renew_lease(
+            self.lease,
+            duration or self._duration,
+        )
+
+
+class _BusyHeartbeat:
+    """在 GitHub 外部读取期间定时刷新 Worker 忙碌心跳。"""
+
+    def __init__(
+        self,
+        queue: ReviewTaskQueue,
+        worker_id: str,
+        task_id: str,
+        interval: timedelta,
+    ) -> None:
+        self._queue = queue
+        self._worker_id = worker_id
+        self._task_id = task_id
+        # 健康检查默认允许 15 秒，最长 5 秒一次可以覆盖慢速外部请求。
+        self._interval_seconds = min(
+            5.0,
+            max(0.5, interval.total_seconds()),
+        )
+        self._stop_event = Event()
+        self._thread = Thread(
+            target=self._run,
+            name=f"openreviewer-heartbeat-{worker_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        """启动独立心跳线程；线程只使用队列公开的短事务接口。"""
+
+        self._thread.start()
+
+    def stop(self) -> None:
+        """停止并等待心跳线程退出，避免恢复 idle 时发生写入竞态。"""
+
+        self._stop_event.set()
+        self._thread.join(timeout=self._interval_seconds + 1.0)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_seconds):
+            try:
+                self._queue.record_heartbeat(
+                    self._worker_id,
+                    WorkerStatus.BUSY,
+                    self._task_id,
+                )
+            except TaskQueueError:
+                LOGGER.exception("Worker 忙碌心跳刷新失败")
 
 
 class WorkerRuntime:
@@ -97,6 +206,7 @@ class WorkerRuntime:
         queue: ReviewTaskQueue,
         settings: WorkerSettings,
         *,
+        context_loader: ReviewContextLoader | None = None,
         stop_event: Event | None = None,
     ) -> None:
         """保存队列适配器、运行参数和可选的停止事件。
@@ -114,6 +224,7 @@ class WorkerRuntime:
         """
         self._queue = queue
         self._settings = settings
+        self._context_loader = context_loader
         self._stop_event = stop_event or Event()
 
     @property
@@ -163,8 +274,8 @@ class WorkerRuntime:
     def run_once(self) -> bool:
         """执行一轮“恢复、心跳、领取、处理”的队列流程。
 
-        返回值表示本轮是否成功领取了任务。当前 M2 处理步骤只会把任务推进到
-        ``waiting_for_ci``；处理异常则交给队列按租约规则重试或标记失败。状态
+        返回值表示本轮是否成功领取了任务。任务会按 GitHub 当前 PR/CI 状态推进；
+        处理异常则交给队列按租约规则重试或标记失败。状态
         写入失败会记录日志，但不会把失去租约的任务强行改写成成功。
 
         返回：
@@ -173,7 +284,7 @@ class WorkerRuntime:
 
         状态顺序：
             先恢复过期租约，再把 Worker 记为空闲并领取一条任务；领取后记为
-            ``busy``，当前 M2 只调用 ``mark_waiting_for_ci``，最后无论成功失败都
+            ``busy``，读取并保存 GitHub 上下文，最后无论成功失败都
             把心跳恢复为 ``idle``。
 
         异常：
@@ -191,9 +302,26 @@ class WorkerRuntime:
             return False
 
         self._queue.record_heartbeat(worker_id, WorkerStatus.BUSY, lease.task_id)
+        cursor = _LeaseCursor(self._queue, lease, self._settings.lease_duration)
+        busy_heartbeat = (
+            _BusyHeartbeat(
+                self._queue,
+                worker_id,
+                lease.task_id,
+                self._settings.poll_interval,
+            )
+            if self._context_loader is not None
+            else None
+        )
+        if busy_heartbeat is not None:
+            busy_heartbeat.start()
         try:
-            self._advance_to_supported_boundary(lease)
-            LOGGER.info("任务 %s 已进入 waiting_for_ci", lease.task_id)
+            next_status = self._advance_to_supported_boundary(cursor)
+            LOGGER.info(
+                "任务 %s 已进入 %s",
+                lease.task_id,
+                next_status.value,
+            )
         except Exception as exc:
             safe_error = SafeError.from_exception(exc)
             LOGGER.error(
@@ -203,7 +331,7 @@ class WorkerRuntime:
                 safe_error.safe_message,
             )
             try:
-                self._queue.retry_or_fail(lease, safe_error)
+                self._queue.retry_or_fail(cursor.lease, safe_error)
             except TaskQueueError as persistence_error:
                 persisted_error = SafeError.from_exception(persistence_error)
                 LOGGER.error(
@@ -212,29 +340,47 @@ class WorkerRuntime:
                     persisted_error.code.value,
                 )
         finally:
+            if busy_heartbeat is not None:
+                busy_heartbeat.stop()
             self._queue.record_heartbeat(worker_id, WorkerStatus.IDLE)
         return True
 
-    def _advance_to_supported_boundary(self, lease: ReviewTaskLease) -> None:
+    def _advance_to_supported_boundary(
+        self,
+        cursor: _LeaseCursor,
+    ) -> ExecutionStatus:
         """把任务推进到当前版本真正支持的边界。
 
-        GitHub、CI 和模型调用尚未接入，因此这里仅调用队列的状态转换方法。这个
-        看似简单的封装保留了未来插入 PR 上下文准备和审查工作流的扩展点，同时
-        明确禁止把未执行的工作标记为 ``completed``。
+        配置了 GitHub 上下文读取器时，先一次性延长上下文处理租约，在数据库事务外
+        获取 PR、文件和 CI；读取期间由独立心跳线程刷新忙碌状态，随后用短事务保存
+        快照并推进状态。
+        测试或旧调用方未注入读取器时仍保留兼容的等待边界。
 
         参数：
-            lease: 当前 Worker 领取的有效租约。
+            cursor: 保存当前有效租约并能在外部请求之间续期的游标。
 
         副作用：
-            调用队列把任务和运行原子推进到 ``waiting_for_ci``，清除租约并写入
-            状态事件。当前版本不会调用 GitHub、CI、模型或外部通知系统。
+            GitHub 路径会保存上下文，并进入等待 CI、可审查、取消或已替代状态；
+            尚未接入模型，因此不会写成 ``completed``。
 
         异常：
             TaskLeaseLostError/TaskQueueError: 租约失效或数据库状态转换失败，
             由 ``run_once`` 交给重试/失败处理。
         """
 
-        self._queue.mark_waiting_for_ci(lease)
+        if self._context_loader is None:
+            self._queue.mark_waiting_for_ci(cursor.lease)
+            return ExecutionStatus.WAITING_FOR_CI
+
+        cursor.renew(self._settings.github_context_lease_duration)
+        target = self._queue.load_target(cursor.lease)
+        context = self._context_loader.load(target)
+        return self._queue.store_github_context(
+            cursor.lease,
+            context,
+            ci_poll_interval=self._settings.ci_poll_interval,
+            ci_wait_timeout=self._settings.ci_wait_timeout,
+        )
 
 
 def main() -> None:
@@ -256,10 +402,20 @@ def main() -> None:
     )
     install_redacting_log_filters()
     settings = WorkerSettings.from_environment()
-    database = Database.from_environment()
+    github_api = GitHubApiClient()
+    try:
+        github_tokens = GitHubAppTokenProvider(
+            github_api,
+            GitHubAppSettings.from_environment(),
+        )
+        database = Database.from_environment()
+    except Exception:
+        github_api.close()
+        raise
     runtime = WorkerRuntime(
         SqlAlchemyReviewTaskQueue(database.sessions),
         settings,
+        context_loader=GitHubReviewContextLoader(github_api, github_tokens),
     )
 
     def stop_worker(_signum: int, _frame: object) -> None:
@@ -280,6 +436,7 @@ def main() -> None:
     try:
         runtime.run()
     finally:
+        github_api.close()
         database.dispose()
 
 

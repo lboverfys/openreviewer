@@ -1,24 +1,24 @@
-# M2 Worker、管理前端与 PostgreSQL 部署
+# M3 GitHub 上下文 Worker、管理前端与 PostgreSQL 部署
 
-这是 `niuma-2` 的 M2 部署边界。Compose 运行以下组件：
+这是 `niuma-2` 的 M3 部署边界。Compose 运行以下组件：
 
 - `postgres`：OpenReviewer 独享的 PostgreSQL 16，不映射宿主机端口；
 - `migrate`：每次发布前执行 `alembic upgrade head`，成功后正常退出；
 - `api`：健康检查和认证后的管理 API，只绑定宿主机 `127.0.0.1:18090`；
-- `worker`：单并发数据库任务 Worker，无公网端口；
+- `worker`：单并发数据库任务 Worker，只出站访问 GitHub API，无公网端口；
 - `web`：React 静态文件、HTTPS 和 API 反向代理，公开宿主机 `18443`。
 
 当前测试环境前端入口：
 
 ```text
-https://107.175.221.182:18443
+https://openreviewer.lovecoding.store
 ```
 
-该入口使用自签名 HTTPS 证书，仅用于测试和验收；浏览器首次访问时会显示证书警告。
+公网域名由 Cloudflare 代理，源站使用只读挂载的 Origin 证书。
 
-当前已包含 GitHub Webhook 验签、过滤和入队，但仍不包含 installation token、PR 上下文、
-CI 回调或模型调用。任务会从 `queued` 经过 `running` 进入 `waiting_for_ci`，不会伪装为
-`completed`。
+当前已包含 GitHub Webhook 验签、GitHub App 短期身份、PR/diff/CI 读取、CI 轮询和旧提交
+失效保护。CI 终态任务进入 `ready_for_review`；模型调用与 Check 发布仍未实现，因此不会
+伪装为 `completed`。
 
 ## 镜像规则
 
@@ -95,6 +95,8 @@ release 的 `release.info`，不包含任何密码或会话密钥。
 │   └── release.info         # 成功发布后生成，不含敏感值
 └── shared/
     ├── postgres-password    # 已有数据库密码，仅用于生成发布 .env
+    ├── github/
+    │   └── github-app-private-key.pem  # 0640 root:root，只读挂载给 Worker
     └── tls/                 # 0700 root:root
         ├── openreviewer.crt
         └── openreviewer.key
@@ -124,7 +126,12 @@ OPENREVIEWER_ADMIN_USERNAME=<管理员用户名>
 OPENREVIEWER_ADMIN_PASSWORD_HASH='<Argon2id 哈希>'
 OPENREVIEWER_SESSION_SECRET=<随机会话签名密钥>
 OPENREVIEWER_GITHUB_WEBHOOK_SECRET=<至少 32 字节的 Webhook 密钥>
+OPENREVIEWER_GITHUB_APP_ID=<GitHub App 数字 ID>
+OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE=/opt/openreviewer/shared/github/github-app-private-key.pem
 OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES=262144
+OPENREVIEWER_CI_POLL_SECONDS=30
+OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS=3600
+OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS=600
 OPENREVIEWER_API_HOST_PORT=18090
 OPENREVIEWER_WEB_HOST_PORT=18443
 OPENREVIEWER_TLS_CERT_FILE=/opt/openreviewer/shared/tls/openreviewer.crt
@@ -135,24 +142,14 @@ OPENREVIEWER_LOG_LEVEL=INFO
 
 `.env` 必须是 `0600 root:root`。管理员密码哈希不是明文，但仍不提交 Git。
 
-## 测试 HTTPS 证书
+## Cloudflare Origin TLS
 
-测试入口直接使用公网 IP，因此生成包含该 IP Subject Alternative Name 的自签名证书：
+源站证书覆盖 `openreviewer.lovecoding.store`，Cloudflare SSL/TLS 模式使用 `Full (strict)`。
+证书和私钥分别保存为 `/opt/openreviewer/shared/tls/openreviewer.crt` 与
+`/opt/openreviewer/shared/tls/openreviewer.key`，只读挂载到 Web 容器。TLS 目录保持
+`0700 root:root`，防止宿主机普通用户遍历；容器仍以非 root `nginx` 用户运行。
 
-```shell
-install -d -m 0700 -o root -g root /opt/openreviewer/shared/tls
-openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
-  -keyout /opt/openreviewer/shared/tls/openreviewer.key \
-  -out /opt/openreviewer/shared/tls/openreviewer.crt \
-  -subj "/CN=<niuma-2-public-ip>" \
-  -addext "subjectAltName=IP:<niuma-2-public-ip>"
-chmod 0644 /opt/openreviewer/shared/tls/openreviewer.crt
-chmod 0644 /opt/openreviewer/shared/tls/openreviewer.key
-```
-
-TLS 目录本身保持 `0700 root:root`，所以宿主机普通用户不能读取其中的私钥；文件以只读方式
-单独挂载后，非 root Nginx 才能读取。自签名证书仍会让浏览器首次访问显示“不受信任”警告，
-测试人员核对 IP 和证书后手工继续即可。正式入口应换成受信任证书和域名。
+Origin 证书只用于 Cloudflare 到源站的连接，不应把源站 IP 当作给普通浏览器使用的正式入口。
 
 ## 手工发布和排障
 
@@ -172,7 +169,7 @@ TLS 目录本身保持 `0700 root:root`，所以宿主机普通用户不能读�
 ## 网络和安全边界
 
 ```text
-浏览器 https://107.175.221.182:18443
+浏览器 https://openreviewer.lovecoding.store
         -> Web Nginx :8443
             -> 允许的 /api/v1 管理路径 -> API :18090
             -> /webhooks/github（GitHub HMAC 验签）-> API :18090
@@ -180,9 +177,12 @@ TLS 目录本身保持 `0700 root:root`，所以宿主机普通用户不能读�
 
 宿主机 127.0.0.1:18090 -> API :18090
 backend 内部网络        -> PostgreSQL :5432
+worker egress 网络       -> api.github.com:443
 ```
 
 - PostgreSQL、Worker 不发布宿主机端口；
+- Worker 以 UID `10001`、GID `0` 运行，只为读取宿主机 `0640 root:root` 的 GitHub App
+  私钥；容器仍移除全部 capabilities、使用只读根文件系统且禁止提权；
 - API 不监听公网地址；
 - Nginx 拒绝未列入白名单的 `/api/` 路径；
 - 登录同时受 Nginx IP 限速和 API 失败窗口限制；

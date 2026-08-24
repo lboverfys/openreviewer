@@ -102,12 +102,26 @@ services:
     <<: *openreviewer-container
     container_name: openreviewer-worker
     restart: unless-stopped
+    user: "10001:0"
     command: ["python", "-m", "apps.worker.main"]
     environment:
       <<: *openreviewer-environment
       OPENREVIEWER_WORKER_ID: openreviewer-worker-1
       OPENREVIEWER_WORKER_POLL_SECONDS: "${OPENREVIEWER_WORKER_POLL_SECONDS:-2}"
       OPENREVIEWER_WORKER_LEASE_SECONDS: "${OPENREVIEWER_WORKER_LEASE_SECONDS:-30}"
+      OPENREVIEWER_CI_POLL_SECONDS: "${OPENREVIEWER_CI_POLL_SECONDS:-30}"
+      OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS: "${OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS:-3600}"
+      OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS: "${OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS:-600}"
+      OPENREVIEWER_GITHUB_APP_ID: "${OPENREVIEWER_GITHUB_APP_ID:?Set the GitHub App ID}"
+      OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE: /run/secrets/github-app-private-key.pem
+    volumes:
+      - type: bind
+        source: "${OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE:?Set the GitHub App private key file}"
+        target: /run/secrets/github-app-private-key.pem
+        read_only: true
+    networks:
+      - backend
+      - egress
     healthcheck:
       test: ["CMD", "python", "-m", "apps.worker.healthcheck"]
       interval: 15s
@@ -160,3 +174,5 @@ networks:
     internal: true
   edge:
     name: openreviewer-edge
+  egress:
+    name: openreviewer-egress

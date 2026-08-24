@@ -1,6 +1,6 @@
 # 审查契约 v0
 
-本文档是 M0 阶段的领域边界。它描述数据的稳定含义，不代表 GitHub、模型或数据库适配器已经实现。
+本文档描述跨阶段保持稳定的领域边界。各适配器的实际进度以路线图为准。
 
 ## 1. 事件范围
 
@@ -35,7 +35,7 @@ thread_id = {review_version_key}:{review_run_id}
 ### 执行状态
 
 ```text
-queued | waiting_for_ci | running | completed | failed |
+queued | waiting_for_ci | running | ready_for_review | completed | failed |
 timed_out | cancelled | superseded
 ```
 
@@ -74,10 +74,8 @@ complete | partial | unknown | stale
 | `verification_status` | `unverified`、`verified` 或 `rejected` |
 | `rule_reference` | 可选的规则或文档依据 |
 
-文件路径的契约要求是仓库相对路径，禁止绝对路径和 `..` 路径段。当前验证器会把反斜杠
-转换为正斜杠，并拒绝以 `/` 开头或包含 `..` 路径段的值，但尚未专门拒绝 `C:/...` 这类
-Windows 盘符绝对路径；在补齐校验前，不能把现有验证器视为对该契约的完整强制执行。
-行号从 1 开始，结束行不能小于开始行。
+文件路径的契约要求是仓库相对路径，禁止 Linux 绝对路径、Windows 盘符/UNC 路径、控制字符、
+空路径段和 `..` 越界。验证器会把反斜杠转换为正斜杠。行号从 1 开始，结束行不能小于开始行。
 
 ## 5. 行内评论准入
 

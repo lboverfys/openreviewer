@@ -6,11 +6,11 @@
 
 ## 1. 当前结论
 
-OpenReviewer 目前处于 M2 可观察任务执行阶段。可靠任务、Worker、管理界面和部署链路已经具备，
-但真正的 GitHub PR 自动审查闭环尚未实现。
+OpenReviewer 目前处于 M3 GitHub 上下文准备阶段。可靠任务、Worker、管理界面、部署链路、
+GitHub 安全入口以及 PR/CI 读取代码已经具备，但模型审查与结果发布闭环尚未实现。
 
-当前 Worker 会把任务推进到 `waiting_for_ci`。这表示任务正在等待后续能力，不代表 CI 已通过，
-也不代表 AI 审查完成。
+当前 Worker 会读取与任务 `head_sha` 匹配的 PR、diff 和 CI；CI 未结束时进入
+`waiting_for_ci`，终止后进入 `ready_for_review`。两个状态都不代表 AI 审查完成。
 
 NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独立部署在 `niuma-2`，两者不共享
 应用进程、数据库或部署目录，只通过 GitHub PR、Check 和 Actions 状态协作。
@@ -29,14 +29,18 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - 结构化安全错误、统一脱敏、跨平台路径与符号链接越界校验。
 - GitHub Webhook 原始请求体验签、大小/事件限制、delivery 去重和原子任务入库。
 - installation、PR 版本、Webhook delivery、外部动作审计模型和 GitHub API 客户端骨架。
+- GitHub App JWT、短期 installation token 内存缓存和只读密钥挂载。
+- PR 元数据、changed files、完整 diff、Check Runs 和 Commit Statuses 分页读取。
+- 文件/CI 有界快照、CI 轮询与超时，以及旧 `head_sha` 批量失效保护。
 
 稳定语义已经拆分到以下契约中：
 
 - [`review-contract.md`](../contracts/review-contract.md)：审查状态、Finding 和行内评论准入；
 - [`review-task-api.md`](../contracts/review-task-api.md)：幂等任务创建；
-- [`review-worker.md`](../contracts/review-worker.md)：领取、租约、恢复和 M2 状态边界；
+- [`review-worker.md`](../contracts/review-worker.md)：领取、租约、恢复和 PR/CI 状态边界；
 - [`management-api.md`](../contracts/management-api.md)：登录、Dashboard 和实时事件。
 - [`github-webhook.md`](../contracts/github-webhook.md)：验签、过滤、去重和原子入库。
+- [`github-context.md`](../contracts/github-context.md)：短期身份、PR/diff/CI 读取和版本保护。
 
 ### NiuMa 测试场
 
@@ -54,9 +58,10 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ### GitHub 接入
 
-- GitHub App 实例注册、安装范围、私钥签发和 installation token；
-- PR 元数据、changed files、完整 diff 和 CI Check 获取；
-- 新提交使旧运行失效，以及 stale SHA 副作用保护。
+- 阶段 C 代码部署前，需要把 GitHub App 增加到 `Checks: Read-only` 和
+  `Commit statuses: Read-only`；
+- 超过单文件补丁上限的 Blob API 补充读取尚未实现，当前会明确降低 diff 完整度；
+- GitHub Check 写入和所有发布前的第二次 stale SHA 校验属于阶段 D。
 
 ### 审查执行
 
@@ -79,7 +84,7 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ### 阶段 A：接入前安全补强
 
-状态：代码与自动化测试已完成，尚未随本次工作区修改部署。
+状态：已完成并部署。
 
 先完成外部服务接入所需的底座：
 
@@ -92,7 +97,7 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ### 阶段 B：GitHub App 与 Webhook
 
-状态：Webhook 入口代码已完成；GitHub App 的真实注册、安装和密钥配置仍待执行。
+状态：已完成并部署，真实 GitHub App、安装范围、Webhook 和密钥已配置。
 
 实现最小可信入口：
 
@@ -112,11 +117,13 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ### 阶段 C：PR、CI 与提交生命周期
 
+状态：代码与自动化测试已完成，尚未提交、推送或部署。
+
 1. 通过 installation token 获取 PR 的 base/head、changed files 和 CI 状态。
 2. 处理分页、截断 patch、大文件、二进制文件、删除和重命名。
 3. 为 Worker 配置访问 GitHub 和模型 API 所需的受控出网，不增加任何 Worker 入站端口。
 4. 以 `{repository_id}:{pr_number}:{head_sha}` 作为审查版本。
-5. CI 完成事件只唤醒匹配同一 `head_sha` 的任务。
+5. Worker 只轮询匹配同一 `head_sha` 的 CI，正常轮询不消耗失败重试次数。
 6. 新提交把旧运行标记为 `superseded`，所有副作用前重新检查当前 SHA。
 7. CI 超时或结果不完整时进入明确的非确定状态。
 
@@ -198,13 +205,12 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ## 7. 下一批具体产物
 
-按当前状态，下一批实现应集中在阶段 C：
+按当前状态，下一批实现应集中在阶段 D：
 
-1. 注册测试 GitHub App，按契约配置最小权限、Webhook secret 和 NiuMa 测试仓库安装范围；
-2. 实现 App JWT 与短期 installation token 获取，不持久化访问 Token；
-3. 分页获取 PR 元数据、changed files、完整 diff 和匹配 `head_sha` 的 CI 状态；
-4. 处理截断 patch、大文件、二进制、删除、重命名、限流和超时；
-5. 新提交到达时把旧运行标记为 `superseded`，副作用前重新校验当前 SHA；
-6. 增加 PR/CI 固定样本回放和乱序事件测试，仍不写真实 PR。
+1. 加载仓库根目录和相关子目录的 `AGENTS.md`，把规则限制在对应文件范围；
+2. 按文件类型、大小和补丁完整度筛选文件，构建有总预算的 Review Unit；
+3. 定义可替换模型适配器、结构化 Finding 输出、调用次数、Token、耗时和成本记录；
+4. 对模型 Finding 做 Schema 校验、原始证据回读、指纹去重和行内定位准入；
+5. 发布一个使用稳定动作键的 GitHub Check，并在写入前重新校验当前 `head_sha`。
 
-这些产物完成后再进入模型审查和 GitHub Check，避免在提交生命周期未稳定时扩大外部副作用。
+阶段 D 完成前，`ready_for_review` 仍只是明确的待处理边界，不能显示为审查成功。

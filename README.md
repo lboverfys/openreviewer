@@ -2,10 +2,10 @@
 
 OpenReviewer 是独立的 AI 代码审查编排平台，首个接入项目是 NiuMa。
 
-当前仓库已完成 M2 可观察任务执行和首批 GitHub 安全入口：除 PostgreSQL 任务、单并发
-Worker、管理员登录、实时 Dashboard 和 React 管理前端外，已经具备 Webhook 原始请求体验签、
-事件过滤、delivery 去重与原子入库。GitHub App installation token、PR/CI 获取、模型调用和
-LangGraph 工作流仍将在后续里程碑加入。
+当前仓库已完成 M3 GitHub 上下文准备：除 PostgreSQL 任务、单并发 Worker、管理员登录、
+实时 Dashboard、React 管理前端和 Webhook 安全入口外，Worker 已能用 GitHub App 短期身份
+读取 PR 元数据、变更文件、完整 diff 和当前提交的 CI，并安全处理轮询、超时和新提交淘汰。
+模型调用、Finding 复核、GitHub Check 发布和 LangGraph 工作流仍将在后续里程碑加入。
 
 ## 目录
 
@@ -27,7 +27,7 @@ deployment/         niuma-2 Compose 部署配置
 - Agent 服务与 NiuMa 业务服务独立部署、独立存储。
 - Agent 只读取受限的 PR 上下文，不执行 PR 提供的脚本或构建命令。
 - 不在仓库提交 Token、私钥、明文密码、密码哈希或真实部署配置。
-- 当前 Worker 只把任务推进到 `waiting_for_ci`；没有 GitHub/模型结果时不会伪装成
+- 当前 Worker 会把 CI 终态任务推进到 `ready_for_review`；模型尚未接入，因此不会伪装成
   `completed`。
 
 ## 已实现能力
@@ -40,21 +40,23 @@ deployment/         niuma-2 Compose 部署配置
 - 登录页可选调用浏览器密码管理器记住账号密码；应用不把明文凭据写入 localStorage。
 - 受保护的 Dashboard、任务列表和 SSE 实时事件接口。
 - React 登录页、实时状态卡、Worker 状态、最近任务和手工任务创建表单。
-- Nginx 自签名 HTTPS 测试入口；API 仍只绑定服务器回环地址，PostgreSQL 不映射端口。
+- Nginx HTTPS 源站和 Cloudflare 域名入口；API 仍只绑定服务器回环地址，PostgreSQL 不映射端口。
 - 结构化任务错误、日志/数据库/API 统一脱敏和跨平台仓库路径边界校验。
 - `POST /webhooks/github` HMAC-SHA256 验签、256 KiB 请求限制、PR 事件白名单和 delivery 幂等。
 - GitHub installation、PR 版本、Webhook delivery 与外部动作审计数据模型。
+- GitHub App JWT 与短期 installation token，Token 只缓存在 Worker 内存。
+- 分页读取 PR changed files、完整 diff、Check Runs 和 Commit Statuses。
+- 文件/CI 有界快照、CI 定时轮询与超时，以及旧 `head_sha` 批量失效保护。
 
 ## 当前前端入口
 
 当前 `niuma-2` 测试环境的 React 管理前端地址为：
 
 ```text
-https://107.175.221.182:18443
+https://openreviewer.lovecoding.store
 ```
 
-这是测试环境的自签名 HTTPS 证书，浏览器首次访问会显示证书警告；确认地址无误后再继续访问。
-公网只开放 Web 的 `18443` 端口，API 和 PostgreSQL 不直接对公网开放。
+公网通过 Cloudflare 访问，源站使用 Origin 证书。API 和 PostgreSQL 不直接对公网开放。
 登录页勾选“记住账号密码”后，Chrome/Edge 等支持 Credential Management API 的浏览器会
 把凭据保存到自己的密码库；证书尚未被浏览器接受或使用无痕窗口时，自动保存可能不可用。
 
@@ -69,6 +71,8 @@ python -m alembic upgrade head
 
 本地配置需要数据库连接、管理员用户名、Argon2id 密码哈希、至少 32 字节的会话密钥和
 至少 32 字节的 GitHub Webhook secret。
+Worker 还需要 GitHub App ID 和只读私钥文件路径；完整配置见
+[`docs/contracts/github-context.md`](docs/contracts/github-context.md)。
 可以使用交互式输入生成哈希，明文不会写入命令历史：
 
 ```shell

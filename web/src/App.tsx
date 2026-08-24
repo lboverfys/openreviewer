@@ -33,6 +33,7 @@ const statusOrder: ExecutionStatus[] = [
   "queued",
   "running",
   "waiting_for_ci",
+  "ready_for_review",
   "completed",
   "failed",
 ];
@@ -907,6 +908,12 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
                       onClick={() => setActiveFilter("waiting_for_ci")}
                     >
                       等待 CI ({snapshot?.status_counts.waiting_for_ci ?? 0})
+                    </button>
+                    <button
+                      className={`pill-btn ${activeFilter === "ready_for_review" ? "active" : ""}`}
+                      onClick={() => setActiveFilter("ready_for_review")}
+                    >
+                      可开始审查 ({snapshot?.status_counts.ready_for_review ?? 0})
                     </button>
                     <button
                       className={`pill-btn ${activeFilter === "queued" ? "active" : ""}`}

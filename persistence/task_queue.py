@@ -1,23 +1,35 @@
 """基于 PostgreSQL 的任务租约、恢复、重试与心跳存储。"""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Load, Session, sessionmaker
 
-from domain.enums import ExecutionStatus, WorkerStatus
+from domain.enums import (
+    CiState,
+    CoverageStatus,
+    ExecutionStatus,
+    PullRequestState,
+    WorkerStatus,
+)
+from domain.github import GitHubReviewContext
 from domain.security import ErrorCode, SafeError
 from persistence.models import (
+    GitHubInstallationRecord,
     OutboxEventRecord,
+    PullRequestCiCheckRecord,
+    PullRequestFileRecord,
+    PullRequestVersionRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
     WorkerHeartbeatRecord,
 )
 from services.task_queue import (
     ReviewTaskLease,
+    ReviewTarget,
     TaskLeaseLostError,
     TaskQueueError,
 )
@@ -48,12 +60,23 @@ def _task_run_mutation_load_options() -> tuple[Load, Load]:
         Load(ReviewTaskRecord).load_only(
             ReviewTaskRecord.id,
             ReviewTaskRecord.review_run_id,
+            ReviewTaskRecord.execution_status,
             ReviewTaskRecord.attempt_count,
             ReviewTaskRecord.max_attempts,
+            ReviewTaskRecord.ci_poll_count,
+            ReviewTaskRecord.ci_wait_started_at,
+            ReviewTaskRecord.ci_deadline_at,
             raiseload=True,
         ),
         Load(ReviewRunRecord).load_only(
             ReviewRunRecord.id,
+            ReviewRunRecord.review_version_key,
+            ReviewRunRecord.installation_id,
+            ReviewRunRecord.repository_id,
+            ReviewRunRecord.repository,
+            ReviewRunRecord.pull_request_number,
+            ReviewRunRecord.head_sha,
+            ReviewRunRecord.coverage_status,
             raiseload=True,
         ),
     )
@@ -216,7 +239,7 @@ class SqlAlchemyReviewTaskQueue:
     ) -> ReviewTaskLease | None:
         """原子领取一个当前可执行的任务。
 
-        只选择状态为 ``queued`` 且 ``available_at`` 已到期的任务，并按优先级、
+        选择 ``queued`` 或已经到下一次检查时间的 ``waiting_for_ci`` 任务，并按优先级、
         可用时间和创建时间排序。锁定后同时更新任务和运行状态、尝试次数、租约
         所有者及过期时间，再写入 ``review.task.running`` 事件；没有可领取任务时
         返回 ``None``。
@@ -233,8 +256,8 @@ class SqlAlchemyReviewTaskQueue:
             ValueError: 租约时长不大于零。
             TaskQueueError: 关联运行不存在、数据库锁定/更新/提交失败。
 
-        领取时会把 ``attempt_count`` 先加一，再把运行和任务同时改为 ``running``；
-        因此重试判断可以用“本次已经是第几次尝试”而不用额外计数器。
+        新任务或错误重试会增加 ``attempt_count``；正常 CI 轮询只增加
+        ``ci_poll_count``，不会因为等待外部流水线而耗尽错误重试次数。
         """
         if lease_duration.total_seconds() <= 0:
             raise ValueError("lease_duration must be positive")
@@ -249,8 +272,12 @@ class SqlAlchemyReviewTaskQueue:
                         ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
                     )
                     .where(
-                        ReviewTaskRecord.execution_status
-                        == ExecutionStatus.QUEUED.value,
+                        ReviewTaskRecord.execution_status.in_(
+                            (
+                                ExecutionStatus.QUEUED.value,
+                                ExecutionStatus.WAITING_FOR_CI.value,
+                            )
+                        ),
                         ReviewTaskRecord.available_at <= now,
                     )
                     .order_by(
@@ -269,8 +296,12 @@ class SqlAlchemyReviewTaskQueue:
                     return None
                 task, run = row
 
+                claimed_from_status = ExecutionStatus(task.execution_status)
                 task.execution_status = ExecutionStatus.RUNNING.value
-                task.attempt_count += 1
+                if claimed_from_status is ExecutionStatus.QUEUED:
+                    task.attempt_count += 1
+                else:
+                    task.ci_poll_count += 1
                 task.lease_owner = worker_id
                 task.lease_expires_at = lease_expires_at
                 task.last_error = None
@@ -284,7 +315,7 @@ class SqlAlchemyReviewTaskQueue:
                     session,
                     task,
                     "review.task.running",
-                    f"running:{task.attempt_count}",
+                    f"running:{task.attempt_count}:ci-poll-{task.ci_poll_count}",
                     now,
                 )
                 session.commit()
@@ -294,6 +325,8 @@ class SqlAlchemyReviewTaskQueue:
                     worker_id=worker_id,
                     attempt_count=task.attempt_count,
                     lease_expires_at=lease_expires_at,
+                    ci_poll_count=task.ci_poll_count,
+                    claimed_from_status=claimed_from_status,
                 )
             except TaskQueueError:
                 session.rollback()
@@ -344,6 +377,8 @@ class SqlAlchemyReviewTaskQueue:
                     worker_id=lease.worker_id,
                     attempt_count=lease.attempt_count,
                     lease_expires_at=renewed_until,
+                    ci_poll_count=lease.ci_poll_count,
+                    claimed_from_status=lease.claimed_from_status,
                 )
             except TaskLeaseLostError:
                 session.rollback()
@@ -352,11 +387,241 @@ class SqlAlchemyReviewTaskQueue:
                 session.rollback()
                 raise TaskQueueError("the review task lease could not be renewed") from exc
 
-    def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
-        """完成当前 M2 准备步骤并把任务推进到 ``waiting_for_ci``。
+    def load_target(self, lease: ReviewTaskLease) -> ReviewTarget:
+        """用一次有索引 JOIN 读取任务目标，不在外部请求期间持有事务。"""
 
-        这个状态是有意保留的能力边界：当前项目还没有 GitHub CI 回调和模型审查，
-        因此这里清除租约、同步更新运行状态并写事件，但绝不会伪造 ``completed``。
+        now = self._clock()
+        context_fetched_at = (
+            select(PullRequestVersionRecord.context_fetched_at)
+            .where(
+                PullRequestVersionRecord.review_version_key
+                == ReviewRunRecord.review_version_key
+            )
+            .correlate(ReviewRunRecord)
+            .scalar_subquery()
+            .label("context_fetched_at")
+        )
+        statement = (
+            select(
+                ReviewRunRecord.installation_id,
+                ReviewRunRecord.repository_id,
+                ReviewRunRecord.repository,
+                ReviewRunRecord.pull_request_number,
+                ReviewRunRecord.head_sha,
+                ReviewRunRecord.review_version_key,
+                context_fetched_at,
+            )
+            .join(
+                ReviewTaskRecord,
+                ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
+            )
+            .where(
+                ReviewTaskRecord.id == lease.task_id,
+                ReviewTaskRecord.review_run_id == lease.review_run_id,
+                ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
+                ReviewTaskRecord.lease_owner == lease.worker_id,
+                ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+                ReviewTaskRecord.lease_expires_at.is_not(None),
+                ReviewTaskRecord.lease_expires_at > now,
+            )
+        )
+        with self._sessions() as session:
+            try:
+                row = session.execute(statement).one_or_none()
+                if row is None:
+                    raise TaskLeaseLostError()
+                return ReviewTarget(
+                    installation_id=row.installation_id,
+                    repository_id=row.repository_id,
+                    repository=row.repository,
+                    pull_request_number=row.pull_request_number,
+                    head_sha=row.head_sha,
+                    review_version_key=row.review_version_key,
+                    context_fetched_at=(
+                        _as_utc(row.context_fetched_at)
+                        if row.context_fetched_at is not None
+                        else None
+                    ),
+                )
+            except TaskLeaseLostError:
+                raise
+            except SQLAlchemyError as exc:
+                raise TaskQueueError("the review target could not be loaded") from exc
+
+    def store_github_context(
+        self,
+        lease: ReviewTaskLease,
+        context: GitHubReviewContext,
+        *,
+        ci_poll_interval: timedelta,
+        ci_wait_timeout: timedelta,
+    ) -> ExecutionStatus:
+        """保存有界快照并按当前 PR/CI 状态原子推进任务。"""
+
+        if ci_poll_interval.total_seconds() <= 0:
+            raise ValueError("CI poll interval must be positive")
+        if ci_wait_timeout <= ci_poll_interval:
+            raise ValueError("CI wait timeout must exceed the poll interval")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                task, run = self._locked_owned_task_with_run(session, lease, now)
+                pull_request = context.pull_request
+                if (
+                    pull_request.repository_id != run.repository_id
+                    or pull_request.repository != run.repository
+                    or pull_request.pull_request_number
+                    != run.pull_request_number
+                ):
+                    raise TaskQueueError("GitHub PR identity does not match the review task")
+                if pull_request.head_sha != run.head_sha:
+                    self._set_owned_status(
+                        task,
+                        run,
+                        ExecutionStatus.SUPERSEDED,
+                        now,
+                    )
+                    run.coverage_status = CoverageStatus.STALE.value
+                    self._add_event(
+                        session,
+                        task,
+                        "review.superseded",
+                        f"head-mismatch:{task.attempt_count}:ci-poll-{task.ci_poll_count}",
+                        now,
+                    )
+                    session.commit()
+                    return ExecutionStatus.SUPERSEDED
+
+                version = self._get_or_create_version(session, run, now)
+                self._update_pull_request_snapshot(version, context, now)
+                if (
+                    pull_request.state is PullRequestState.CLOSED
+                    or pull_request.draft
+                ):
+                    self._set_owned_status(
+                        task,
+                        run,
+                        ExecutionStatus.CANCELLED,
+                        now,
+                    )
+                    self._add_event(
+                        session,
+                        task,
+                        "review.cancelled",
+                        f"not-reviewable:{task.attempt_count}:ci-poll-{task.ci_poll_count}",
+                        now,
+                    )
+                    session.commit()
+                    return ExecutionStatus.CANCELLED
+
+                if context.files is not None:
+                    self._replace_files(session, version.id, context, now)
+                    version.files_complete = context.files_complete
+                    version.diff_complete = context.diff_complete
+                    version.context_fetched_at = now
+                if context.ci is None or context.ci.head_sha != run.head_sha:
+                    raise TaskQueueError("GitHub CI snapshot is missing or stale")
+                self._replace_ci_checks(session, version.id, context, now)
+                version.ci_state = context.ci.state.value
+                version.ci_checks_complete = context.ci.complete
+                version.ci_checked_at = context.ci.checked_at
+
+                superseded_count = self._supersede_previous_versions(
+                    session,
+                    run,
+                    now,
+                )
+                if superseded_count:
+                    self._add_event(
+                        session,
+                        task,
+                        "review.previous_versions_superseded",
+                        f"{task.attempt_count}:ci-poll-{task.ci_poll_count}",
+                        now,
+                        extra_payload={"superseded_count": superseded_count},
+                    )
+
+                if context.ci.state in {CiState.PENDING, CiState.UNKNOWN}:
+                    wait_started_at = task.ci_wait_started_at or now
+                    deadline = task.ci_deadline_at or (
+                        wait_started_at + ci_wait_timeout
+                    )
+                    task.ci_wait_started_at = wait_started_at
+                    task.ci_deadline_at = deadline
+                    if _as_utc(deadline) <= _as_utc(now):
+                        timeout_error = SafeError(
+                            code=ErrorCode.CI_WAIT_TIMEOUT,
+                            safe_message="等待 GitHub CI 完成已超时",
+                            retryable=False,
+                            details={"ci_state": context.ci.state.value},
+                        )
+                        task.last_error = timeout_error.safe_message
+                        task.last_error_code = timeout_error.code.value
+                        task.last_error_retryable = timeout_error.retryable
+                        task.last_error_details = dict(timeout_error.details)
+                        self._set_owned_status(
+                            task,
+                            run,
+                            ExecutionStatus.TIMED_OUT,
+                            now,
+                        )
+                        self._add_event(
+                            session,
+                            task,
+                            "review.ci_timed_out",
+                            f"{task.attempt_count}:ci-poll-{task.ci_poll_count}",
+                            now,
+                            error=timeout_error,
+                        )
+                        next_status = ExecutionStatus.TIMED_OUT
+                    else:
+                        self._set_owned_status(
+                            task,
+                            run,
+                            ExecutionStatus.WAITING_FOR_CI,
+                            now,
+                        )
+                        task.available_at = now + ci_poll_interval
+                        self._add_event(
+                            session,
+                            task,
+                            "review.waiting_for_ci",
+                            f"{task.attempt_count}:ci-poll-{task.ci_poll_count}",
+                            now,
+                            extra_payload={"ci_state": context.ci.state.value},
+                        )
+                        next_status = ExecutionStatus.WAITING_FOR_CI
+                else:
+                    self._set_owned_status(
+                        task,
+                        run,
+                        ExecutionStatus.READY_FOR_REVIEW,
+                        now,
+                    )
+                    self._add_event(
+                        session,
+                        task,
+                        "review.ready_for_review",
+                        f"{task.attempt_count}:ci-poll-{task.ci_poll_count}",
+                        now,
+                        extra_payload={"ci_state": context.ci.state.value},
+                    )
+                    next_status = ExecutionStatus.READY_FOR_REVIEW
+                session.commit()
+                return next_status
+            except (TaskLeaseLostError, TaskQueueError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("GitHub review context could not be stored") from exc
+
+    def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
+        """供兼容测试路径把任务直接推进到 ``waiting_for_ci``。
+
+        生产 Worker 使用 ``store_github_context`` 保存真实 CI；本方法只保留给不注入
+        GitHub 读取器的测试和兼容调用。它清除租约并写事件，但绝不会伪造 ``completed``。
 
         参数：
             lease: 当前 Worker 领取任务时获得的、尚未过期的租约。
@@ -365,8 +630,7 @@ class SqlAlchemyReviewTaskQueue:
             TaskLeaseLostError: 任务不再属于该 Worker。
             TaskQueueError: 关联运行不存在，或状态/事件事务无法提交。
 
-        成功后任务不再有租约，后续需要真实 CI/模型事件才能继续推进；本方法不会
-        调用 GitHub、模型或外部消息系统。
+        成功后任务不再有租约；本方法不会调用 GitHub、模型或外部消息系统。
         """
         now = self._clock()
         with self._sessions() as session:
@@ -468,7 +732,8 @@ class SqlAlchemyReviewTaskQueue:
         """锁定并验证租约所属的任务。
 
         这是所有“修改运行中任务”操作共用的所有权检查。除了 ID 关联外，还会
-        校验状态、Worker、尝试次数和租约过期时间；任一条件失败都视为租约丢失。
+        校验状态、Worker、失败尝试次数、CI 轮询代次和租约过期时间；任一条件
+        失败都视为租约丢失。
 
         参数：
             session: 已在事务中的 SQLAlchemy 会话。
@@ -480,8 +745,8 @@ class SqlAlchemyReviewTaskQueue:
             同一事务中安全修改它。
 
         异常：
-            TaskLeaseLostError: 任务不存在、状态不是 ``running``、Worker/运行/尝试
-            次数不匹配，或租约为空/已过期。
+            TaskLeaseLostError: 任务不存在、状态不是 ``running``、Worker/运行、失败
+            尝试次数或 CI 轮询代次不匹配，或租约为空/已过期。
 
         这个私有方法故意集中所有权条件，避免续租、成功推进和失败上报各自漏掉
         某个检查而产生旧 Worker 覆盖新 Worker 的竞态。
@@ -494,6 +759,7 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_owner == lease.worker_id,
                 ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
             )
@@ -530,6 +796,7 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_owner == lease.worker_id,
                 ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
             )
@@ -540,6 +807,223 @@ class SqlAlchemyReviewTaskQueue:
         if row is None:
             raise TaskLeaseLostError("the worker no longer owns this review task")
         return row[0], row[1]
+
+    def _get_or_create_version(
+        self,
+        session: Session,
+        run: ReviewRunRecord,
+        now: datetime,
+    ) -> PullRequestVersionRecord:
+        """锁定版本行；兼容历史手工任务缺少版本记录的情况。"""
+
+        version = session.scalar(
+            select(PullRequestVersionRecord)
+            .where(
+                PullRequestVersionRecord.review_version_key
+                == run.review_version_key
+            )
+            .with_for_update()
+        )
+        if version is None:
+            installation = session.get(GitHubInstallationRecord, run.installation_id)
+            if installation is None:
+                installation = GitHubInstallationRecord(
+                    id=run.installation_id,
+                    created_at=now,
+                    last_seen_at=now,
+                )
+                session.add(installation)
+                session.flush()
+            else:
+                installation.last_seen_at = now
+            version = PullRequestVersionRecord(
+                id=str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"openreviewer:{run.review_version_key}",
+                    )
+                ),
+                review_version_key=run.review_version_key,
+                installation_id=run.installation_id,
+                repository_id=run.repository_id,
+                repository=run.repository,
+                pull_request_number=run.pull_request_number,
+                head_sha=run.head_sha,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            session.add(version)
+            session.flush()
+        if (
+            version.installation_id != run.installation_id
+            or version.repository_id != run.repository_id
+            or version.repository != run.repository
+            or version.pull_request_number != run.pull_request_number
+            or version.head_sha != run.head_sha
+        ):
+            raise TaskQueueError("stored PR version identity does not match the review run")
+        return version
+
+    @staticmethod
+    def _update_pull_request_snapshot(
+        version: PullRequestVersionRecord,
+        context: GitHubReviewContext,
+        now: datetime,
+    ) -> None:
+        pull_request = context.pull_request
+        version.base_sha = pull_request.base_sha
+        version.pr_state = pull_request.state.value
+        version.is_draft = pull_request.draft
+        version.title = pull_request.title
+        version.changed_files_count = pull_request.changed_files
+        version.pr_updated_at = pull_request.updated_at
+        version.last_seen_at = now
+
+    @staticmethod
+    def _replace_files(
+        session: Session,
+        version_id: str,
+        context: GitHubReviewContext,
+        now: datetime,
+    ) -> None:
+        files = context.files
+        if files is None:
+            return
+        session.execute(
+            delete(PullRequestFileRecord).where(
+                PullRequestFileRecord.pull_request_version_id == version_id
+            )
+        )
+        if not files:
+            return
+        rows = [
+            {
+                "id": str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"openreviewer:file:{version_id}:{item.path}",
+                    )
+                ),
+                "pull_request_version_id": version_id,
+                "path": item.path,
+                "previous_path": item.previous_path,
+                "status": item.status.value,
+                "blob_sha": item.blob_sha,
+                "additions": item.additions,
+                "deletions": item.deletions,
+                "changes": item.changes,
+                "patch_state": item.patch_state.value,
+                "patch": item.patch,
+                "observed_at": now,
+            }
+            for item in files
+        ]
+        session.execute(insert(PullRequestFileRecord), rows)
+
+    @staticmethod
+    def _replace_ci_checks(
+        session: Session,
+        version_id: str,
+        context: GitHubReviewContext,
+        now: datetime,
+    ) -> None:
+        ci = context.ci
+        if ci is None:
+            return
+        session.execute(
+            delete(PullRequestCiCheckRecord).where(
+                PullRequestCiCheckRecord.pull_request_version_id == version_id
+            )
+        )
+        if not ci.checks:
+            return
+        rows = [
+            {
+                "id": str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        "openreviewer:ci:"
+                        f"{version_id}:{check.kind.value}:{check.external_key}",
+                    )
+                ),
+                "pull_request_version_id": version_id,
+                "kind": check.kind.value,
+                "external_key": check.external_key,
+                "name": check.name,
+                "status": check.status,
+                "conclusion": check.conclusion,
+                "app_id": check.app_id,
+                "observed_at": now,
+            }
+            for check in ci.checks
+        ]
+        session.execute(insert(PullRequestCiCheckRecord), rows)
+
+    @staticmethod
+    def _supersede_previous_versions(
+        session: Session,
+        current_run: ReviewRunRecord,
+        now: datetime,
+    ) -> int:
+        """用两条批量 UPDATE 淘汰同一 PR 的其他 head SHA，查询次数为常数。"""
+
+        replaceable_statuses = (
+            ExecutionStatus.QUEUED.value,
+            ExecutionStatus.WAITING_FOR_CI.value,
+            ExecutionStatus.RUNNING.value,
+            ExecutionStatus.READY_FOR_REVIEW.value,
+            ExecutionStatus.COMPLETED.value,
+        )
+        previous_run_ids = select(ReviewRunRecord.id).where(
+            ReviewRunRecord.repository_id == current_run.repository_id,
+            ReviewRunRecord.pull_request_number
+            == current_run.pull_request_number,
+            ReviewRunRecord.id != current_run.id,
+            ReviewRunRecord.head_sha != current_run.head_sha,
+            ReviewRunRecord.execution_status.in_(replaceable_statuses),
+        )
+        session.execute(
+            update(ReviewTaskRecord)
+            .where(
+                ReviewTaskRecord.review_run_id.in_(previous_run_ids),
+                ReviewTaskRecord.execution_status.in_(replaceable_statuses),
+            )
+            .values(
+                execution_status=ExecutionStatus.SUPERSEDED.value,
+                lease_owner=None,
+                lease_expires_at=None,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        result = session.execute(
+            update(ReviewRunRecord)
+            .where(
+                ReviewRunRecord.id.in_(previous_run_ids),
+                ReviewRunRecord.execution_status.in_(replaceable_statuses),
+            )
+            .values(
+                execution_status=ExecutionStatus.SUPERSEDED.value,
+                coverage_status=CoverageStatus.STALE.value,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return max(0, int(result.rowcount or 0))
+
+    @staticmethod
+    def _set_owned_status(
+        task: ReviewTaskRecord,
+        run: ReviewRunRecord,
+        status: ExecutionStatus,
+        now: datetime,
+    ) -> None:
+        task.execution_status = status.value
+        task.lease_owner = None
+        task.lease_expires_at = None
+        task.updated_at = now
+        run.execution_status = status.value
+        run.updated_at = now
 
     def _reschedule_or_fail(
         self,
@@ -628,6 +1112,7 @@ class SqlAlchemyReviewTaskQueue:
         occurred_at: datetime,
         *,
         error: SafeError | None = None,
+        extra_payload: Mapping[str, object] | None = None,
     ) -> None:
         """在当前事务中追加一条不可重复的任务状态 Outbox 事件。
 
@@ -652,6 +1137,7 @@ class SqlAlchemyReviewTaskQueue:
             "review_run_id": task.review_run_id,
             "review_task_id": task.id,
             "attempt_count": task.attempt_count,
+            "ci_poll_count": task.ci_poll_count,
         }
         if error is not None:
             payload.update(
@@ -660,6 +1146,8 @@ class SqlAlchemyReviewTaskQueue:
                     "error_retryable": error.retryable,
                 }
             )
+        if extra_payload is not None:
+            payload.update(extra_payload)
         session.add(
             OutboxEventRecord(
                 id=str(self._uuid_factory()),

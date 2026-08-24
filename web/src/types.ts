@@ -2,6 +2,7 @@ export type ExecutionStatus =
   | "queued"
   | "waiting_for_ci"
   | "running"
+  | "ready_for_review"
   | "completed"
   | "failed"
   | "timed_out"

@@ -4,6 +4,7 @@ export const statusLabels: Record<ExecutionStatus, string> = {
   queued: "排队中",
   waiting_for_ci: "等待 CI",
   running: "处理中",
+  ready_for_review: "可开始审查",
   completed: "已完成",
   failed: "失败",
   timed_out: "已超时",

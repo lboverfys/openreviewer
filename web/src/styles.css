@@ -47,6 +47,10 @@
   --color-waiting-bg: #ffedd5;
   --color-waiting-border: #fdba74;
 
+  --color-ready: #0f766e;
+  --color-ready-bg: #f0fdfa;
+  --color-ready-border: #99f6e4;
+
   --color-completed: #16a34a;
   --color-completed-bg: #f0fdf4;
   --color-completed-border: #bbf7d0;
@@ -1179,6 +1183,7 @@ code, .code-font {
 .status-pill-queued .status-mini-orb { background: var(--color-queued); }
 .status-pill-running .status-mini-orb { background: var(--color-running); }
 .status-pill-waiting_for_ci .status-mini-orb { background: var(--color-waiting); }
+.status-pill-ready_for_review .status-mini-orb { background: var(--color-ready); }
 .status-pill-completed .status-mini-orb { background: var(--color-completed); }
 .status-pill-failed .status-mini-orb { background: var(--color-failed); }
 
@@ -1224,6 +1229,7 @@ code, .code-font {
 .toolbar-left-group {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 16px;
 }
 
@@ -1236,6 +1242,7 @@ code, .code-font {
 .filter-pill-capsules {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
@@ -1427,6 +1434,11 @@ code, .code-font {
   color: var(--color-waiting);
   background: var(--color-waiting-bg);
   border: 1px solid var(--color-waiting-border);
+}
+.warm-status-pill.status-ready_for_review {
+  color: var(--color-ready);
+  background: var(--color-ready-bg);
+  border: 1px solid var(--color-ready-border);
 }
 .warm-status-pill.status-completed {
   color: var(--color-completed);

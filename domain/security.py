@@ -39,6 +39,8 @@ class ErrorCode(str, Enum):
     GITHUB_SERVER_ERROR = "github_server_error"
     GITHUB_REQUEST_REJECTED = "github_request_rejected"
     GITHUB_INVALID_RESPONSE = "github_invalid_response"
+    GITHUB_RESPONSE_TOO_LARGE = "github_response_too_large"
+    CI_WAIT_TIMEOUT = "ci_wait_timeout"
 
 
 _SENSITIVE_KEYS = {

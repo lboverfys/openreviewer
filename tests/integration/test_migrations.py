@@ -39,6 +39,8 @@ def test_initial_migration_creates_durable_review_task_schema(
             "github_installations",
             "github_webhook_deliveries",
             "outbox_events",
+            "pull_request_ci_checks",
+            "pull_request_files",
             "pull_request_versions",
             "review_runs",
             "review_tasks",
@@ -61,6 +63,9 @@ def test_initial_migration_creates_durable_review_task_schema(
             "last_error_code",
             "last_error_retryable",
             "last_error_details",
+            "ci_wait_started_at",
+            "ci_deadline_at",
+            "ci_poll_count",
         } <= task_columns
         assert {
             constraint["name"]
@@ -74,6 +79,7 @@ def test_initial_migration_creates_durable_review_task_schema(
         assert {
             "ix_review_runs_created_at",
             "ix_review_runs_execution_status",
+            "ix_review_runs_repository_pr_status",
         } <= {index["name"] for index in inspector.get_indexes("review_runs")}
         assert {
             constraint["name"]
@@ -93,6 +99,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_tasks_attempt_count_nonnegative",
             "ck_review_tasks_execution_status_value",
             "ck_review_tasks_max_attempts_positive",
+            "ck_review_tasks_ci_poll_count_nonnegative",
         }
         assert {
             constraint["name"]
@@ -104,8 +111,23 @@ def test_initial_migration_creates_durable_review_task_schema(
                 "worker_heartbeats"
             )
         } == {"ck_worker_heartbeats_status_value"}
-        assert revision == "20260824_0003"
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints(
+                "pull_request_versions"
+            )
+        } == {
+            "ck_pull_request_versions_changed_files_count_nonnegative",
+            "ck_pull_request_versions_ci_state_value",
+            "ck_pull_request_versions_installation_id_positive",
+            "ck_pull_request_versions_pr_state_value",
+            "ck_pull_request_versions_pull_request_number_positive",
+            "ck_pull_request_versions_repository_id_positive",
+        }
+        assert revision == "20260824_0004"
     finally:
         engine.dispose()
 
+    command.downgrade(configuration, "20260824_0003")
+    command.upgrade(configuration, "head")
     command.check(configuration)

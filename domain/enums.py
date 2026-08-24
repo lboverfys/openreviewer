@@ -39,6 +39,7 @@ class ExecutionStatus(str, Enum):
     QUEUED = "queued"
     WAITING_FOR_CI = "waiting_for_ci"
     RUNNING = "running"
+    READY_FOR_REVIEW = "ready_for_review"
     COMPLETED = "completed"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
@@ -91,3 +92,47 @@ class FileDisposition(str, Enum):
 class LocationSide(str, Enum):
     LEFT = "left"
     RIGHT = "right"
+
+
+class PullRequestState(str, Enum):
+    """GitHub Pull Request 当前是否仍可继续审查。"""
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class ChangedFileStatus(str, Enum):
+    """GitHub changed files 接口返回的稳定文件状态。"""
+
+    ADDED = "added"
+    REMOVED = "removed"
+    MODIFIED = "modified"
+    RENAMED = "renamed"
+    COPIED = "copied"
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
+
+
+class PatchState(str, Enum):
+    """一个变更文件的补丁是否可供后续审查。"""
+
+    AVAILABLE = "available"
+    BINARY = "binary"
+    MISSING = "missing"
+    TOO_LARGE = "too_large"
+
+
+class CiState(str, Enum):
+    """与某个精确 head SHA 绑定的 CI 汇总状态。"""
+
+    UNKNOWN = "unknown"
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+class CiCheckKind(str, Enum):
+    """组成 CI 汇总结果的 GitHub 状态来源。"""
+
+    CHECK_RUN = "check_run"
+    COMMIT_STATUS = "commit_status"

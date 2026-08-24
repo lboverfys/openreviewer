@@ -6,8 +6,10 @@
 
 内部任务创建接口见 [review-task-api.md](review-task-api.md)。
 
-M2 Worker 的领取、租约、恢复和状态边界见 [review-worker.md](review-worker.md)。
+Worker 的领取、租约、恢复和 PR/CI 状态边界见 [review-worker.md](review-worker.md)。
 
 管理员登录、Dashboard 和实时事件接口见 [management-api.md](management-api.md)。
 
 GitHub Webhook 的验签、过滤、去重和原子入库见 [github-webhook.md](github-webhook.md)。
+
+GitHub App 短期身份、PR/diff/CI 读取和版本保护见 [github-context.md](github-context.md)。

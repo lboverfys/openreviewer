@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from domain.enums import WorkerStatus
+from domain.enums import ExecutionStatus, WorkerStatus
+from domain.github import GitHubReviewContext
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 
 
@@ -42,6 +43,21 @@ class ReviewTaskLease:
     worker_id: str
     attempt_count: int
     lease_expires_at: datetime
+    claimed_from_status: ExecutionStatus = ExecutionStatus.QUEUED
+    ci_poll_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewTarget:
+    """Worker 在不持有数据库事务时读取 GitHub 所需的稳定任务身份。"""
+
+    installation_id: int
+    repository_id: int
+    repository: str
+    pull_request_number: int
+    head_sha: str
+    review_version_key: str
+    context_fetched_at: datetime | None
 
 
 class ReviewTaskQueue(Protocol):
@@ -87,8 +103,8 @@ class ReviewTaskQueue(Protocol):
             lease_duration: 从领取时刻开始计算的租约有效期，必须大于零。
 
         返回：
-            成功时返回包含任务、运行、Worker、尝试次数和到期时间的租约；当前
-            没有可领取任务时返回 ``None``。
+            成功时返回包含任务、运行、Worker、失败尝试次数、CI 轮询代次和到期
+            时间的租约；当前没有可领取任务时返回 ``None``。
 
         异常：
             ValueError: 租约时长不大于零。
@@ -112,9 +128,25 @@ class ReviewTaskQueue(Protocol):
 
         异常：
             ValueError: 新租约时长不大于零。
-            TaskLeaseLostError: 任务、运行、Worker、尝试次数或有效期不再匹配。
+            TaskLeaseLostError: 任务、运行、Worker、失败尝试次数、CI 轮询代次或
+            有效期不再匹配。
             TaskQueueError: 数据库操作失败。
         """
+        ...
+
+    def load_target(self, lease: ReviewTaskLease) -> ReviewTarget:
+        """用一次 JOIN 读取当前租约关联的 PR 身份和上下文准备状态。"""
+        ...
+
+    def store_github_context(
+        self,
+        lease: ReviewTaskLease,
+        context: GitHubReviewContext,
+        *,
+        ci_poll_interval: timedelta,
+        ci_wait_timeout: timedelta,
+    ) -> ExecutionStatus:
+        """原子保存 GitHub 快照并推进、等待、取消或淘汰当前任务。"""
         ...
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
