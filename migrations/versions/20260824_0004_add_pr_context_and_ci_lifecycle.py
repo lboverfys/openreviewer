@@ -66,13 +66,14 @@ def _replace_execution_status_constraints(
     connection = op.get_bind()
     if connection.dialect.name == "postgresql":
         for table_name in ("review_runs", "review_tasks"):
+            constraint_name = op.f(f"ck_{table_name}_execution_status_value")
             op.drop_constraint(
-                f"ck_{table_name}_execution_status_value",
+                constraint_name,
                 table_name,
                 type_="check",
             )
             op.create_check_constraint(
-                f"ck_{table_name}_execution_status_value",
+                constraint_name,
                 table_name,
                 expression,
             )

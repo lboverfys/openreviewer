@@ -131,3 +131,29 @@ def test_initial_migration_creates_durable_review_task_schema(
     command.downgrade(configuration, "20260824_0003")
     command.upgrade(configuration, "head")
     command.check(configuration)
+
+
+def test_postgres_migration_keeps_execution_constraint_names_fixed(
+    capsys,
+) -> None:
+    """验证 PostgreSQL 离线迁移不会再次生成重复表名前缀。"""
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option(
+        "sqlalchemy.url",
+        "postgresql+psycopg://openreviewer_test:ci-only-postgres-password"
+        "@127.0.0.1:5432/openreviewer_test",
+    )
+
+    command.upgrade(configuration, "head", sql=True)
+
+    output = capsys.readouterr().out
+    assert (
+        "ALTER TABLE review_runs DROP CONSTRAINT "
+        "ck_review_runs_execution_status_value"
+    ) in output
+    assert (
+        "ALTER TABLE review_tasks DROP CONSTRAINT "
+        "ck_review_tasks_execution_status_value"
+    ) in output
+    assert "DROP CONSTRAINT ck_review_runs_ck_review_runs_" not in output
+    assert "DROP CONSTRAINT ck_review_tasks_ck_review_tasks_" not in output
