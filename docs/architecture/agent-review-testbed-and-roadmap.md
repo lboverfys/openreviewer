@@ -30,6 +30,8 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - GitHub Webhook 原始请求体验签、大小/事件限制、delivery 去重和原子任务入库。
 - installation、PR 版本、Webhook delivery、外部动作审计模型和 GitHub API 客户端骨架。
 - GitHub App JWT、短期 installation token 内存缓存和只读密钥挂载。
+- GitHub App 安装已启用 Metadata、Pull requests、Contents、Checks 和 Commit statuses
+  五项只读仓库权限。
 - PR 元数据、changed files、完整 diff、Check Runs 和 Commit Statuses 分页读取。
 - 文件/CI 有界快照、CI 轮询与超时，以及旧 `head_sha` 批量失效保护。
 
@@ -58,8 +60,6 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ### GitHub 接入
 
-- 阶段 C 代码部署前，需要把 GitHub App 增加到 `Checks: Read-only` 和
-  `Commit statuses: Read-only`；
 - 超过单文件补丁上限的 Blob API 补充读取尚未实现，当前会明确降低 diff 完整度；
 - GitHub Check 写入和所有发布前的第二次 stale SHA 校验属于阶段 D。
 
@@ -117,7 +117,9 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ### 阶段 C：PR、CI 与提交生命周期
 
-状态：代码与自动化测试已完成，尚未提交、推送或部署。
+状态：已完成并部署。真实 PR 的 `synchronize` 冒烟测试已验证 Webhook、PR 元数据、文件列表、
+完整 diff、Check Runs、Commit Statuses 和 CI 轮询链路；任务会先进入 `waiting_for_ci`，CI 终止
+后进入 `ready_for_review`。
 
 1. 通过 installation token 获取 PR 的 base/head、changed files 和 CI 状态。
 2. 处理分页、截断 patch、大文件、二进制文件、删除和重命名。

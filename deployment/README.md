@@ -142,6 +142,32 @@ OPENREVIEWER_LOG_LEVEL=INFO
 
 `.env` 必须是 `0600 root:root`。管理员密码哈希不是明文，但仍不提交 Git。
 
+### GitHub App 仓库权限
+
+当前 PR 与 CI 上下文读取阶段需要现有安装批准以下仓库权限：
+
+| 权限 | 级别 | 用途 |
+| --- | --- | --- |
+| Metadata | Read-only | 校验仓库身份 |
+| Pull requests | Read-only | 读取 PR 元数据和 changed files |
+| Contents | Read-only | 读取私有仓库 PR 的完整 diff 表示 |
+| Checks | Read-only | 读取 Check Runs |
+| Commit statuses | Read-only | 读取 Commit Statuses |
+
+只在 GitHub App 的 `Permissions & events` 页面保存权限还不够。已有安装会显示权限更新请求，
+管理员必须进入安装设置并接受该请求。Worker 会在进程内缓存短期 installation token，因此批准
+权限后只重启 Worker，使其重新签发 Token：
+
+```shell
+docker restart openreviewer-worker
+docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+  openreviewer-worker
+```
+
+验证结果必须为 `running healthy`。完整权限和请求契约见
+[`docs/contracts/github-context.md`](../docs/contracts/github-context.md)。阶段 D 发布 GitHub Check
+时，再单独审批把 `Checks` 提升为 `Read and write`；当前阶段不授予其他写权限。
+
 ## Cloudflare Origin TLS
 
 源站证书覆盖 `openreviewer.lovecoding.store`，Cloudflare SSL/TLS 模式使用 `Full (strict)`。

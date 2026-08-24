@@ -12,12 +12,15 @@ installation token。Token 只存在于 Worker 进程内存，按 installation �
 | 权限 | 级别 | 用途 |
 | --- | --- | --- |
 | Metadata | Read-only | 校验仓库稳定数字 ID 和名称 |
-| Pull requests | Read-only | 读取 PR 元数据、changed files 和完整 diff |
+| Pull requests | Read-only | 读取 PR 元数据和 changed files |
+| Contents | Read-only | 读取私有仓库 PR 的完整 diff 表示 |
 | Checks | Read-only | 分页读取当前 `head_sha` 的 Check Runs |
 | Commit statuses | Read-only | 分页读取当前 `head_sha` 的 Commit Statuses |
 
-当前阶段不需要 Contents 写权限、Administration、Workflows 或 Secrets。后续若使用 Blob API
-补充超大文件，再单独增加 `Contents: Read-only`。
+GitHub 对私有仓库的 PR diff 表示会同时校验 `Pull requests: Read-only` 和
+`Contents: Read-only`。当前阶段不需要 Contents 写权限、Administration、Workflows 或
+Secrets。后续若使用 Blob API 补充超大文件，复用现有 `Contents: Read-only` 即可，不需要
+再扩大权限。
 
 ## 2. 读取顺序与版本保护
 
