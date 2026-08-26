@@ -136,7 +136,7 @@ def test_planner_assigns_every_file_once_and_orders_applicable_rules() -> None:
     )
 
 
-def test_planner_applies_total_budget_in_stable_path_order() -> None:
+def test_planner_keeps_all_reviewable_files_and_defers_batching_to_model_stage() -> None:
     files = (
         _file("b.py", patch="b" * 3000),
         _file("c.py", patch="c" * 5000),
@@ -152,13 +152,13 @@ def test_planner_applies_total_budget_in_stable_path_order() -> None:
 
     plan = planner.plan(_target(), files, _snapshot())
 
-    assert [unit.file for unit in plan.units] == ["a.py"]
+    assert [unit.file for unit in plan.units] == ["a.py", "b.py", "c.py"]
     assert {item.file: item.decision for item in plan.files} == {
         "a.py": ReviewFileDecision.PLANNED,
-        "b.py": ReviewFileDecision.OMITTED_BY_BUDGET,
-        "c.py": ReviewFileDecision.OMITTED_BY_BUDGET,
+        "b.py": ReviewFileDecision.PLANNED,
+        "c.py": ReviewFileDecision.PLANNED,
     }
-    assert plan.total_estimated_input_bytes == 3000
+    assert plan.total_estimated_input_bytes == 11_000
 
 
 def test_planner_changes_identity_for_a_new_head_sha() -> None:

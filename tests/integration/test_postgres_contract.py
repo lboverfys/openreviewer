@@ -366,6 +366,7 @@ def test_postgres_review_plan_is_claimed_and_saved_atomically(
 
     assert stored_model.created is True
     assert stored_model.finding_count == 1
+    assert stored_model.execution_status is ExecutionStatus.COMPLETED
     with postgres_database.sessions() as session:
         persisted = session.get(ReviewPlanRecord, stored.plan_id)
         task = session.get(ReviewTaskRecord, submission.review_task_id)
@@ -373,7 +374,7 @@ def test_postgres_review_plan_is_claimed_and_saved_atomically(
         assert task is not None
         assert persisted.plan_fingerprint == plan.plan_fingerprint
         assert persisted.model_review_completed_at is not None
-        assert task.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert task.execution_status == ExecutionStatus.COMPLETED.value
         assert task.claimed_from_status is None
         assert session.scalar(select(ModelCallRecord.id)) == stored_model.model_call_id
         assert session.scalar(select(ReviewFindingRecord.verification_status)) == (

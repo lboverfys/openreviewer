@@ -1,7 +1,7 @@
 """任务详情、人工操作和 Finding 裁决接口回归测试。"""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -20,6 +20,7 @@ from domain.enums import (
 )
 from domain.model_review import ModelTokenUsage
 from domain.models import FindingLocation, ReviewFinding, ReviewRequest
+from domain.security import ErrorCode, SafeError
 from persistence.database import Database
 from persistence.models import (
     Base,
@@ -31,6 +32,7 @@ from persistence.models import (
     ReviewTaskRecord,
 )
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.dashboard import DashboardService
 from persistence.dashboard import SqlAlchemyDashboardRepository
 from services.reviews import ReviewService
@@ -187,6 +189,7 @@ def test_failed_planned_run_can_retry_and_rerun(database: Database) -> None:
         assert task is not None
         run.execution_status = "failed"
         task.execution_status = "failed"
+        task.model_attempt_count = 1
         task.last_error = "model output truncated"
         task.last_error_code = "model_output_truncated"
         task.last_error_retryable = True
@@ -212,6 +215,34 @@ def test_failed_planned_run_can_retry_and_rerun(database: Database) -> None:
                 created_at=now,
             )
         )
+        session.add_all(
+            [
+                OutboxEventRecord(
+                    id="event-old-model-running",
+                    event_key=(
+                        f"review.task.running:{task.id}:model-review:1"
+                    ),
+                    aggregate_type="review_run",
+                    aggregate_id=run.id,
+                    event_type="review.task.running",
+                    payload={},
+                    occurred_at=now,
+                    publish_attempts=0,
+                ),
+                OutboxEventRecord(
+                    id="event-old-model-failed",
+                    event_key=(
+                        f"review.task.failed:{task.id}:failed:model-attempt-1"
+                    ),
+                    aggregate_type="review_run",
+                    aggregate_id=run.id,
+                    event_type="review.task.failed",
+                    payload={},
+                    occurred_at=now,
+                    publish_attempts=0,
+                ),
+            ]
+        )
         session.commit()
 
     async def exercise() -> None:
@@ -229,6 +260,19 @@ def test_failed_planned_run_can_retry_and_rerun(database: Database) -> None:
             assert retried.status_code == 200
             assert retried.json()["review_run_id"] == submission.review_run_id
             assert retried.json()["execution_status"] == "ready_for_review"
+
+            queue = SqlAlchemyReviewTaskQueue(database.sessions)
+            lease = queue.claim_next("retry-regression-worker", timedelta(minutes=5))
+            assert lease is not None
+            assert lease.review_run_id == submission.review_run_id
+            queue.retry_or_fail(
+                lease,
+                SafeError(
+                    code=ErrorCode.MODEL_OUTPUT_TRUNCATED,
+                    safe_message="model output truncated",
+                    retryable=False,
+                ),
+            )
 
             rerun = await client.post(
                 f"/api/v1/reviews/{submission.review_run_id}/actions",
@@ -380,6 +424,7 @@ def test_finding_decision_is_visible_in_detail(database: Database) -> None:
             body = response.json()
             assert body["verified_finding_count"] == 1
             assert body["unverified_finding_count"] == 0
+            assert body["model_reasoning_tokens"] == 0
             assert body["findings"][0]["verification_status"] == "verified"
 
     asyncio.run(exercise())

@@ -123,6 +123,7 @@ class StoredReviewDetails:
     plan_rule_count: int | None
     plan_input_bytes: int | None
     plan_rules_complete: bool | None
+    plan_file_decisions: Mapping[str, int]
     model_review_completed_at: datetime | None
     model_call_id: str | None
     model_provider: str | None
@@ -135,6 +136,7 @@ class StoredReviewDetails:
     model_output_tokens: int | None
     model_cache_read_tokens: int | None
     model_cache_write_tokens: int | None
+    model_reasoning_tokens: int | None
     model_cost_microusd: int | None
     model_finding_count: int | None
     model_created_at: datetime | None
@@ -253,7 +255,7 @@ class ReviewManagementService:
     @staticmethod
     def _current_stage(
         item: StoredReviewDetails,
-        unverified_findings: int,
+        _unverified_findings: int,
     ) -> tuple[str, str]:
         status = item.execution_status
         if status is ExecutionStatus.SUPERSEDED:
@@ -263,7 +265,7 @@ class ReviewManagementService:
         if status is ExecutionStatus.TIMED_OUT:
             return "ci", "ci_timed_out"
         if status is ExecutionStatus.COMPLETED:
-            return "publication", "completed"
+            return "result", "completed"
         if status is ExecutionStatus.FAILED:
             if item.review_plan_id is not None:
                 return "model", "model_failed"
@@ -271,9 +273,7 @@ class ReviewManagementService:
                 return "planning", "planning_failed"
             return "context", "context_failed"
         if item.model_review_completed_at is not None:
-            if unverified_findings:
-                return "verification", "awaiting_verification"
-            return "publication", "awaiting_publication"
+            return "result", "completed"
         if item.review_plan_id is not None:
             return (
                 "model",
@@ -331,7 +331,7 @@ class ReviewManagementService:
         phase: str,
         unverified_findings: int,
     ) -> tuple[ReviewStage, ...]:
-        order = ("intake", "context", "ci", "planning", "model", "verification", "publication")
+        order = ("intake", "context", "ci", "planning", "model", "result")
         current_index = order.index(current_stage)
         failed_phase = phase.endswith("failed") or phase == "ci_timed_out"
         event_times = {event.event_type: event.occurred_at for event in item.events}
@@ -345,38 +345,20 @@ class ReviewManagementService:
             ),
             "planning": item.plan_created_at,
             "model": item.model_review_completed_at,
-            "verification": (
-                max(
-                    (
-                        finding.reviewed_at
-                        for finding in item.findings
-                        if finding.reviewed_at is not None
-                    ),
-                    default=None,
-                )
-                if item.findings and unverified_findings == 0
-                else (item.model_review_completed_at if not item.findings and item.model_review_completed_at else None)
-            ),
-            "publication": (
-                item.updated_at
-                if item.execution_status is ExecutionStatus.COMPLETED
-                else None
-            ),
+            "result": item.model_review_completed_at,
         }
         result: list[ReviewStage] = []
         for index, key in enumerate(order):
-            if completed_times[key] is not None and (
-                index < current_index or key == "intake" or key == "verification"
-            ):
+            if index < current_index:
                 stage_status = "completed"
             elif index == current_index:
-                stage_status = "failed" if failed_phase else "current"
-            elif index < current_index:
-                stage_status = "completed"
+                stage_status = (
+                    "failed"
+                    if failed_phase
+                    else "completed" if phase == "completed" else "current"
+                )
             else:
                 stage_status = "pending"
-            if key == "publication" and phase == "awaiting_publication":
-                stage_status = "blocked"
             result.append(
                 ReviewStage(
                     key=key,

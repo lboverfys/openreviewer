@@ -55,6 +55,7 @@ from persistence.models import (
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.ai_settings import ActiveAiRuntime
+from services.model_review import ModelServiceSettings
 from services.review_planning import DeterministicReviewPlanner
 from services.reviews import ReviewService
 from services.task_queue import ReviewPlanConflictError, ReviewPlanInputError, ReviewTarget
@@ -438,7 +439,7 @@ def test_model_review_is_loaded_and_saved_atomically(database: Database) -> None
     assert repeated.created is False
     assert repeated.model_call_id == stored.model_call_id
     assert stored.finding_count == 1
-    assert stored.execution_status is ExecutionStatus.READY_FOR_REVIEW
+    assert stored.execution_status is ExecutionStatus.COMPLETED
     assert queue.claim_next("worker-1", timedelta(seconds=30)) is None
     with database.sessions() as session:
         task = session.get(ReviewTaskRecord, task_id)
@@ -451,8 +452,10 @@ def test_model_review_is_loaded_and_saved_atomically(database: Database) -> None
         assert persisted_plan is not None
         assert call is not None
         assert finding is not None
-        assert task.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
-        assert run.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert task.execution_status == ExecutionStatus.COMPLETED.value
+        assert run.execution_status == ExecutionStatus.COMPLETED.value
+        assert run.review_conclusion == "findings_present"
+        assert run.coverage_status == "partial"
         assert task.model_attempt_count == 1
         assert task.lease_owner is None
         completed_at = persisted_plan.model_review_completed_at
@@ -673,7 +676,7 @@ def test_plan_retry_and_expired_lease_return_to_ready_stage(
         assert task.claimed_from_status is None
 
 
-def test_worker_prepares_plan_and_keeps_ready_status(database: Database) -> None:
+def test_worker_prepares_plan_runs_model_batches_and_completes(database: Database) -> None:
     clock = MutableClock(datetime(2026, 8, 25, 13, 0, tzinfo=UTC))
     task_id, run_id = _submit(database, clock, "worker-plan", "a" * 40)
     rule_loader = StaticRuleLoader()
@@ -683,6 +686,13 @@ def test_worker_prepares_plan_and_keeps_ready_status(database: Database) -> None
             revision=17,
             reviewer=model_reviewer,
             planner=DeterministicReviewPlanner(),
+            model_settings=ModelServiceSettings(
+                provider=ModelProvider.OPENAI,
+                model="test-model",
+                api_key="test-key",
+                api_protocol=ModelApiProtocol.RESPONSES,
+                context_window_tokens=1_000_000,
+            ),
         )
     )
     runtime = WorkerRuntime(
@@ -708,8 +718,8 @@ def test_worker_prepares_plan_and_keeps_ready_status(database: Database) -> None
         run = session.get(ReviewRunRecord, run_id)
         assert task is not None
         assert run is not None
-        assert task.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
-        assert run.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert task.execution_status == ExecutionStatus.COMPLETED.value
+        assert run.execution_status == ExecutionStatus.COMPLETED.value
         assert session.scalar(
             select(func.count()).select_from(ReviewPlanRecord)
         ) == 1
@@ -723,6 +733,26 @@ def test_worker_prepares_plan_and_keeps_ready_status(database: Database) -> None
         assert session.scalar(
             select(func.count()).select_from(ReviewFindingRecord)
         ) == 1
+        progress_types = set(
+            session.scalars(
+                select(OutboxEventRecord.event_type).where(
+                    OutboxEventRecord.event_type.like("review.model.%")
+                )
+            )
+        )
+        assert {
+            "review.model.batches_planned",
+            "review.model.batch_started",
+            "review.model.batch_completed",
+            "review.model.completed",
+        } <= progress_types
+        completed_event = session.scalar(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.event_type == "review.model.batch_completed"
+            )
+        )
+        assert completed_event is not None
+        assert completed_event.payload["reasoning_tokens"] == 5
 
 
 def test_worker_does_not_claim_ready_task_without_active_ai_configuration(

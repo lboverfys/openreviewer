@@ -6,6 +6,7 @@ import type {
   FindingDecision,
   ReviewAction,
   ReviewDetails,
+  ReviewEvent,
   ReviewFinding,
 } from "./types";
 import {
@@ -46,7 +47,7 @@ const severityLabels: Record<string, string> = {
 };
 
 const findingStatusLabels: Record<string, string> = {
-  unverified: "待确认",
+  unverified: "未标记",
   verified: "已确认",
   rejected: "已忽略",
 };
@@ -57,6 +58,9 @@ const eventLabels: Record<string, string> = {
   "review.waiting_for_ci": "等待 CI",
   "review.ready_for_review": "CI 已完成",
   "review.plan.prepared": "审查计划已生成",
+  "review.model.batches_planned": "AI 批次已规划",
+  "review.model.batch_started": "AI 批次开始",
+  "review.model.batch_completed": "AI 批次完成",
   "review.model.completed": "AI 分析完成",
   "review.task.retry_scheduled": "已安排自动重试",
   "review.task.failed": "任务失败",
@@ -68,6 +72,17 @@ const eventLabels: Record<string, string> = {
   "review.manual.cancel": "管理员取消任务",
   "review.manual.rerun_requested": "管理员发起重新审查",
   "review.finding.decided": "管理员更新问题裁决",
+};
+
+const fileDecisionLabels: Record<string, string> = {
+  planned: "已送 AI",
+  binary: "二进制",
+  generated: "生成文件",
+  unsupported: "不支持的类型",
+  patch_missing: "Diff 缺失",
+  patch_too_large: "Diff 过大",
+  rules_incomplete: "规则不完整",
+  omitted_by_budget: "旧版范围省略",
 };
 
 function actionKey(): string {
@@ -85,6 +100,49 @@ function formatDuration(value: number | null): string {
   if (value === null || value === undefined) return "—";
   if (value < 1000) return `${value} ms`;
   return `${(value / 1000).toFixed(1)} s`;
+}
+
+function payloadNumber(event: ReviewEvent | undefined, key: string): number | null {
+  const value = event?.payload[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function payloadString(event: ReviewEvent | undefined, key: string): string | null {
+  const value = event?.payload[key];
+  return typeof value === "string" ? value : null;
+}
+
+function latestBatchPlanEvent(events: ReviewEvent[]): ReviewEvent | undefined {
+  return events
+    .filter((event) => event.event_type === "review.model.batches_planned")
+    .reduce<ReviewEvent | undefined>((latest, event) => {
+      if (!latest) return event;
+      return (payloadNumber(event, "model_attempt_count") ?? -1)
+        > (payloadNumber(latest, "model_attempt_count") ?? -1)
+        ? event
+        : latest;
+    }, undefined);
+}
+
+function eventDetail(event: ReviewEvent): string | null {
+  if (event.event_type === "review.model.batches_planned") {
+    const batches = payloadNumber(event, "batch_count");
+    const files = payloadNumber(event, "file_count");
+    const context = payloadNumber(event, "context_window_tokens");
+    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 上下文 ${context?.toLocaleString() ?? "—"} Token`;
+  }
+  if (event.event_type === "review.model.batch_started") {
+    const number = payloadNumber(event, "batch_number");
+    const total = payloadNumber(event, "batch_count");
+    const files = payloadNumber(event, "file_count");
+    return `第 ${number ?? "—"}/${total ?? "—"} 批 · ${files ?? "—"} 个文件 · 约 ${payloadNumber(event, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token`;
+  }
+  if (event.event_type === "review.model.batch_completed") {
+    const number = payloadNumber(event, "batch_number");
+    const total = payloadNumber(event, "batch_count");
+    return `第 ${number ?? "—"}/${total ?? "—"} 批 · 输入 ${payloadNumber(event, "input_tokens")?.toLocaleString() ?? "—"} · 输出 ${payloadNumber(event, "output_tokens")?.toLocaleString() ?? "—"} · 推理 ${payloadNumber(event, "reasoning_tokens")?.toLocaleString() ?? "—"} Token · ${formatDuration(payloadNumber(event, "duration_ms"))}`;
+  }
+  return null;
 }
 
 function DetailIcon({ children }: { children: string }) {
@@ -132,6 +190,58 @@ function StageTimeline({ details }: { details: ReviewDetails }) {
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function ModelBatchPanel({ details }: { details: ReviewDetails }) {
+  const planned = latestBatchPlanEvent(details.events);
+  const latestAttempt = payloadNumber(planned, "model_attempt_count");
+  const modelEvents = details.events.filter((event) =>
+    event.event_type.startsWith("review.model.batch")
+    && (latestAttempt === null || payloadNumber(event, "model_attempt_count") === latestAttempt),
+  );
+  if (!planned && modelEvents.length === 0) return null;
+
+  const started = new Map<number, ReviewEvent>();
+  const completed = new Map<number, ReviewEvent>();
+  for (const event of modelEvents) {
+    const number = payloadNumber(event, "batch_number");
+    if (number === null) continue;
+    if (event.event_type === "review.model.batch_started") started.set(number, event);
+    if (event.event_type === "review.model.batch_completed") completed.set(number, event);
+  }
+  const batchCount = payloadNumber(planned, "batch_count")
+    ?? Math.max(0, ...started.keys(), ...completed.keys());
+  const completeCount = completed.size;
+
+  return (
+    <section className="review-panel review-batch-panel">
+      <div className="review-panel-heading">
+        <div><span className="review-eyebrow">LIVE MODEL PROGRESS</span><h2>AI 分批进度</h2></div>
+        <span className={`review-batch-readout ${completeCount === batchCount ? "is-complete" : ""}`}>{completeCount}/{batchCount} 批</span>
+      </div>
+      <div className="review-batch-progress" aria-hidden="true"><span style={{ width: `${batchCount ? (completeCount / batchCount) * 100 : 0}%` }} /></div>
+      <div className="review-batch-list">
+        {Array.from({ length: batchCount }, (_, offset) => offset + 1).map((number) => {
+          const start = started.get(number);
+          const finish = completed.get(number);
+          const failed = details.execution_status === "failed" && Boolean(start) && !finish;
+          const status = finish ? "completed" : failed ? "failed" : start ? "running" : "pending";
+          const firstFile = payloadString(start, "first_file");
+          const lastFile = payloadString(start, "last_file");
+          return (
+            <div className={`review-batch-row is-${status}`} key={number}>
+              <span className="review-batch-marker">{finish ? "✓" : number}</span>
+              <div className="review-batch-copy">
+                <div><strong>第 {number}/{batchCount} 批</strong><span>{finish ? "已完成" : failed ? "本批失败" : start ? "模型响应中" : "等待中"}</span></div>
+                {start && <p>{payloadNumber(start, "file_count") ?? 0} 个文件 · {firstFile}{lastFile && lastFile !== firstFile ? ` 至 ${lastFile}` : ""}</p>}
+                {finish ? <small>输入 {payloadNumber(finish, "input_tokens")?.toLocaleString() ?? "—"} · 输出 {payloadNumber(finish, "output_tokens")?.toLocaleString() ?? "—"} · 推理 {payloadNumber(finish, "reasoning_tokens")?.toLocaleString() ?? "—"} Token · {formatDuration(payloadNumber(finish, "duration_ms"))} · {payloadNumber(finish, "finding_count") ?? 0} 条候选</small> : start && <small>预计输入 {payloadNumber(start, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token{start.payload.fragmented === true ? " · 含文件切片" : ""}</small>}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -314,6 +424,20 @@ function ReviewDetailPage({
   }
 
   const hasActions = details.available_actions.length > 0;
+  const latestBatchPlan = latestBatchPlanEvent(details.events);
+  const modelProgressActive = details.execution_status === "running" && !details.model_review_completed_at && details.events.some(
+    (event) => event.event_type === "review.model.batch_started",
+  );
+  const modelDisplayState = details.model_status === "succeeded"
+    ? "成功"
+    : details.execution_status === "failed" && latestBatchPlan
+      ? "调用失败"
+    : modelProgressActive
+      ? "调用中"
+      : latestBatchPlan
+        ? "已分批"
+        : details.model_status ?? "未调用";
+  const modelDisplayName = details.model_name ?? payloadString(latestBatchPlan, "model");
   return (
     <div className="review-detail-shell">
       <header className="review-detail-navbar">
@@ -381,11 +505,12 @@ function ReviewDetailPage({
         <div className="review-detail-grid">
           <div className="review-detail-primary">
             <StageTimeline details={details} />
+            <ModelBatchPanel details={details} />
 
             <section className="review-panel review-result-panel">
               <div className="review-panel-heading">
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
-                <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span><span className="result-count result-count-pending">{details.unverified_finding_count} 待确认</span></div>
+                <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.unverified_finding_count > 0 && <span className="result-count result-count-pending">{details.unverified_finding_count} 未标记</span>}</div>
               </div>
               {!details.model_review_completed_at && (
                 <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>AI 结果尚未生成</strong><p>模型完成后，候选问题会显示在这里。</p></div></div>
@@ -411,7 +536,7 @@ function ReviewDetailPage({
                     <div className="review-event-row" key={event.id}>
                       <span className="review-event-time">{formatDate(event.occurred_at)}</span>
                       <span className="review-event-line" />
-                      <div className="review-event-copy"><strong>{eventLabels[event.event_type] ?? event.event_type}</strong><code>{event.event_type}</code>{typeof event.payload.error_message === "string" && <p>{event.payload.error_message}</p>}{typeof event.payload.error_code === "string" && <small>错误码：{event.payload.error_code}{event.payload.error_retryable === true ? " · 可重试" : event.payload.error_retryable === false ? " · 不可重试" : ""}</small>}</div>
+                      <div className="review-event-copy"><strong>{eventLabels[event.event_type] ?? event.event_type}</strong><code>{event.event_type}</code>{eventDetail(event) && <small>{eventDetail(event)}</small>}{typeof event.payload.error_message === "string" && <p>{event.payload.error_message}</p>}{typeof event.payload.error_code === "string" && <small>错误码：{event.payload.error_code}{event.payload.error_retryable === true ? " · 可重试" : event.payload.error_retryable === false ? " · 不可重试" : ""}</small>}</div>
                     </div>
                   ))}
                 </div>
@@ -426,21 +551,22 @@ function ReviewDetailPage({
                 <div><dt>运行 ID</dt><dd><code title={details.review_run_id}>{details.review_run_id.slice(0, 12)}…</code></dd></div>
                 <div><dt>任务 ID</dt><dd><code title={details.review_task_id}>{details.review_task_id.slice(0, 12)}…</code></dd></div>
                 <div><dt>版本 SHA</dt><dd><code>{shortSha(details.head_sha)}</code></dd></div>
-                <div><dt>覆盖状态</dt><dd>{details.coverage_status}</dd></div>
+                <div><dt>覆盖状态</dt><dd>{details.coverage_status === "complete" ? "完整" : details.coverage_status === "partial" ? "部分" : details.coverage_status}</dd></div>
                 <div><dt>创建时间</dt><dd>{formatDate(details.created_at)}</dd></div>
                 <div><dt>可用时间</dt><dd>{formatDate(details.available_at)}</dd></div>
               </dl>
             </section>
 
             <section className="review-panel review-model-panel">
-              <div className="review-panel-heading"><div><span className="review-eyebrow">MODEL CALL</span><h2>AI 调用</h2></div><span className={`review-model-state ${details.model_status === "succeeded" ? "is-good" : details.model_status ? "is-warning" : ""}`}>{details.model_status === "succeeded" ? "成功" : details.model_status ?? "未调用"}</span></div>
+              <div className="review-panel-heading"><div><span className="review-eyebrow">MODEL CALL</span><h2>AI 调用</h2></div><span className={`review-model-state ${details.model_status === "succeeded" ? "is-good" : details.execution_status === "failed" && latestBatchPlan ? "is-error" : modelProgressActive ? "is-running" : latestBatchPlan ? "is-warning" : ""}`}>{modelDisplayState}</span></div>
               <dl className="review-metric-grid">
-                <div><dt>模型</dt><dd>{details.model_name || "—"}</dd></div>
-                <div><dt>供应商</dt><dd>{details.model_provider || "—"}</dd></div>
-                <div><dt>接口</dt><dd>{details.model_protocol || "—"}</dd></div>
+                <div><dt>模型</dt><dd>{modelDisplayName || "—"}</dd></div>
+                <div><dt>供应商</dt><dd>{details.model_provider ?? payloadString(latestBatchPlan, "provider") ?? "—"}</dd></div>
+                <div><dt>接口</dt><dd>{details.model_protocol ?? payloadString(latestBatchPlan, "api_protocol") ?? "—"}</dd></div>
                 <div><dt>响应</dt><dd>{details.model_response_status ?? "—"}</dd></div>
                 <div><dt>输入 Token</dt><dd>{details.model_input_tokens?.toLocaleString() ?? "—"}</dd></div>
                 <div><dt>输出 Token</dt><dd>{details.model_output_tokens?.toLocaleString() ?? "—"}</dd></div>
+                <div><dt>推理 Token</dt><dd>{details.model_reasoning_tokens?.toLocaleString() ?? "—"}</dd></div>
                 <div><dt>耗时</dt><dd>{formatDuration(details.model_duration_ms)}</dd></div>
                 <div><dt>候选问题</dt><dd>{details.model_finding_count ?? "—"}</dd></div>
               </dl>
@@ -459,7 +585,7 @@ function ReviewDetailPage({
               {details.ci_checks.length > 0 && <div className="review-ci-check-list">{details.ci_checks.slice(0, 8).map((check) => <div key={`${check.kind}:${check.name}`}><span className={`ci-check-dot ci-check-${check.conclusion ?? check.status}`} /><span>{check.name}</span><small>{check.conclusion ?? check.status}</small></div>)}</div>}
             </section>
 
-            {details.review_plan_id && <section className="review-panel review-plan-panel"><div className="review-panel-heading"><div><span className="review-eyebrow">REVIEW PLAN</span><h2>审查计划</h2></div></div><div className="review-plan-stats"><div><strong>{details.plan_file_count ?? 0}</strong><span>文件</span></div><div><strong>{details.plan_unit_count ?? 0}</strong><span>审查单元</span></div><div><strong>{details.plan_rule_count ?? 0}</strong><span>规则</span></div></div><div className="review-plan-bytes">输入预算 {formatBytes(details.plan_input_bytes)}</div></section>}
+            {details.review_plan_id && <section className="review-panel review-plan-panel"><div className="review-panel-heading"><div><span className="review-eyebrow">REVIEW COVERAGE</span><h2>文件覆盖</h2></div></div><div className="review-plan-stats"><div><strong>{details.plan_file_count ?? 0}</strong><span>变更文件</span></div><div><strong>{details.plan_unit_count ?? 0}</strong><span>送入 AI</span></div><div><strong>{details.plan_rule_count ?? 0}</strong><span>规则</span></div></div><div className="review-decision-list">{Object.entries(details.plan_file_decisions).map(([decision, count]) => <div key={decision}><span>{fileDecisionLabels[decision] ?? decision}</span><strong>{count}</strong></div>)}</div><div className="review-plan-bytes">可审查输入 {formatBytes(details.plan_input_bytes)} · 超长内容自动分批</div></section>}
           </aside>
         </div>
       </main>

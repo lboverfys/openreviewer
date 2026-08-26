@@ -1,5 +1,6 @@
 """租用和推进审查任务的应用边界。"""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -261,6 +262,15 @@ class ReviewTaskQueue(Protocol):
 
     def load_model_review_input(self, lease: ReviewTaskLease) -> ModelReviewInput:
         """用固定三次有界查询读取计划、规则和全部 Review Unit。"""
+        ...
+
+    def record_model_progress(
+        self,
+        lease: ReviewTaskLease,
+        phase: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        """在不暴露模型私密思维文本的前提下记录批次级真实进度。"""
         ...
 
     def store_model_review(

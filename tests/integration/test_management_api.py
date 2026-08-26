@@ -286,6 +286,7 @@ def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
                     "api_base_url": "https://relay.example.test/v1/",
                     "api_key": api_key,
                     "clear_api_key": False,
+                    "context_window_tokens": 1_000_000,
                     "max_output_tokens": 8192,
                     "connect_timeout_seconds": 5,
                     "read_timeout_seconds": 180,
@@ -308,6 +309,7 @@ def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
             assert saved.json()["providers"][0]["api_base_url"] == (
                 "https://relay.example.test/v1"
             )
+            assert saved.json()["providers"][0]["context_window_tokens"] == 1_000_000
 
             premature = await client.post(
                 "/api/v1/settings/ai/providers/openai/activate",

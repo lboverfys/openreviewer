@@ -328,7 +328,7 @@ def test_switching_api_base_url_invalidates_test_and_active_provider(
     assert tested == ["https://relay-one.example/v1"]
 
 
-def test_updating_pricing_keeps_test_status_and_active_provider(
+def test_updating_planning_limits_keeps_test_status_and_active_provider(
     database: Database,
 ) -> None:
     service = AiSettingsService(
@@ -362,6 +362,7 @@ def test_updating_pricing_keeps_test_status_and_active_provider(
         AiProviderDraft(
             model="priced-model",
             api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            context_window_tokens=1_000_000,
             input_usd_per_million=Decimal("0.50"),
             output_usd_per_million=Decimal("2.00"),
         ),
@@ -372,3 +373,4 @@ def test_updating_pricing_keeps_test_status_and_active_provider(
     assert updated.active_provider is ModelProvider.OPENAI
     assert updated.providers[0].active is True
     assert updated.providers[0].test_status == "succeeded"
+    assert updated.providers[0].context_window_tokens == 1_000_000

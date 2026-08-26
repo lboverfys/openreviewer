@@ -32,9 +32,9 @@ Content-Type: application/json
 2. 一个与该运行一一对应、状态为 `queued` 的 `ReviewTask`；
 3. 一个类型为 `review.requested` 的 `OutboxEvent`。
 
-只有事务整体提交成功才返回接受结果。当前 Worker 可以把任务从 `queued` 推进到
-`waiting_for_ci`，再在 `ready_for_review` 生成计划和未复核模型候选。证据复核与结果发布尚未
-接入，因此不能进入 `completed`。
+只有事务整体提交成功才返回接受结果。Worker 会把任务从 `queued` 推进到 `waiting_for_ci`，
+再在 `ready_for_review` 生成计划并自动调用模型；AI 结果原子保存后进入 `completed`。人工标记
+候选和后续 GitHub 发布不阻塞当前管理界面的审查完成状态。
 
 ## 3. 幂等行为
 

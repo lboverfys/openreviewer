@@ -2,9 +2,10 @@
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Load, Session, sessionmaker
 
@@ -15,6 +16,8 @@ from domain.enums import (
     ExecutionStatus,
     PatchState,
     PullRequestState,
+    ReviewConclusion,
+    ReviewFileDecision,
     WorkerStatus,
 )
 from domain.github import GitHubReviewContext, PullRequestFile
@@ -1280,7 +1283,7 @@ class SqlAlchemyReviewTaskQueue:
         *,
         configuration_revision: int | None = None,
     ) -> StoredModelReview:
-        """短事务原子保存调用审计、未复核 Finding、阶段标记和 Outbox。"""
+        """短事务原子保存调用审计、Finding、完成标记和 Outbox。"""
 
         if (
             lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW
@@ -1354,6 +1357,7 @@ class SqlAlchemyReviewTaskQueue:
                             ReviewPlanRecord.review_version_key,
                             ReviewPlanRecord.head_sha,
                             ReviewPlanRecord.plan_fingerprint,
+                            ReviewPlanRecord.rules_complete,
                             ReviewPlanRecord.model_review_completed_at,
                             raiseload=True,
                         )
@@ -1519,10 +1523,29 @@ class SqlAlchemyReviewTaskQueue:
                     session.execute(insert(ReviewFindingRecord), finding_rows)
 
                 plan.model_review_completed_at = now
+                incomplete_file_count = session.scalar(
+                    select(func.count())
+                    .select_from(ReviewFilePlanRecord)
+                    .where(
+                        ReviewFilePlanRecord.review_plan_id == plan.id,
+                        ReviewFilePlanRecord.decision
+                        != ReviewFileDecision.PLANNED.value,
+                    )
+                )
+                run.review_conclusion = (
+                    ReviewConclusion.FINDINGS_PRESENT.value
+                    if findings
+                    else ReviewConclusion.NO_CONFIRMED_FINDINGS.value
+                )
+                run.coverage_status = (
+                    CoverageStatus.COMPLETE.value
+                    if plan.rules_complete and not incomplete_file_count
+                    else CoverageStatus.PARTIAL.value
+                )
                 self._set_owned_status(
                     task,
                     run,
-                    ExecutionStatus.READY_FOR_REVIEW,
+                    ExecutionStatus.COMPLETED,
                     now,
                 )
                 self._add_event(
@@ -1556,7 +1579,7 @@ class SqlAlchemyReviewTaskQueue:
                     model_call_id=model_call_id,
                     created=True,
                     finding_count=len(findings),
-                    execution_status=ExecutionStatus.READY_FOR_REVIEW,
+                    execution_status=ExecutionStatus.COMPLETED,
                 )
             except (
                 ModelReviewConflictError,
@@ -1568,6 +1591,41 @@ class SqlAlchemyReviewTaskQueue:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise TaskQueueError("model review could not be persisted") from exc
+
+    def record_model_progress(
+        self,
+        lease: ReviewTaskLease,
+        phase: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        """用短事务写入模型批次进度，不保存或伪造 Chain-of-Thought。"""
+
+        allowed_phases = {"batches_planned", "batch_started", "batch_completed"}
+        if phase not in allowed_phases:
+            raise ValueError("unsupported model progress phase")
+        if lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW:
+            raise ModelReviewConflictError("当前租约不属于模型审查阶段")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                task, run = self._locked_owned_task_with_run(session, lease, now)
+                task.updated_at = now
+                run.updated_at = now
+                self._add_event(
+                    session,
+                    task,
+                    f"review.model.{phase}",
+                    f"model-attempt-{task.model_attempt_count}",
+                    now,
+                    extra_payload=dict(payload),
+                )
+                session.commit()
+            except (ModelReviewConflictError, TaskLeaseLostError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model progress could not be persisted") from exc
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
         """供兼容测试路径把任务直接推进到 ``waiting_for_ci``。
@@ -2142,10 +2200,16 @@ class SqlAlchemyReviewTaskQueue:
             )
         if extra_payload is not None:
             payload.update(extra_payload)
+        event_id = str(self._uuid_factory())
+        event_identity = (
+            f"{event_type}:{task.id}:{key_suffix}:{event_id}".encode("utf-8")
+        )
         session.add(
             OutboxEventRecord(
-                id=str(self._uuid_factory()),
-                event_key=f"{event_type}:{task.id}:{key_suffix}",
+                id=event_id,
+                # 状态事务本身保证同一次转换只提交一次；事件 ID 区分人工重试后
+                # 计数器重新从 1 开始的全新转换，避免旧事件键阻断整个 Worker。
+                event_key=f"review.task.event:{sha256(event_identity).hexdigest()}",
                 aggregate_type="review_run",
                 aggregate_id=task.review_run_id,
                 event_type=event_type,

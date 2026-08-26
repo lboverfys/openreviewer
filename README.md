@@ -2,14 +2,14 @@
 
 OpenReviewer 是独立的 AI 代码审查编排平台，首个接入项目是 NiuMa。
 
-当前仓库已完成 M3 GitHub 上下文准备，并进入阶段 D 的模型审查执行：除 PostgreSQL 任务、
+当前仓库已完成从 GitHub 提交到 AI 审查结果的首个可用闭环：除 PostgreSQL 任务、
 单并发 Worker、管理员登录、
 实时 Dashboard、React 管理前端和 Webhook 安全入口外，Worker 已能用 GitHub App 短期身份
 读取 PR 元数据、变更文件、完整 diff 和当前提交的 CI，并安全处理轮询、超时和新提交淘汰。
-Finding 复核、GitHub Check 发布和 LangGraph 工作流仍将在后续里程碑加入。阶段 D 已把
-`AGENTS.md` 批量规则加载、有预算的 Review Unit 规划、OpenAI/Anthropic 严格结构化调用接入
-Worker，并原子保存规则、计划、模型用量、成本和未复核 Finding。运行链路仍停在
-`ready_for_review`，不会把“模型候选已生成”误报成审查完成。
+GitHub Check 发布和 LangGraph 工作流仍将在后续里程碑加入。当前 Worker 已把
+`AGENTS.md` 批量规则加载、全量 Review Unit 规划、按模型上下文自动分批的
+OpenAI/Anthropic 严格结构化调用接入，并原子保存规则、计划、模型用量、成本和 Finding。
+AI 返回结果后运行进入 `completed`；人工确认或忽略 Finding 是可选标记，不再阻塞完成状态。
 
 ## 目录
 
@@ -31,8 +31,8 @@ deployment/         niuma-2 Compose 部署配置
 - Agent 服务与 NiuMa 业务服务独立部署、独立存储。
 - Agent 只读取受限的 PR 上下文，不执行 PR 提供的脚本或构建命令。
 - 不在仓库提交 Token、私钥、明文密码、密码哈希或真实部署配置。
-- 当前 Worker 会在 CI 终态后生成计划和未复核模型候选；证据复核尚未接入，因此保持
-  `ready_for_review`，不会伪装成 `completed`。
+- 当前 Worker 会在 CI 终态后自动规划并审查本次提交中所有可审查文件；超出单批上下文时
+  自动按文件分批，单文件仍过大时按行切片，不用管理员设置“最多审查多少文件”。
 
 ## 已实现能力
 
@@ -51,9 +51,9 @@ deployment/         niuma-2 Compose 部署配置
 - GitHub App JWT 与短期 installation token，Token 只缓存在 Worker 内存。
 - 分页读取 PR changed files、完整 diff、Check Runs 和 Commit Statuses。
 - 文件/CI 有界快照、CI 定时轮询与超时，以及旧 `head_sha` 批量失效保护。
-- `AGENTS.md` 单请求批量加载、目录作用域、确定性 Review Plan，以及四表原子持久化和幂等复用。
+- `AGENTS.md` 单请求批量加载、目录作用域、全量确定性 Review Plan，以及四表原子持久化和幂等复用。
 - OpenAI Responses、OpenAI Chat Completions 与 Anthropic Messages 统一适配、严格 JSON Schema、
-  模型调用审计、独立重试、Token/耗时/可配置成本和未复核 Finding 原子持久化。
+  上下文感知分批、模型调用审计、独立重试、Token/耗时/可配置成本和 Finding 原子持久化。
 - 管理界面动态保存 OpenAI/Anthropic 草稿、官方或中转站 API 地址、真实连接测试和单供应商
   激活；API Key 使用 AES-256-GCM 加密，OpenAI 可动态选择接口协议，Worker 按配置 revision
   在下一条任务生效。
@@ -82,7 +82,7 @@ python -m alembic upgrade head
 本地配置需要数据库连接、管理员用户名、Argon2id 密码哈希、至少 32 字节的会话密钥和
 至少 32 字节的 GitHub Webhook secret。
 API 和 Worker 还需要同一份 32 字节 AI 配置加密主密钥。Worker 需要 GitHub App ID 和只读
-私钥文件路径；模型供应商、API 地址、模型 ID、API Key 与预算在登录后的设置页保存。完整
+私钥文件路径；模型供应商、API 地址、模型 ID、API Key、上下文窗口与调用边界在登录后的设置页保存。完整
 配置见 [`docs/contracts/github-context.md`](docs/contracts/github-context.md) 和
 [`docs/contracts/ai-settings.md`](docs/contracts/ai-settings.md)。
 可以使用交互式输入生成哈希，明文不会写入命令历史：

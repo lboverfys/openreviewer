@@ -16,6 +16,7 @@ from persistence.models import (
     OutboxEventRecord,
     PullRequestCiCheckRecord,
     PullRequestVersionRecord,
+    ReviewFilePlanRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
     ReviewRunRecord,
@@ -73,7 +74,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
     def get(self, review_run_id: str) -> StoredReviewDetails:
         """读取一条运行、计划、模型调用及其有界子资源快照。
 
-        主记录、Finding、CI 和事件分别使用最多四次查询；所有子查询都带
+        主记录、Finding、CI、文件覆盖汇总和事件使用固定五次查询；所有子查询都带
         ``LIMIT``，循环只负责把已取回的行转成不可变读模型。
         """
 
@@ -143,6 +144,9 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ModelCallRecord.cache_write_input_tokens.label(
                             "model_cache_write_tokens"
                         ),
+                        ModelCallRecord.reasoning_output_tokens.label(
+                            "model_reasoning_tokens"
+                        ),
                         ModelCallRecord.estimated_cost_microusd.label(
                             "model_cost_microusd"
                         ),
@@ -174,6 +178,10 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 findings = self._load_findings(session, review_run_id)
                 version_id = row["pr_version_id"]
                 ci_checks = self._load_ci_checks(session, version_id)
+                plan_file_decisions = self._load_plan_file_decisions(
+                    session,
+                    row["review_plan_id"],
+                )
                 events = self._load_events(session, review_run_id)
                 safe_error = redact_sensitive(row["last_error"])
                 safe_code = redact_sensitive(row["last_error_code"])
@@ -224,6 +232,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     plan_rule_count=row["plan_rule_count"],
                     plan_input_bytes=row["plan_input_bytes"],
                     plan_rules_complete=row["plan_rules_complete"],
+                    plan_file_decisions=plan_file_decisions,
                     model_review_completed_at=_as_utc(
                         row["model_review_completed_at"]
                     ),
@@ -238,6 +247,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     model_output_tokens=row["model_output_tokens"],
                     model_cache_read_tokens=row["model_cache_read_tokens"],
                     model_cache_write_tokens=row["model_cache_write_tokens"],
+                    model_reasoning_tokens=row["model_reasoning_tokens"],
                     model_cost_microusd=row["model_cost_microusd"],
                     model_finding_count=row["model_finding_count"],
                     model_created_at=_as_utc(row["model_created_at"]),
@@ -342,6 +352,24 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
             )
             for row in rows
         )
+
+    @staticmethod
+    def _load_plan_file_decisions(
+        session: Session,
+        review_plan_id: str | None,
+    ) -> dict[str, int]:
+        if review_plan_id is None:
+            return {}
+        rows = session.execute(
+            select(
+                ReviewFilePlanRecord.decision,
+                func.count().label("count"),
+            )
+            .where(ReviewFilePlanRecord.review_plan_id == review_plan_id)
+            .group_by(ReviewFilePlanRecord.decision)
+            .limit(16)
+        ).all()
+        return {row.decision: row.count for row in rows}
 
     @staticmethod
     def _load_events(

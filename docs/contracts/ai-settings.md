@@ -3,8 +3,8 @@
 ## 1. 配置边界
 
 管理员可以在设置页维护 OpenAI 与 Anthropic 的模型 ID、API Key、可选的 HTTPS API Base URL（支持
-中转站的 `/v1` 前缀）、输出 Token 上限、HTTP 超时、
-请求/响应大小、四类 Token 单价，以及 Review Unit 数量和输入预算。OpenAI 还可以选择
+中转站的 `/v1` 前缀）、模型上下文窗口、每批输出 Token 上限、HTTP 超时、
+请求/响应大小和四类 Token 单价。OpenAI 还可以选择
 `responses` 或 `chat_completions`；Anthropic 固定使用 `messages`。两个供应商可以同时保存，
 但同一时刻只有一个供应商处于激活状态，不做隐式故障切换。
 
@@ -28,8 +28,8 @@ URL-safe Base64。API 与 Worker 使用相同主密钥和正整数 key version�
    同时取消激活。
 2. 测试连接在数据库事务外发送一个最小严格结构化 Review Unit 请求，并保存成功或失败状态。
 3. 只有当前完整配置指纹测试成功后才能激活，旧模型或旧密钥的测试结果不能复用。
-4. 修改 Review Planning 预算和成本统计单价不取消已激活供应商，但会产生新的全局 revision；
-   成本单价只用于记录估算，不会改变服务商实际计费。
+4. 修改上下文窗口、旧版 Review Planning 兼容参数或成本统计单价不取消已激活供应商，但会产生
+   新的全局 revision；这些参数不改变 API 连通性，成本单价也不会改变服务商实际计费。
 
 所有写接口提交 `expected_revision`。数据库锁定全局单例并检查 revision；并发修改冲突返回
 `409 Conflict`，调用方必须重新读取。每次有效修改生成一条 `configuration_audits`，审计只含
@@ -59,3 +59,8 @@ revision 不变时复用模型 HTTP Client；revision 变化时创建新快照�
 
 `model_calls.api_protocol` 同时保存该次调用实际使用的协议。升级迁移会把已有 OpenAI 配置和
 调用回填为 `responses`，已有 Anthropic 配置和调用回填为 `messages`。
+
+上下文窗口表示“输入与输出合计可使用的 Token 数”，不是建议一次塞满的输入量。Worker 会先
+预留每批输出上限，再保留 5%（最低 4096 Token）安全余量，并同时遵守 HTTP 请求字节上限。
+超出的可审查文件自动进入后续批次；单文件仍超限时按行切片。DeepSeek 官方模型卡确认
+DeepSeek V4 Flash 为 1M 上下文，迁移会把已知的该模型配置更新为 `1000000`。

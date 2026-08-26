@@ -1,4 +1,4 @@
-"""把 changed files、规则作用域和输入预算编译成确定性 Review Plan。"""
+"""把 changed files 和规则作用域编译成可自动分批的确定性 Review Plan。"""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -21,7 +21,7 @@ from domain.review_planning import (
 from services.task_queue import ReviewTarget
 
 
-PLANNER_VERSION = "review-planner-v1"
+PLANNER_VERSION = "review-planner-v2"
 
 _LANGUAGE_BY_SUFFIX = {
     ".bash": "shell",
@@ -114,7 +114,7 @@ class ReviewPlanner(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ReviewPlanningSettings:
-    """使用 UTF-8 字节近似模型输入，最终 Token 限制由模型适配器再执行。"""
+    """规划边界；旧输入预算字段仅为配置兼容，不再用于漏掉可审查文件。"""
 
     max_units: int = 100
     max_scope_depth: int = 32
@@ -156,7 +156,7 @@ class DeterministicReviewPlanner:
         incomplete_files = set(rules.incomplete_files)
         units: list[ReviewUnit] = []
         file_plans: list[ReviewFilePlan] = []
-        total_input_bytes = 0
+        total_patch_bytes = 0
 
         for item in ordered_files:
             decision = self._non_reviewable_decision(item)
@@ -186,27 +186,9 @@ class DeterministicReviewPlanner:
                 if path in rules_by_path
             )
             patch_bytes = len(item.patch.encode("utf-8"))
-            estimated_input_bytes = patch_bytes + sum(
-                rule.byte_size for rule in applicable_rules
-            )
-            exceeds_budget = (
-                estimated_input_bytes > self._settings.max_unit_input_bytes
-                or len(units) >= self._settings.max_units
-                or total_input_bytes + estimated_input_bytes
-                > self._settings.max_total_input_bytes
-            )
-            if exceeds_budget:
-                file_plans.append(
-                    ReviewFilePlan(
-                        file=item.path,
-                        decision=ReviewFileDecision.OMITTED_BY_BUDGET,
-                    )
-                )
-                continue
-
-            unit = self._build_unit(target, item, applicable_rules, estimated_input_bytes)
+            unit = self._build_unit(target, item, applicable_rules, patch_bytes)
             units.append(unit)
-            total_input_bytes += estimated_input_bytes
+            total_patch_bytes += patch_bytes
             file_plans.append(
                 ReviewFilePlan(
                     file=item.path,
@@ -232,7 +214,9 @@ class DeterministicReviewPlanner:
             rules=rules.rules,
             units=tuple(units),
             files=tuple(file_plans),
-            total_estimated_input_bytes=total_input_bytes,
+            total_estimated_input_bytes=(
+                total_patch_bytes + sum(rule.byte_size for rule in rules.rules)
+            ),
         )
 
     @staticmethod

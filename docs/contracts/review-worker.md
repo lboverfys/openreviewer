@@ -53,11 +53,15 @@ Worker 已能使用短期 GitHub App installation token 获取 PR 上下文和�
 `waiting_for_ci` 是明确的未完成状态，不等于“审查成功”。CI 进入任意终态后，任务进入
 `ready_for_review`。Worker 随后一次批量读取当前 SHA 的文件快照、一次 GraphQL 读取规则，
 生成确定性 Review Plan，并在短事务内原子保存规则、Unit、文件结果与
-`review.plan.prepared` Outbox；随后通过 OpenAI 或 Anthropic 发起一次整计划结构化请求，再原子
-保存调用审计、Token、耗时、成本、未复核 Finding 和 `review.model.completed` Outbox。模型 HTTP
-请求发生在事务外，保存前重新检查租约、计划指纹和 SHA。证据复核与结果发布尚未实现，因此
-Worker 仍保持 `ready_for_review`，不得写入 `completed`。旧 SHA、关闭/Draft PR 和 CI 超时分别进入
-`superseded`、`cancelled` 和 `timed_out`。
+`review.plan.prepared` Outbox；随后按激活模型的上下文窗口、输出预留和请求字节限制，把全部
+可审查 Unit 分成一个或多个 OpenAI/Anthropic 结构化请求。单文件仍超限时按行切片，不因旧版
+文件数或总字节预算静默漏审。
+
+每批规划、开始和完成都会用短事务保存结构化进度事件；模型 HTTP 请求发生在事务外。全部
+批次成功后，Worker 合并去重 Finding 和用量，再原子保存调用审计、Token、耗时、成本、Finding、
+`review.model.completed` Outbox，并把任务写成 `completed`。人工确认或忽略 Finding 是可选标记，
+GitHub 发布尚未实现，二者都不阻塞管理界面完成状态。保存前仍重新检查租约、计划指纹和 SHA。
+旧 SHA、关闭/Draft PR 和 CI 超时分别进入 `superseded`、`cancelled` 和 `timed_out`。
 
 ## 4. 心跳
 

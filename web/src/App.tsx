@@ -948,7 +948,7 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenReview }: Dashboar
                       className={`pill-btn ${activeFilter === "ready_for_review" ? "active" : ""}`}
                       onClick={() => setActiveFilter("ready_for_review")}
                     >
-                      待处理 ({snapshot?.status_counts.ready_for_review ?? 0})
+                      等待 AI ({snapshot?.status_counts.ready_for_review ?? 0})
                     </button>
                     <button
                       className={`pill-btn ${activeFilter === "queued" ? "active" : ""}`}

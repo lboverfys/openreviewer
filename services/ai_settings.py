@@ -205,6 +205,7 @@ class AiProviderDraft:
     model: str
     api_protocol: ModelApiProtocol
     api_base_url: str | None = None
+    context_window_tokens: int = 128_000
     max_output_tokens: int = 8192
     connect_timeout_seconds: float = 5.0
     read_timeout_seconds: float = 180.0
@@ -236,6 +237,7 @@ class AiProviderView:
     api_base_url: str | None
     api_key_configured: bool
     api_key_mask: str | None
+    context_window_tokens: int
     max_output_tokens: int
     connect_timeout_seconds: float
     read_timeout_seconds: float
@@ -286,6 +288,7 @@ class ActiveAiRuntime:
     revision: int
     reviewer: ModelReviewer
     planner: DeterministicReviewPlanner
+    model_settings: ModelServiceSettings | None = None
 
 
 class AiRuntimeProvider(Protocol):
@@ -746,6 +749,7 @@ class AiSettingsService:
                     api_base_url=record.api_base_url,
                     api_key_configured=secret is not None,
                     api_key_mask=(f"****{api_key[-4:]}" if api_key else None),
+                    context_window_tokens=record.context_window_tokens,
                     max_output_tokens=record.max_output_tokens,
                     connect_timeout_seconds=record.connect_timeout_seconds,
                     read_timeout_seconds=record.read_timeout_seconds,
@@ -802,6 +806,9 @@ class AiSettingsService:
             api_base_url=None,
             api_key_configured=False,
             api_key_mask=None,
+            context_window_tokens=(
+                128_000 if provider is ModelProvider.OPENAI else 200_000
+            ),
             max_output_tokens=8192,
             connect_timeout_seconds=5.0,
             read_timeout_seconds=180.0,
@@ -886,6 +893,7 @@ class AiSettingsService:
             "model",
             "api_protocol",
             "api_base_url",
+            "context_window_tokens",
             "max_output_tokens",
             "connect_timeout_seconds",
             "read_timeout_seconds",
@@ -925,6 +933,7 @@ class AiSettingsService:
             "model",
             "api_protocol",
             "api_base_url",
+            "context_window_tokens",
             "max_output_tokens",
             "connect_timeout_seconds",
             "read_timeout_seconds",
@@ -958,6 +967,7 @@ class AiSettingsService:
             model=record.model,
             api_protocol=ModelApiProtocol(record.api_protocol),
             api_base_url=record.api_base_url,
+            context_window_tokens=record.context_window_tokens,
             max_output_tokens=record.max_output_tokens,
             connect_timeout_seconds=record.connect_timeout_seconds,
             read_timeout_seconds=record.read_timeout_seconds,
@@ -1004,6 +1014,7 @@ class AiSettingsService:
                 api_protocol=draft.api_protocol,
                 api_base_url=normalize_api_base_url(draft.api_base_url),
                 pricing=pricing,
+                context_window_tokens=draft.context_window_tokens,
                 max_output_tokens=draft.max_output_tokens,
                 connect_timeout_seconds=draft.connect_timeout_seconds,
                 read_timeout_seconds=draft.read_timeout_seconds,
@@ -1073,6 +1084,7 @@ class SqlAlchemyAiRuntimeProvider:
                 revision=settings.revision,
                 reviewer=reviewer,
                 planner=DeterministicReviewPlanner(settings.planning),
+                model_settings=settings.model,
             )
             self._close_cached()
             self._cached = runtime

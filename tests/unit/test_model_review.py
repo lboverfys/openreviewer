@@ -25,6 +25,7 @@ from services.model_review import (
     ModelPricing,
     ModelServiceSettings,
     StructuredReviewPromptBuilder,
+    plan_model_review_batches,
 )
 
 
@@ -101,6 +102,46 @@ def make_output(*, start_line: int = 2) -> ModelReviewOutput:
     )
 
 
+def make_large_v2_input() -> ModelReviewInput:
+    source = make_model_input()
+    units = []
+    for index, file in enumerate(("src/a.py", "src/b.py", "src/c.py"), start=1):
+        patch = f"@@ -1 +1 @@\n-old-{index}\n+" + ("x" * 120_000) + "\n"
+        encoded = patch.encode("utf-8")
+        units.append(
+            ReviewUnit(
+                unit_key=f"{index}" * 64,
+                review_version_key=source.review_version_key,
+                head_sha=source.head_sha,
+                file=file,
+                blob_sha=f"{index + 3}" * 40,
+                language="python",
+                patch=patch,
+                patch_sha256=sha256(encoded).hexdigest(),
+                rule_paths=("AGENTS.md",),
+                estimated_input_bytes=len(encoded),
+                planner_version="review-planner-v2",
+            )
+        )
+    return ModelReviewInput(
+        review_plan_id=source.review_plan_id,
+        review_run_id=source.review_run_id,
+        plan_fingerprint=source.plan_fingerprint,
+        planner_version="review-planner-v2",
+        review_version_key=source.review_version_key,
+        repository_id=source.repository_id,
+        repository=source.repository,
+        pull_request_number=source.pull_request_number,
+        head_sha=source.head_sha,
+        rules=source.rules,
+        units=tuple(units),
+        total_estimated_input_bytes=(
+            sum(unit.estimated_input_bytes for unit in units)
+            + sum(rule.byte_size for rule in source.rules)
+        ),
+    )
+
+
 def test_model_schema_excludes_platform_owned_finding_fields() -> None:
     schema = model_review_output_schema()
     item = schema["properties"]["findings"]["items"]
@@ -170,6 +211,84 @@ def test_prompt_is_one_bounded_plan_payload_and_marks_repository_text_untrusted(
     assert "不可信数据" in prompt.system
     assert len(prompt.request_fingerprint) == 64
     assert prompt.request_fingerprint != chat_prompt.request_fingerprint
+
+
+def test_model_batches_use_context_window_without_omitting_files() -> None:
+    review_input = make_large_v2_input()
+    one_million = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="deepseek-v4-flash",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=1_000_000,
+        max_output_tokens=16_384,
+        max_request_bytes=8 * 1024 * 1024,
+    )
+    small_context = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="small-context-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_request_bytes=1024 * 1024,
+    )
+
+    large_batches = plan_model_review_batches(review_input, one_million)
+    small_batches = plan_model_review_batches(review_input, small_context)
+
+    assert len(large_batches) == 1
+    assert len(small_batches) > 1
+    assert {
+        file
+        for batch in small_batches
+        for file in batch.files
+    } == {unit.file for unit in review_input.units}
+    assert all(
+        batch.estimated_input_tokens <= small_context.input_budget_tokens
+        for batch in small_batches
+    )
+
+
+def test_model_batches_split_one_large_file_without_losing_unit_identity() -> None:
+    source = make_large_v2_input()
+    large_unit = source.units[0].model_copy(
+        update={
+            "patch": "@@ -1 +1 @@\n-old\n+" + ("变" * 180_000) + "\n",
+        }
+    )
+    large_unit = large_unit.model_copy(
+        update={
+            "patch_sha256": sha256(large_unit.patch.encode("utf-8")).hexdigest(),
+            "estimated_input_bytes": len(large_unit.patch.encode("utf-8")),
+        }
+    )
+    review_input = source.model_copy(
+        update={
+            "units": (large_unit,),
+            "total_estimated_input_bytes": (
+                large_unit.estimated_input_bytes
+                + sum(rule.byte_size for rule in source.rules)
+            ),
+        }
+    )
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="small-context-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_request_bytes=1024 * 1024,
+    )
+
+    batches = plan_model_review_batches(review_input, settings)
+
+    assert len(batches) > 1
+    fragments = [batch.review_input.units[0] for batch in batches]
+    assert all(batch.fragmented for batch in batches)
+    assert all(fragment.unit_key == large_unit.unit_key for fragment in fragments)
+    assert "".join(fragment.patch for fragment in fragments) == large_unit.patch
 
 
 def test_pricing_uses_decimal_microusd_and_requires_cache_rates_when_used() -> None:

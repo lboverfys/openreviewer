@@ -299,6 +299,7 @@ class ReviewDetailsResponse(BaseModel):
     plan_rule_count: int | None
     plan_input_bytes: int | None
     plan_rules_complete: bool | None
+    plan_file_decisions: dict[str, int]
     model_review_completed_at: datetime | None
     model_call_id: str | None
     model_provider: str | None
@@ -311,6 +312,7 @@ class ReviewDetailsResponse(BaseModel):
     model_output_tokens: int | None
     model_cache_read_tokens: int | None
     model_cache_write_tokens: int | None
+    model_reasoning_tokens: int | None
     model_cost_microusd: int | None
     model_finding_count: int | None
     model_created_at: datetime | None
@@ -448,6 +450,7 @@ class AiProviderResponse(BaseModel):
     api_base_url: str | None
     api_key_configured: bool
     api_key_mask: str | None
+    context_window_tokens: int
     max_output_tokens: int
     connect_timeout_seconds: float
     read_timeout_seconds: float
@@ -527,6 +530,7 @@ class AiProviderUpdateRequest(BaseModel):
     api_base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, min_length=1, max_length=65_536)
     clear_api_key: bool = False
+    context_window_tokens: int = Field(ge=8_192, le=4_000_000)
     max_output_tokens: int = Field(ge=256, le=131_072)
     connect_timeout_seconds: float = Field(gt=0, le=3600)
     read_timeout_seconds: float = Field(gt=0, le=3600)

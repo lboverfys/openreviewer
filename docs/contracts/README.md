@@ -17,7 +17,7 @@ GitHub App 短期身份、PR/diff/CI 读取和版本保护见 [github-context.md
 `AGENTS.md` 规则作用域、批量读取和 Review Unit 规划见
 [review-planning.md](review-planning.md)。
 
-OpenAI/Anthropic 结构化调用、模型用量、成本和未复核 Finding 持久化见
+OpenAI/Anthropic 结构化调用、上下文自动分批、模型用量、成本和 Finding 持久化见
 [model-review.md](model-review.md)。
 
 管理界面的 AI 草稿、连接测试、激活、密钥加密、revision 和审计契约见

@@ -176,9 +176,12 @@ class ModelReviewInput(ModelContract):
                 or not set(unit.rule_paths).issubset(known_rules)
             ):
                 raise ValueError("model review unit identity does not match its plan")
-        if sum(unit.estimated_input_bytes for unit in self.units) != (
-            self.total_estimated_input_bytes
-        ):
+        expected_input_bytes = sum(
+            unit.estimated_input_bytes for unit in self.units
+        )
+        if self.planner_version == "review-planner-v2":
+            expected_input_bytes += sum(rule.byte_size for rule in self.rules)
+        if expected_input_bytes != self.total_estimated_input_bytes:
             raise ValueError("model review input byte total does not match its units")
         return self
 

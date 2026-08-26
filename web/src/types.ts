@@ -133,6 +133,7 @@ export interface ReviewDetails {
   plan_rule_count: number | null;
   plan_input_bytes: number | null;
   plan_rules_complete: boolean | null;
+  plan_file_decisions: Record<string, number>;
   model_review_completed_at: string | null;
   model_call_id: string | null;
   model_provider: string | null;
@@ -145,6 +146,7 @@ export interface ReviewDetails {
   model_output_tokens: number | null;
   model_cache_read_tokens: number | null;
   model_cache_write_tokens: number | null;
+  model_reasoning_tokens: number | null;
   model_cost_microusd: number | null;
   model_finding_count: number | null;
   model_created_at: string | null;
@@ -208,6 +210,7 @@ export interface AiProviderSettings {
   api_base_url: string | null;
   api_key_configured: boolean;
   api_key_mask: string | null;
+  context_window_tokens: number;
   max_output_tokens: number;
   connect_timeout_seconds: number;
   read_timeout_seconds: number;
@@ -243,6 +246,7 @@ export interface AiProviderUpdate {
   api_base_url: string | null;
   api_key: string | null;
   clear_api_key: boolean;
+  context_window_tokens: number;
   max_output_tokens: number;
   connect_timeout_seconds: number;
   read_timeout_seconds: number;

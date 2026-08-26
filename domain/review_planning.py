@@ -217,7 +217,7 @@ class ReviewFilePlan(PlanningContractModel):
 
 
 class ReviewPlan(PlanningContractModel):
-    """精确 PR 版本的一份可重放、预算有界的模型调用前计划。"""
+    """精确 PR 版本的一份可重放、资源有界的模型调用前计划。"""
 
     plan_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     planner_version: str = Field(min_length=1, max_length=50)
@@ -290,6 +290,8 @@ class ReviewPlan(PlanningContractModel):
                 raise ValueError("review units may only reference rules in the plan")
 
         expected_total = sum(unit.estimated_input_bytes for unit in self.units)
+        if self.planner_version == "review-planner-v2":
+            expected_total += sum(rule.byte_size for rule in self.rules)
         if self.total_estimated_input_bytes != expected_total:
             raise ValueError("plan input byte total must equal its review units")
         return self

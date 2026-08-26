@@ -2,9 +2,9 @@
 
 ## 1. 当前边界
 
-当前已实现模型调用前的完整准备阶段：Worker 在精确 `head_sha` 上批量读取 `AGENTS.md`，再把
-数据库中的 changed files 编译成有界、可重放的 Review Plan，并原子保存。它不调用模型，保存前后
-任务都保持 `ready_for_review`，不会把“计划已准备”写成 `completed`。
+Worker 在精确 `head_sha` 上批量读取 `AGENTS.md`，再把数据库中的 changed files 编译成有界、
+可重放的 Review Plan，并原子保存。计划保存后任务保持 `ready_for_review`，下一次领取进入模型
+审查；只有模型结果保存成功后才写成 `completed`。
 
 规则内容只作为后续代码审查输入。仓库规则不能扩大 GitHub App 权限、读取凭据、连接服务器、执行
 PR 代码或覆盖平台安全边界。
@@ -55,22 +55,24 @@ services/auth/AGENTS.md
 | `patch_missing` | GitHub 没有提供可审查补丁 |
 | `patch_too_large` | 单文件补丁已在上下文阶段超过上限 |
 | `rules_incomplete` | 无法证明该文件所需规则读取完整 |
-| `omitted_by_budget` | 单 Unit、Unit 数量或 PR 总预算不足 |
+| `omitted_by_budget` | 仅用于读取旧版计划；v2 不再用预算省略可审查文件 |
 
-`planned` 不能映射成 `model_reviewed`；只有后续模型调用和证据复核完成后，最终覆盖层才可以使用
-该状态。所有其他 decision 都没有 `unit_key`，不能制造空 Review Unit 掩盖缺口。
+`planned` 表示文件已进入模型输入，任务完成后可视为本轮 AI 已覆盖。所有其他 decision 都没有
+`unit_key`，不能制造空 Review Unit 掩盖缺口。
 
 首版使用“一文件一 Unit”。支持常见代码、脚本、配置、Markdown、Vue、Mapper XML 和 SQL；
 `node_modules`、`vendor`、`build`、`dist`、`target`、覆盖率目录、压缩 JS/CSS、source map 和常见
 锁文件按生成内容处理。这个分类是确定性策略，不读取或执行文件内容。
 
-## 4. 预算与稳定身份
+## 4. 分批与稳定身份
 
-规划预算按 UTF-8 字节估算，默认最多 100 个 Unit、单 Unit 192 KiB、单 PR 2 MiB。估算值不是
-模型 Token 数；模型适配器还会限制单次请求/响应字节和最大输出 Token，并记录供应商返回的
-实际输入、输出、缓存与推理 Token、耗时和成本。
+`review-planner-v2` 会收集最多 3000 个 changed files 中的全部可审查补丁，不再使用旧版“最多
+100 个 Unit、单 PR 2 MiB”配置丢弃后面的文件。旧字段暂时保留用于配置和历史数据兼容，其中
+规则作用域深度仍然生效。
 
-文件按规范化路径排序后依次使用预算，因此同一输入不会因 GitHub 列表顺序不同而改变结果。
+模型适配器再按上下文窗口和 HTTP 大小分批，Token 使用保守的 `2 UTF-8 字节/Token` 估算，
+并记录供应商返回的实际输入、输出、缓存与推理 Token、耗时和成本。文件按规范化路径排序，
+因此同一输入不会因 GitHub 列表顺序不同而改变结果。
 Unit 稳定键包含：
 
 ```text

@@ -19,8 +19,8 @@ OpenReviewer 是独立于被审查业务系统的代码审查平台，首个接�
 
 当前仓库已完成 M3，并进入阶段 D：除结构化安全错误、路径边界、Webhook 验签、过滤、去重与
 原子入库外，还实现了 GitHub App 短期身份、PR/diff/CI 获取、CI 轮询、`head_sha` 生命周期、
-规则加载、Review Plan 持久化、OpenAI/Anthropic 统一结构化调用，以及模型用量、成本和未复核
-Finding 持久化。Finding 证据复核、GitHub Check 发布和 LangGraph 工作流尚未接入。
+规则加载、全量 Review Plan 持久化、OpenAI/Anthropic 统一结构化调用、上下文自动分批，以及
+模型用量、成本和 Finding 持久化。自动证据复核、GitHub Check 发布和 LangGraph 工作流尚未接入。
 
 ## 2. 核心决策
 
@@ -93,8 +93,8 @@ GitHub Actions CI        GitHub App Webhook
 ```
 
 较晚阶段的节点在真正实现前不得返回伪造的成功。当前 Worker 会把任务推进到
-`waiting_for_ci`，并在 `ready_for_review` 阶段生成计划和未复核模型候选；证据复核尚未执行，
-所以不会写成 `completed`。
+`waiting_for_ci`，在 `ready_for_review` 阶段自动生成全量计划并按上下文调用模型；模型结果保存
+后写成 `completed`。人工候选标记是可选操作，GitHub Check 发布不属于当前完成条件。
 
 ### PR 与 CI 竞态
 

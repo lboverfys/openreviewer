@@ -26,7 +26,11 @@ from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
 from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
 from services.github_rules import GitHubRepositoryRuleLoader, RepositoryRuleLoader
 from services.review_planning import ReviewPlanner
-from services.model_review import ModelReviewer
+from services.model_review import (
+    ModelReviewer,
+    combine_model_review_results,
+    plan_model_review_batches,
+)
 
 
 LOGGER = logging.getLogger("openreviewer.worker")
@@ -291,7 +295,12 @@ class WorkerRuntime:
         LOGGER.info("Worker 已启动，等待数据库任务")
         try:
             while not self._stop_event.is_set():
-                self.run_once()
+                try:
+                    self.run_once()
+                except TaskQueueError:
+                    # 单次队列事务失败不应终止常驻进程；等待下一轮后重试，
+                    # 同时保留完整堆栈供详情页之外的运维日志定位。
+                    LOGGER.exception("Worker 本轮队列处理失败，将继续轮询")
                 self._stop_event.wait(self._settings.poll_interval.total_seconds())
         finally:
             try:
@@ -427,7 +436,81 @@ class WorkerRuntime:
                     raise TaskQueueError("Worker 未配置模型审查适配器")
                 cursor.renew(self._settings.model_review_lease_duration)
                 model_input = self._queue.load_model_review_input(cursor.lease)
-                model_result = model_reviewer.review(model_input)
+                model_settings = (
+                    ai_runtime.model_settings if ai_runtime is not None else None
+                )
+                if model_settings is not None and model_input.units:
+                    batches = plan_model_review_batches(
+                        model_input,
+                        model_settings,
+                    )
+                    self._queue.record_model_progress(
+                        cursor.lease,
+                        "batches_planned",
+                        {
+                            "batch_count": len(batches),
+                            "file_count": len(model_input.units),
+                            "context_window_tokens": (
+                                model_settings.context_window_tokens
+                            ),
+                            "max_output_tokens": model_settings.max_output_tokens,
+                            "input_budget_tokens": (
+                                model_settings.input_budget_tokens
+                            ),
+                            "provider": model_settings.provider.value,
+                            "api_protocol": (
+                                model_settings.resolved_api_protocol.value
+                            ),
+                            "model": model_settings.model,
+                        },
+                    )
+                    batch_results = []
+                    for batch in batches:
+                        cursor.renew(self._settings.model_review_lease_duration)
+                        files = batch.files
+                        self._queue.record_model_progress(
+                            cursor.lease,
+                            "batch_started",
+                            {
+                                "batch_number": batch.number,
+                                "batch_count": batch.total,
+                                "file_count": len(files),
+                                "first_file": files[0],
+                                "last_file": files[-1],
+                                "estimated_input_tokens": (
+                                    batch.estimated_input_tokens
+                                ),
+                                "fragmented": batch.fragmented,
+                            },
+                        )
+                        batch_result = model_reviewer.review(batch.review_input)
+                        batch_results.append(batch_result)
+                        self._queue.record_model_progress(
+                            cursor.lease,
+                            "batch_completed",
+                            {
+                                "batch_number": batch.number,
+                                "batch_count": batch.total,
+                                "file_count": len(files),
+                                "input_tokens": (
+                                    batch_result.usage.total_input_tokens
+                                ),
+                                "output_tokens": batch_result.usage.output_tokens,
+                                "reasoning_tokens": (
+                                    batch_result.usage.reasoning_output_tokens
+                                ),
+                                "duration_ms": batch_result.duration_ms,
+                                "finding_count": len(
+                                    batch_result.output.findings
+                                ),
+                            },
+                        )
+                    model_result = combine_model_review_results(
+                        model_input,
+                        tuple(batch_results),
+                    )
+                else:
+                    model_result = model_reviewer.review(model_input)
                 findings = materialize_findings(model_input, model_result.output)
                 stored_model = self._queue.store_model_review(
                     cursor.lease,

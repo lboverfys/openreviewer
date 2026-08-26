@@ -4,7 +4,7 @@ export const statusLabels: Record<ExecutionStatus, string> = {
   queued: "排队中",
   waiting_for_ci: "等待 CI",
   running: "处理中",
-  ready_for_review: "待处理",
+  ready_for_review: "等待 AI",
   completed: "已完成",
   failed: "失败",
   timed_out: "已超时",
@@ -25,8 +25,7 @@ export const stageLabels: Record<string, string> = {
   ci: "等待 CI",
   planning: "生成审查计划",
   model: "AI 分析",
-  verification: "复核问题",
-  publication: "发布结果",
+  result: "审查结果",
 };
 
 export const phaseLabels: Record<string, string> = {
@@ -38,8 +37,6 @@ export const phaseLabels: Record<string, string> = {
   planning_running: "正在整理规则、文件和审查范围",
   model_queued: "审查计划已准备，等待 AI 分析",
   model_running: "AI 正在分析变更，请稍候",
-  awaiting_verification: "AI 已返回结果，请逐条确认问题是否成立",
-  awaiting_publication: "结果已准备，等待发布流程",
   model_failed: "AI 分析失败，请查看错误和日志后重试",
   planning_failed: "审查计划生成失败，请查看日志后重试",
   context_failed: "读取 GitHub 上下文失败，请查看日志后重试",
@@ -51,7 +48,7 @@ export const phaseLabels: Record<string, string> = {
 
 export function reviewDisplayLabel(review: Pick<ReviewItem, "execution_status" | "model_review_completed_at">): string {
   if (review.execution_status === "ready_for_review" && review.model_review_completed_at) {
-    return "待复核结果";
+    return "已完成";
   }
   return statusLabels[review.execution_status];
 }

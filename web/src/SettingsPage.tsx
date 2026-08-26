@@ -16,7 +16,6 @@ import type {
   AiSettings,
   AuthUser,
   ConfigurationAudit,
-  ReviewPolicyUpdate,
 } from "./types";
 import { errorMessage, formatDate } from "./utils";
 
@@ -33,6 +32,7 @@ interface ProviderDraft {
   apiBaseUrl: string;
   apiKey: string;
   clearApiKey: boolean;
+  contextWindowTokens: string;
   maxOutputTokens: string;
   connectTimeoutSeconds: string;
   readTimeoutSeconds: string;
@@ -44,13 +44,6 @@ interface ProviderDraft {
   outputPrice: string;
   cacheReadPrice: string;
   cacheWritePrice: string;
-}
-
-interface PolicyDraft {
-  maxUnits: string;
-  maxScopeDepth: string;
-  maxUnitInputBytes: string;
-  maxTotalInputBytes: string;
 }
 
 const KIB = 1024;
@@ -108,7 +101,8 @@ const fieldLabels: Record<string, string> = {
   api_base_url: "API 地址",
   api_key: "API Key",
   model: "模型 ID",
-  max_output_tokens: "单次回答长度",
+  context_window_tokens: "上下文窗口",
+  max_output_tokens: "每批回答上限",
   connect_timeout_seconds: "连接等待时间",
   read_timeout_seconds: "回答等待时间",
   write_timeout_seconds: "发送等待时间",
@@ -120,90 +114,7 @@ const fieldLabels: Record<string, string> = {
   cache_read_usd_per_million: "缓存读取统计单价",
   cache_write_usd_per_million: "缓存写入统计单价",
   test_status: "测试状态",
-  max_units: "最多审查文件",
-  max_scope_depth: "规则查找深度",
-  max_unit_input_bytes: "单文件输入上限",
-  max_total_input_bytes: "整次输入上限",
 };
-
-const callPresets = {
-  economy: {
-    label: "省钱日常",
-    note: "适合小型 PR",
-    values: {
-      maxOutputTokens: "4096",
-      connectTimeoutSeconds: "5",
-      readTimeoutSeconds: "120",
-      writeTimeoutSeconds: "30",
-      poolTimeoutSeconds: "5",
-      maxRequestBytes: String(2 * MIB),
-      maxResponseBytes: String(1 * MIB),
-    },
-  },
-  balanced: {
-    label: "均衡推荐",
-    note: "大多数情况",
-    values: {
-      maxOutputTokens: "8192",
-      connectTimeoutSeconds: "5",
-      readTimeoutSeconds: "180",
-      writeTimeoutSeconds: "30",
-      poolTimeoutSeconds: "5",
-      maxRequestBytes: String(4 * MIB),
-      maxResponseBytes: String(2 * MIB),
-    },
-  },
-  deep: {
-    label: "长文深度",
-    note: "复杂或大型改动",
-    values: {
-      maxOutputTokens: "16384",
-      connectTimeoutSeconds: "10",
-      readTimeoutSeconds: "300",
-      writeTimeoutSeconds: "60",
-      poolTimeoutSeconds: "10",
-      maxRequestBytes: String(8 * MIB),
-      maxResponseBytes: String(4 * MIB),
-    },
-  },
-} as const;
-
-type CallPreset = keyof typeof callPresets;
-
-const policyPresets = {
-  light: {
-    label: "轻量日常",
-    note: "小型改动，费用更稳",
-    values: {
-      maxUnits: "30",
-      maxScopeDepth: "16",
-      maxUnitInputBytes: String(128 * KIB),
-      maxTotalInputBytes: String(1 * MIB),
-    },
-  },
-  balanced: {
-    label: "均衡推荐",
-    note: "覆盖常见 PR",
-    values: {
-      maxUnits: "100",
-      maxScopeDepth: "32",
-      maxUnitInputBytes: String(192 * KIB),
-      maxTotalInputBytes: String(2 * MIB),
-    },
-  },
-  large: {
-    label: "大型改动",
-    note: "覆盖更广，成本更高",
-    values: {
-      maxUnits: "300",
-      maxScopeDepth: "48",
-      maxUnitInputBytes: String(256 * KIB),
-      maxTotalInputBytes: String(8 * MIB),
-    },
-  },
-} as const;
-
-type PolicyPreset = keyof typeof policyPresets;
 
 function providerDraft(settings: AiProviderSettings): ProviderDraft {
   return {
@@ -213,6 +124,7 @@ function providerDraft(settings: AiProviderSettings): ProviderDraft {
     apiBaseUrl: settings.api_base_url ?? "",
     apiKey: "",
     clearApiKey: false,
+    contextWindowTokens: String(settings.context_window_tokens),
     maxOutputTokens: String(settings.max_output_tokens),
     connectTimeoutSeconds: String(settings.connect_timeout_seconds),
     readTimeoutSeconds: String(settings.read_timeout_seconds),
@@ -224,15 +136,6 @@ function providerDraft(settings: AiProviderSettings): ProviderDraft {
     outputPrice: settings.output_usd_per_million ?? "",
     cacheReadPrice: settings.cache_read_usd_per_million ?? "",
     cacheWritePrice: settings.cache_write_usd_per_million ?? "",
-  };
-}
-
-function policyDraft(settings: AiSettings): PolicyDraft {
-  return {
-    maxUnits: String(settings.max_units),
-    maxScopeDepth: String(settings.max_scope_depth),
-    maxUnitInputBytes: String(settings.max_unit_input_bytes),
-    maxTotalInputBytes: String(settings.max_total_input_bytes),
   };
 }
 
@@ -260,31 +163,45 @@ function inputToBytes(value: string, unit: number): string {
   return Number.isFinite(parsed) ? String(Math.round(parsed * unit)) : "";
 }
 
-function formatBytes(value: string | number): string {
-  const bytes = Number(value);
-  if (!Number.isFinite(bytes)) return "--";
-  if (bytes >= MIB) return `${Number((bytes / MIB).toFixed(2))} MiB`;
-  return `${Number((bytes / KIB).toFixed(1))} KiB`;
+function formatTokens(value: string | number): string {
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens)) return "--";
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(2))}M`;
+  if (tokens >= 1_000) return `${Number((tokens / 1_000).toFixed(0))}K`;
+  return String(tokens);
 }
 
-function matchingCallPreset(draft: ProviderDraft): CallPreset | null {
-  return (
-    (Object.keys(callPresets) as CallPreset[]).find((preset) =>
-      Object.entries(callPresets[preset].values).every(
-        ([field, value]) => draft[field as keyof ProviderDraft] === value,
-      ),
-    ) ?? null
-  );
+function contextWindowOptions(current: string): Array<[string, string]> {
+  const presets: Array<[string, string]> = [
+    ["8192", "8K Token"],
+    ["16384", "16K Token"],
+    ["32768", "32K Token"],
+    ["65536", "64K Token"],
+    ["128000", "128K Token"],
+    ["200000", "200K Token"],
+    ["256000", "256K Token"],
+    ["384000", "384K Token"],
+    ["1000000", "1M Token（DeepSeek V4）"],
+    ["2000000", "2M Token"],
+    ["4000000", "4M Token"],
+  ];
+  if (presets.some(([value]) => value === current)) return presets;
+  return [[current, `${formatTokens(current)} Token（当前值）`], ...presets];
 }
 
-function matchingPolicyPreset(draft: PolicyDraft): PolicyPreset | null {
-  return (
-    (Object.keys(policyPresets) as PolicyPreset[]).find((preset) =>
-      Object.entries(policyPresets[preset].values).every(
-        ([field, value]) => draft[field as keyof PolicyDraft] === value,
-      ),
-    ) ?? null
-  );
+function outputTokenOptions(context: string, current: string): Array<[string, string]> {
+  const contextTokens = Number(context);
+  const presets: Array<[string, string]> = [
+    ["2048", "简短（2K Token）"],
+    ["4096", "日常（4K Token）"],
+    ["8192", "标准（8K Token）"],
+    ["16384", "详细（16K Token）"],
+    ["32768", "超长（32K Token）"],
+    ["65536", "极长（64K Token）"],
+    ["131072", "最大（128K Token）"],
+  ].filter(([value]) => Number(value) <= contextTokens - 4_096) as Array<[string, string]>;
+  if (presets.some(([value]) => value === current)) return presets;
+  return [[current, `${formatTokens(current)} Token（当前值）`], ...presets];
 }
 
 function providerHasChanges(
@@ -300,6 +217,7 @@ function providerHasChanges(
     effectiveBaseUrl !== settings.api_base_url ||
     Boolean(draft.apiKey.trim()) ||
     draft.clearApiKey ||
+    Number(draft.contextWindowTokens) !== settings.context_window_tokens ||
     Number(draft.maxOutputTokens) !== settings.max_output_tokens ||
     Number(draft.connectTimeoutSeconds) !== settings.connect_timeout_seconds ||
     Number(draft.readTimeoutSeconds) !== settings.read_timeout_seconds ||
@@ -311,15 +229,6 @@ function providerHasChanges(
     draft.outputPrice !== (settings.output_usd_per_million ?? "") ||
     draft.cacheReadPrice !== (settings.cache_read_usd_per_million ?? "") ||
     draft.cacheWritePrice !== (settings.cache_write_usd_per_million ?? "")
-  );
-}
-
-function policyHasChanges(settings: AiSettings, draft: PolicyDraft): boolean {
-  return (
-    Number(draft.maxUnits) !== settings.max_units ||
-    Number(draft.maxScopeDepth) !== settings.max_scope_depth ||
-    Number(draft.maxUnitInputBytes) !== settings.max_unit_input_bytes ||
-    Number(draft.maxTotalInputBytes) !== settings.max_total_input_bytes
   );
 }
 
@@ -349,7 +258,6 @@ export default function SettingsPage({
   const [audits, setAudits] = useState<ConfigurationAudit[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<AiProvider>("openai");
   const [drafts, setDrafts] = useState<Partial<Record<AiProvider, ProviderDraft>>>({});
-  const [policy, setPolicy] = useState<PolicyDraft | null>(null);
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(true);
@@ -367,7 +275,6 @@ export default function SettingsPage({
         next.providers.map((provider) => [provider.provider, providerDraft(provider)]),
       ) as Record<AiProvider, ProviderDraft>,
     );
-    setPolicy(policyDraft(next));
     if (!providerInitialized.current) {
       setSelectedProvider(next.active_provider ?? "openai");
       providerInitialized.current = true;
@@ -415,11 +322,20 @@ export default function SettingsPage({
     }));
   }
 
-  function updateDraftValues(values: Partial<ProviderDraft>) {
-    setDrafts((current) => ({
-      ...current,
-      [selectedProvider]: { ...current[selectedProvider]!, ...values },
-    }));
+  function updateContextWindow(value: string) {
+    setDrafts((current) => {
+      const selected = current[selectedProvider]!;
+      const outputLimit = Math.max(256, Number(value) - 4_096);
+      const currentOutput = Number(selected.maxOutputTokens);
+      return {
+        ...current,
+        [selectedProvider]: {
+          ...selected,
+          contextWindowTokens: value,
+          maxOutputTokens: String(Math.min(currentOutput, outputLimit)),
+        },
+      };
+    });
   }
 
   function showSuccess(text: string) {
@@ -470,7 +386,8 @@ export default function SettingsPage({
         api_base_url: draft.useCustomEndpoint ? draft.apiBaseUrl.trim() : null,
         api_key: draft.apiKey.trim() || null,
         clear_api_key: draft.clearApiKey,
-        max_output_tokens: requiredNumber(draft.maxOutputTokens, "单次回答长度"),
+        context_window_tokens: requiredNumber(draft.contextWindowTokens, "上下文窗口"),
+        max_output_tokens: requiredNumber(draft.maxOutputTokens, "每批回答上限"),
         connect_timeout_seconds: requiredNumber(draft.connectTimeoutSeconds, "连接等待时间"),
         read_timeout_seconds: requiredNumber(draft.readTimeoutSeconds, "回答等待时间"),
         write_timeout_seconds: requiredNumber(draft.writeTimeoutSeconds, "发送等待时间"),
@@ -512,28 +429,6 @@ export default function SettingsPage({
     );
   }
 
-  async function savePolicy(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!settings || !policy) return;
-    try {
-      const payload: ReviewPolicyUpdate = {
-        expected_revision: settings.revision,
-        max_units: requiredNumber(policy.maxUnits, "最多审查文件"),
-        max_scope_depth: requiredNumber(policy.maxScopeDepth, "规则查找深度"),
-        max_unit_input_bytes: requiredNumber(policy.maxUnitInputBytes, "单文件输入上限"),
-        max_total_input_bytes: requiredNumber(policy.maxTotalInputBytes, "整次输入上限"),
-      };
-      await handleAction(
-        "save-policy",
-        () => api.updateReviewPolicy(payload),
-        "审查范围已保存",
-      );
-    } catch (error) {
-      setMessageKind("error");
-      setMessage(errorMessage(error));
-    }
-  }
-
   async function logout() {
     try {
       await api.logout();
@@ -545,9 +440,24 @@ export default function SettingsPage({
   const providerDirty = Boolean(
     selectedSettings && draft && providerHasChanges(selectedSettings, draft),
   );
-  const policyDirty = Boolean(settings && policy && policyHasChanges(settings, policy));
-  const activeCallPreset = draft ? matchingCallPreset(draft) : null;
-  const activePolicyPreset = policy ? matchingPolicyPreset(policy) : null;
+  const contextTokens = Number(draft?.contextWindowTokens ?? 0);
+  const outputTokens = Number(draft?.maxOutputTokens ?? 0);
+  const maxRequestBytes = Number(draft?.maxRequestBytes ?? 0);
+  const contextInputBudgetTokens = contextTokens
+    - outputTokens
+    - Math.max(4_096, Math.floor(contextTokens / 20));
+  const requestInputBudgetTokens = Math.floor(
+    Math.max(
+      0,
+      maxRequestBytes
+        - Math.max(16 * 1024, Math.floor(maxRequestBytes / 10))
+        - 4 * 1024,
+    ) / 2,
+  );
+  const inputBudgetTokens = Math.max(
+    0,
+    Math.min(contextInputBudgetTokens, requestInputBudgetTokens),
+  );
 
   return (
     <div className="settings-page-layout">
@@ -593,7 +503,7 @@ export default function SettingsPage({
 
         {message && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
 
-        {loading || !settings || !selectedSettings || !draft || !policy ? (
+        {loading || !settings || !selectedSettings || !draft ? (
           <div className="settings-loading">正在读取设置...</div>
         ) : (
           <>
@@ -704,24 +614,21 @@ export default function SettingsPage({
 
                   <details className="settings-disclosure">
                     <summary>
-                      <span><strong>调用范围与稳定性</strong><small>推荐使用预设，通常无需逐项修改</small></span>
-                      <span className="settings-summary-value">{activeCallPreset ? callPresets[activeCallPreset].label : "自定义"}</span>
+                      <span><strong>上下文与回答</strong><small>按模型官网或中转站说明填写</small></span>
+                      <span className="settings-summary-value">{formatTokens(draft.contextWindowTokens)} Token</span>
                     </summary>
                     <fieldset disabled={Boolean(busyAction)}>
-                      <div className="settings-preset-control" role="group" aria-label="调用范围预设">
-                        {(Object.keys(callPresets) as CallPreset[]).map((preset) => (
-                          <button key={preset} type="button" className={activeCallPreset === preset ? "is-selected" : ""} onClick={() => updateDraftValues(callPresets[preset].values)}><strong>{callPresets[preset].label}</strong><small>{callPresets[preset].note}</small></button>
-                        ))}
-                      </div>
-                      <div className="settings-form-grid settings-form-grid-compact">
-                        <SelectField name="max-output-tokens" label="单次回答长度" value={draft.maxOutputTokens} options={[["2048", "简短（约 2K Token）"], ["4096", "日常（约 4K Token）"], ["8192", "标准（约 8K Token）"], ["16384", "详细（约 16K Token）"], ["32768", "超长（约 32K Token）"]]} onChange={(value) => updateDraft("maxOutputTokens", value)} />
+                      <div className="settings-form-grid settings-form-grid-compact settings-context-grid">
+                        <SelectField name="context-window-tokens" label="模型上下文窗口" value={draft.contextWindowTokens} options={contextWindowOptions(draft.contextWindowTokens)} onChange={updateContextWindow} />
+                        <SelectField name="max-output-tokens" label="每批回答上限" value={draft.maxOutputTokens} options={outputTokenOptions(draft.contextWindowTokens, draft.maxOutputTokens)} onChange={(value) => updateDraft("maxOutputTokens", value)} />
                         <NumberField name="read-timeout-seconds" label="最多等待回答" value={draft.readTimeoutSeconds} min="10" max="3600" step="1" suffix="秒" onChange={(value) => updateDraft("readTimeoutSeconds", value)} />
-                        <NumberField name="max-request-mib" label="请求保护上限" value={bytesToInput(draft.maxRequestBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxRequestBytes", inputToBytes(value, MIB))} />
-                        <NumberField name="max-response-mib" label="响应保护上限" value={bytesToInput(draft.maxResponseBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxResponseBytes", inputToBytes(value, MIB))} />
                       </div>
+                      <div className="settings-info-band settings-context-budget"><strong>单批可用输入约 {formatTokens(inputBudgetTokens)} Token</strong><span>超出的文件会自动进入下一批</span></div>
                       <details className="settings-nested-disclosure">
-                        <summary>网络超时细项</summary>
+                        <summary>传输与网络高级设置</summary>
                         <div className="settings-form-grid settings-form-grid-compact">
+                          <NumberField name="max-request-mib" label="请求保护上限" value={bytesToInput(draft.maxRequestBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxRequestBytes", inputToBytes(value, MIB))} />
+                          <NumberField name="max-response-mib" label="响应保护上限" value={bytesToInput(draft.maxResponseBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxResponseBytes", inputToBytes(value, MIB))} />
                           <NumberField name="connect-timeout-seconds" label="建立连接" value={draft.connectTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("connectTimeoutSeconds", value)} />
                           <NumberField name="write-timeout-seconds" label="发送请求" value={draft.writeTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("writeTimeoutSeconds", value)} />
                           <NumberField name="pool-timeout-seconds" label="等待空闲连接" value={draft.poolTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("poolTimeoutSeconds", value)} />
@@ -761,35 +668,6 @@ export default function SettingsPage({
                   </div>
                 </form>
               </div>
-            </section>
-
-            <section className="settings-policy-section">
-              <div className="settings-section-heading settings-policy-heading">
-                <div><span className="settings-eyebrow">REVIEW SCOPE</span><h2>每次审查的范围</h2><p>范围越大，能覆盖更多代码，同时会使用更多模型额度。</p></div>
-                <div className="settings-policy-readout"><strong>最多 {policy.maxUnits} 个文件</strong><span>整次输入不超过 {formatBytes(policy.maxTotalInputBytes)}</span></div>
-              </div>
-              <form onSubmit={savePolicy}>
-                <fieldset disabled={Boolean(busyAction)}>
-                  <div className="settings-preset-control settings-policy-presets" role="group" aria-label="审查范围预设">
-                    {(Object.keys(policyPresets) as PolicyPreset[]).map((preset) => (
-                      <button key={preset} type="button" className={activePolicyPreset === preset ? "is-selected" : ""} onClick={() => setPolicy({ ...policyPresets[preset].values })}><strong>{policyPresets[preset].label}</strong><small>{policyPresets[preset].note}</small></button>
-                    ))}
-                  </div>
-                  <details className="settings-nested-disclosure settings-policy-custom">
-                    <summary>自定义详细范围{activePolicyPreset ? "" : "（当前）"}</summary>
-                    <div className="settings-form-grid settings-policy-grid">
-                      <NumberField name="max-review-units" label="最多审查文件" value={policy.maxUnits} min="1" max="3000" suffix="个" onChange={(value) => setPolicy((current) => ({ ...current!, maxUnits: value }))} />
-                      <NumberField name="max-scope-depth" label="规则查找深度" value={policy.maxScopeDepth} min="1" max="64" suffix="层" onChange={(value) => setPolicy((current) => ({ ...current!, maxScopeDepth: value }))} />
-                      <NumberField name="max-unit-input-kib" label="单文件输入上限" value={bytesToInput(policy.maxUnitInputBytes, KIB)} min="4" max="10240" suffix="KiB" onChange={(value) => setPolicy((current) => ({ ...current!, maxUnitInputBytes: inputToBytes(value, KIB) }))} />
-                      <NumberField name="max-total-input-mib" label="整次输入上限" value={bytesToInput(policy.maxTotalInputBytes, MIB)} min="0.004" max="100" step="0.125" suffix="MiB" onChange={(value) => setPolicy((current) => ({ ...current!, maxTotalInputBytes: inputToBytes(value, MIB) }))} />
-                    </div>
-                  </details>
-                  <div className="settings-policy-action">
-                    <span>{activePolicyPreset ? `当前为“${policyPresets[activePolicyPreset].label}”` : "当前为自定义范围"}</span>
-                    <button className="settings-primary-btn" type="submit" disabled={!policyDirty || Boolean(busyAction)}>{busyAction === "save-policy" ? "保存中..." : "保存审查范围"}</button>
-                  </div>
-                </fieldset>
-              </form>
             </section>
 
             <details className="settings-audit-section">

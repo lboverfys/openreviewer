@@ -375,8 +375,16 @@ class AiProviderConfigRecord(Base):
             name="api_protocol_provider",
         ),
         CheckConstraint(
+            "context_window_tokens BETWEEN 8192 AND 4000000",
+            name="context_window_tokens_range",
+        ),
+        CheckConstraint(
             "max_output_tokens BETWEEN 256 AND 131072",
             name="max_output_tokens_range",
+        ),
+        CheckConstraint(
+            "context_window_tokens - max_output_tokens >= 4096",
+            name="context_reserves_input",
         ),
         CheckConstraint(
             "connect_timeout_seconds > 0 AND read_timeout_seconds > 0 "
@@ -413,6 +421,9 @@ class AiProviderConfigRecord(Base):
     model: Mapped[str] = mapped_column(String(200), nullable=False)
     api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
     api_base_url: Mapped[str | None] = mapped_column(String(500))
+    context_window_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=128_000
+    )
     max_output_tokens: Mapped[int] = mapped_column(
         Integer, nullable=False, default=8192
     )

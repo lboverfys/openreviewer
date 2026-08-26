@@ -16,9 +16,9 @@ https://openreviewer.lovecoding.store
 
 公网域名由 Cloudflare 代理，源站使用只读挂载的 Origin 证书。
 
-当前已包含 GitHub Webhook 验签、GitHub App 短期身份、PR/diff/CI 读取、CI 轮询和旧提交
-失效保护。CI 终态任务进入 `ready_for_review`；模型调用与 Check 发布仍未实现，因此不会
-伪装为 `completed`。
+当前已包含 GitHub Webhook 验签、GitHub App 短期身份、PR/diff/CI 读取、CI 轮询、旧提交
+失效保护和模型审查。CI 终态任务进入 `ready_for_review` 后由 Worker 自动规划并按模型上下文
+分批调用 AI；结果保存后进入 `completed`。GitHub Check 发布仍未实现，不影响管理界面查看结果。
 
 ## 镜像规则
 
@@ -147,7 +147,7 @@ OPENREVIEWER_LOG_LEVEL=INFO
 
 `.env` 必须是 `0600 root:root`。管理员密码哈希不是明文，但仍不提交 Git。
 AI 配置主密钥文件使用 `0600` 或 `0640 root:root`；API 与 Worker 容器都以 group 0 只读挂载。
-模型供应商、模型 ID、API Key、超时、大小、价格与审查预算在管理界面的设置页配置。
+模型供应商、模型 ID、API Key、上下文窗口、超时、传输大小与价格在管理界面的设置页配置。
 
 ### GitHub App 仓库权限
 

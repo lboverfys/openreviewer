@@ -6,12 +6,13 @@
 
 ## 1. 当前结论
 
-OpenReviewer 已完成 M3 GitHub 上下文准备，目前处于阶段 D 的模型候选生成。可靠任务、Worker、
-管理界面、部署链路、GitHub 安全入口、PR/CI 读取、规则规划和模型调用已经具备，但 Finding
-证据复核与结果发布闭环尚未实现。
+OpenReviewer 已具备管理界面内的 AI 审查闭环。可靠任务、Worker、管理界面、部署链路、GitHub
+安全入口、PR/CI 读取、全量规则规划、上下文自动分批和模型调用已经具备；GitHub Check 发布、
+自动证据复核与跨提交结果消解尚未实现。
 
 当前 Worker 会读取与任务 `head_sha` 匹配的 PR、diff 和 CI；CI 未结束时进入
-`waiting_for_ci`，终止后进入 `ready_for_review`。两个状态都不代表 AI 审查完成。
+`waiting_for_ci`，终止后短暂进入 `ready_for_review` 等待自动 AI 处理，模型结果保存后进入
+`completed`。
 
 NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独立部署在 `niuma-2`，两者不共享
 应用进程、数据库或部署目录，只通过 GitHub PR、Check 和 Actions 状态协作。
@@ -37,8 +38,8 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - 文件/CI 有界快照、CI 轮询与超时，以及旧 `head_sha` 批量失效保护。
 - 当前 SHA 的 `AGENTS.md` 单请求批量加载、确定性 Review Plan、四表原子持久化、幂等复用和
   保存前新 SHA 防护。
-- OpenAI Responses/Chat Completions 与 Anthropic Messages 统一结构化适配、整计划单次调用、独立模型重试，
-  调用耗时/Token/可配置成本和未复核 Finding 原子持久化。
+- OpenAI Responses/Chat Completions 与 Anthropic Messages 统一结构化适配、按上下文自动分批、
+  独立模型重试、逐批进度，以及调用耗时/Token/可配置成本和 Finding 原子持久化。
 
 稳定语义已经拆分到以下契约中：
 
@@ -49,7 +50,7 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - [`github-webhook.md`](../contracts/github-webhook.md)：验签、过滤、去重和原子入库。
 - [`github-context.md`](../contracts/github-context.md)：短期身份、PR/diff/CI 读取和版本保护。
 - [`review-planning.md`](../contracts/review-planning.md)：仓库规则、Review Unit 和输入预算。
-- [`model-review.md`](../contracts/model-review.md)：双供应商协议、调用审计和未复核 Finding。
+- [`model-review.md`](../contracts/model-review.md)：双供应商协议、上下文分批、调用审计和 Finding。
 
 ### NiuMa 测试场
 
@@ -137,9 +138,9 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ### 阶段 D：最小审查闭环
 
-状态：开发中。已实现精确 SHA 的 `AGENTS.md` 单请求批量加载、目录作用域、文件分类、
-Review Unit、字节预算、OpenAI/Anthropic 统一适配、严格结构化输出、稳定 Finding 指纹、
-Worker 接入和原子持久化；尚未复核证据或发布 Check。
+状态：管理界面闭环已可用。已实现精确 SHA 的 `AGENTS.md` 单请求批量加载、目录作用域、文件分类、
+全量 Review Unit、上下文自动分批、OpenAI/Anthropic 统一适配、严格结构化输出、稳定 Finding
+指纹、Worker 接入和原子持久化；尚未自动复核证据或发布 Check。
 
 ```text
 选择文件 -> 构建 Review Unit -> 加载相关规则
@@ -221,4 +222,4 @@ Worker 接入和原子持久化；尚未复核证据或发布 Check。
 2. 为复核后的 Finding 增加状态转换、跨提交消解和行内定位准入；
 3. 发布一个使用稳定动作键的 GitHub Check，并在写入前重新校验当前 `head_sha`。
 
-阶段 D 完成前，`ready_for_review` 仍只是明确的待处理边界，不能显示为审查成功。
+`ready_for_review` 只表示等待 AI 领取，不能显示为审查成功；模型结果保存后才进入 `completed`。
