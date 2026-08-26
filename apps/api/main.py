@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
+import os
 from threading import RLock
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
@@ -15,7 +16,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from domain.enums import ExecutionStatus, ModelApiProtocol, ModelProvider, WorkerStatus
+from domain.enums import (
+    ExecutionStatus,
+    ModelApiProtocol,
+    ModelProvider,
+    ModelReasoningEffort,
+    ReviewAgent,
+    WorkerStatus,
+)
 from domain.security import (
     ErrorCode,
     SafeApplicationError,
@@ -51,12 +59,22 @@ from services.ai_settings import (
     ConfigurationAuditView,
     ReviewPolicyDraft,
 )
+from services.agent_settings import (
+    AgentConfigDraft,
+    AgentConfigView,
+    AgentSettingsService,
+    AgentSettingsView,
+)
+from services.rag import MarkdownKnowledgeBase, RagCitation
 from services.dashboard import (
     DashboardPersistenceError,
     DashboardService,
     DashboardSnapshot,
     ReviewListItem,
 )
+from services.github import GitHubApiClient
+from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
+from services.github_publisher import GitHubReviewPublisher
 from services.reviews import (
     IdempotencyConflictError,
     ReviewPersistenceError,
@@ -67,6 +85,7 @@ from services.review_management import (
     ReviewAction,
     ReviewActionConflictError,
     ReviewManagementPersistenceError,
+    ReviewPublishUnavailableError,
     ReviewManagementService,
     ReviewNotFoundError,
     FindingNotFoundError,
@@ -160,6 +179,7 @@ class ReviewItemResponse(BaseModel):
     pull_request_number: int
     head_sha: str
     execution_status: ExecutionStatus
+    workflow_status: ExecutionStatus = ExecutionStatus.QUEUED
     attempt_count: int
     max_attempts: int
     last_error: str | None
@@ -265,6 +285,7 @@ class ReviewDetailsResponse(BaseModel):
     pull_request_number: int
     head_sha: str
     execution_status: ExecutionStatus
+    workflow_status: ExecutionStatus
     review_conclusion: str | None
     coverage_status: str
     priority: int
@@ -367,6 +388,7 @@ class ReviewActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     action: ReviewAction
+    target_stage: ExecutionStatus | None = None
 
 
 class ReviewActionResponse(BaseModel):
@@ -376,6 +398,7 @@ class ReviewActionResponse(BaseModel):
     review_run_id: str
     review_task_id: str
     execution_status: ExecutionStatus
+    workflow_status: ExecutionStatus | None = None
 
 
 class ReviewFindingDecisionRequest(BaseModel):
@@ -448,10 +471,12 @@ class AiProviderResponse(BaseModel):
     model: str
     api_protocol: ModelApiProtocol
     api_base_url: str | None
+    reasoning_effort: ModelReasoningEffort
     api_key_configured: bool
     api_key_mask: str | None
     context_window_tokens: int
     max_output_tokens: int
+    max_batch_input_tokens: int
     connect_timeout_seconds: float
     read_timeout_seconds: float
     write_timeout_seconds: float
@@ -521,6 +546,109 @@ class AiSettingsResponse(BaseModel):
         )
 
 
+class AiAgentResponse(BaseModel):
+    """一个固定 DAG Agent 的脱敏独立配置。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    agent: ReviewAgent
+    configured: bool
+    enabled: bool
+    provider: ModelProvider
+    model: str
+    api_protocol: ModelApiProtocol
+    api_base_url: str | None
+    reasoning_effort: ModelReasoningEffort
+    api_key_configured: bool
+    api_key_mask: str | None
+    context_window_tokens: int
+    max_output_tokens: int
+    max_batch_input_tokens: int
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+    write_timeout_seconds: float
+    pool_timeout_seconds: float
+    max_retries: int
+    test_status: Literal["untested", "succeeded", "failed"]
+    tested_at: datetime | None
+    updated_at: datetime | None
+
+
+class AiAgentSettingsResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    revision: int
+    agents: tuple[AiAgentResponse, ...]
+
+    @classmethod
+    def from_view(cls, view: AgentSettingsView) -> "AiAgentSettingsResponse":
+        return cls(
+            revision=view.revision,
+            agents=tuple(
+                AiAgentResponse(
+                    **{
+                        name: getattr(item, name)
+                        for name in AiAgentResponse.model_fields
+                    }
+                )
+                for item in view.agents
+            ),
+        )
+
+
+class AiAgentUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=0)
+    provider: ModelProvider
+    model: str = Field(min_length=1, max_length=200)
+    api_protocol: ModelApiProtocol = ModelApiProtocol.CHAT_COMPLETIONS
+    api_base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = Field(default=None, min_length=1, max_length=65_536)
+    clear_api_key: bool = False
+    reasoning_effort: ModelReasoningEffort = ModelReasoningEffort.NONE
+    context_window_tokens: int = Field(default=128_000, ge=8192, le=4_000_000)
+    max_output_tokens: int = Field(default=8192, ge=256, le=131_072)
+    max_batch_input_tokens: int = Field(default=64_000, ge=4096, le=4_000_000)
+    connect_timeout_seconds: float = Field(default=5.0, gt=0, le=3600)
+    read_timeout_seconds: float = Field(default=180.0, gt=0, le=3600)
+    write_timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
+    pool_timeout_seconds: float = Field(default=5.0, gt=0, le=3600)
+    max_retries: int = Field(default=2, ge=0, le=10)
+
+    def to_draft(self) -> AgentConfigDraft:
+        return AgentConfigDraft(
+            **{
+                name: getattr(self, name)
+                for name in AgentConfigDraft.__dataclass_fields__
+            }
+        )
+
+
+class AiAgentEnabledRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_revision: int = Field(ge=0)
+    enabled: bool
+
+
+class KnowledgeCitationResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source: str
+    heading: str
+    score: float
+    excerpt: str
+    version: str
+
+
+class KnowledgeSearchResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    query: str
+    items: tuple[KnowledgeCitationResponse, ...]
+
+
 class AiProviderUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -530,8 +658,14 @@ class AiProviderUpdateRequest(BaseModel):
     api_base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, min_length=1, max_length=65_536)
     clear_api_key: bool = False
+    reasoning_effort: ModelReasoningEffort = ModelReasoningEffort.NONE
     context_window_tokens: int = Field(ge=8_192, le=4_000_000)
     max_output_tokens: int = Field(ge=256, le=131_072)
+    max_batch_input_tokens: int = Field(
+        default=64_000,
+        ge=4_096,
+        le=4_000_000,
+    )
     connect_timeout_seconds: float = Field(gt=0, le=3600)
     read_timeout_seconds: float = Field(gt=0, le=3600)
     write_timeout_seconds: float = Field(gt=0, le=3600)
@@ -608,6 +742,8 @@ def create_app(
     login_limiter: LoginAttemptLimiter | None = None,
     webhook_service: GitHubWebhookService | None = None,
     ai_settings_service: AiSettingsService | None = None,
+    agent_settings_service: AgentSettingsService | None = None,
+    knowledge_base: MarkdownKnowledgeBase | None = None,
     review_management_service: ReviewManagementService | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
@@ -645,6 +781,9 @@ def create_app(
         install_redacting_log_filters()
         yield
         database: Database | None = application.state.owned_database
+        github_api: GitHubApiClient | None = application.state.owned_github_api
+        if github_api is not None:
+            github_api.close()
         if database is not None:
             database.dispose()
 
@@ -661,9 +800,12 @@ def create_app(
     application.state.dashboard_service = dashboard_service
     application.state.webhook_service = webhook_service
     application.state.ai_settings_service = ai_settings_service
+    application.state.agent_settings_service = agent_settings_service
+    application.state.knowledge_base = knowledge_base
     application.state.review_management_service = review_management_service
     application.state.login_limiter = login_limiter or LoginAttemptLimiter()
     application.state.owned_database = None
+    application.state.owned_github_api = None
     initialization_lock = RLock()
 
     def get_database() -> Database:
@@ -810,7 +952,6 @@ def create_app(
         )
         if configured_service is not None:
             return configured_service
-
         with initialization_lock:
             configured_service = application.state.ai_settings_service
             if configured_service is None:
@@ -826,6 +967,38 @@ def create_app(
                 application.state.ai_settings_service = configured_service
             return configured_service
 
+    def get_agent_settings_service() -> AgentSettingsService:
+        """返回固定 DAG 的独立 Agent 配置服务。"""
+
+        configured_service: AgentSettingsService | None = (
+            application.state.agent_settings_service
+        )
+        if configured_service is not None:
+            return configured_service
+        with initialization_lock:
+            configured_service = application.state.agent_settings_service
+            if configured_service is None:
+                try:
+                    cipher = AiSecretCipher.from_environment()
+                    database = get_database()
+                except AiSettingsConfigurationError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="AI settings encryption is not configured",
+                    ) from exc
+                configured_service = AgentSettingsService(database.sessions, cipher)
+                application.state.agent_settings_service = configured_service
+            return configured_service
+
+    def get_knowledge_base() -> MarkdownKnowledgeBase:
+        configured = application.state.knowledge_base
+        if configured is None:
+            configured = MarkdownKnowledgeBase(
+                os.environ.get("OPENREVIEWER_KNOWLEDGE_ROOT", "knowledge")
+            )
+            application.state.knowledge_base = configured
+        return configured
+
     def get_review_management_service() -> ReviewManagementService:
         """返回任务详情与人工控制服务。"""
 
@@ -837,8 +1010,34 @@ def create_app(
         with initialization_lock:
             configured_service = application.state.review_management_service
             if configured_service is None:
+                publisher = None
+                # 详情读取不依赖 GitHub 凭据。只有 App ID 和私钥路径都存在时
+                # 才装配人工发布器；配置缺失会在用户点击发布时准确返回 503，
+                # 配置存在但无效则同样不会伪造发布成功。
+                if (
+                    os.environ.get("OPENREVIEWER_GITHUB_APP_ID", "").strip()
+                    and os.environ.get(
+                        "OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE",
+                        "",
+                    ).strip()
+                ):
+                    try:
+                        github_api = GitHubApiClient()
+                        github_tokens = GitHubAppTokenProvider(
+                            github_api,
+                            GitHubAppSettings.from_environment(),
+                        )
+                        publisher = GitHubReviewPublisher(github_api, github_tokens)
+                        application.state.owned_github_api = github_api
+                    except (ValueError, OSError):
+                        if "github_api" in locals():
+                            github_api.close()
+                        publisher = None
                 configured_service = ReviewManagementService(
-                    SqlAlchemyReviewManagementRepository(get_database().sessions)
+                    SqlAlchemyReviewManagementRepository(
+                        get_database().sessions,
+                        publisher=publisher,
+                    )
                 )
                 application.state.review_management_service = configured_service
             return configured_service
@@ -1237,6 +1436,118 @@ def create_app(
 
         return ai_settings_response()
 
+    @application.get(
+        "/api/v1/settings/ai/agents",
+        response_model=AiAgentSettingsResponse,
+    )
+    def get_agent_settings(
+        _: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> AiAgentSettingsResponse:
+        """返回四个审查 Agent 的独立脱敏配置。"""
+
+        try:
+            return AiAgentSettingsResponse.from_view(
+                get_agent_settings_service().get()
+            )
+        except (AiSettingsPersistenceError, AiSettingsConfigurationError) as exc:
+            raise translate_ai_settings_error(exc) from exc
+
+    @application.put(
+        "/api/v1/settings/ai/agents/{agent}",
+        response_model=AiAgentSettingsResponse,
+    )
+    def update_agent_settings(
+        agent: ReviewAgent,
+        request_body: AiAgentUpdateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> AiAgentSettingsResponse:
+        """保存单个 Agent 草稿；每个 Agent 的密钥和测试状态相互隔离。"""
+
+        try:
+            view = get_agent_settings_service().update(
+                agent,
+                request_body.to_draft(),
+                expected_revision=request_body.expected_revision,
+                actor=principal.username,
+                api_key=request_body.api_key,
+                clear_api_key=request_body.clear_api_key,
+            )
+        except (
+            AiSettingsConfigurationError,
+            AiSettingsConflictError,
+            AiSettingsPersistenceError,
+            AiSettingsValidationError,
+        ) as exc:
+            raise translate_ai_settings_error(exc) from exc
+        return AiAgentSettingsResponse.from_view(view)
+
+    @application.post(
+        "/api/v1/settings/ai/agents/{agent}/test",
+        response_model=AiAgentSettingsResponse,
+    )
+    def test_agent_settings(
+        agent: ReviewAgent,
+        request_body: AiRevisionRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> AiAgentSettingsResponse:
+        """在事务外测试一个 Agent 的真实结构化连接。"""
+
+        try:
+            return AiAgentSettingsResponse.from_view(
+                get_agent_settings_service().test(
+                    agent,
+                    expected_revision=request_body.expected_revision,
+                    actor=principal.username,
+                )
+            )
+        except AiConnectionTestError as exc:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_503_SERVICE_UNAVAILABLE
+                    if exc.retryable
+                    else status.HTTP_422_UNPROCESSABLE_CONTENT
+                ),
+                detail=str(exc),
+            ) from exc
+        except (
+            AiSettingsConfigurationError,
+            AiSettingsConflictError,
+            AiSettingsPersistenceError,
+            AiSettingsValidationError,
+        ) as exc:
+            raise translate_ai_settings_error(exc) from exc
+
+    @application.post(
+        "/api/v1/settings/ai/agents/{agent}/enabled",
+        response_model=AiAgentSettingsResponse,
+    )
+    def set_agent_enabled(
+        agent: ReviewAgent,
+        request_body: AiAgentEnabledRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> AiAgentSettingsResponse:
+        """启用或停用一个 Agent，不影响其他 Agent 的模型配置。"""
+
+        try:
+            return AiAgentSettingsResponse.from_view(
+                get_agent_settings_service().set_enabled(
+                    agent,
+                    request_body.enabled,
+                    expected_revision=request_body.expected_revision,
+                    actor=principal.username,
+                )
+            )
+        except (
+            AiSettingsConfigurationError,
+            AiSettingsConflictError,
+            AiSettingsPersistenceError,
+            AiSettingsValidationError,
+        ) as exc:
+            raise translate_ai_settings_error(exc) from exc
+
     @application.put(
         "/api/v1/settings/ai/providers/{provider}",
         response_model=AiSettingsResponse,
@@ -1379,6 +1690,31 @@ def create_app(
             items=tuple(
                 ConfigurationAuditResponse.from_view(item) for item in audits
             )
+        )
+
+    @application.get(
+        "/api/v1/knowledge/search",
+        response_model=KnowledgeSearchResponse,
+    )
+    def search_knowledge(
+        q: Annotated[str, Query(min_length=1, max_length=500)],
+        _: Annotated[SessionPrincipal, Depends(require_principal)],
+        limit: Annotated[int, Query(ge=1, le=20)] = 5,
+    ) -> KnowledgeSearchResponse:
+        """检索版本化 Markdown 规则，返回可展示的引用来源。"""
+
+        items = get_knowledge_base().search(q, limit=limit)
+        return KnowledgeSearchResponse(
+            query=q,
+            items=tuple(
+                KnowledgeCitationResponse(
+                    **{
+                        name: getattr(item, name)
+                        for name in KnowledgeCitationResponse.model_fields
+                    }
+                )
+                for item in items
+            ),
         )
 
     @application.get(
@@ -1543,14 +1879,22 @@ def create_app(
                 detail="Idempotency-Key must not be blank",
             )
         try:
-            new_run_id, task_id, execution_status = (
-                get_review_management_service().apply_action(
-                    review_run_id,
-                    request_body.action,
-                    actor=principal.username,
-                    request_id=normalized_key,
-                )
+            management = get_review_management_service()
+            new_run_id, task_id, execution_status = management.apply_action(
+                review_run_id,
+                request_body.action,
+                actor=principal.username,
+                request_id=normalized_key,
+                target_stage=(
+                    request_body.target_stage.value
+                    if request_body.target_stage is not None
+                    else None
+                ),
             )
+            # ``execution_status`` 是旧队列兼容字段；人工节点（尤其批准后）
+            # 的真实状态只存在于固定 DAG 的 workflow_status 中。动作提交后
+            # 重新读取一次已提交快照，避免用旧状态集合推断并返回 null。
+            workflow_status = management.details(new_run_id).stored.workflow_status
         except ReviewNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1566,11 +1910,17 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="review action is temporarily unavailable",
             ) from exc
+        except ReviewPublishUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="GitHub publish is not configured or temporarily unavailable",
+            ) from exc
         return ReviewActionResponse(
             action=request_body.action,
             review_run_id=new_run_id,
             review_task_id=task_id,
             execution_status=execution_status,
+            workflow_status=workflow_status,
         )
 
     @application.post(

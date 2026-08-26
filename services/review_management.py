@@ -25,7 +25,18 @@ class FindingNotFoundError(LookupError):
     """指定候选问题不属于当前审查运行。"""
 
 
+class ReviewPublishUnavailableError(RuntimeError):
+    """GitHub 人工发布器未配置或发布失败。"""
+
+
 class ReviewAction(str, Enum):
+    START = "start"
+    PAUSE = "pause"
+    RESUME = "resume"
+    RETRY_STAGE = "retry_stage"
+    APPROVE = "approve"
+    REJECT = "reject"
+    PUBLISH = "publish"
     EXPEDITE = "expedite"
     RETRY = "retry"
     CANCEL = "cancel"
@@ -89,6 +100,7 @@ class StoredReviewDetails:
     pull_request_number: int
     head_sha: str
     execution_status: ExecutionStatus
+    workflow_status: ExecutionStatus
     review_conclusion: str | None
     coverage_status: str
     priority: int
@@ -177,6 +189,7 @@ class ReviewManagementRepository(Protocol):
         *,
         actor: str,
         request_id: str,
+        target_stage: str | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """幂等执行任务控制动作并返回运行、任务和新状态。"""
 
@@ -190,6 +203,15 @@ class ReviewManagementRepository(Protocol):
         request_id: str,
     ) -> None:
         """幂等保存人工 Finding 裁决和对应审计事件。"""
+
+    def publish(
+        self,
+        review_run_id: str,
+        *,
+        actor: str,
+        request_id: str,
+    ) -> tuple[str, str, ExecutionStatus]:
+        """在批准门之后执行一次人工 GitHub 发布。"""
 
 
 class ReviewManagementService:
@@ -226,12 +248,20 @@ class ReviewManagementService:
         *,
         actor: str,
         request_id: str,
+        target_stage: str | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
+        if action is ReviewAction.PUBLISH:
+            return self._repository.publish(
+                review_run_id,
+                actor=actor,
+                request_id=request_id,
+            )
         return self._repository.apply_action(
             review_run_id,
             action,
             actor=actor,
             request_id=request_id,
+            target_stage=target_stage,
         )
 
     def review_finding(
@@ -257,13 +287,33 @@ class ReviewManagementService:
         item: StoredReviewDetails,
         _unverified_findings: int,
     ) -> tuple[str, str]:
-        status = item.execution_status
+        status = item.workflow_status
         if status is ExecutionStatus.SUPERSEDED:
             return "intake", "superseded"
         if status is ExecutionStatus.CANCELLED:
             return "intake", "cancelled"
         if status is ExecutionStatus.TIMED_OUT:
             return "ci", "ci_timed_out"
+        if status is ExecutionStatus.PAUSED:
+            paused_from = next(
+                (
+                    event.payload.get("paused_from")
+                    for event in reversed(item.events)
+                    if event.event_type == "review.workflow.pause"
+                    and isinstance(event.payload.get("paused_from"), str)
+                ),
+                None,
+            )
+            paused_stage = {
+                ExecutionStatus.QUEUED.value: "context",
+                ExecutionStatus.CI.value: "ci",
+                ExecutionStatus.PLANNING.value: "planning",
+                ExecutionStatus.AGENT_BATCHES.value: "agent_batches",
+                ExecutionStatus.AGGREGATING.value: "aggregating",
+                ExecutionStatus.AWAITING_APPROVAL.value: "approval",
+                ExecutionStatus.AWAITING_PUBLISH.value: "publish",
+            }.get(paused_from, "context")
+            return paused_stage, "paused"
         if status is ExecutionStatus.COMPLETED:
             return "result", "completed"
         if status is ExecutionStatus.FAILED:
@@ -272,14 +322,34 @@ class ReviewManagementService:
             if item.context_fetched_at is not None:
                 return "planning", "planning_failed"
             return "context", "context_failed"
-        if item.model_review_completed_at is not None:
-            return "result", "completed"
+        if status is ExecutionStatus.AWAITING_PUBLISH:
+            return "publish", "awaiting_publish"
+        if status is ExecutionStatus.PUBLISHING:
+            return "publish", "publishing"
+        if status is ExecutionStatus.AWAITING_APPROVAL:
+            return "approval", "awaiting_approval"
+        if status is ExecutionStatus.APPROVED:
+            return "approval", "approved"
+        if status is ExecutionStatus.REJECTED:
+            return "approval", "rejected"
+        direct_stage = {
+            ExecutionStatus.CI: ("ci", "ci_running"),
+            ExecutionStatus.PLANNING: ("planning", "planning_running"),
+            ExecutionStatus.AGENT_BATCHES: ("agent_batches", "agent_batches_running"),
+            ExecutionStatus.AGGREGATING: ("aggregating", "aggregating_running"),
+        }.get(status)
+        if direct_stage is not None:
+            return direct_stage
         if item.review_plan_id is not None:
             return (
                 "model",
                 "model_running"
                 if status is ExecutionStatus.RUNNING
-                else "model_queued",
+                else (
+                    "model_retry_waiting"
+                    if item.last_error is not None
+                    else "model_queued"
+                ),
             )
         if item.context_fetched_at is not None and item.ci_state in {
             "success",
@@ -309,19 +379,47 @@ class ReviewManagementService:
     def _available_actions(
         item: StoredReviewDetails,
     ) -> tuple[ReviewAction, ...]:
-        if item.execution_status in {
-            ExecutionStatus.FAILED,
-            ExecutionStatus.TIMED_OUT,
-        }:
+        status = item.workflow_status
+        if status is ExecutionStatus.FAILED:
+            return (ReviewAction.RETRY, ReviewAction.RETRY_STAGE, ReviewAction.RERUN)
+        if status is ExecutionStatus.TIMED_OUT:
             return (ReviewAction.RETRY, ReviewAction.RERUN)
-        if item.model_review_completed_at is not None:
+        if status is ExecutionStatus.AWAITING_APPROVAL:
+            return (ReviewAction.APPROVE, ReviewAction.REJECT, ReviewAction.PAUSE)
+        if status is ExecutionStatus.AWAITING_PUBLISH:
+            return (ReviewAction.PUBLISH, ReviewAction.REJECT)
+        if status is ExecutionStatus.REJECTED:
+            return (ReviewAction.RETRY_STAGE, ReviewAction.RERUN)
+        if status is ExecutionStatus.PAUSED:
+            actions = (ReviewAction.RESUME,)
+            if item.execution_status in {
+                ExecutionStatus.QUEUED,
+                ExecutionStatus.WAITING_FOR_CI,
+                ExecutionStatus.READY_FOR_REVIEW,
+            }:
+                actions += (ReviewAction.CANCEL,)
+            return actions
+        if item.model_review_completed_at is not None and status is ExecutionStatus.COMPLETED:
             return (ReviewAction.RERUN,)
-        if item.execution_status in {
-            ExecutionStatus.QUEUED,
+        if status is ExecutionStatus.QUEUED:
+            return (
+                ReviewAction.START,
+                ReviewAction.EXPEDITE,
+                ReviewAction.PAUSE,
+                ReviewAction.CANCEL,
+            )
+        if status in {
             ExecutionStatus.WAITING_FOR_CI,
             ExecutionStatus.READY_FOR_REVIEW,
         }:
             return (ReviewAction.EXPEDITE, ReviewAction.CANCEL)
+        if status in {
+            ExecutionStatus.CI,
+            ExecutionStatus.PLANNING,
+            ExecutionStatus.AGENT_BATCHES,
+            ExecutionStatus.AGGREGATING,
+        }:
+            return (ReviewAction.PAUSE,)
         return ()
 
     @staticmethod
@@ -331,7 +429,18 @@ class ReviewManagementService:
         phase: str,
         unverified_findings: int,
     ) -> tuple[ReviewStage, ...]:
-        order = ("intake", "context", "ci", "planning", "model", "result")
+        order = (
+            "intake",
+            "context",
+            "ci",
+            "planning",
+            "model",
+            "agent_batches",
+            "aggregating",
+            "approval",
+            "publish",
+            "result",
+        )
         current_index = order.index(current_stage)
         failed_phase = phase.endswith("failed") or phase == "ci_timed_out"
         event_times = {event.event_type: event.occurred_at for event in item.events}
@@ -345,6 +454,22 @@ class ReviewManagementService:
             ),
             "planning": item.plan_created_at,
             "model": item.model_review_completed_at,
+            "agent_batches": event_times.get(
+                "review.model.batches_persisted",
+                item.plan_created_at,
+            ),
+            "aggregating": event_times.get(
+                "review.model.aggregating_started",
+                item.model_review_completed_at,
+            ),
+            "approval": event_times.get(
+                "review.workflow.approve",
+                item.model_review_completed_at,
+            ),
+            "publish": event_times.get(
+                "review.manual.publish_completed",
+                event_times.get("review.manual.publish_started"),
+            ),
             "result": item.model_review_completed_at,
         }
         result: list[ReviewStage] = []

@@ -35,7 +35,9 @@ from domain.enums import (
     LocationSide,
     ModelApiProtocol,
     ModelCallStatus,
+    ModelBatchStatus,
     ModelProvider,
+    ModelReasoningEffort,
     PatchState,
     PullRequestState,
     ReviewFileDecision,
@@ -98,6 +100,16 @@ class ReviewRunRecord(Base):
             name="execution_status_value",
         ),
         CheckConstraint(
+            f"workflow_status IN ({enum_values(ExecutionStatus)})",
+            name="workflow_status_value",
+        ),
+        CheckConstraint(
+            "workflow_paused_from IS NULL OR workflow_paused_from IN "
+            "('queued', 'ci', 'planning', 'agent_batches', 'aggregating', "
+            "'awaiting_approval', 'awaiting_publish')",
+            name="workflow_paused_from_value",
+        ),
+        CheckConstraint(
             "review_conclusion IS NULL OR "
             f"review_conclusion IN ({enum_values(ReviewConclusion)})",
             name="review_conclusion_value",
@@ -136,6 +148,11 @@ class ReviewRunRecord(Base):
     pull_request_number: Mapped[int] = mapped_column(Integer, nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    workflow_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=ExecutionStatus.QUEUED.value
+    )
+    # ``paused`` 是独立的人工门；保存暂停前节点后，继续操作不必猜测应回到哪里。
+    workflow_paused_from: Mapped[str | None] = mapped_column(String(32))
     review_conclusion: Mapped[str | None] = mapped_column(String(32))
     coverage_status: Mapped[str] = mapped_column(String(32), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -159,6 +176,16 @@ class ReviewTaskRecord(Base):
         CheckConstraint(
             f"execution_status IN ({enum_values(ExecutionStatus)})",
             name="execution_status_value",
+        ),
+        CheckConstraint(
+            f"workflow_status IN ({enum_values(ExecutionStatus)})",
+            name="workflow_status_value",
+        ),
+        CheckConstraint(
+            "workflow_paused_from IS NULL OR workflow_paused_from IN "
+            "('queued', 'ci', 'planning', 'agent_batches', 'aggregating', "
+            "'awaiting_approval', 'awaiting_publish')",
+            name="workflow_paused_from_value",
         ),
         CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
         CheckConstraint(
@@ -193,6 +220,10 @@ class ReviewTaskRecord(Base):
         nullable=False,
     )
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    workflow_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=ExecutionStatus.QUEUED.value
+    )
+    workflow_paused_from: Mapped[str | None] = mapped_column(String(32))
     priority: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=100)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     model_attempt_count: Mapped[int] = mapped_column(
@@ -387,6 +418,14 @@ class AiProviderConfigRecord(Base):
             name="context_reserves_input",
         ),
         CheckConstraint(
+            "reasoning_effort IN ('none', 'low', 'medium', 'high', 'max')",
+            name="reasoning_effort_value",
+        ),
+        CheckConstraint(
+            "max_batch_input_tokens BETWEEN 4096 AND 4000000",
+            name="max_batch_input_tokens_range",
+        ),
+        CheckConstraint(
             "connect_timeout_seconds > 0 AND read_timeout_seconds > 0 "
             "AND write_timeout_seconds > 0 AND pool_timeout_seconds > 0",
             name="timeouts_positive",
@@ -421,11 +460,17 @@ class AiProviderConfigRecord(Base):
     model: Mapped[str] = mapped_column(String(200), nullable=False)
     api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
     api_base_url: Mapped[str | None] = mapped_column(String(500))
+    reasoning_effort: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=ModelReasoningEffort.NONE.value
+    )
     context_window_tokens: Mapped[int] = mapped_column(
         Integer, nullable=False, default=128_000
     )
     max_output_tokens: Mapped[int] = mapped_column(
         Integer, nullable=False, default=8192
+    )
+    max_batch_input_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=64_000
     )
     connect_timeout_seconds: Mapped[float] = mapped_column(
         Float, nullable=False, default=5.0
@@ -485,6 +530,97 @@ class AiProviderSecretRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class AiAgentConfigRecord(Base):
+    """固定 DAG 中每个审查 Agent 的独立模型配置。"""
+
+    __tablename__ = "ai_agent_configs"
+    __table_args__ = (
+        CheckConstraint(
+            "agent IN ('security', 'convention', 'logic', 'summary')",
+            name="agent_value",
+        ),
+        CheckConstraint(
+            f"provider IN ({enum_values(ModelProvider)})",
+            name="provider_value",
+        ),
+        CheckConstraint(
+            "(provider = 'openai' AND api_protocol IN "
+            "('responses', 'chat_completions')) OR "
+            "(provider = 'anthropic' AND api_protocol = 'messages')",
+            name="api_protocol_provider",
+        ),
+        CheckConstraint(
+            "reasoning_effort IN ('none', 'low', 'medium', 'high', 'max')",
+            name="reasoning_effort_value",
+        ),
+        CheckConstraint(
+            "context_window_tokens BETWEEN 8192 AND 4000000",
+            name="context_window_tokens_range",
+        ),
+        CheckConstraint(
+            "max_output_tokens BETWEEN 256 AND 131072",
+            name="max_output_tokens_range",
+        ),
+        CheckConstraint(
+            "max_batch_input_tokens BETWEEN 4096 AND 4000000",
+            name="max_batch_input_tokens_range",
+        ),
+        CheckConstraint(
+            "connect_timeout_seconds > 0 AND read_timeout_seconds > 0 "
+            "AND write_timeout_seconds > 0 AND pool_timeout_seconds > 0",
+            name="timeouts_positive",
+        ),
+        CheckConstraint("max_retries BETWEEN 0 AND 10", name="max_retries_range"),
+        CheckConstraint(
+            "test_status IS NULL OR test_status IN ('succeeded', 'failed')",
+            name="test_status_value",
+        ),
+        Index("ix_ai_agent_configs_enabled", "enabled", "updated_at"),
+    )
+
+    agent: Mapped[str] = mapped_column(String(32), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
+    api_base_url: Mapped[str | None] = mapped_column(String(500))
+    reasoning_effort: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=ModelReasoningEffort.NONE.value
+    )
+    context_window_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=128_000)
+    max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=8192)
+    max_batch_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=64_000)
+    connect_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=5.0)
+    read_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=180.0)
+    write_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=30.0)
+    pool_timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=5.0)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    test_status: Mapped[str | None] = mapped_column(String(20))
+    tested_configuration_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class AiAgentSecretRecord(Base):
+    """每个 Agent 独立保存的加密 API Key。"""
+
+    __tablename__ = "ai_agent_secrets"
+    __table_args__ = (
+        CheckConstraint("key_version > 0", name="key_version_positive"),
+    )
+
+    agent: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("ai_agent_configs.agent", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
 class ConfigurationAuditRecord(Base):
@@ -935,6 +1071,100 @@ class ModelCallRecord(Base):
     finding_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ModelReviewBatchRecord(Base):
+    """一个 Agent 批次的可恢复执行记录。
+
+    ``result`` 保存经过严格 Pydantic 校验的供应商无关结果；它不包含 Prompt、
+    API Key 或模型思维链。Worker 重启后只重新领取 ``pending``/过期 ``running``
+    批次，已经成功的批次不会再次调用外部模型。
+    """
+
+    __tablename__ = "model_review_batches"
+    __table_args__ = (
+        CheckConstraint("batch_number > 0", name="batch_number_positive"),
+        CheckConstraint("batch_count > 0", name="batch_count_positive"),
+        CheckConstraint(
+            "batch_number <= batch_count",
+            name="batch_number_within_count",
+        ),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
+        CheckConstraint(
+            "estimated_input_tokens >= 0",
+            name="estimated_input_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "response_status IS NULL OR "
+            "(response_status >= 100 AND response_status <= 599)",
+            name="response_status_range",
+        ),
+        CheckConstraint(
+            "duration_ms IS NULL OR duration_ms >= 0",
+            name="duration_ms_nonnegative",
+        ),
+        CheckConstraint(
+            f"status IN ({enum_values(ModelBatchStatus)})",
+            name="status_value",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "agent",
+            "batch_number",
+            name="uq_model_review_batches_plan_agent_number",
+        ),
+        Index(
+            "ix_model_review_batches_claimable",
+            "status",
+            "available_at",
+            "lease_expires_at",
+        ),
+        Index(
+            "ix_model_review_batches_plan_agent",
+            "review_plan_id",
+            "agent",
+            "batch_number",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_plan_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_plans.id",
+            name="fk_model_review_batches_plan",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    agent: Mapped[str] = mapped_column(String(32), nullable=False, default="default")
+    batch_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    estimated_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ModelBatchStatus.PENDING.value
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    provider_request_id: Mapped[str | None] = mapped_column(String(200))
+    response_status: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    result: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(String(1000))
+    error_details: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )
 
 

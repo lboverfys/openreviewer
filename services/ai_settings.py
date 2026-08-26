@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 from threading import RLock
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
 from cryptography.exceptions import InvalidTag
@@ -21,7 +21,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from domain.enums import ModelApiProtocol, ModelProvider
+from domain.enums import (
+    ModelApiProtocol,
+    ModelProvider,
+    ModelReasoningEffort,
+    ReviewAgent,
+)
 from domain.identifiers import build_review_version_key
 from domain.model_review import ModelReviewInput
 from domain.review_planning import ReviewUnit
@@ -34,6 +39,7 @@ from persistence.models import (
 )
 from services.model_providers import create_model_reviewer
 from services.model_review import (
+    DEFAULT_MAX_BATCH_INPUT_TOKENS,
     ModelPricing,
     ModelReviewer,
     ModelServiceSettings,
@@ -43,6 +49,10 @@ from services.review_planning import (
     DeterministicReviewPlanner,
     ReviewPlanningSettings,
 )
+
+if TYPE_CHECKING:
+    from services.agent_settings import AgentSettingsService
+    from services.agent_workflow import FixedAgentWorkflow
 
 
 AI_SETTINGS_ID = 1
@@ -205,8 +215,10 @@ class AiProviderDraft:
     model: str
     api_protocol: ModelApiProtocol
     api_base_url: str | None = None
+    reasoning_effort: ModelReasoningEffort = ModelReasoningEffort.NONE
     context_window_tokens: int = 128_000
     max_output_tokens: int = 8192
+    max_batch_input_tokens: int = DEFAULT_MAX_BATCH_INPUT_TOKENS
     connect_timeout_seconds: float = 5.0
     read_timeout_seconds: float = 180.0
     write_timeout_seconds: float = 30.0
@@ -235,10 +247,12 @@ class AiProviderView:
     model: str
     api_protocol: ModelApiProtocol
     api_base_url: str | None
+    reasoning_effort: ModelReasoningEffort
     api_key_configured: bool
     api_key_mask: str | None
     context_window_tokens: int
     max_output_tokens: int
+    max_batch_input_tokens: int
     connect_timeout_seconds: float
     read_timeout_seconds: float
     write_timeout_seconds: float
@@ -286,9 +300,10 @@ class ActiveAiSettings:
 @dataclass(frozen=True, slots=True)
 class ActiveAiRuntime:
     revision: int
-    reviewer: ModelReviewer
+    reviewer: ModelReviewer | None
     planner: DeterministicReviewPlanner
     model_settings: ModelServiceSettings | None = None
+    agent_workflow: "FixedAgentWorkflow | None" = None
 
 
 class AiRuntimeProvider(Protocol):
@@ -392,6 +407,7 @@ class AiSettingsService:
                         "model",
                         "api_protocol",
                         "api_base_url",
+                        "reasoning_effort",
                         "max_output_tokens",
                         "connect_timeout_seconds",
                         "read_timeout_seconds",
@@ -747,10 +763,12 @@ class AiSettingsService:
                     model=record.model,
                     api_protocol=ModelApiProtocol(record.api_protocol),
                     api_base_url=record.api_base_url,
+                    reasoning_effort=ModelReasoningEffort(record.reasoning_effort),
                     api_key_configured=secret is not None,
                     api_key_mask=(f"****{api_key[-4:]}" if api_key else None),
                     context_window_tokens=record.context_window_tokens,
                     max_output_tokens=record.max_output_tokens,
+                    max_batch_input_tokens=record.max_batch_input_tokens,
                     connect_timeout_seconds=record.connect_timeout_seconds,
                     read_timeout_seconds=record.read_timeout_seconds,
                     write_timeout_seconds=record.write_timeout_seconds,
@@ -804,12 +822,14 @@ class AiSettingsService:
                 else ModelApiProtocol.MESSAGES
             ),
             api_base_url=None,
+            reasoning_effort=ModelReasoningEffort.NONE,
             api_key_configured=False,
             api_key_mask=None,
             context_window_tokens=(
                 128_000 if provider is ModelProvider.OPENAI else 200_000
             ),
             max_output_tokens=8192,
+            max_batch_input_tokens=DEFAULT_MAX_BATCH_INPUT_TOKENS,
             connect_timeout_seconds=5.0,
             read_timeout_seconds=180.0,
             write_timeout_seconds=30.0,
@@ -893,8 +913,10 @@ class AiSettingsService:
             "model",
             "api_protocol",
             "api_base_url",
+            "reasoning_effort",
             "context_window_tokens",
             "max_output_tokens",
+            "max_batch_input_tokens",
             "connect_timeout_seconds",
             "read_timeout_seconds",
             "write_timeout_seconds",
@@ -915,9 +937,15 @@ class AiSettingsService:
                 ModelApiProtocol(record.api_protocol) != draft.api_protocol
                 if name == "api_protocol"
                 else (
-                    record.api_base_url != normalize_api_base_url(draft.api_base_url)
-                    if name == "api_base_url"
-                    else getattr(record, name) != getattr(draft, name)
+                    ModelReasoningEffort(record.reasoning_effort)
+                    != draft.reasoning_effort
+                    if name == "reasoning_effort"
+                    else (
+                        record.api_base_url
+                        != normalize_api_base_url(draft.api_base_url)
+                        if name == "api_base_url"
+                        else getattr(record, name) != getattr(draft, name)
+                    )
                 )
             )
         }
@@ -933,8 +961,10 @@ class AiSettingsService:
             "model",
             "api_protocol",
             "api_base_url",
+            "reasoning_effort",
             "context_window_tokens",
             "max_output_tokens",
+            "max_batch_input_tokens",
             "connect_timeout_seconds",
             "read_timeout_seconds",
             "write_timeout_seconds",
@@ -952,7 +982,9 @@ class AiSettingsService:
             setattr(
                 record,
                 name,
-                value.value if name == "api_protocol" else value,
+                value.value
+                if name in {"api_protocol", "reasoning_effort"}
+                else value,
             )
         record.updated_by = actor
         record.updated_at = now
@@ -967,8 +999,10 @@ class AiSettingsService:
             model=record.model,
             api_protocol=ModelApiProtocol(record.api_protocol),
             api_base_url=record.api_base_url,
+            reasoning_effort=ModelReasoningEffort(record.reasoning_effort),
             context_window_tokens=record.context_window_tokens,
             max_output_tokens=record.max_output_tokens,
+            max_batch_input_tokens=record.max_batch_input_tokens,
             connect_timeout_seconds=record.connect_timeout_seconds,
             read_timeout_seconds=record.read_timeout_seconds,
             write_timeout_seconds=record.write_timeout_seconds,
@@ -1013,9 +1047,11 @@ class AiSettingsService:
                 api_key=api_key,
                 api_protocol=draft.api_protocol,
                 api_base_url=normalize_api_base_url(draft.api_base_url),
+                reasoning_effort=draft.reasoning_effort,
                 pricing=pricing,
                 context_window_tokens=draft.context_window_tokens,
                 max_output_tokens=draft.max_output_tokens,
+                max_batch_input_tokens=draft.max_batch_input_tokens,
                 connect_timeout_seconds=draft.connect_timeout_seconds,
                 read_timeout_seconds=draft.read_timeout_seconds,
                 write_timeout_seconds=draft.write_timeout_seconds,
@@ -1045,6 +1081,7 @@ class AiSettingsService:
             "api_protocol": settings.resolved_api_protocol.value,
             "model": settings.model,
             "api_base_url": settings.resolved_api_base_url,
+            "reasoning_effort": settings.reasoning_effort.value,
             "api_key_sha256": sha256(settings.api_key.encode("utf-8")).hexdigest(),
             "max_output_tokens": settings.max_output_tokens,
             "timeouts": [
@@ -1064,27 +1101,104 @@ class AiSettingsService:
 
 
 class SqlAlchemyAiRuntimeProvider:
-    """按全局 revision 缓存模型 HTTP Client 与确定性规划器。"""
+    """按配置 revision 缓存旧版或固定多 Agent 模型运行时。"""
 
-    def __init__(self, service: AiSettingsService) -> None:
+    def __init__(
+        self,
+        service: AiSettingsService,
+        agent_settings_service: "AgentSettingsService | None" = None,
+        *,
+        max_agent_concurrency: int = 3,
+    ) -> None:
+        if not 1 <= max_agent_concurrency <= 3:
+            raise ValueError("Agent 并发上限必须在 1 到 3 之间")
         self._service = service
+        self._agent_settings_service = agent_settings_service
+        self._max_agent_concurrency = max_agent_concurrency
         self._lock = RLock()
         self._cached: ActiveAiRuntime | None = None
 
     def current(self) -> ActiveAiRuntime | None:
         settings = self._service.active_settings()
+        agent_view = (
+            self._agent_settings_service.get()
+            if self._agent_settings_service is not None
+            else None
+        )
+        configured_agents = (
+            tuple(item for item in agent_view.agents if item.configured)
+            if agent_view is not None
+            else ()
+        )
+        ready_agents = (
+            {
+                item.agent
+                for item in agent_view.agents
+                if item.configured
+                and item.enabled
+                and item.test_status == "succeeded"
+                and item.api_key_configured
+            }
+            if agent_view is not None
+            else set()
+        )
+        required_agents = set(ReviewAgent)
+        revision = max(
+            settings.revision if settings is not None else 0,
+            agent_view.revision if agent_view is not None else 0,
+        )
         with self._lock:
-            if settings is None:
+            if settings is None and not configured_agents:
                 self._close_cached()
                 return None
-            if self._cached is not None and self._cached.revision == settings.revision:
+            # 一旦开始配置新版 Agent，就必须四个节点全部就绪。部分配置不能
+            # 静默退回旧单模型，也不能让某个 Agent 代替缺失节点。
+            if configured_agents and ready_agents != required_agents:
+                self._close_cached()
+                return None
+            if self._cached is not None and self._cached.revision == revision:
                 return self._cached
-            reviewer = create_model_reviewer(settings.model)
+            use_agent_workflow = bool(configured_agents)
+            reviewer = (
+                create_model_reviewer(settings.model)
+                if settings is not None and not use_agent_workflow
+                else None
+            )
+            if settings is not None:
+                planning = settings.planning
+            else:
+                snapshot = self._service.get()
+                planning = ReviewPlanningSettings(
+                    max_units=snapshot.max_units,
+                    max_scope_depth=snapshot.max_scope_depth,
+                    max_unit_input_bytes=snapshot.max_unit_input_bytes,
+                    max_total_input_bytes=snapshot.max_total_input_bytes,
+                )
+            agent_workflow = None
+            if use_agent_workflow and self._agent_settings_service is not None:
+                from services.agent_workflow import FixedAgentWorkflow
+
+                agent_settings = self._agent_settings_service.model_settings()
+                if set(agent_settings) != required_agents:
+                    self._close_cached()
+                    return None
+                reviewers = {
+                    agent: create_model_reviewer(model_settings)
+                    for agent, model_settings in agent_settings.items()
+                }
+
+                agent_workflow = FixedAgentWorkflow(
+                    reviewers,
+                    summary_reviewer=reviewers.get(ReviewAgent.SUMMARY),
+                    agent_settings=agent_settings,
+                    max_concurrency=self._max_agent_concurrency,
+                )
             runtime = ActiveAiRuntime(
-                revision=settings.revision,
+                revision=revision,
                 reviewer=reviewer,
-                planner=DeterministicReviewPlanner(settings.planning),
-                model_settings=settings.model,
+                planner=DeterministicReviewPlanner(planning),
+                model_settings=settings.model if settings is not None else None,
+                agent_workflow=agent_workflow,
             )
             self._close_cached()
             self._cached = runtime
@@ -1096,7 +1210,10 @@ class SqlAlchemyAiRuntimeProvider:
 
     def _close_cached(self) -> None:
         if self._cached is not None:
-            self._cached.reviewer.close()
+            if self._cached.agent_workflow is not None:
+                self._cached.agent_workflow.close()
+            if self._cached.reviewer is not None:
+                self._cached.reviewer.close()
             self._cached = None
 
 

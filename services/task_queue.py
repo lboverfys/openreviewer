@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from domain.enums import ExecutionStatus, WorkerStatus
+from domain.enums import ExecutionStatus, ModelBatchStatus, WorkerStatus
 from domain.github import GitHubReviewContext, PullRequestFile
 from domain.model_review import (
     MaterializedFinding,
@@ -99,6 +99,20 @@ class ModelReviewConflictError(TaskQueueError):
         )
 
 
+class ModelBatchBusyError(TaskQueueError):
+    """批次仍有有效执行租约，应等待而不是重复调用模型。"""
+
+    def __init__(self, message: str = "模型批次正在执行，请稍后重试") -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.MODEL_BATCH_BUSY,
+                safe_message=message,
+                retryable=True,
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewTaskLease:
     task_id: str
@@ -150,6 +164,25 @@ class StoredModelReview:
     created: bool
     finding_count: int
     execution_status: ExecutionStatus
+
+
+@dataclass(frozen=True, slots=True)
+class StoredModelBatch:
+    """持久化批次的最小恢复快照。"""
+
+    id: str
+    review_plan_id: str
+    agent: str
+    batch_number: int
+    batch_count: int
+    unit_keys: tuple[str, ...]
+    estimated_input_tokens: int
+    status: ModelBatchStatus
+    attempt_count: int
+    request_fingerprint: str | None
+    result: ModelReviewResult | None
+    error_code: str | None
+    error_message: str | None
 
 
 class ReviewTaskQueue(Protocol):
@@ -269,8 +302,67 @@ class ReviewTaskQueue(Protocol):
         lease: ReviewTaskLease,
         phase: str,
         payload: Mapping[str, object],
+        *,
+        agent: str = "default",
     ) -> None:
         """在不暴露模型私密思维文本的前提下记录批次级真实进度。"""
+        ...
+
+    def mark_model_aggregating(self, lease: ReviewTaskLease) -> None:
+        """三路 Agent 完成后，把固定 DAG 原子推进到结果汇总节点。"""
+        ...
+
+    def ensure_model_batches(
+        self,
+        lease: ReviewTaskLease,
+        batches: tuple[object, ...],
+        *,
+        agent: str = "default",
+    ) -> tuple[StoredModelBatch, ...]:
+        """幂等保存批次定义并返回当前状态。"""
+        ...
+
+    def claim_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        *,
+        agent: str = "default",
+        lease_duration: timedelta,
+    ) -> StoredModelBatch:
+        """锁定一个待执行批次；已成功批次直接返回且不会再次执行。"""
+        ...
+
+    def complete_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        result: ModelReviewResult,
+        *,
+        agent: str = "default",
+    ) -> StoredModelBatch:
+        """原子保存单批结果。"""
+        ...
+
+    def fail_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        error: SafeError,
+        *,
+        agent: str = "default",
+        retry_delay: timedelta | None = None,
+    ) -> StoredModelBatch:
+        """保存单批安全错误并安排阶段级重试。"""
+        ...
+
+    def load_model_batches(
+        self,
+        lease: ReviewTaskLease,
+        *,
+        agent: str = "default",
+    ) -> tuple[StoredModelBatch, ...]:
+        """按批次号读取一个 Agent 的有界批次结果。"""
         ...
 
     def store_model_review(

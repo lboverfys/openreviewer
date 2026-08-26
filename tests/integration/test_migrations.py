@@ -36,6 +36,8 @@ def test_initial_migration_creates_durable_review_task_schema(
         assert set(inspector.get_table_names()) == {
             "ai_provider_configs",
             "ai_provider_secrets",
+            "ai_agent_configs",
+            "ai_agent_secrets",
             "ai_settings",
             "alembic_version",
             "configuration_audits",
@@ -43,6 +45,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "github_installations",
             "github_webhook_deliveries",
             "model_calls",
+            "model_review_batches",
             "outbox_events",
             "pull_request_ci_checks",
             "pull_request_files",
@@ -106,6 +109,8 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_runs_pull_request_number_positive",
             "ck_review_runs_repository_id_positive",
             "ck_review_runs_review_conclusion_value",
+            "ck_review_runs_workflow_paused_from_value",
+            "ck_review_runs_workflow_status_value",
         }
         assert {
             constraint["name"]
@@ -117,6 +122,8 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_tasks_ci_poll_count_nonnegative",
             "ck_review_tasks_claimed_from_status_value",
             "ck_review_tasks_model_attempt_count_nonnegative",
+            "ck_review_tasks_workflow_paused_from_value",
+            "ck_review_tasks_workflow_status_value",
         }
         assert {
             constraint["name"]
@@ -170,6 +177,79 @@ def test_initial_migration_creates_durable_review_task_schema(
             column["name"]
             for column in inspector.get_columns("ai_provider_configs")
         }
+        assert {"reasoning_effort", "max_batch_input_tokens"} <= {
+            column["name"]
+            for column in inspector.get_columns("ai_provider_configs")
+        }
+        assert {
+            "ck_ai_provider_configs_reasoning_effort_value",
+            "ck_ai_provider_configs_max_batch_input_tokens_range",
+        } <= {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints(
+                "ai_provider_configs"
+            )
+        }
+        assert {
+            "workflow_status",
+        } <= {
+            column["name"] for column in inspector.get_columns("review_runs")
+        }
+        assert {
+            "workflow_status",
+        } <= {
+            column["name"] for column in inspector.get_columns("review_tasks")
+        }
+        assert {
+            "agent",
+            "provider",
+            "model",
+            "api_protocol",
+            "max_batch_input_tokens",
+            "enabled",
+            "test_status",
+        } <= {
+            column["name"] for column in inspector.get_columns("ai_agent_configs")
+        }
+        assert {"agent", "ciphertext", "nonce", "key_version"} <= {
+            column["name"] for column in inspector.get_columns("ai_agent_secrets")
+        }
+        assert {
+            "ix_ai_agent_configs_enabled",
+        } <= {
+            index["name"] for index in inspector.get_indexes("ai_agent_configs")
+        }
+        assert {
+            "ix_model_review_batches_claimable",
+            "ix_model_review_batches_plan_agent",
+        } <= {
+            index["name"] for index in inspector.get_indexes("model_review_batches")
+        }
+        assert {
+            "uq_model_review_batches_plan_agent_number",
+        } == {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("model_review_batches")
+        }
+        assert {
+            "ck_model_review_batches_attempt_count_nonnegative",
+            "ck_model_review_batches_batch_count_positive",
+            "ck_model_review_batches_batch_number_positive",
+            "ck_model_review_batches_batch_number_within_count",
+            "ck_model_review_batches_duration_ms_nonnegative",
+            "ck_model_review_batches_estimated_input_tokens_nonnegative",
+            "ck_model_review_batches_response_status_range",
+            "ck_model_review_batches_status_value",
+        } == {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints(
+                "model_review_batches"
+            )
+        }
+        assert "ck_ai_agent_configs_reasoning_effort_value" in {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("ai_agent_configs")
+        }
         assert {
             constraint["name"]
             for constraint in inspector.get_unique_constraints("ai_settings")
@@ -191,7 +271,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_file_plans_decision_value",
             "ck_review_file_plans_ordinal_nonnegative",
         }
-        assert revision == "20260826_0011"
+        assert revision == "20260827_0016"
     finally:
         engine.dispose()
 
@@ -224,6 +304,36 @@ def test_postgres_migration_keeps_execution_constraint_names_fixed(
     ) in output
     assert "DROP CONSTRAINT ck_review_runs_ck_review_runs_" not in output
     assert "DROP CONSTRAINT ck_review_tasks_ck_review_tasks_" not in output
+
+
+def test_workflow_downgrade_restores_legacy_execution_constraints(
+    tmp_path: Path,
+) -> None:
+    database_path = (tmp_path / "workflow-downgrade.sqlite3").as_posix()
+    database_url = f"sqlite:///{database_path}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "head")
+    command.downgrade(configuration, "20260827_0013")
+
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        for table in ("review_runs", "review_tasks"):
+            assert "workflow_status" not in {
+                column["name"] for column in inspector.get_columns(table)
+            }
+            execution_constraint = next(
+                constraint
+                for constraint in inspector.get_check_constraints(table)
+                if constraint["name"] == f"ck_{table}_execution_status_value"
+            )
+            sql = execution_constraint["sqltext"]
+            assert "ready_for_review" in sql
+            assert "aggregating" not in sql
+            assert "awaiting_approval" not in sql
+    finally:
+        engine.dispose()
 
 
 def test_protocol_migration_backfills_existing_provider_configs(
@@ -279,7 +389,8 @@ def test_protocol_migration_backfills_existing_provider_configs(
             rows = connection.execute(
                 text(
                     "SELECT provider, api_protocol, api_base_url, "
-                    "context_window_tokens "
+                    "context_window_tokens, reasoning_effort, "
+                    "max_batch_input_tokens "
                     "FROM ai_provider_configs"
                 )
             ).all()
@@ -287,6 +398,12 @@ def test_protocol_migration_backfills_existing_provider_configs(
             api_base_urls = {row.provider: row.api_base_url for row in rows}
             context_windows = {
                 row.provider: row.context_window_tokens for row in rows
+            }
+            reasoning_efforts = {
+                row.provider: row.reasoning_effort for row in rows
+            }
+            batch_limits = {
+                row.provider: row.max_batch_input_tokens for row in rows
             }
         assert protocols == {
             "openai": "responses",
@@ -300,5 +417,7 @@ def test_protocol_migration_backfills_existing_provider_configs(
             "openai": 1_000_000,
             "anthropic": 128_000,
         }
+        assert reasoning_efforts == {"openai": "none", "anthropic": "none"}
+        assert batch_limits == {"openai": 64_000, "anthropic": 64_000}
     finally:
         engine.dispose()

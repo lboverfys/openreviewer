@@ -3,11 +3,15 @@ from hashlib import sha256
 
 import pytest
 
+import services.model_review as model_review_service
+
 from domain.enums import (
     FindingCategory,
     LocationSide,
     ModelApiProtocol,
+    ModelCallStatus,
     ModelProvider,
+    ModelReasoningEffort,
     Severity,
     VerificationStatus,
 )
@@ -16,16 +20,21 @@ from domain.model_review import (
     ModelFindingLocation,
     ModelReviewInput,
     ModelReviewOutput,
+    ModelReviewResult,
     ModelTokenUsage,
     materialize_findings,
     model_review_output_schema,
 )
 from domain.review_planning import RepositoryRule, ReviewUnit
 from services.model_review import (
+    FragmentLineMap,
     ModelPricing,
+    ModelReviewBatch,
     ModelServiceSettings,
     StructuredReviewPromptBuilder,
+    combine_model_review_results,
     plan_model_review_batches,
+    remap_model_review_result,
 )
 
 
@@ -142,6 +151,67 @@ def make_large_v2_input() -> ModelReviewInput:
     )
 
 
+def make_many_line_input(line_count: int = 10_000) -> ModelReviewInput:
+    """生成可稳定切成多片段的单文件统一 diff。"""
+
+    source = make_model_input()
+    patch = (
+        "@@ -1,{count} +1,{count} @@\n".format(count=line_count)
+        + "".join(f"+line-{index}\n" for index in range(1, line_count + 1))
+    )
+    unit = source.units[0].model_copy(update={"patch": patch})
+    unit = unit.model_copy(
+        update={
+            "patch_sha256": sha256(patch.encode("utf-8")).hexdigest(),
+            "estimated_input_bytes": len(patch.encode("utf-8")),
+        }
+    )
+    return source.model_copy(
+        update={
+            "units": (unit,),
+            "total_estimated_input_bytes": unit.estimated_input_bytes
+            + sum(rule.byte_size for rule in source.rules),
+        }
+    )
+
+
+def make_result(output: ModelReviewOutput, fingerprint: str) -> ModelReviewResult:
+    return ModelReviewResult(
+        provider=ModelProvider.OPENAI,
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        model="test-model",
+        status=ModelCallStatus.SUCCEEDED,
+        prompt_version="test",
+        request_fingerprint=fingerprint,
+        response_status=200,
+        duration_ms=10,
+        usage=ModelTokenUsage(input_tokens=10, output_tokens=4),
+        output=output,
+    )
+
+
+def candidate_at(unit_key: str, line: int, *, title: str = "跨片段问题") -> ModelFindingCandidate:
+    return ModelFindingCandidate(
+        unit_key=unit_key,
+        severity=Severity.HIGH,
+        category=FindingCategory.SECURITY,
+        location=ModelFindingLocation(
+            file="src/auth.py",
+            start_line=line,
+            end_line=line,
+            side=LocationSide.RIGHT,
+            symbol="check",
+        ),
+        title=title,
+        evidence="证据",
+        impact="影响",
+        suggestion="建议",
+        required_test=None,
+        confidence=0.8,
+        rule_reference="AGENTS.md",
+    )
+
+
 def test_model_schema_excludes_platform_owned_finding_fields() -> None:
     schema = model_review_output_schema()
     item = schema["properties"]["findings"]["items"]
@@ -237,17 +307,44 @@ def test_model_batches_use_context_window_without_omitting_files() -> None:
     large_batches = plan_model_review_batches(review_input, one_million)
     small_batches = plan_model_review_batches(review_input, small_context)
 
-    assert len(large_batches) == 1
+    assert len(large_batches) >= 3
     assert len(small_batches) > 1
-    assert {
-        file
-        for batch in small_batches
-        for file in batch.files
-    } == {unit.file for unit in review_input.units}
+    for batches in (large_batches, small_batches):
+        assert {
+            file
+            for batch in batches
+            for file in batch.files
+        } == {unit.file for unit in review_input.units}
+        fragments_by_unit: dict[str, list[str]] = {}
+        for batch in batches:
+            for unit in batch.review_input.units:
+                fragments_by_unit.setdefault(unit.unit_key, []).append(unit.patch)
+        assert {
+            unit_key: "".join(fragments)
+            for unit_key, fragments in fragments_by_unit.items()
+        } == {unit.unit_key: unit.patch for unit in review_input.units}
     assert all(
-        batch.estimated_input_tokens <= small_context.input_budget_tokens
+        batch.estimated_input_tokens <= one_million.batch_input_budget_tokens
+        for batch in large_batches
+    )
+    assert all(
+        batch.estimated_input_tokens <= small_context.batch_input_budget_tokens
         for batch in small_batches
     )
+
+
+def test_model_settings_default_to_gateway_safe_batching_and_optional_reasoning() -> None:
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="one-million-context-model",
+        api_key="relay-key",
+        context_window_tokens=1_000_000,
+        max_output_tokens=16_384,
+    )
+
+    assert settings.reasoning_effort is ModelReasoningEffort.NONE
+    assert settings.max_batch_input_tokens == 64_000
+    assert settings.batch_input_budget_tokens == 64_000
 
 
 def test_model_batches_split_one_large_file_without_losing_unit_identity() -> None:
@@ -289,6 +386,334 @@ def test_model_batches_split_one_large_file_without_losing_unit_identity() -> No
     assert all(batch.fragmented for batch in batches)
     assert all(fragment.unit_key == large_unit.unit_key for fragment in fragments)
     assert "".join(fragment.patch for fragment in fragments) == large_unit.patch
+
+
+def test_model_batches_reject_count_above_persistence_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_input = make_large_v2_input()
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="small-context-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_request_bytes=1024 * 1024,
+    )
+    monkeypatch.setattr(model_review_service, "MAX_MODEL_REVIEW_BATCHES", 1)
+
+    with pytest.raises(ValueError, match="batch count exceeds"):
+        plan_model_review_batches(review_input, settings)
+
+
+def test_fragment_line_mapping_handles_adjacent_boundaries_and_both_sides() -> None:
+    review_input = make_many_line_input()
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="small-context-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_request_bytes=1024 * 1024,
+    )
+    batches = plan_model_review_batches(review_input, settings)
+
+    assert len(batches) > 1
+    first = batches[0]
+    second = batches[1]
+    first_map = first.line_maps[0]
+    second_map = second.line_maps[0]
+    assert first_map.line_mode == "global"
+    assert second_map.line_mode == "local"
+    assert first_map.local_to_right[-1] is not None
+    # 片段可能恰好把一条超长行从中间切开；此时边界两端映射到同一
+    # 原始行，下一条完整行仍必须保持连续。
+    assert second_map.local_to_right[1] == first_map.local_to_right[-1] + 1
+
+    candidate = candidate_at(
+        review_input.units[0].unit_key,
+        1,
+        title="第二片段首行",
+    )
+    remapped = remap_model_review_result(
+        make_result(ModelReviewOutput(findings=(candidate,)), "1" * 64),
+        second,
+    )
+    location = remapped.output.findings[0].location
+    assert location is not None
+    assert location.start_line == second_map.local_to_right[0]
+    assert location.end_line == second_map.local_to_right[0]
+
+    # 同一片段内的相邻范围必须分别还原，不可只映射首行。
+    range_candidate = candidate_at(
+        review_input.units[0].unit_key,
+        1,
+        title="片段相邻范围",
+    ).model_copy(
+        update={
+            "location": ModelFindingLocation(
+                file="src/auth.py",
+                start_line=1,
+                end_line=2,
+                side=LocationSide.RIGHT,
+                symbol="check",
+            )
+        }
+    )
+    range_result = remap_model_review_result(
+        make_result(ModelReviewOutput(findings=(range_candidate,)), "2" * 64),
+        second,
+    )
+    range_location = range_result.output.findings[0].location
+    assert range_location is not None
+    assert range_location.start_line == second_map.local_to_right[0]
+    assert range_location.end_line == second_map.local_to_right[1]
+
+    # 删除行只允许使用 left，新增行只允许使用 right。
+    source_map = plan_model_review_batches(make_model_input(), settings)[0].line_maps[0]
+    assert source_map.map_line(1, LocationSide.LEFT) == 1
+    assert source_map.map_line(1, LocationSide.RIGHT) == 1
+    with pytest.raises(ValueError):
+        source_map.map_line(3, LocationSide.LEFT)
+
+
+def test_fragment_mapping_rejects_zero_and_unprovable_lines() -> None:
+    mapping = FragmentLineMap(
+        unit_key="d" * 64,
+        file="src/auth.py",
+        fragment_index=0,
+        fragment_count=2,
+        line_mode="local",
+        local_to_left=(None,),
+        local_to_right=(7,),
+    )
+    with pytest.raises(ValueError):
+        mapping.map_line(0, LocationSide.RIGHT)
+    with pytest.raises(ValueError):
+        mapping.map_line(1, LocationSide.LEFT)
+    assert mapping.map_line(1, LocationSide.RIGHT) == 7
+
+
+def test_batch_mapping_rejects_findings_for_units_not_sent_in_that_batch() -> None:
+    batch = plan_model_review_batches(
+        make_model_input(),
+        ModelServiceSettings(
+            provider=ModelProvider.OPENAI,
+            model="test-model",
+            api_key="relay-key",
+        ),
+    )[0]
+    candidate = candidate_at("f" * 64, 1).model_copy(update={"location": None})
+
+    with pytest.raises(ValueError, match="outside its batch"):
+        remap_model_review_result(
+            make_result(ModelReviewOutput(findings=(candidate,)), "6" * 64),
+            batch,
+        )
+
+
+def test_fragment_mapping_prefers_declared_line_mode_and_rejects_unknown_lines() -> None:
+    mapping = FragmentLineMap(
+        unit_key="d" * 64,
+        file="src/auth.py",
+        fragment_index=0,
+        fragment_count=2,
+        line_mode="global",
+        local_to_left=(100, 101),
+        local_to_right=(100, 101),
+    )
+    # 行号 1 在局部范围内但不在全局映射中，可安全按局部兼容。
+    assert mapping.map_line(1, LocationSide.RIGHT) == 100
+    with pytest.raises(ValueError):
+        mapping.map_line(102, LocationSide.RIGHT)
+
+
+def test_line_mapping_keeps_multiple_findings_on_original_files_for_zero_count_hunks() -> None:
+    source = make_model_input()
+    new_patch = "@@ -0,0 +1,2 @@\n+first\n+second\n"
+    removed_patch = "@@ -1,2 +0,0 @@\n-first\n-second\n"
+    new_unit = source.units[0].model_copy(
+        update={
+            "unit_key": "e" * 64,
+            "file": "src/new.py",
+            "patch": new_patch,
+            "patch_sha256": sha256(new_patch.encode("utf-8")).hexdigest(),
+            "estimated_input_bytes": len(new_patch.encode("utf-8")),
+        }
+    )
+    removed_unit = source.units[0].model_copy(
+        update={
+            "unit_key": "f" * 64,
+            "file": "src/removed.py",
+            "patch": removed_patch,
+            "patch_sha256": sha256(removed_patch.encode("utf-8")).hexdigest(),
+            "estimated_input_bytes": len(removed_patch.encode("utf-8")),
+        }
+    )
+    review_input = source.model_copy(
+        update={
+            "units": (new_unit, removed_unit),
+            "total_estimated_input_bytes": (
+                new_unit.estimated_input_bytes + removed_unit.estimated_input_bytes
+            ),
+        }
+    )
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="test-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+    )
+    batch = plan_model_review_batches(review_input, settings)[0]
+
+    def candidate(
+        unit: ReviewUnit,
+        *,
+        side: LocationSide,
+        start_line: int,
+        end_line: int,
+        title: str,
+    ) -> ModelFindingCandidate:
+        return ModelFindingCandidate(
+            unit_key=unit.unit_key,
+            severity=Severity.HIGH,
+            category=FindingCategory.SECURITY,
+            location=ModelFindingLocation(
+                file=unit.file,
+                start_line=start_line,
+                end_line=end_line,
+                side=side,
+                symbol=None,
+            ),
+            title=title,
+            evidence="证据",
+            impact="影响",
+            suggestion="建议",
+            required_test=None,
+            confidence=0.8,
+            rule_reference="AGENTS.md",
+        )
+
+    result = remap_model_review_result(
+        make_result(
+            ModelReviewOutput(
+                findings=(
+                    candidate(
+                        new_unit,
+                        side=LocationSide.RIGHT,
+                        start_line=1,
+                        end_line=2,
+                        title="新增文件范围",
+                    ),
+                    candidate(
+                        new_unit,
+                        side=LocationSide.RIGHT,
+                        start_line=2,
+                        end_line=2,
+                        title="新增文件第二处",
+                    ),
+                    candidate(
+                        removed_unit,
+                        side=LocationSide.LEFT,
+                        start_line=1,
+                        end_line=2,
+                        title="删除文件范围",
+                    ),
+                )
+            ),
+            "5" * 64,
+        ),
+        batch,
+    )
+
+    locations = [item.location for item in result.output.findings]
+    assert [(item.file, item.start_line, item.end_line, item.side) for item in locations if item] == [
+        ("src/new.py", 1, 2, LocationSide.RIGHT),
+        ("src/new.py", 2, 2, LocationSide.RIGHT),
+        ("src/removed.py", 1, 2, LocationSide.LEFT),
+    ]
+
+
+def test_large_utf8_single_line_is_preserved_and_maps_every_fragment() -> None:
+    source = make_model_input()
+    patch = "@@ -1 +1 @@\n-old\n+" + ("审" * 180_000) + "\n"
+    unit = source.units[0].model_copy(update={"patch": patch})
+    unit = unit.model_copy(
+        update={
+            "patch_sha256": sha256(patch.encode("utf-8")).hexdigest(),
+            "estimated_input_bytes": len(patch.encode("utf-8")),
+        }
+    )
+    review_input = source.model_copy(
+        update={
+            "units": (unit,),
+            "total_estimated_input_bytes": unit.estimated_input_bytes
+            + sum(rule.byte_size for rule in source.rules),
+        }
+    )
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="small-context-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_request_bytes=1024 * 1024,
+    )
+    batches = plan_model_review_batches(review_input, settings)
+    assert len(batches) > 1
+    assert "".join(batch.review_input.units[0].patch for batch in batches) == patch
+    for batch in batches:
+        result = remap_model_review_result(
+            make_result(
+                ModelReviewOutput(
+                    findings=(candidate_at(review_input.units[0].unit_key, 1, title=f"片段-{batch.number}"),)
+                ),
+                f"{batch.number:064x}",
+            ),
+            batch,
+        )
+        location = result.output.findings[0].location
+        assert location is not None
+        assert location.start_line == 1
+
+
+def test_cross_fragment_results_are_deduplicated_and_sorted_after_remapping() -> None:
+    review_input = make_many_line_input()
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="small-context-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_request_bytes=1024 * 1024,
+    )
+    batches = plan_model_review_batches(review_input, settings)
+    assert len(batches) >= 2
+    unit_key = review_input.units[0].unit_key
+    duplicate_first = candidate_at(unit_key, 2, title="同一个问题")
+    duplicate_second = candidate_at(unit_key, 1, title="同一个问题").model_copy(
+        update={"confidence": 0.95}
+    )
+    unique = candidate_at(unit_key, 3, title="另一个问题").model_copy(
+        update={"severity": Severity.CRITICAL, "confidence": 0.7}
+    )
+    results = (
+        make_result(ModelReviewOutput(findings=(duplicate_first, unique)), "3" * 64),
+        make_result(ModelReviewOutput(findings=(duplicate_second,)), "4" * 64),
+    )
+    combined = combine_model_review_results(
+        review_input,
+        results,
+        batches=batches[:2],
+    )
+    assert len(combined.output.findings) == 2
+    assert combined.output.findings[0].title == "另一个问题"
+    assert combined.output.findings[1].title == "同一个问题"
+    assert combined.output.findings[1].confidence == 0.95
 
 
 def test_pricing_uses_decimal_microusd_and_requires_cache_rates_when_used() -> None:

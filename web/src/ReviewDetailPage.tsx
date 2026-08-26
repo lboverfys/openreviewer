@@ -26,13 +26,36 @@ interface ReviewDetailPageProps {
 }
 
 const actionLabels: Record<ReviewAction, string> = {
+  start: "开始审查",
+  pause: "暂停",
+  resume: "继续",
+  retry_stage: "重试本阶段",
+  approve: "批准审查",
+  reject: "驳回",
+  publish: "发布到 GitHub",
   expedite: "立即唤醒",
   retry: "重试本阶段",
   cancel: "取消任务",
   rerun: "重新审查",
 };
 
+type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
+
+const retryTargetOptions: ReadonlyArray<[RetryTargetStage, string]> = [
+  ["ci", "CI 检查"],
+  ["planning", "审查规划"],
+  ["agent_batches", "三路 Agent"],
+  ["aggregating", "结果汇总"],
+];
+
 const actionIcons: Record<ReviewAction, string> = {
+  start: "▶",
+  pause: "Ⅱ",
+  resume: "▶",
+  retry_stage: "↻",
+  approve: "✓",
+  reject: "×",
+  publish: "⇧",
   expedite: "↯",
   retry: "↻",
   cancel: "×",
@@ -60,8 +83,25 @@ const eventLabels: Record<string, string> = {
   "review.plan.prepared": "审查计划已生成",
   "review.model.batches_planned": "AI 批次已规划",
   "review.model.batch_started": "AI 批次开始",
+  "review.model.request_started": "AI 请求已发出",
+  "review.model.request_completed": "AI 响应已返回",
   "review.model.batch_completed": "AI 批次完成",
+  "review.model.batch_failed": "AI 批次失败",
+  "review.model.agent_completed": "审查 Agent 已完成",
+  "review.model.agent_failed": "审查 Agent 失败",
+  "review.model.aggregating_started": "开始汇总审查结果",
+  "review.model.summary_completed": "汇总 Agent 已完成",
   "review.model.completed": "AI 分析完成",
+  "review.model.batches_persisted": "批次已保存",
+  "review.workflow.approve": "审查已批准，等待发布",
+  "review.workflow.advance": "批准状态已记录，开放人工发布",
+  "review.workflow.reject": "审查已驳回",
+  "review.workflow.retry_stage": "从指定阶段重新审查",
+  "review.workflow.pause": "审查已暂停",
+  "review.workflow.resume": "审查已继续",
+  "review.manual.publish_started": "开始人工发布",
+  "review.manual.publish_completed": "已发布到 GitHub",
+  "review.manual.publish_failed": "GitHub 发布失败",
   "review.task.retry_scheduled": "已安排自动重试",
   "review.task.failed": "任务失败",
   "review.ci_timed_out": "CI 等待超时",
@@ -85,7 +125,20 @@ const fileDecisionLabels: Record<string, string> = {
   omitted_by_budget: "旧版范围省略",
 };
 
-function actionKey(): string {
+const reasoningEffortLabels: Record<string, string> = {
+  none: "跟随服务商",
+  low: "轻量",
+  medium: "标准",
+  high: "深入",
+  max: "极致",
+};
+
+function actionKey(action?: ReviewAction, reviewRunId?: string): string {
+  if (action === "publish" && reviewRunId) {
+    // 一次审查最多人工发布一次；稳定幂等键让网络超时或页面刷新后的
+    // 再次点击能够恢复同一发布，而不是创建第二条 GitHub 评论。
+    return `ui:publish:${reviewRunId}`;
+  }
   return `ui:${Date.now()}:${crypto.randomUUID()}`;
 }
 
@@ -99,6 +152,10 @@ function formatBytes(value: number | null): string {
 function formatDuration(value: number | null): string {
   if (value === null || value === undefined) return "—";
   if (value < 1000) return `${value} ms`;
+  if (value >= 60_000) {
+    const seconds = Math.round(value / 1000);
+    return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  }
   return `${(value / 1000).toFixed(1)} s`;
 }
 
@@ -124,12 +181,39 @@ function latestBatchPlanEvent(events: ReviewEvent[]): ReviewEvent | undefined {
     }, undefined);
 }
 
+function latestEvent(
+  events: ReviewEvent[],
+  eventType: string,
+  modelAttempt?: number,
+): ReviewEvent | undefined {
+  return [...events].reverse().find((event) => (
+    event.event_type === eventType
+    && (modelAttempt === undefined
+      || payloadNumber(event, "model_attempt_count") === modelAttempt)
+  ));
+}
+
+function retryDetail(event: ReviewEvent | undefined): string | null {
+  const retryAt = payloadString(event, "retry_at");
+  if (!retryAt) return null;
+  const remainingSeconds = Math.max(
+    0,
+    Math.ceil((new Date(retryAt).getTime() - Date.now()) / 1000),
+  );
+  if (!Number.isFinite(remainingSeconds)) return `计划重试时间 ${formatDate(retryAt)}`;
+  if (remainingSeconds === 0) return `已到重试时间，等待 Worker 领取`;
+  if (remainingSeconds < 60) return `${remainingSeconds} 秒后自动重试`;
+  return `约 ${Math.ceil(remainingSeconds / 60)} 分钟后自动重试（${formatDate(retryAt)}）`;
+}
+
 function eventDetail(event: ReviewEvent): string | null {
   if (event.event_type === "review.model.batches_planned") {
     const batches = payloadNumber(event, "batch_count");
     const files = payloadNumber(event, "file_count");
     const context = payloadNumber(event, "context_window_tokens");
-    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 上下文 ${context?.toLocaleString() ?? "—"} Token`;
+    const batchBudget = payloadNumber(event, "input_budget_tokens");
+    const reasoning = payloadString(event, "reasoning_effort");
+    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 模型总容量 ${context?.toLocaleString() ?? "—"} · 单批约 ${batchBudget?.toLocaleString() ?? "—"} Token · 推理 ${reasoningEffortLabels[reasoning ?? ""] ?? reasoning ?? "—"}`;
   }
   if (event.event_type === "review.model.batch_started") {
     const number = payloadNumber(event, "batch_number");
@@ -141,6 +225,30 @@ function eventDetail(event: ReviewEvent): string | null {
     const number = payloadNumber(event, "batch_number");
     const total = payloadNumber(event, "batch_count");
     return `第 ${number ?? "—"}/${total ?? "—"} 批 · 输入 ${payloadNumber(event, "input_tokens")?.toLocaleString() ?? "—"} · 输出 ${payloadNumber(event, "output_tokens")?.toLocaleString() ?? "—"} · 推理 ${payloadNumber(event, "reasoning_tokens")?.toLocaleString() ?? "—"} Token · ${formatDuration(payloadNumber(event, "duration_ms"))}`;
+  }
+  if (event.event_type === "review.model.request_started") {
+    const number = payloadNumber(event, "batch_number");
+    const total = payloadNumber(event, "batch_count");
+    const model = payloadString(event, "model");
+    const protocol = payloadString(event, "api_protocol");
+    return `第 ${number ?? "—"}/${total ?? "—"} 批已发送 · ${model ?? "—"} · ${protocol ?? "—"}`;
+  }
+  if (event.event_type === "review.model.request_completed") {
+    const number = payloadNumber(event, "batch_number");
+    const total = payloadNumber(event, "batch_count");
+    const status = payloadNumber(event, "response_status");
+    const requestId = payloadString(event, "provider_request_id");
+    return `第 ${number ?? "—"}/${total ?? "—"} 批已返回 · HTTP ${status ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))}${requestId ? ` · 请求 ID ${requestId}` : ""}`;
+  }
+  if (event.event_type === "review.model.batch_failed") {
+    const number = payloadNumber(event, "batch_number");
+    const total = payloadNumber(event, "batch_count");
+    const status = payloadNumber(event, "status_code");
+    const code = payloadString(event, "error_code");
+    return `第 ${number ?? "—"}/${total ?? "—"} 批失败 · HTTP ${status ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))} · 错误码 ${code ?? "—"}${event.payload.error_retryable === true ? " · 可自动重试" : event.payload.error_retryable === false ? " · 不可自动重试" : ""}`;
+  }
+  if (event.event_type === "review.task.retry_scheduled") {
+    return retryDetail(event);
   }
   return null;
 }
@@ -195,51 +303,264 @@ function StageTimeline({ details }: { details: ReviewDetails }) {
   );
 }
 
-function ModelBatchPanel({ details }: { details: ReviewDetails }) {
-  const planned = latestBatchPlanEvent(details.events);
-  const latestAttempt = payloadNumber(planned, "model_attempt_count");
-  const modelEvents = details.events.filter((event) =>
-    event.event_type.startsWith("review.model.batch")
-    && (latestAttempt === null || payloadNumber(event, "model_attempt_count") === latestAttempt),
-  );
-  if (!planned && modelEvents.length === 0) return null;
+const agentDefinitions = [
+  { key: "security", label: "安全审查", description: "检查漏洞、权限和敏感数据风险" },
+  { key: "convention", label: "规范审查", description: "检查编码规范、可维护性和工程约定" },
+  { key: "logic", label: "逻辑审查", description: "检查业务逻辑、边界条件和回归风险" },
+  { key: "summary", label: "汇总 Agent", description: "去重、排序并生成最终审查结论" },
+] as const;
 
-  const started = new Map<number, ReviewEvent>();
-  const completed = new Map<number, ReviewEvent>();
-  for (const event of modelEvents) {
+type ReviewAgentKey = (typeof agentDefinitions)[number]["key"];
+
+function eventAgent(event: ReviewEvent): string | null {
+  const value = event.payload.agent;
+  return typeof value === "string" ? value : null;
+}
+
+function latestAgentEvents(events: ReviewEvent[], agent: ReviewAgentKey): ReviewEvent[] {
+  const matching = events.filter((event) => (
+    event.event_type.startsWith("review.model.") && eventAgent(event) === agent
+  ));
+  if (matching.length === 0) return [];
+  const attempts = matching
+    .map((event) => payloadNumber(event, "model_attempt_count"))
+    .filter((value): value is number => value !== null);
+  const latestAttempt = attempts.length > 0 ? Math.max(...attempts) : null;
+  return matching.filter((event) => (
+    latestAttempt === null
+      || payloadNumber(event, "model_attempt_count") === null
+      || payloadNumber(event, "model_attempt_count") === latestAttempt
+  ));
+}
+
+function latestAgentEvent(events: ReviewEvent[], eventType: string): ReviewEvent | undefined {
+  return [...events].reverse().find((event) => event.event_type === eventType);
+}
+
+function latestBatchEvents(events: ReviewEvent[]): Map<number, ReviewEvent> {
+  const lifecycle = new Set([
+    "review.model.batch_started",
+    "review.model.request_started",
+    "review.model.request_completed",
+    "review.model.batch_completed",
+    "review.model.batch_failed",
+  ]);
+  const lifecycleRank: Record<string, number> = {
+    "review.model.batch_started": 1,
+    "review.model.request_started": 2,
+    "review.model.request_completed": 3,
+    "review.model.batch_completed": 4,
+    "review.model.batch_failed": 4,
+  };
+  const result = new Map<number, ReviewEvent>();
+  for (const event of events) {
+    if (!lifecycle.has(event.event_type)) continue;
     const number = payloadNumber(event, "batch_number");
     if (number === null) continue;
-    if (event.event_type === "review.model.batch_started") started.set(number, event);
-    if (event.event_type === "review.model.batch_completed") completed.set(number, event);
+    const current = result.get(number);
+    if (!current || lifecycleRank[event.event_type] > lifecycleRank[current.event_type]) {
+      result.set(number, event);
+    }
   }
+  return result;
+}
+
+function workflowReadout(details: ReviewDetails, retryPending: boolean): string {
+  if (retryPending) return "等待自动重试";
+  if (details.phase === "rejected") return "已驳回";
+  if (details.phase === "paused") return "已暂停";
+  if (details.phase === "awaiting_approval" || details.phase === "awaiting_publish") return "等待人工操作";
+  if (details.phase === "publishing") return "发布中";
+  if (details.phase === "completed") return "已完成";
+  if (details.phase.endsWith("failed") || details.phase === "ci_timed_out") return "需要处理";
+  if (details.phase === "cancelled" || details.phase === "superseded") return "已结束";
+  return "运行中";
+}
+
+function numericPayloadSum(events: ReviewEvent[], key: string): number | null {
+  const values = events
+    .map((event) => payloadNumber(event, key))
+    .filter((value): value is number => value !== null);
+  return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function stringArrayPayload(event: ReviewEvent | undefined, key: string): string[] {
+  const value = event?.payload[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
+  const scoped = latestAgentEvents(events, agent);
+  const planned = latestAgentEvent(scoped, "review.model.batches_planned");
+  const completedEvent = latestAgentEvent(scoped, "review.model.agent_completed");
+  const failedEvent = latestAgentEvent(scoped, "review.model.agent_failed");
+  const summaryEvent = latestAgentEvent(scoped, "review.model.summary_completed");
+  const batches = latestBatchEvents(scoped);
   const batchCount = payloadNumber(planned, "batch_count")
-    ?? Math.max(0, ...started.keys(), ...completed.keys());
-  const completeCount = completed.size;
+    ?? Math.max(0, ...batches.keys());
+  const completedBatches = [...batches.values()].filter(
+    (event) => event.event_type === "review.model.batch_completed",
+  );
+  const failedBatches = [...batches.values()].filter(
+    (event) => event.event_type === "review.model.batch_failed",
+  );
+  const lastTerminal = [...scoped].reverse().find((event) => (
+    event.event_type === "review.model.agent_completed"
+      || event.event_type === "review.model.agent_failed"
+      || event.event_type === "review.model.summary_completed"
+  ));
+  const terminalIsSuccess = lastTerminal?.event_type === "review.model.agent_completed"
+    || (lastTerminal?.event_type === "review.model.summary_completed"
+      && lastTerminal.payload.agent_status === "completed");
+  const terminalIsFailure = lastTerminal?.event_type === "review.model.agent_failed"
+    || (lastTerminal?.event_type === "review.model.summary_completed"
+      && lastTerminal.payload.agent_status !== "completed");
+  const status = terminalIsSuccess
+    ? "completed"
+    : terminalIsFailure
+      ? "failed"
+      : failedBatches.length > 0
+        ? "failed"
+        : scoped.some((event) => event.event_type === "review.model.request_started")
+          ? "running"
+          : planned
+            ? "planned"
+            : "waiting";
+  const terminal = terminalIsSuccess || terminalIsFailure ? lastTerminal : undefined;
+  const findingCount = payloadNumber(terminal, "finding_count")
+    ?? (agent === "summary" ? payloadNumber(summaryEvent, "finding_count") : null)
+    ?? numericPayloadSum(completedBatches, "finding_count")
+    ?? 0;
+  const duration = payloadNumber(terminal, "duration_ms")
+    ?? numericPayloadSum(completedBatches, "duration_ms");
+  const inputTokens = numericPayloadSum(completedBatches, "input_tokens");
+  const outputTokens = numericPayloadSum(completedBatches, "output_tokens");
+  const reasoningTokens = numericPayloadSum(completedBatches, "reasoning_tokens");
+  const requestIds = [...new Set(
+    scoped
+      .map((event) => payloadString(event, "provider_request_id"))
+      .filter((value): value is string => Boolean(value)),
+  )];
+  const errorEvent = [...scoped].reverse().find((event) => (
+    event.event_type === "review.model.batch_failed"
+      || event.event_type === "review.model.agent_failed"
+      || (event.event_type === "review.model.summary_completed" && terminalIsFailure)
+  ));
+  const errorCode = payloadString(errorEvent, "error_code")
+    ?? payloadString(errorEvent, "code");
+  const errorMessage = payloadString(errorEvent, "error_message")
+    ?? payloadString(errorEvent, "error")
+    ?? (terminalIsFailure ? "该 Agent 未返回可用结果" : null);
+  const references = [...new Set([
+    ...stringArrayPayload(completedEvent, "references"),
+    ...stringArrayPayload(failedEvent, "references"),
+    ...stringArrayPayload(summaryEvent, "references"),
+  ])];
+  return {
+    events: scoped,
+    planned,
+    batches,
+    batchCount,
+    completedBatches,
+    failedBatches,
+    status,
+    findingCount,
+    duration,
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    requestIds,
+    errorCode,
+    errorMessage,
+    references,
+  };
+}
+
+function ModelBatchPanel({ details }: { details: ReviewDetails }) {
+  const activeAgents = agentDefinitions.map((definition) => ({
+    ...definition,
+    progress: agentProgress(details.events, definition.key),
+  }));
+  const hasModelEvents = activeAgents.some((item) => item.progress.events.length > 0);
+  if (!hasModelEvents && !details.model_review_completed_at) return null;
 
   return (
     <section className="review-panel review-batch-panel">
       <div className="review-panel-heading">
-        <div><span className="review-eyebrow">LIVE MODEL PROGRESS</span><h2>AI 分批进度</h2></div>
-        <span className={`review-batch-readout ${completeCount === batchCount ? "is-complete" : ""}`}>{completeCount}/{batchCount} 批</span>
+        <div><span className="review-eyebrow">LIVE MODEL PROGRESS</span><h2>四路 Agent 进度</h2></div>
+        <span className="review-batch-readout">安全 · 规范 · 逻辑 · 汇总</span>
       </div>
-      <div className="review-batch-progress" aria-hidden="true"><span style={{ width: `${batchCount ? (completeCount / batchCount) * 100 : 0}%` }} /></div>
-      <div className="review-batch-list">
-        {Array.from({ length: batchCount }, (_, offset) => offset + 1).map((number) => {
-          const start = started.get(number);
-          const finish = completed.get(number);
-          const failed = details.execution_status === "failed" && Boolean(start) && !finish;
-          const status = finish ? "completed" : failed ? "failed" : start ? "running" : "pending";
-          const firstFile = payloadString(start, "first_file");
-          const lastFile = payloadString(start, "last_file");
+      <div className="review-agent-grid">
+        {activeAgents.map(({ key, label, description, progress }) => {
+          const completeCount = progress.completedBatches.length;
+          const failedCount = progress.failedBatches.length;
+          const progressPercent = progress.batchCount > 0
+            ? Math.min(100, (completeCount / progress.batchCount) * 100)
+            : progress.status === "completed" ? 100 : 0;
+          const statusLabel = progress.status === "completed"
+            ? "已完成"
+            : progress.status === "failed"
+              ? "失败"
+              : progress.status === "running"
+                ? "进行中"
+                : progress.status === "planned"
+                  ? "已规划"
+                  : "等待开始";
           return (
-            <div className={`review-batch-row is-${status}`} key={number}>
-              <span className="review-batch-marker">{finish ? "✓" : number}</span>
-              <div className="review-batch-copy">
-                <div><strong>第 {number}/{batchCount} 批</strong><span>{finish ? "已完成" : failed ? "本批失败" : start ? "模型响应中" : "等待中"}</span></div>
-                {start && <p>{payloadNumber(start, "file_count") ?? 0} 个文件 · {firstFile}{lastFile && lastFile !== firstFile ? ` 至 ${lastFile}` : ""}</p>}
-                {finish ? <small>输入 {payloadNumber(finish, "input_tokens")?.toLocaleString() ?? "—"} · 输出 {payloadNumber(finish, "output_tokens")?.toLocaleString() ?? "—"} · 推理 {payloadNumber(finish, "reasoning_tokens")?.toLocaleString() ?? "—"} Token · {formatDuration(payloadNumber(finish, "duration_ms"))} · {payloadNumber(finish, "finding_count") ?? 0} 条候选</small> : start && <small>预计输入 {payloadNumber(start, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token{start.payload.fragmented === true ? " · 含文件切片" : ""}</small>}
+            <article className={`review-agent-card is-${progress.status}`} key={key}>
+              <header className="review-agent-card-header">
+                <div><strong>{label}</strong><span>{description}</span></div>
+                <b>{statusLabel}</b>
+              </header>
+              <div className="review-agent-progress-meta">
+                <span>{completeCount}/{progress.batchCount || "—"} 批</span>
+                {failedCount > 0 && <span className="is-error">{failedCount} 批失败</span>}
+                <span>{progress.findingCount} 条 Finding</span>
               </div>
-            </div>
+              <div className="review-batch-progress" aria-hidden="true"><span style={{ width: `${progressPercent}%` }} /></div>
+              <dl className="review-agent-metrics">
+                <div><dt>耗时</dt><dd>{formatDuration(progress.duration)}</dd></div>
+                <div><dt>输入 Token</dt><dd>{progress.inputTokens?.toLocaleString() ?? "—"}</dd></div>
+                <div><dt>输出 Token</dt><dd>{progress.outputTokens?.toLocaleString() ?? "—"}</dd></div>
+                <div><dt>推理 Token</dt><dd>{progress.reasoningTokens?.toLocaleString() ?? "—"}</dd></div>
+              </dl>
+              {progress.requestIds.length > 0 && (
+                <div className="review-agent-detail"><span>请求 ID</span><code>{progress.requestIds.join(" · ")}</code></div>
+              )}
+              {progress.status === "completed" && progress.findingCount === 0 && (
+                <p className="review-agent-empty"><span aria-hidden="true">✓</span>该 Agent 已完成，未发现问题</p>
+              )}
+              {progress.errorMessage && progress.status === "failed" && (
+                <div className="review-agent-error">
+                  <strong>{progress.errorCode ? `错误码 ${progress.errorCode}` : "Agent 执行失败"}</strong>
+                  <p>{progress.errorMessage}</p>
+                </div>
+              )}
+              {progress.references.length > 0 && (
+                <details className="review-agent-references">
+                  <summary>RAG 引用（{progress.references.length}）</summary>
+                  <ul>{progress.references.map((reference, index) => <li key={`${reference}-${index}`}>{reference}</li>)}</ul>
+                </details>
+              )}
+              {progress.batchCount > 0 && (
+                <div className="review-agent-batches">
+                  {Array.from({ length: progress.batchCount }, (_, offset) => offset + 1).map((number) => {
+                    const event = progress.batches.get(number);
+                    const completed = event?.event_type === "review.model.batch_completed";
+                    const failed = event?.event_type === "review.model.batch_failed";
+                    const requestStarted = event?.event_type === "review.model.request_started";
+                    const started = event?.event_type === "review.model.batch_started";
+                    const batchStatus = completed ? "已完成" : failed ? "失败" : requestStarted ? "请求中" : started ? "准备发送" : "等待发送";
+                    return (
+                      <div className={`review-agent-batch-row ${completed ? "is-completed" : failed ? "is-failed" : requestStarted ? "is-running" : ""}`} key={number}>
+                        <span>第 {number}/{progress.batchCount} 批</span><b>{batchStatus}</b>
+                        {event && <small>{completed ? `输入 ${payloadNumber(event, "input_tokens")?.toLocaleString() ?? "—"} · 输出 ${payloadNumber(event, "output_tokens")?.toLocaleString() ?? "—"} · 推理 ${payloadNumber(event, "reasoning_tokens")?.toLocaleString() ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))}` : failed ? `${payloadString(event, "error_code") ?? "错误"} · ${payloadString(event, "error_message") ?? "模型请求失败"}` : `预计输入 ${payloadNumber(event, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token`}</small>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </article>
           );
         })}
       </div>
@@ -327,6 +648,7 @@ function ReviewDetailPage({
   const [actionBusy, setActionBusy] = useState<ReviewAction | null>(null);
   const [findingBusy, setFindingBusy] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [retryTargetStage, setRetryTargetStage] = useState<RetryTargetStage>("agent_batches");
 
   const loadDetails = useCallback(async () => {
     try {
@@ -361,9 +683,18 @@ function ReviewDetailPage({
   async function runAction(action: ReviewAction) {
     if (!details) return;
     if (action === "cancel" && !window.confirm("确定取消这个任务吗？")) return;
+    if (action === "approve" && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
+    if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
+    if (action === "retry_stage" && !window.confirm("将清除所选阶段及之后的结果，并从该阶段重新审查。继续吗？")) return;
+    if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
     setActionBusy(action);
     try {
-      const result = await api.reviewAction(details.review_run_id, action, actionKey());
+      const result = await api.reviewAction(
+        details.review_run_id,
+        action,
+        actionKey(action, details.review_run_id),
+        action === "retry_stage" ? retryTargetStage : undefined,
+      );
       if (action === "rerun" && result.review_run_id !== details.review_run_id) {
         onOpenReview(result.review_run_id);
       } else {
@@ -425,19 +756,66 @@ function ReviewDetailPage({
 
   const hasActions = details.available_actions.length > 0;
   const latestBatchPlan = latestBatchPlanEvent(details.events);
+  const currentModelFailure = latestEvent(
+    details.events,
+    "review.model.batch_failed",
+    details.model_attempt_count,
+  );
+  const currentRetryEvent = latestEvent(
+    details.events,
+    "review.task.retry_scheduled",
+    details.model_attempt_count,
+  );
+  const latestRequestLifecycleEvent = [...details.events].reverse().find((event) => (
+    payloadNumber(event, "model_attempt_count") === details.model_attempt_count
+    && [
+      "review.model.request_started",
+      "review.model.request_completed",
+      "review.model.batch_failed",
+    ].includes(event.event_type)
+  ));
+  const retryPending = Boolean(
+    currentRetryEvent
+    && details.execution_status === "ready_for_review",
+  );
+  const retryStatus = retryDetail(currentRetryEvent);
+  const requestInFlight = latestRequestLifecycleEvent?.event_type
+    === "review.model.request_started";
   const modelProgressActive = details.execution_status === "running" && !details.model_review_completed_at && details.events.some(
     (event) => event.event_type === "review.model.batch_started",
   );
   const modelDisplayState = details.model_status === "succeeded"
     ? "成功"
-    : details.execution_status === "failed" && latestBatchPlan
+    : retryPending
+      ? "等待重试"
+      : currentModelFailure
       ? "调用失败"
-    : modelProgressActive
-      ? "调用中"
-      : latestBatchPlan
-        ? "已分批"
-        : details.model_status ?? "未调用";
+      : requestInFlight
+        ? "请求中"
+        : modelProgressActive
+          ? "处理中"
+          : latestBatchPlan
+            ? "已规划"
+            : details.model_status ?? "未调用";
+  const modelStateClass = details.model_status === "succeeded"
+    ? "is-good"
+    : retryPending
+        ? "is-warning"
+        : currentModelFailure
+          ? "is-error"
+          : requestInFlight || modelProgressActive
+            ? "is-running"
+            : latestBatchPlan
+              ? "is-warning"
+              : "";
   const modelDisplayName = details.model_name ?? payloadString(latestBatchPlan, "model");
+  const displayMessage = retryPending
+    ? `上一轮 AI 请求失败，${retryStatus ?? "系统已安排自动重试"}`
+    : currentMessage;
+  const failureStatus = payloadNumber(currentModelFailure, "status_code");
+  const failureDuration = payloadNumber(currentModelFailure, "duration_ms");
+  const failureCode = payloadString(currentModelFailure, "error_code");
+  const failureRequestId = payloadString(currentModelFailure, "provider_request_id");
   return (
     <div className="review-detail-shell">
       <header className="review-detail-navbar">
@@ -468,7 +846,7 @@ function ReviewDetailPage({
           <div className="review-hero-copy">
             <div className="review-hero-kicker"><span className="review-hero-pulse" />{details.repository} · PR #{details.pull_request_number}</div>
             <h1>{details.pr_title || `Pull Request #${details.pull_request_number}`}</h1>
-            <p>{currentMessage}</p>
+            <p>{displayMessage}</p>
             <div className="review-hero-meta">
               <span><code>{shortSha(details.head_sha)}</code></span>
               <span>{details.changed_files_count ?? "—"} 个变更文件</span>
@@ -478,16 +856,28 @@ function ReviewDetailPage({
           <div className="review-hero-status">
             <span className="review-current-stage-label">当前节点</span>
             <strong>{stageLabels[details.current_stage] ?? details.current_stage}</strong>
-            <span className="review-current-phase">{details.execution_status === "failed" ? "需要处理" : details.execution_status === "completed" ? "已完成" : "运行中"}</span>
+            <span className="review-current-phase">{workflowReadout(details, retryPending)}</span>
           </div>
         </section>
 
         <section className="review-control-strip">
           <div className="review-control-summary">
             <span className="review-control-title">任务控制</span>
-            <span className="review-control-hint">尝试 {details.attempt_count}/{details.max_attempts} · AI 阶段 {details.model_attempt_count}/{details.max_attempts}</span>
+            <span className={`review-control-hint ${retryPending ? "is-retry" : ""}`}>{retryPending ? retryStatus : `尝试 ${details.attempt_count}/${details.max_attempts} · AI 阶段 ${details.model_attempt_count}/${details.max_attempts}`}</span>
           </div>
           <div className="review-control-actions">
+            {details.available_actions.includes("retry_stage") && (
+              <label className="review-retry-target">
+                <span>重审起点</span>
+                <select
+                  value={retryTargetStage}
+                  disabled={actionBusy !== null}
+                  onChange={(event) => setRetryTargetStage(event.target.value as RetryTargetStage)}
+                >
+                  {retryTargetOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+            )}
             {hasActions ? details.available_actions.map((action) => (
               <button
                 key={action}
@@ -496,7 +886,7 @@ function ReviewDetailPage({
                 disabled={actionBusy !== null}
                 onClick={() => void runAction(action)}
               >
-                <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : actionLabels[action]}
+                <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
               </button>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
           </div>
@@ -512,7 +902,10 @@ function ReviewDetailPage({
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
                 <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.unverified_finding_count > 0 && <span className="result-count result-count-pending">{details.unverified_finding_count} 未标记</span>}</div>
               </div>
-              {!details.model_review_completed_at && (
+              {!details.model_review_completed_at && (currentModelFailure || retryPending) && (
+                <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small></div></div>
+              )}
+              {!details.model_review_completed_at && !currentModelFailure && !retryPending && (
                 <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>AI 结果尚未生成</strong><p>模型完成后，候选问题会显示在这里。</p></div></div>
               )}
               {details.model_review_completed_at && details.findings.length === 0 && (
@@ -533,10 +926,10 @@ function ReviewDetailPage({
               {details.events.length === 0 ? <div className="review-empty-small">暂时没有结构化事件记录</div> : (
                 <div className="review-event-list">
                   {details.events.map((event) => (
-                    <div className="review-event-row" key={event.id}>
+                    <div className={`review-event-row ${event.event_type === "review.model.batch_failed" || event.event_type === "review.task.failed" ? "is-error" : ""}`} key={event.id}>
                       <span className="review-event-time">{formatDate(event.occurred_at)}</span>
                       <span className="review-event-line" />
-                      <div className="review-event-copy"><strong>{eventLabels[event.event_type] ?? event.event_type}</strong><code>{event.event_type}</code>{eventDetail(event) && <small>{eventDetail(event)}</small>}{typeof event.payload.error_message === "string" && <p>{event.payload.error_message}</p>}{typeof event.payload.error_code === "string" && <small>错误码：{event.payload.error_code}{event.payload.error_retryable === true ? " · 可重试" : event.payload.error_retryable === false ? " · 不可重试" : ""}</small>}</div>
+                      <div className="review-event-copy"><strong>{eventLabels[event.event_type] ?? event.event_type}</strong><code>{event.event_type}</code>{eventDetail(event) && <small>{eventDetail(event)}</small>}{typeof event.payload.error_message === "string" && <p>{event.payload.error_message}</p>}{event.event_type !== "review.model.batch_failed" && typeof event.payload.error_code === "string" && <small>错误码：{event.payload.error_code}{event.payload.error_retryable === true ? " · 可重试" : event.payload.error_retryable === false ? " · 不可重试" : ""}</small>}</div>
                     </div>
                   ))}
                 </div>
@@ -553,22 +946,26 @@ function ReviewDetailPage({
                 <div><dt>版本 SHA</dt><dd><code>{shortSha(details.head_sha)}</code></dd></div>
                 <div><dt>覆盖状态</dt><dd>{details.coverage_status === "complete" ? "完整" : details.coverage_status === "partial" ? "部分" : details.coverage_status}</dd></div>
                 <div><dt>创建时间</dt><dd>{formatDate(details.created_at)}</dd></div>
-                <div><dt>可用时间</dt><dd>{formatDate(details.available_at)}</dd></div>
+                <div><dt>{retryPending ? "自动重试" : "可用时间"}</dt><dd>{retryPending ? retryStatus ?? formatDate(details.available_at) : formatDate(details.available_at)}</dd></div>
               </dl>
             </section>
 
             <section className="review-panel review-model-panel">
-              <div className="review-panel-heading"><div><span className="review-eyebrow">MODEL CALL</span><h2>AI 调用</h2></div><span className={`review-model-state ${details.model_status === "succeeded" ? "is-good" : details.execution_status === "failed" && latestBatchPlan ? "is-error" : modelProgressActive ? "is-running" : latestBatchPlan ? "is-warning" : ""}`}>{modelDisplayState}</span></div>
+              <div className="review-panel-heading"><div><span className="review-eyebrow">MODEL CALL</span><h2>AI 调用</h2></div><span className={`review-model-state ${modelStateClass}`}>{modelDisplayState}</span></div>
               <dl className="review-metric-grid">
                 <div><dt>模型</dt><dd>{modelDisplayName || "—"}</dd></div>
                 <div><dt>供应商</dt><dd>{details.model_provider ?? payloadString(latestBatchPlan, "provider") ?? "—"}</dd></div>
                 <div><dt>接口</dt><dd>{details.model_protocol ?? payloadString(latestBatchPlan, "api_protocol") ?? "—"}</dd></div>
-                <div><dt>响应</dt><dd>{details.model_response_status ?? "—"}</dd></div>
+                <div><dt>推理档位</dt><dd>{reasoningEffortLabels[payloadString(latestBatchPlan, "reasoning_effort") ?? ""] ?? payloadString(latestBatchPlan, "reasoning_effort") ?? "—"}</dd></div>
+                <div><dt>单批预算</dt><dd>{payloadNumber(latestBatchPlan, "input_budget_tokens")?.toLocaleString() ?? "—"} Token</dd></div>
+                <div><dt>响应</dt><dd>{details.model_response_status ?? failureStatus ?? "—"}</dd></div>
                 <div><dt>输入 Token</dt><dd>{details.model_input_tokens?.toLocaleString() ?? "—"}</dd></div>
                 <div><dt>输出 Token</dt><dd>{details.model_output_tokens?.toLocaleString() ?? "—"}</dd></div>
                 <div><dt>推理 Token</dt><dd>{details.model_reasoning_tokens?.toLocaleString() ?? "—"}</dd></div>
-                <div><dt>耗时</dt><dd>{formatDuration(details.model_duration_ms)}</dd></div>
+                <div><dt>耗时</dt><dd>{formatDuration(details.model_duration_ms ?? failureDuration)}</dd></div>
                 <div><dt>候选问题</dt><dd>{details.model_finding_count ?? "—"}</dd></div>
+                {failureCode && <div><dt>错误码</dt><dd>{failureCode}</dd></div>}
+                {failureRequestId && <div><dt>请求 ID</dt><dd><code title={failureRequestId}>{failureRequestId}</code></dd></div>}
               </dl>
               {details.model_cost_microusd !== null && details.model_cost_microusd !== undefined && <div className="review-cost-note">估算成本 ${(details.model_cost_microusd / 1_000_000).toFixed(4)}</div>}
             </section>

@@ -2,7 +2,7 @@
 
 ## 1. 身份与凭据
 
-Worker 使用 `OPENREVIEWER_GITHUB_APP_ID` 和只读挂载的 RSA 私钥签发最长 9 分钟的
+Worker 与 API 使用 `OPENREVIEWER_GITHUB_APP_ID` 和只读挂载的 RSA 私钥签发最长 9 分钟的
 GitHub App JWT，再向 `POST /app/installations/{installation_id}/access_tokens` 申请短期
 installation token。Token 只存在于 Worker 进程内存，按 installation 缓存，并在距离过期
 不足 2 分钟时刷新；数据库、日志、错误详情和任务事件都不保存 Token 或私钥内容。
@@ -12,15 +12,15 @@ installation token。Token 只存在于 Worker 进程内存，按 installation �
 | 权限 | 级别 | 用途 |
 | --- | --- | --- |
 | Metadata | Read-only | 校验仓库稳定数字 ID 和名称 |
-| Pull requests | Read-only | 读取 PR 元数据和 changed files |
+| Pull requests | Read and write | 读取 PR；API 在人工批准后创建汇总评论 |
 | Contents | Read-only | 读取私有仓库 PR 的完整 diff 表示 |
 | Checks | Read-only | 分页读取当前 `head_sha` 的 Check Runs |
 | Commit statuses | Read-only | 分页读取当前 `head_sha` 的 Commit Statuses |
 
-GitHub 对私有仓库的 PR diff 表示会同时校验 `Pull requests: Read-only` 和
+GitHub 对私有仓库的 PR diff 表示会同时校验 `Pull requests` 和
 `Contents: Read-only`。当前阶段不需要 Contents 写权限、Administration、Workflows 或
-Secrets。后续若使用 Blob API 补充超大文件，复用现有 `Contents: Read-only` 即可，不需要
-再扩大权限。
+Secrets。当前不创建 Check Run，因此 Checks 仍保持只读。人工发布的版本复核、幂等标记和
+评论边界见 [github-publishing.md](github-publishing.md)。
 
 ## 2. 读取顺序与版本保护
 
@@ -42,7 +42,8 @@ Worker 领取任务后按下面的顺序工作：
 
 changed files 每页最多 100 条，总数最多 3000 条。完整 diff 使用 PR diff 表示读取，并通过
 标准 unified diff 解析器处理新增、修改、删除、重命名和二进制文件。每个文本补丁最多保存
-512 KiB；超过上限、缺失或无法完整解析时，文件仍会保存，但分别标记为 `too_large`、
+8 MiB；这个边界允许常见的大文件继续进入模型层按行切片。超过上限、缺失或无法完整解析时，
+文件仍会保存，但分别标记为 `too_large`、
 `missing` 或降低 `diff_complete`，不能静默当成完整覆盖。
 
 文件表只保存路径、旧路径、Git blob SHA、增删行计数、补丁状态和有界补丁文本，不保存整份

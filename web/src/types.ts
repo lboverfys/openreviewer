@@ -1,5 +1,15 @@
 export type ExecutionStatus =
   | "queued"
+  | "ci"
+  | "planning"
+  | "agent_batches"
+  | "aggregating"
+  | "awaiting_approval"
+  | "approved"
+  | "rejected"
+  | "awaiting_publish"
+  | "publishing"
+  | "paused"
   | "waiting_for_ci"
   | "running"
   | "ready_for_review"
@@ -24,6 +34,7 @@ export interface ReviewItem {
   pull_request_number: number;
   head_sha: string;
   execution_status: ExecutionStatus;
+  workflow_status: ExecutionStatus;
   attempt_count: number;
   max_attempts: number;
   last_error: string | null;
@@ -40,7 +51,18 @@ export interface ReviewItem {
   updated_at: string;
 }
 
-export type ReviewAction = "expedite" | "retry" | "cancel" | "rerun";
+export type ReviewAction =
+  | "start"
+  | "pause"
+  | "resume"
+  | "retry_stage"
+  | "approve"
+  | "reject"
+  | "publish"
+  | "expedite"
+  | "retry"
+  | "cancel"
+  | "rerun";
 export type FindingDecision = "verified" | "rejected";
 
 export interface ReviewStage {
@@ -99,6 +121,7 @@ export interface ReviewDetails {
   pull_request_number: number;
   head_sha: string;
   execution_status: ExecutionStatus;
+  workflow_status: ExecutionStatus;
   review_conclusion: string | null;
   coverage_status: string;
   priority: number;
@@ -200,6 +223,7 @@ export interface ReviewAccepted {
 export type AiProvider = "openai" | "anthropic";
 export type AiApiProtocol = "responses" | "chat_completions" | "messages";
 export type AiTestStatus = "untested" | "succeeded" | "failed";
+export type AiReasoningEffort = "none" | "low" | "medium" | "high" | "max";
 
 export interface AiProviderSettings {
   provider: AiProvider;
@@ -208,10 +232,12 @@ export interface AiProviderSettings {
   model: string;
   api_protocol: AiApiProtocol;
   api_base_url: string | null;
+  reasoning_effort: AiReasoningEffort;
   api_key_configured: boolean;
   api_key_mask: string | null;
   context_window_tokens: number;
   max_output_tokens: number;
+  max_batch_input_tokens: number;
   connect_timeout_seconds: number;
   read_timeout_seconds: number;
   write_timeout_seconds: number;
@@ -239,6 +265,37 @@ export interface AiSettings {
   providers: AiProviderSettings[];
 }
 
+export type ReviewAgent = "security" | "convention" | "logic" | "summary";
+
+export interface AiAgentSettings {
+  agent: ReviewAgent;
+  configured: boolean;
+  enabled: boolean;
+  provider: AiProvider;
+  model: string;
+  api_protocol: AiApiProtocol;
+  api_base_url: string | null;
+  reasoning_effort: AiReasoningEffort;
+  api_key_configured: boolean;
+  api_key_mask: string | null;
+  context_window_tokens: number;
+  max_output_tokens: number;
+  max_batch_input_tokens: number;
+  connect_timeout_seconds: number;
+  read_timeout_seconds: number;
+  write_timeout_seconds: number;
+  pool_timeout_seconds: number;
+  max_retries: number;
+  test_status: AiTestStatus;
+  tested_at: string | null;
+  updated_at: string | null;
+}
+
+export interface AiAgentSettingsResponse {
+  revision: number;
+  agents: AiAgentSettings[];
+}
+
 export interface AiProviderUpdate {
   expected_revision: number;
   model: string;
@@ -246,8 +303,10 @@ export interface AiProviderUpdate {
   api_base_url: string | null;
   api_key: string | null;
   clear_api_key: boolean;
+  reasoning_effort: AiReasoningEffort;
   context_window_tokens: number;
   max_output_tokens: number;
+  max_batch_input_tokens: number;
   connect_timeout_seconds: number;
   read_timeout_seconds: number;
   write_timeout_seconds: number;

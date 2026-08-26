@@ -37,7 +37,7 @@ from domain.model_review import (
     materialize_findings,
 )
 from domain.review_planning import RepositoryRule, RepositoryRulesSnapshot
-from domain.security import ErrorCode, SafeError
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 from persistence.database import Database
 from persistence.models import (
     Base,
@@ -140,6 +140,32 @@ class StaticModelReviewer:
             ),
             estimated_cost_microusd=375,
             output=output,
+        )
+
+    def close(self) -> None:
+        return None
+
+
+class FailingModelReviewer:
+    def __init__(self) -> None:
+        self.calls: list[ModelReviewInput] = []
+
+    def review(self, review_input: ModelReviewInput) -> ModelReviewResult:
+        self.calls.append(review_input)
+        raise SafeApplicationError(
+            SafeError(
+                code=ErrorCode.MODEL_SERVER_ERROR,
+                safe_message="模型中转站请求超时",
+                retryable=True,
+                details={
+                    "status_code": 524,
+                    "duration_ms": 100_250,
+                    "provider_request_id": "relay-request-524",
+                    "provider": "openai",
+                    "api_protocol": "responses",
+                    "model": "test-model",
+                },
+            )
         )
 
     def close(self) -> None:
@@ -475,6 +501,49 @@ def test_model_review_is_loaded_and_saved_atomically(database: Database) -> None
         ) == 1
 
 
+def test_model_aggregating_state_is_atomic_and_idempotent(database: Database) -> None:
+    clock = MutableClock(datetime(2026, 8, 27, 10, 45, tzinfo=UTC))
+    queue, plan_lease, task_id, run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="model-aggregating-state",
+    )
+    planning_input = queue.load_planning_input(plan_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(plan_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+
+    queue.mark_model_aggregating(model_lease)
+    queue.mark_model_aggregating(model_lease)
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, run_id)
+        assert task is not None
+        assert run is not None
+        assert task.execution_status == ExecutionStatus.RUNNING.value
+        assert run.execution_status == ExecutionStatus.RUNNING.value
+        assert task.workflow_status == ExecutionStatus.AGGREGATING.value
+        assert run.workflow_status == ExecutionStatus.AGGREGATING.value
+        events = list(
+            session.scalars(
+                select(OutboxEventRecord).where(
+                    OutboxEventRecord.event_type
+                    == "review.model.aggregating_started"
+                )
+            )
+        )
+        assert len(events) == 1
+        assert events[0].payload["review_plan_id"] == model_lease.review_plan_id
+        assert events[0].payload["agent_count"] == 3
+
+
 def test_new_sha_discards_model_result_before_call_and_finding_insert(
     database: Database,
 ) -> None:
@@ -743,6 +812,8 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(database: Databas
         assert {
             "review.model.batches_planned",
             "review.model.batch_started",
+            "review.model.request_started",
+            "review.model.request_completed",
             "review.model.batch_completed",
             "review.model.completed",
         } <= progress_types
@@ -753,6 +824,70 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(database: Databas
         )
         assert completed_event is not None
         assert completed_event.payload["reasoning_tokens"] == 5
+
+
+def test_worker_records_failed_batch_http_details_and_retry_time(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 8, 25, 14, 30, tzinfo=UTC))
+    task_id, run_id = _submit(database, clock, "worker-model-524", "a" * 40)
+    model_reviewer = FailingModelReviewer()
+    runtime = WorkerRuntime(
+        SqlAlchemyReviewTaskQueue(database.sessions, clock=clock),
+        WorkerSettings(
+            worker_id="worker-1",
+            poll_interval=timedelta(seconds=1),
+            lease_duration=timedelta(seconds=30),
+        ),
+        context_loader=StaticContextLoader(_context("a" * 40, clock.value)),
+        rule_loader=StaticRuleLoader(),
+        ai_runtime_provider=StaticAiRuntimeProvider(
+            ActiveAiRuntime(
+                revision=18,
+                reviewer=model_reviewer,
+                planner=DeterministicReviewPlanner(),
+                model_settings=ModelServiceSettings(
+                    provider=ModelProvider.OPENAI,
+                    model="test-model",
+                    api_key="test-key",
+                    api_protocol=ModelApiProtocol.RESPONSES,
+                ),
+            )
+        ),
+    )
+
+    assert runtime.run_once() is True
+    assert runtime.run_once() is True
+    assert runtime.run_once() is True
+    assert len(model_reviewer.calls) == 1
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, run_id)
+        assert task is not None
+        assert run is not None
+        assert task.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert run.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        failed_event = session.scalar(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.event_type == "review.model.batch_failed"
+            )
+        )
+        retry_event = session.scalar(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.event_type == "review.task.retry_scheduled"
+            )
+        )
+        assert failed_event is not None
+        assert failed_event.payload["batch_number"] == 1
+        assert failed_event.payload["status_code"] == 524
+        assert failed_event.payload["duration_ms"] == 100_250
+        assert failed_event.payload["provider_request_id"] == "relay-request-524"
+        assert failed_event.payload["error_retryable"] is True
+        assert retry_event is not None
+        assert retry_event.payload["retry_delay_seconds"] == 5
+        assert datetime.fromisoformat(retry_event.payload["retry_at"]) == (
+            clock.value + timedelta(seconds=5)
+        )
 
 
 def test_worker_does_not_claim_ready_task_without_active_ai_configuration(

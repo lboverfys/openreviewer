@@ -25,6 +25,7 @@ from persistence.database import Database
 from persistence.models import (
     Base,
     ModelCallRecord,
+    ModelReviewBatchRecord,
     OutboxEventRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
@@ -119,6 +120,533 @@ def test_detail_is_readable_and_cancel_is_audited(database: Database) -> None:
             assert after.json()["events"][-1]["event_type"] == "review.manual.cancel"
 
     asyncio.run(exercise())
+
+
+def test_approve_action_returns_persisted_workflow_status(database: Database) -> None:
+    """批准门不能被旧的 execution_status 兼容值覆盖。"""
+
+    application = application_for(database)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "workflow-status-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 131,
+                    "head_sha": "1" * 40,
+                },
+            )
+            assert created.status_code == 202
+            run_id = created.json()["review_run_id"]
+            with database.sessions() as session:
+                run = session.get(ReviewRunRecord, run_id)
+                task = session.scalar(
+                    select(ReviewTaskRecord).where(
+                        ReviewTaskRecord.review_run_id == run_id
+                    )
+                )
+                assert run is not None
+                assert task is not None
+                # 模拟旧读模型仍保留 completed，但新版 DAG 已到批准节点。
+                run.execution_status = "completed"
+                task.execution_status = "completed"
+                run.workflow_status = "awaiting_approval"
+                task.workflow_status = "awaiting_approval"
+                session.commit()
+
+            approved = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "workflow-approve-001"},
+                json={"action": "approve"},
+            )
+            assert approved.status_code == 200
+            assert approved.json()["execution_status"] == "completed"
+            assert approved.json()["workflow_status"] == "awaiting_publish"
+
+            repeated = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "workflow-approve-001"},
+                json={"action": "approve"},
+            )
+            assert repeated.status_code == 200
+            assert repeated.json()["workflow_status"] == "awaiting_publish"
+
+            detail = await client.get(f"/api/v1/reviews/{run_id}")
+            workflow_events = [
+                event
+                for event in detail.json()["events"]
+                if event["event_type"] in {
+                    "review.workflow.approve",
+                    "review.workflow.advance",
+                }
+            ]
+            assert [event["payload"]["new_status"] for event in workflow_events] == [
+                "approved",
+                "awaiting_publish",
+            ]
+
+    asyncio.run(exercise())
+
+
+def test_awaiting_publish_review_can_still_be_rejected(database: Database) -> None:
+    """批准和发布是两次操作，尚未发布的结果仍允许人工驳回。"""
+
+    application = application_for(database)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "reject-before-publish-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 133,
+                    "head_sha": "3" * 40,
+                },
+            )
+            assert created.status_code == 202
+            run_id = created.json()["review_run_id"]
+            with database.sessions() as session:
+                run = session.get(ReviewRunRecord, run_id)
+                task = session.scalar(
+                    select(ReviewTaskRecord).where(
+                        ReviewTaskRecord.review_run_id == run_id
+                    )
+                )
+                assert run is not None
+                assert task is not None
+                run.execution_status = "completed"
+                task.execution_status = "completed"
+                run.workflow_status = "awaiting_publish"
+                task.workflow_status = "awaiting_publish"
+                plan = ReviewPlanRecord(
+                    id="plan-reject-retry-001",
+                    review_run_id=run_id,
+                    pull_request_version_id="version-reject-retry-001",
+                    review_version_key=run.review_version_key,
+                    head_sha=run.head_sha,
+                    plan_fingerprint="a" * 64,
+                    planner_version="test",
+                    rules_complete=True,
+                    incomplete_files=[],
+                    rule_issues=[],
+                    candidate_count=1,
+                    requested_candidate_count=1,
+                    rule_count=0,
+                    unit_count=1,
+                    file_count=1,
+                    total_estimated_input_bytes=10,
+                    model_review_completed_at=datetime.now(UTC),
+                    created_at=datetime.now(UTC),
+                )
+                session.add(plan)
+                for agent in ("security", "summary"):
+                    session.add(
+                        ModelReviewBatchRecord(
+                            id=f"batch-reject-retry-{agent}",
+                            review_plan_id=plan.id,
+                            agent=agent,
+                            batch_number=1,
+                            batch_count=1,
+                            unit_keys=["b" * 64],
+                            estimated_input_tokens=10,
+                            status="succeeded",
+                            attempt_count=1,
+                            available_at=datetime.now(UTC),
+                            result={},
+                            created_at=datetime.now(UTC),
+                            updated_at=datetime.now(UTC),
+                        )
+                    )
+                session.commit()
+
+            before = await client.get(f"/api/v1/reviews/{run_id}")
+            assert before.status_code == 200
+            assert "reject" in before.json()["available_actions"]
+
+            rejected = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "reject-before-publish-001"},
+                json={"action": "reject"},
+            )
+            assert rejected.status_code == 200
+            assert rejected.json()["execution_status"] == "completed"
+            assert rejected.json()["workflow_status"] == "rejected"
+
+            detail = await client.get(f"/api/v1/reviews/{run_id}")
+            assert detail.status_code == 200
+            assert detail.json()["phase"] == "rejected"
+            assert detail.json()["available_actions"] == ["retry_stage", "rerun"]
+            assert detail.json()["events"][-1]["event_type"] == (
+                "review.workflow.reject"
+            )
+
+            retried = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "reject-retry-aggregate-001"},
+                json={"action": "retry_stage", "target_stage": "aggregating"},
+            )
+            assert retried.status_code == 200
+            assert retried.json()["execution_status"] == "ready_for_review"
+            assert retried.json()["workflow_status"] == "aggregating"
+
+            with database.sessions() as session:
+                plan = session.get(ReviewPlanRecord, "plan-reject-retry-001")
+                assert plan is not None
+                assert plan.model_review_completed_at is None
+                agents = session.scalars(
+                    select(ModelReviewBatchRecord.agent).where(
+                        ModelReviewBatchRecord.review_plan_id == plan.id
+                    )
+                ).all()
+                assert agents == ["security"]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("target_stage", "expected_execution", "expected_agents", "plan_retained"),
+    (
+        ("ci", "queued", (), False),
+        ("planning", "ready_for_review", (), False),
+        ("agent_batches", "ready_for_review", (), True),
+        ("aggregating", "ready_for_review", ("security",), True),
+    ),
+)
+def test_rejected_review_restarts_from_the_selected_real_stage(
+    database: Database,
+    target_stage: str,
+    expected_execution: str,
+    expected_agents: tuple[str, ...],
+    plan_retained: bool,
+) -> None:
+    application = application_for(database)
+    now = datetime.now(UTC)
+    submission = ReviewService(SqlAlchemyReviewRepository(database.sessions)).submit(
+        ReviewRequest(
+            installation_id=10,
+            repository_id=42,
+            repository="lboverfys/NiuMa",
+            pull_request_number=140,
+            head_sha="4" * 40,
+        ),
+        f"stage-retry-source-{target_stage}",
+    )
+    plan_id = f"plan-stage-retry-{target_stage}"
+    with database.sessions() as session:
+        run = session.get(ReviewRunRecord, submission.review_run_id)
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        assert run is not None
+        assert task is not None
+        run.execution_status = "completed"
+        task.execution_status = "completed"
+        run.workflow_status = "rejected"
+        task.workflow_status = "rejected"
+        run.review_conclusion = "findings_present"
+        session.add(
+            ReviewPlanRecord(
+                id=plan_id,
+                review_run_id=run.id,
+                pull_request_version_id=f"version-stage-retry-{target_stage}",
+                review_version_key=run.review_version_key,
+                head_sha=run.head_sha,
+                plan_fingerprint="5" * 64,
+                planner_version="test",
+                rules_complete=True,
+                incomplete_files=[],
+                rule_issues=[],
+                candidate_count=1,
+                requested_candidate_count=1,
+                rule_count=0,
+                unit_count=1,
+                file_count=1,
+                total_estimated_input_bytes=10,
+                model_review_completed_at=now,
+                created_at=now,
+            )
+        )
+        session.add(
+            ModelCallRecord(
+                id=f"call-stage-retry-{target_stage}",
+                review_plan_id=plan_id,
+                provider="openai",
+                api_protocol="chat_completions",
+                model="test-model",
+                status="succeeded",
+                prompt_version="test",
+                request_fingerprint="6" * 64,
+                provider_response_id=None,
+                provider_request_id=None,
+                response_status=200,
+                duration_ms=1,
+                input_tokens=1,
+                output_tokens=1,
+                cache_read_input_tokens=0,
+                cache_write_input_tokens=0,
+                reasoning_output_tokens=0,
+                estimated_cost_microusd=None,
+                finding_count=0,
+                created_at=now,
+            )
+        )
+        for agent in ("security", "summary"):
+            session.add(
+                ModelReviewBatchRecord(
+                    id=f"batch-stage-retry-{target_stage}-{agent}",
+                    review_plan_id=plan_id,
+                    agent=agent,
+                    batch_number=1,
+                    batch_count=1,
+                    unit_keys=["7" * 64],
+                    estimated_input_tokens=10,
+                    status="succeeded",
+                    attempt_count=1,
+                    available_at=now,
+                    result={},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        session.commit()
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            idempotency_key = f"stage-retry-{target_stage}-001"
+            response = await client.post(
+                f"/api/v1/reviews/{submission.review_run_id}/actions",
+                headers={"Idempotency-Key": idempotency_key},
+                json={"action": "retry_stage", "target_stage": target_stage},
+            )
+            assert response.status_code == 200
+            assert response.json()["execution_status"] == expected_execution
+            assert response.json()["workflow_status"] == target_stage
+
+            repeated = await client.post(
+                f"/api/v1/reviews/{submission.review_run_id}/actions",
+                headers={"Idempotency-Key": idempotency_key},
+                json={"action": "retry_stage", "target_stage": target_stage},
+            )
+            assert repeated.status_code == 200
+            assert repeated.json() == response.json()
+
+            conflict = await client.post(
+                f"/api/v1/reviews/{submission.review_run_id}/actions",
+                headers={"Idempotency-Key": idempotency_key},
+                json={
+                    "action": "retry_stage",
+                    "target_stage": (
+                        "planning" if target_stage != "planning" else "agent_batches"
+                    ),
+                },
+            )
+            assert conflict.status_code == 409
+
+    asyncio.run(exercise())
+
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        assert (plan is not None) is plan_retained
+        if plan is not None:
+            assert plan.model_review_completed_at is None
+        assert session.get(ModelCallRecord, f"call-stage-retry-{target_stage}") is None
+        agents = tuple(
+            session.scalars(
+                select(ModelReviewBatchRecord.agent)
+                .where(ModelReviewBatchRecord.review_plan_id == plan_id)
+                .order_by(ModelReviewBatchRecord.agent)
+            ).all()
+        )
+        assert agents == expected_agents
+        run = session.get(ReviewRunRecord, submission.review_run_id)
+        assert run is not None
+        assert run.review_conclusion is None
+        if not plan_retained:
+            assert run.coverage_status == "unknown"
+
+    lease = SqlAlchemyReviewTaskQueue(database.sessions).claim_next(
+        f"stage-retry-worker-{target_stage}",
+        timedelta(minutes=5),
+    )
+    assert lease is not None
+    assert lease.claimed_from_status.value == expected_execution
+    assert lease.review_plan_id == (plan_id if plan_retained else None)
+
+
+def test_paused_approval_keeps_its_stage_and_only_resumes(database: Database) -> None:
+    """人工门暂停后仍显示批准阶段，且不暴露无法执行的取消动作。"""
+
+    application = application_for(database)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "pause-approval-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 134,
+                    "head_sha": "4" * 40,
+                },
+            )
+            assert created.status_code == 202
+            run_id = created.json()["review_run_id"]
+            with database.sessions() as session:
+                run = session.get(ReviewRunRecord, run_id)
+                task = session.scalar(
+                    select(ReviewTaskRecord).where(
+                        ReviewTaskRecord.review_run_id == run_id
+                    )
+                )
+                assert run is not None
+                assert task is not None
+                run.execution_status = "completed"
+                task.execution_status = "completed"
+                run.workflow_status = "awaiting_approval"
+                task.workflow_status = "awaiting_approval"
+                session.commit()
+
+            paused = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "pause-approval-001"},
+                json={"action": "pause"},
+            )
+            assert paused.status_code == 200
+            assert paused.json()["workflow_status"] == "paused"
+
+            detail = await client.get(f"/api/v1/reviews/{run_id}")
+            assert detail.status_code == 200
+            assert detail.json()["current_stage"] == "approval"
+            assert detail.json()["phase"] == "paused"
+            assert detail.json()["available_actions"] == ["resume"]
+
+            resumed = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "resume-approval-001"},
+                json={"action": "resume"},
+            )
+            assert resumed.status_code == 200
+            assert resumed.json()["workflow_status"] == "awaiting_approval"
+
+    asyncio.run(exercise())
+
+
+def test_manual_publish_can_retry_after_external_failure_and_is_idempotent(
+    database: Database,
+) -> None:
+    """GitHub 调用失败后回到待发布；同一幂等键可恢复且不重复成功调用。"""
+
+    publish_calls: list[str] = []
+
+    def publisher(details) -> None:
+        publish_calls.append(details.review_run_id)
+        if len(publish_calls) == 1:
+            raise RuntimeError("temporary GitHub failure")
+
+    application = create_app(
+        ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+        auth_service=make_auth_service(),
+        dashboard_service=DashboardService(
+            SqlAlchemyDashboardRepository(database.sessions)
+        ),
+        review_management_service=ReviewManagementService(
+            SqlAlchemyReviewManagementRepository(
+                database.sessions,
+                publisher=publisher,
+            )
+        ),
+    )
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "publish-retry-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 132,
+                    "head_sha": "2" * 40,
+                },
+            )
+            run_id = created.json()["review_run_id"]
+            with database.sessions() as session:
+                run = session.get(ReviewRunRecord, run_id)
+                task = session.scalar(
+                    select(ReviewTaskRecord).where(
+                        ReviewTaskRecord.review_run_id == run_id
+                    )
+                )
+                assert run is not None
+                assert task is not None
+                run.execution_status = "completed"
+                task.execution_status = "completed"
+                run.workflow_status = "awaiting_publish"
+                task.workflow_status = "awaiting_publish"
+                session.commit()
+
+            headers = {"Idempotency-Key": f"ui:publish:{run_id}"}
+            first = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers=headers,
+                json={"action": "publish"},
+            )
+            assert first.status_code == 503
+            failed_detail = await client.get(f"/api/v1/reviews/{run_id}")
+            assert failed_detail.json()["workflow_status"] == "awaiting_publish"
+
+            second = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers=headers,
+                json={"action": "publish"},
+            )
+            assert second.status_code == 200
+            assert second.json()["workflow_status"] == "completed"
+
+            repeated = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers=headers,
+                json={"action": "publish"},
+            )
+            assert repeated.status_code == 200
+            assert repeated.json()["workflow_status"] == "completed"
+
+    asyncio.run(exercise())
+    assert len(publish_calls) == 2
+    assert len(set(publish_calls)) == 1
 
 
 def test_rerun_creates_a_new_queued_run(database: Database) -> None:

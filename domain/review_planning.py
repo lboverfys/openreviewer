@@ -1,11 +1,12 @@
 """仓库规则快照与模型调用前 Review Plan 的严格领域契约。"""
 
 from hashlib import sha256
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from domain.enums import RepositoryRuleIssueKind, ReviewFileDecision
+from domain.github import MAX_PATCH_BYTES
 from domain.identifiers import build_review_version_key, normalize_sha
 from domain.paths import normalize_repository_path
 
@@ -160,11 +161,19 @@ class ReviewUnit(PlanningContractModel):
     file: str = Field(min_length=1, max_length=1024)
     blob_sha: str = Field(min_length=40, max_length=64)
     language: str = Field(min_length=1, max_length=50)
-    patch: str = Field(min_length=1, max_length=524_288)
+    patch: str = Field(min_length=1, max_length=MAX_PATCH_BYTES)
     patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     rule_paths: tuple[str, ...] = Field(max_length=128)
     estimated_input_bytes: int = Field(gt=0, le=10 * 1024 * 1024)
     planner_version: str = Field(min_length=1, max_length=50)
+    # 这些字段只用于一次模型请求中的临时分片，不参与计划身份或数据库快照。
+    # ``exclude=True`` 保证旧版持久化和计划指纹保持兼容。
+    fragment_index: int = Field(default=0, ge=0, exclude=True)
+    fragment_count: int = Field(default=1, ge=1, exclude=True)
+    fragment_line_mode: Literal["global", "local"] = Field(
+        default="global",
+        exclude=True,
+    )
 
     @field_validator("head_sha", "blob_sha")
     @classmethod
@@ -192,6 +201,10 @@ class ReviewUnit(PlanningContractModel):
             key=lambda path: (path.count("/"), path),
         ):
             raise ValueError("review unit rules must be ordered from broad to specific")
+        if self.fragment_index >= self.fragment_count:
+            raise ValueError("review unit fragment index must be below its count")
+        if self.fragment_count == 1 and self.fragment_line_mode != "global":
+            raise ValueError("unfragmented review units must use global line numbers")
         return self
 
 

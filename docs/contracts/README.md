@@ -1,6 +1,6 @@
 # 审查契约
 
-本目录用于记录 Webhook 事件、审查运行状态、Finding 结构和 GitHub Check 投影规则。
+本目录用于记录 Webhook 事件、审查运行状态、Finding 结构、固定 Agent 工作流和 GitHub 发布边界。
 
 当前版本见 [review-contract.md](review-contract.md)。
 
@@ -19,6 +19,12 @@ GitHub App 短期身份、PR/diff/CI 读取和版本保护见 [github-context.md
 
 OpenAI/Anthropic 结构化调用、上下文自动分批、模型用量、成本和 Finding 持久化见
 [model-review.md](model-review.md)。
+
+安全、规范、逻辑、汇总四 Agent 固定 DAG、独立配置、可恢复批次和版本化 RAG 见
+[agent-workflow.md](agent-workflow.md)。
+
+批准门、稳定幂等键、PR 版本复核和 GitHub 汇总评论见
+[github-publishing.md](github-publishing.md)。
 
 管理界面的 AI 草稿、连接测试、激活、密钥加密、revision 和审计契约见
 [ai-settings.md](ai-settings.md)。

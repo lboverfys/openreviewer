@@ -1,7 +1,9 @@
 """OpenAI 与 Anthropic 官方 API 的严格结构化输出适配器。"""
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
+import re
 import time
 from typing import Callable
 
@@ -22,6 +24,31 @@ from services.model_review import (
     ModelServiceSettings,
     ReviewPrompt,
     StructuredReviewPromptBuilder,
+)
+
+
+_COMPATIBILITY_ERROR_BODY_LIMIT = 16 * 1024
+_UNSUPPORTED_MARKERS = (
+    "unsupported",
+    "not supported",
+    "does not support",
+    "unknown parameter",
+    "unknown field",
+    "unrecognized parameter",
+    "unrecognized field",
+    "unexpected field",
+    "extra inputs are not permitted",
+    "invalid request argument",
+)
+_COMPATIBILITY_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("max_completion_tokens", ("max_completion_tokens",)),
+    ("reasoning_effort", ("reasoning_effort",)),
+    ("response_format", ("response_format",)),
+    ("json_schema", ("json_schema",)),
+    ("output_config", ("output_config",)),
+    ("reasoning", ("reasoning",)),
+    ("effort", ("effort",)),
+    ("store", ("store",)),
 )
 
 
@@ -86,11 +113,40 @@ class _StructuredModelReviewer(ModelReviewer):
                 output=ModelReviewOutput(findings=()),
             )
 
-        payload, audit = self._post_json(
-            self._settings.api_request_path(self.request_path),
-            headers=self._request_headers(),
-            body=self._request_body(prompt),
-        )
+        request_path = self._settings.api_request_path(self.request_path)
+        request_body = self._request_body(prompt)
+        attempted_bodies: set[str] = set()
+        while True:
+            # 以稳定 JSON 签名限制兼容重试次数；即使中转站反复返回同一
+            # ``unsupported parameter`` 错误，也不会形成无限请求循环。
+            body_signature = json.dumps(
+                request_body,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if body_signature in attempted_bodies:
+                raise self._error(
+                    ErrorCode.MODEL_REQUEST_REJECTED,
+                    "模型中转站不支持当前请求参数",
+                    retryable=False,
+                )
+            attempted_bodies.add(body_signature)
+            try:
+                payload, audit = self._post_json(
+                    request_path,
+                    headers=self._request_headers(),
+                    body=request_body,
+                )
+                break
+            except SafeApplicationError as exc:
+                fallback = self._compatibility_fallback_body(
+                    request_body,
+                    exc.error,
+                )
+                if fallback is None:
+                    raise
+                request_body = fallback
         try:
             output, usage, response_id = self._parse_success(payload)
         except SafeApplicationError:
@@ -122,6 +178,94 @@ class _StructuredModelReviewer(ModelReviewer):
             estimated_cost_microusd=estimated_cost,
             output=output,
         )
+
+    def _compatibility_fallback_body(
+        self,
+        body: dict[str, object],
+        error: SafeError,
+    ) -> dict[str, object] | None:
+        """仅针对明确的可选参数不兼容错误生成下一版请求体。
+
+        这里不根据任意 4xx 自动重试。``_classify_response`` 只会在响应状态为
+        400/422 且错误提示同时包含“不支持”和已知可选字段时写入
+        ``unsupported_parameters``；因此普通业务校验失败、鉴权失败和限流都
+        不会触发降级。
+        """
+
+        raw = error.details.get("unsupported_parameters")
+        if not isinstance(raw, (list, tuple, set, frozenset)):
+            return None
+        parameters = {
+            item for item in raw if isinstance(item, str) and item
+        }
+        if not parameters:
+            return None
+
+        candidate = deepcopy(body)
+        changed = False
+
+        if "reasoning_effort" in parameters:
+            if "reasoning_effort" in candidate:
+                candidate.pop("reasoning_effort", None)
+                changed = True
+            if self.api_protocol is ModelApiProtocol.RESPONSES:
+                reasoning = candidate.get("reasoning")
+                if isinstance(reasoning, dict) and "effort" in reasoning:
+                    candidate.pop("reasoning", None)
+                    changed = True
+            if self.api_protocol is ModelApiProtocol.MESSAGES:
+                output_config = candidate.get("output_config")
+                if isinstance(output_config, dict) and "effort" in output_config:
+                    output_config.pop("effort", None)
+                    changed = True
+
+        if "reasoning" in parameters and "reasoning" in candidate:
+            candidate.pop("reasoning", None)
+            changed = True
+
+        if "effort" in parameters:
+            output_config = candidate.get("output_config")
+            if isinstance(output_config, dict) and "effort" in output_config:
+                output_config.pop("effort", None)
+                changed = True
+
+        if "max_completion_tokens" in parameters and "max_completion_tokens" in candidate:
+            # 旧版 Chat Completions 中转站通常仍接受 max_tokens；只在服务端
+            # 明确指出新字段不支持时转换，避免改变正常请求语义。
+            value = candidate.pop("max_completion_tokens")
+            if "max_tokens" not in candidate:
+                candidate["max_tokens"] = value
+            changed = True
+
+        if "response_format" in parameters or "json_schema" in parameters:
+            if self.api_protocol is ModelApiProtocol.CHAT_COMPLETIONS:
+                response_format = candidate.get("response_format")
+                if isinstance(response_format, dict):
+                    candidate["response_format"] = {"type": "json_object"}
+                    changed = response_format != candidate["response_format"]
+            elif self.api_protocol is ModelApiProtocol.RESPONSES:
+                text_config = candidate.get("text")
+                if isinstance(text_config, dict):
+                    candidate["text"] = {
+                        "format": {"type": "json_object"}
+                    }
+                    changed = text_config != candidate["text"]
+            elif self.api_protocol is ModelApiProtocol.MESSAGES:
+                # Anthropic 旧兼容端点没有统一的 JSON Object 格式字段；移除
+                # 可选结构化配置后仍由本地 Pydantic 严格校验模型文本。
+                if "output_config" in candidate:
+                    candidate.pop("output_config", None)
+                    changed = True
+
+        if "output_config" in parameters and "output_config" in candidate:
+            candidate.pop("output_config", None)
+            changed = True
+
+        if "store" in parameters and "store" in candidate:
+            candidate.pop("store", None)
+            changed = True
+
+        return candidate if changed else None
 
     def _request_headers(self) -> dict[str, str]:
         raise NotImplementedError
@@ -261,6 +405,9 @@ class _StructuredModelReviewer(ModelReviewer):
             message = "模型 API 拒绝了当前请求"
             retryable = False
         details = self._audit_details(audit)
+        unsupported = _unsupported_parameters_from_response(response, status)
+        if unsupported:
+            details["unsupported_parameters"] = sorted(unsupported)
         retry_after = response.headers.get("retry-after")
         if retry_after and retry_after.isdigit():
             details["retry_after_seconds"] = int(retry_after)
@@ -336,7 +483,7 @@ class OpenAIResponsesReviewer(_StructuredModelReviewer):
         }
 
     def _request_body(self, prompt: ReviewPrompt) -> dict[str, object]:
-        return {
+        body: dict[str, object] = {
             "model": self._settings.model,
             "store": False,
             "max_output_tokens": self._settings.max_output_tokens,
@@ -359,6 +506,11 @@ class OpenAIResponsesReviewer(_StructuredModelReviewer):
                 }
             },
         }
+        if self._settings.reasoning_effort.value != "none":
+            body["reasoning"] = {
+                "effort": self._settings.reasoning_effort.value,
+            }
+        return body
 
     def _parse_success(
         self,
@@ -455,7 +607,7 @@ class OpenAIChatCompletionsReviewer(_StructuredModelReviewer):
         }
 
     def _request_body(self, prompt: ReviewPrompt) -> dict[str, object]:
-        return {
+        body: dict[str, object] = {
             "model": self._settings.model,
             "store": False,
             "max_completion_tokens": self._settings.max_output_tokens,
@@ -472,6 +624,9 @@ class OpenAIChatCompletionsReviewer(_StructuredModelReviewer):
                 },
             },
         }
+        if self._settings.reasoning_effort.value != "none":
+            body["reasoning_effort"] = self._settings.reasoning_effort.value
+        return body
 
     def _parse_success(
         self,
@@ -569,17 +724,20 @@ class AnthropicModelReviewer(_StructuredModelReviewer):
         }
 
     def _request_body(self, prompt: ReviewPrompt) -> dict[str, object]:
+        output_config: dict[str, object] = {
+            "format": {
+                "type": "json_schema",
+                "schema": model_review_output_schema(),
+            }
+        }
+        if self._settings.reasoning_effort.value != "none":
+            output_config["effort"] = self._settings.reasoning_effort.value
         return {
             "model": self._settings.model,
             "max_tokens": self._settings.max_output_tokens,
             "system": prompt.system,
             "messages": [{"role": "user", "content": prompt.user}],
-            "output_config": {
-                "format": {
-                    "type": "json_schema",
-                    "schema": model_review_output_schema(),
-                }
-            },
+            "output_config": output_config,
         }
 
     def _parse_success(
@@ -684,6 +842,114 @@ def _optional_nonnegative_int(payload: dict[str, object], name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
     return value
+
+
+def _unsupported_parameters_from_response(
+    response: httpx.Response,
+    status_code: int,
+) -> set[str]:
+    """从受限错误片段中识别可安全降级的可选参数。
+
+    供应商错误正文只在内存中读取最多 16 KiB，且最终只保留参数名称；正文、
+    URL 和任何潜在凭据都不会进入 ``SafeError.details``。没有明确“不支持”语义
+    时返回空集合，调用方不会重试。
+    """
+
+    if status_code not in {400, 422}:
+        return set()
+    raw = bytearray()
+    try:
+        for chunk in response.iter_bytes():
+            if not chunk:
+                continue
+            remaining = _COMPATIBILITY_ERROR_BODY_LIMIT - len(raw)
+            if remaining <= 0:
+                break
+            raw.extend(chunk[:remaining])
+            if len(raw) >= _COMPATIBILITY_ERROR_BODY_LIMIT:
+                break
+    except (httpx.HTTPError, RuntimeError, ValueError):
+        return set()
+    if not raw:
+        return set()
+    text = bytes(raw).decode("utf-8", errors="ignore")
+    extracted: list[str] = []
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        decoded = None
+    if decoded is not None:
+        _collect_error_tokens(decoded, extracted)
+    source = f"{text} {' '.join(extracted)}".casefold()
+    normalized = re.sub(r"[^a-z0-9一-鿿]+", "_", source).strip("_")
+    explicit_unsupported = any(
+        marker in source
+        for marker in (
+            *_UNSUPPORTED_MARKERS,
+            "不支持",
+            "未知参数",
+            "未知字段",
+            "未识别参数",
+        )
+    ) or any(
+        token.casefold() in {
+            "unsupported_parameter",
+            "unsupported_field",
+            "unknown_parameter",
+            "unknown_field",
+            "unrecognized_parameter",
+            "unrecognized_field",
+        }
+        for token in extracted
+    )
+    if not explicit_unsupported:
+        return set()
+
+    found: set[str] = set()
+    for canonical, aliases in _COMPATIBILITY_PARAMETER_ALIASES:
+        for alias in aliases:
+            alias_lower = alias.casefold()
+            if re.search(
+                rf"(?<![a-z0-9]){re.escape(alias_lower)}(?![a-z0-9])",
+                source,
+            ) or alias_lower in normalized:
+                found.add(canonical)
+                break
+    # ``reasoning_effort`` also contains the shorter word ``reasoning``; the
+    # former is more precise and lets the fallback touch only the actual field.
+    if "reasoning_effort" in found:
+        found.discard("reasoning")
+    if "json_schema" in found:
+        # Keep both names: one endpoint nests the schema under response_format,
+        # another reports the nested field directly.
+        found.add("response_format")
+    return found
+
+
+def _collect_error_tokens(value: object, output: list[str], depth: int = 0) -> None:
+    """有界提取供应商错误中的参数名，不保留任意响应内容。"""
+
+    if depth > 6 or len(output) >= 64:
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if len(output) >= 64:
+                return
+            if isinstance(item, str) and str(key).casefold() in {
+                "param",
+                "parameter",
+                "field",
+                "path",
+                "code",
+                "type",
+                "error_type",
+                "message",
+            }:
+                output.append(item[:512])
+            _collect_error_tokens(item, output, depth + 1)
+    elif isinstance(value, list):
+        for item in value[:64]:
+            _collect_error_tokens(item, output, depth + 1)
 
 
 def _optional_identifier(value: object) -> str | None:

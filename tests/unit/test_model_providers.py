@@ -4,7 +4,12 @@ import json
 import httpx
 import pytest
 
-from domain.enums import ModelApiProtocol, ModelCallStatus, ModelProvider
+from domain.enums import (
+    ModelApiProtocol,
+    ModelCallStatus,
+    ModelProvider,
+    ModelReasoningEffort,
+)
 from domain.security import ErrorCode, SafeApplicationError
 from services.model_providers import create_model_reviewer
 from services.model_review import ModelPricing, ModelServiceSettings
@@ -17,12 +22,14 @@ def _settings(
     *,
     api_protocol: ModelApiProtocol | None = None,
     api_base_url: str | None = None,
+    reasoning_effort: ModelReasoningEffort = ModelReasoningEffort.NONE,
 ):
     return ModelServiceSettings(
         provider=provider,
         model="test-model",
         api_key="test-only-api-key",
         api_protocol=api_protocol,
+        reasoning_effort=reasoning_effort,
         pricing=pricing,
         api_base_url=api_base_url or f"https://api.{provider.value}.test",
     )
@@ -37,6 +44,7 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
         assert request.url.path == "/v1/responses"
         assert request.headers["authorization"] == "Bearer test-only-api-key"
         assert body["store"] is False
+        assert body["reasoning"] == {"effort": "medium"}
         assert body["text"]["format"]["type"] == "json_schema"
         assert body["text"]["format"]["strict"] is True
         return httpx.Response(
@@ -78,6 +86,7 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
                 output_usd_per_million=Decimal("10"),
                 cache_read_usd_per_million=Decimal("0.5"),
             ),
+            reasoning_effort=ModelReasoningEffort.MEDIUM,
         ),
         client=client,
         monotonic=lambda: next(ticks),
@@ -108,6 +117,7 @@ def test_openai_chat_completions_request_and_usage_are_normalized() -> None:
         assert request.url.path == "/v1/chat/completions"
         assert request.headers["authorization"] == "Bearer test-only-api-key"
         assert body["store"] is False
+        assert body["reasoning_effort"] == "high"
         assert body["max_completion_tokens"] == 8192
         assert body["messages"][0]["role"] == "system"
         assert body["messages"][1]["role"] == "user"
@@ -154,6 +164,7 @@ def test_openai_chat_completions_request_and_usage_are_normalized() -> None:
             ),
             api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
             api_base_url="https://api.openai.test/v1",
+            reasoning_effort=ModelReasoningEffort.HIGH,
         ),
         client=client,
         monotonic=lambda: next(ticks),
@@ -181,6 +192,7 @@ def test_anthropic_messages_request_and_cache_usage_are_normalized() -> None:
         assert request.headers["x-api-key"] == "test-only-api-key"
         assert request.headers["anthropic-version"] == "2023-06-01"
         assert body["output_config"]["format"]["type"] == "json_schema"
+        assert body["output_config"]["effort"] == "max"
         assert body["messages"][0]["role"] == "user"
         return httpx.Response(
             200,
@@ -215,6 +227,7 @@ def test_anthropic_messages_request_and_cache_usage_are_normalized() -> None:
                 cache_read_usd_per_million=Decimal("0.3"),
                 cache_write_usd_per_million=Decimal("3.75"),
             ),
+            reasoning_effort=ModelReasoningEffort.MAX,
         ),
         client=client,
     )
@@ -228,6 +241,244 @@ def test_anthropic_messages_request_and_cache_usage_are_normalized() -> None:
     assert result.usage.cache_read_input_tokens == 30
     assert result.usage.cache_write_input_tokens == 40
     assert result.estimated_cost_microusd == 759
+    client.close()
+
+
+def test_optional_reasoning_parameter_is_omitted_for_relay_compatibility() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "reasoning" not in body
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_without_reasoning",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": make_output().model_dump_json(),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+    )
+
+    assert reviewer.review(make_model_input()).status is ModelCallStatus.SUCCEEDED
+    client.close()
+
+
+def test_chat_retries_once_when_relay_rejects_reasoning_effort() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "type": "invalid_request_error",
+                        "param": "reasoning_effort",
+                        "message": "Unsupported parameter: reasoning_effort",
+                    }
+                },
+            )
+        assert "reasoning_effort" not in body
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-fallback-reasoning",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": make_output().model_dump_json(),
+                            "refusal": None,
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://relay.example.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://relay.example.test/v1",
+            reasoning_effort=ModelReasoningEffort.HIGH,
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert len(requests) == 2
+    client.close()
+
+
+def test_chat_retries_with_legacy_max_tokens_only_when_explicitly_rejected() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            assert "max_completion_tokens" in body
+            return httpx.Response(
+                422,
+                json={
+                    "error": {
+                        "code": "unsupported_parameter",
+                        "param": "max_completion_tokens",
+                        "message": "This relay does not support max_completion_tokens",
+                    }
+                },
+            )
+        assert body["max_tokens"] == 8192
+        assert "max_completion_tokens" not in body
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-fallback-max-tokens",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": make_output().model_dump_json(),
+                            "refusal": None,
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://relay.example.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://relay.example.test/v1",
+        ),
+        client=client,
+    )
+
+    assert reviewer.review(make_model_input()).status is ModelCallStatus.SUCCEEDED
+    assert len(requests) == 2
+    client.close()
+
+
+def test_chat_downgrades_json_schema_to_json_object_and_still_validates_locally() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            assert body["response_format"]["type"] == "json_schema"
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "param": "response_format.json_schema",
+                        "message": "json_schema is not supported by this relay",
+                    }
+                },
+            )
+        assert body["response_format"] == {"type": "json_object"}
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-fallback-json-object",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": make_output().model_dump_json(),
+                            "refusal": None,
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://relay.example.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://relay.example.test/v1",
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert len(result.output.findings) == 1
+    assert len(requests) == 2
+    client.close()
+
+
+def test_generic_bad_request_is_not_retried_or_exposed() -> None:
+    calls = 0
+    secret = "sk-hidden-relay-error-123456789"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            400,
+            json={"error": {"message": f"invalid repository: {secret}"}},
+        )
+
+    client = httpx.Client(
+        base_url="https://relay.example.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://relay.example.test/v1",
+        ),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert calls == 1
+    assert secret not in str(captured.value)
+    assert secret not in str(captured.value.error.details)
     client.close()
 
 

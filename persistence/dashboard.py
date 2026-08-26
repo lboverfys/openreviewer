@@ -102,6 +102,7 @@ class SqlAlchemyDashboardRepository:
                         ReviewRunRecord.pull_request_number,
                         ReviewRunRecord.head_sha,
                         ReviewRunRecord.execution_status,
+                        ReviewRunRecord.workflow_status,
                         ReviewTaskRecord.attempt_count,
                         ReviewTaskRecord.max_attempts,
                         ReviewTaskRecord.last_error,
@@ -152,6 +153,9 @@ class SqlAlchemyDashboardRepository:
                             head_sha=row.head_sha,
                             execution_status=ExecutionStatus(
                                 row.execution_status
+                            ),
+                            workflow_status=ExecutionStatus(
+                                row.workflow_status or row.execution_status
                             ),
                             attempt_count=row.attempt_count,
                             max_attempts=row.max_attempts,

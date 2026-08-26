@@ -33,8 +33,9 @@ Content-Type: application/json
 3. 一个类型为 `review.requested` 的 `OutboxEvent`。
 
 只有事务整体提交成功才返回接受结果。Worker 会把任务从 `queued` 推进到 `waiting_for_ci`，
-再在 `ready_for_review` 生成计划并自动调用模型；AI 结果原子保存后进入 `completed`。人工标记
-候选和后续 GitHub 发布不阻塞当前管理界面的审查完成状态。
+再在 `ready_for_review` 生成计划并自动运行固定四 Agent DAG。AI 结果原子保存后，兼容字段
+`execution_status` 为 `completed`，真实 `workflow_status` 为 `awaiting_approval`。人工批准不会
+自动发布；只有随后显式发布 GitHub PR 评论成功，工作流才进入 `completed`。
 
 ## 3. 幂等行为
 

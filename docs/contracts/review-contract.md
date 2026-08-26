@@ -39,6 +39,19 @@ queued | waiting_for_ci | running | ready_for_review | completed | failed |
 timed_out | cancelled | superseded
 ```
 
+### 工作流状态
+
+固定 DAG 的真实节点单独保存在 `workflow_status`：
+
+```text
+queued | ci | planning | agent_batches | aggregating | awaiting_approval |
+approved | rejected | awaiting_publish | publishing | completed | failed |
+paused | timed_out | cancelled | superseded
+```
+
+`execution_status` 是旧队列领取兼容字段，不能据此判断结果是否已经人工批准或发布。模型结果
+持久化后它可能已是 `completed`，而工作流仍停在 `awaiting_approval`。
+
 ### 审查结论
 
 ```text
@@ -89,12 +102,14 @@ complete | partial | unknown | stale
 - 置信度达到仓库策略门槛，M0 默认值为 `0.90`；
 - 不是普通测试缺口。
 
-不满足条件的 Finding 只能发布到 Check Summary 或人工确认区域。这里得到的仍然只是“行内评论候选”；风险域的历史评测准入和自动降级由后续策略层实现。GitHub 适配器稍后再把领域层的 `right`/`left` 转换为 GitHub API 所需格式。
+不满足条件的 Finding 只能进入当前 PR 汇总评论或人工确认区域。当前版本尚不发布 Check 或
+行内评论；这里得到的仍只是未来行内评论候选。风险域历史评测准入、位置复核和自动降级由后续
+策略层实现。
 
 ## 6. 当前不在契约内的内容
 
 - GitHub App 鉴权和安装 Token 获取；
 - PostgreSQL 表、任务租约和 Outbox；
 - 模型 Prompt、模型厂商响应格式；
-- 飞书通知和人工审批；
+- 飞书通知；
 - 测试候选分支及自动部署。

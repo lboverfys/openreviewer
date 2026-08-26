@@ -56,6 +56,7 @@ class ReviewListItem:
     model_attempt_count: int
     created_at: datetime
     updated_at: datetime
+    workflow_status: ExecutionStatus = ExecutionStatus.QUEUED
 
 
 @dataclass(frozen=True, slots=True)

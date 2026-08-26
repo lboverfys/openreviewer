@@ -6,11 +6,13 @@ import httpx
 import pytest
 
 from apps.api.main import create_app
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database
 from persistence.models import Base, ReviewTaskRecord
 from persistence.repositories import SqlAlchemyReviewRepository
 from services.dashboard import DashboardService
+from services.agent_settings import AgentSettingsService
 from services.ai_settings import AiSecretCipher, AiSettingsService
 from services.reviews import ReviewService
 from tests.support import TEST_PASSWORD, TEST_USERNAME, make_auth_service
@@ -310,6 +312,8 @@ def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
                 "https://relay.example.test/v1"
             )
             assert saved.json()["providers"][0]["context_window_tokens"] == 1_000_000
+            assert saved.json()["providers"][0]["reasoning_effort"] == "none"
+            assert saved.json()["providers"][0]["max_batch_input_tokens"] == 64_000
 
             premature = await client.post(
                 "/api/v1/settings/ai/providers/openai/activate",
@@ -351,6 +355,116 @@ def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
             assert audits.json()["items"][0]["action"] == (
                 "provider.openai.activated"
             )
+
+    asyncio.run(exercise())
+
+
+def test_agent_settings_are_independent_redacted_and_translate_test_failures(
+    database: Database,
+) -> None:
+    """四个 Agent 使用独立配置，连接故障返回稳定状态且密钥不出浏览器。"""
+
+    should_fail = False
+
+    def test_connection(_settings) -> None:
+        if should_fail:
+            raise SafeApplicationError(
+                SafeError(
+                    code=ErrorCode.MODEL_TIMEOUT,
+                    safe_message="中转站连接测试超时",
+                    retryable=True,
+                )
+            )
+
+    service = AgentSettingsService(
+        database.sessions,
+        AiSecretCipher(b"d" * 32),
+        connection_tester=test_connection,
+    )
+    application = create_app(
+        ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+        auth_service=make_auth_service(),
+        dashboard_service=DashboardService(
+            SqlAlchemyDashboardRepository(database.sessions)
+        ),
+        agent_settings_service=service,
+    )
+    api_key = "sk-agent-api-secret-4321"
+
+    async def exercise() -> None:
+        nonlocal should_fail
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            assert (
+                await client.get("/api/v1/settings/ai/agents")
+            ).status_code == 401
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+            )
+            assert login.status_code == 200
+
+            initial = await client.get("/api/v1/settings/ai/agents")
+            assert initial.status_code == 200
+            assert [item["agent"] for item in initial.json()["agents"]] == [
+                "security",
+                "convention",
+                "logic",
+                "summary",
+            ]
+
+            saved = await client.put(
+                "/api/v1/settings/ai/agents/security",
+                json={
+                    "expected_revision": 0,
+                    "provider": "openai",
+                    "model": "security-model",
+                    "api_protocol": "chat_completions",
+                    "api_base_url": "https://relay.example.test/v1/",
+                    "api_key": api_key,
+                },
+            )
+            assert saved.status_code == 200
+            assert api_key not in saved.text
+            security = saved.json()["agents"][0]
+            assert security["api_key_mask"] == "****4321"
+            assert security["enabled"] is False
+
+            tested = await client.post(
+                "/api/v1/settings/ai/agents/security/test",
+                json={"expected_revision": 1},
+            )
+            assert tested.status_code == 200
+            assert tested.json()["agents"][0]["test_status"] == "succeeded"
+
+            enabled = await client.post(
+                "/api/v1/settings/ai/agents/security/enabled",
+                json={"expected_revision": 2, "enabled": True},
+            )
+            assert enabled.status_code == 200
+            assert enabled.json()["agents"][0]["enabled"] is True
+
+            should_fail = True
+            failed = await client.post(
+                "/api/v1/settings/ai/agents/security/test",
+                json={"expected_revision": 3},
+            )
+            assert failed.status_code == 503
+            assert failed.json()["detail"] == "中转站连接测试超时"
+            assert api_key not in failed.text
+
+            disabled = await client.post(
+                "/api/v1/settings/ai/agents/security/enabled",
+                json={"expected_revision": 4, "enabled": False},
+            )
+            assert disabled.status_code == 200
+            security = disabled.json()["agents"][0]
+            assert security["test_status"] == "failed"
+            assert security["enabled"] is False
+            assert api_key not in disabled.text
 
     asyncio.run(exercise())
 

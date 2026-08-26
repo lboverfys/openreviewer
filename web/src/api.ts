@@ -2,6 +2,8 @@ import type {
   AuthUser,
   AiProvider,
   AiProviderUpdate,
+  AiAgentSettingsResponse,
+  ReviewAgent,
   AiSettings,
   ConfigurationAuditList,
   DashboardSnapshot,
@@ -142,16 +144,18 @@ export const api = {
     reviewRunId: string,
     action: ReviewAction,
     idempotencyKey: string,
+    targetStage?: string,
   ) =>
     request<{
       action: ReviewAction;
       review_run_id: string;
       review_task_id: string;
       execution_status: string;
+      workflow_status?: string | null;
     }>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/actions`, {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, ...(targetStage ? { target_stage: targetStage } : {}) }),
     }),
   decideFinding: (
     reviewRunId: string,
@@ -193,4 +197,24 @@ export const api = {
     }),
   configurationAudits: () =>
     request<ConfigurationAuditList>("/api/v1/settings/audits?limit=20"),
+  agentSettings: () => request<AiAgentSettingsResponse>("/api/v1/settings/ai/agents"),
+  updateAgent: (agent: ReviewAgent, payload: Record<string, unknown>) =>
+    request<AiAgentSettingsResponse>(`/api/v1/settings/ai/agents/${agent}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  testAgent: (agent: ReviewAgent, expectedRevision: number) =>
+    request<AiAgentSettingsResponse>(`/api/v1/settings/ai/agents/${agent}/test`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    }),
+  setAgentEnabled: (agent: ReviewAgent, enabled: boolean, expectedRevision: number) =>
+    request<AiAgentSettingsResponse>(`/api/v1/settings/ai/agents/${agent}/enabled`, {
+      method: "POST",
+      body: JSON.stringify({ enabled, expected_revision: expectedRevision }),
+    }),
+  searchKnowledge: (query: string, limit = 5) =>
+    request<{ query: string; items: Array<{ source: string; heading: string; score: number; excerpt: string; version: string }> }>(
+      `/api/v1/knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
 };

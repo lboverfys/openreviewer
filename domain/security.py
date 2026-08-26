@@ -55,6 +55,7 @@ class ErrorCode(str, Enum):
     MODEL_OUTPUT_TRUNCATED = "model_output_truncated"
     MODEL_REVIEW_INPUT_INVALID = "model_review_input_invalid"
     MODEL_REVIEW_CONFLICT = "model_review_conflict"
+    MODEL_BATCH_BUSY = "model_batch_busy"
 
 
 _SENSITIVE_KEYS = {

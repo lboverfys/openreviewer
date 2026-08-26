@@ -139,6 +139,27 @@ class ModelReviewInput(ModelContract):
     rules: tuple[RepositoryRule, ...] = Field(max_length=256)
     units: tuple[ReviewUnit, ...] = Field(max_length=3000)
     total_estimated_input_bytes: int = Field(ge=0, le=100 * 1024 * 1024)
+    # 这些字段只在模型调用前由编排器注入，不属于 Review Plan 身份或持久化快照。
+    knowledge_references: tuple[str, ...] = Field(
+        default=(),
+        max_length=16,
+        exclude=True,
+    )
+    prior_agent_results: tuple[str, ...] = Field(
+        default=(),
+        max_length=64,
+        exclude=True,
+    )
+
+    @field_validator("knowledge_references", "prior_agent_results")
+    @classmethod
+    def validate_ephemeral_context(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if any(not value.strip() or len(value) > 2_000 for value in values):
+            raise ValueError("ephemeral model context item is invalid")
+        return values
 
     @field_validator("head_sha")
     @classmethod

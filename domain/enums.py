@@ -57,8 +57,46 @@ class ModelCallStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class ModelBatchStatus(str, Enum):
+    """持久化模型批次的恢复状态。"""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class ReviewAgent(str, Enum):
+    """固定 DAG 中的四个模型节点。"""
+
+    SECURITY = "security"
+    CONVENTION = "convention"
+    LOGIC = "logic"
+    SUMMARY = "summary"
+
+
+class ModelReasoningEffort(str, Enum):
+    """模型推理强度；``none`` 表示不发送可选推理参数。"""
+
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    MAX = "max"
+
+
 class ExecutionStatus(str, Enum):
     QUEUED = "queued"
+    CI = "ci"
+    PLANNING = "planning"
+    AGENT_BATCHES = "agent_batches"
+    AGGREGATING = "aggregating"
+    AWAITING_APPROVAL = "awaiting_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    AWAITING_PUBLISH = "awaiting_publish"
+    PUBLISHING = "publishing"
+    PAUSED = "paused"
     WAITING_FOR_CI = "waiting_for_ci"
     RUNNING = "running"
     READY_FOR_REVIEW = "ready_for_review"

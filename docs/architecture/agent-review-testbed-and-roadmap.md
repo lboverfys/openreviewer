@@ -6,16 +6,18 @@
 
 ## 1. 当前结论
 
-OpenReviewer 已具备管理界面内的 AI 审查闭环。可靠任务、Worker、管理界面、部署链路、GitHub
-安全入口、PR/CI 读取、全量规则规划、上下文自动分批和模型调用已经具备；GitHub Check 发布、
-自动证据复核与跨提交结果消解尚未实现。
+OpenReviewer 已具备从 GitHub PR 到人工发布的可恢复 AI 审查闭环。可靠任务、Worker、管理界面、
+部署链路、GitHub 安全入口、PR/CI 读取、全量规则规划、固定四 Agent DAG、上下文自动分批、
+版本化 RAG 和模型调用已经具备；当前发布载体是人工批准后的 PR 汇总评论。GitHub Check、行内
+评论、自动证据复核与跨提交结果消解尚未实现。
 
 当前 Worker 会读取与任务 `head_sha` 匹配的 PR、diff 和 CI；CI 未结束时进入
-`waiting_for_ci`，终止后短暂进入 `ready_for_review` 等待自动 AI 处理，模型结果保存后进入
+`waiting_for_ci`，终止后依次执行规划、三路审查 Agent 和汇总 Agent。模型结果保存后真实工作流
+进入 `awaiting_approval`；批准只进入 `awaiting_publish`，再次人工发布 PR 评论成功后才进入
 `completed`。
 
 NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独立部署在 `niuma-2`，两者不共享
-应用进程、数据库或部署目录，只通过 GitHub PR、Check 和 Actions 状态协作。
+应用进程、数据库或部署目录，只通过 GitHub PR、评论、Check 和 Actions 状态协作。
 
 ## 2. 已完成基线
 
@@ -32,14 +34,16 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - GitHub Webhook 原始请求体验签、大小/事件限制、delivery 去重和原子任务入库。
 - installation、PR 版本、Webhook delivery、外部动作审计模型和 GitHub API 客户端骨架。
 - GitHub App JWT、短期 installation token 内存缓存和只读密钥挂载。
-- GitHub App 安装已启用 Metadata、Pull requests、Contents、Checks 和 Commit statuses
-  五项只读仓库权限。
+- GitHub App 使用 Pull requests 读写权限发布人工批准的 PR 汇总评论；Metadata、Contents、
+  Checks 和 Commit statuses 保持只读。
 - PR 元数据、changed files、完整 diff、Check Runs 和 Commit Statuses 分页读取。
 - 文件/CI 有界快照、CI 轮询与超时，以及旧 `head_sha` 批量失效保护。
 - 当前 SHA 的 `AGENTS.md` 单请求批量加载、确定性 Review Plan、四表原子持久化、幂等复用和
   保存前新 SHA 防护。
 - OpenAI Responses/Chat Completions 与 Anthropic Messages 统一结构化适配、按上下文自动分批、
   独立模型重试、逐批进度，以及调用耗时/Token/可配置成本和 Finding 原子持久化。
+- 安全、规范、逻辑三路并行审查与汇总 Agent 的固定 DAG、独立配置、可恢复批次和版本化 RAG。
+- Finding 人工裁决、整份审查批准、独立发布动作、发布前 PR/SHA 复核和 60 KiB 幂等汇总评论。
 
 稳定语义已经拆分到以下契约中：
 
@@ -51,6 +55,8 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - [`github-context.md`](../contracts/github-context.md)：短期身份、PR/diff/CI 读取和版本保护。
 - [`review-planning.md`](../contracts/review-planning.md)：仓库规则、Review Unit 和输入预算。
 - [`model-review.md`](../contracts/model-review.md)：双供应商协议、上下文分批、调用审计和 Finding。
+- [`agent-workflow.md`](../contracts/agent-workflow.md)：固定 DAG、Agent 配置、批次恢复和 RAG。
+- [`github-publishing.md`](../contracts/github-publishing.md)：人工门、版本保护和 PR 汇总评论。
 
 ### NiuMa 测试场
 
@@ -69,7 +75,8 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 ### GitHub 接入
 
 - 超过单文件补丁上限的 Blob API 补充读取尚未实现，当前会明确降低 diff 完整度；
-- GitHub Check 写入和所有发布前的第二次 stale SHA 校验属于阶段 D。
+- 当前 PR 评论发布已经在外部写入前再次校验 PR 状态、Draft 状态和 `head_sha`；未来的 Check
+  Run 与行内评论仍需各自复用相同版本保护。
 
 ### 审查执行
 
@@ -80,7 +87,7 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 - 真实 PR 离线评测集和人工裁决；
 - 飞书通知、成员映射和人工恢复；
-- 知识库、专业审查器和多仓库策略；
+- 更多专业审查器、外部知识来源和多仓库策略；
 - 测试候选分支、隔离环境和自动晋级策略。
 
 这些缺口不得用空节点或固定成功响应掩盖。
@@ -138,23 +145,26 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ### 阶段 D：最小审查闭环
 
-状态：管理界面闭环已可用。已实现精确 SHA 的 `AGENTS.md` 单请求批量加载、目录作用域、文件分类、
-全量 Review Unit、上下文自动分批、OpenAI/Anthropic 统一适配、严格结构化输出、稳定 Finding
-指纹、Worker 接入和原子持久化；尚未自动复核证据或发布 Check。
+状态：人工发布闭环已可用。已实现精确 SHA 的 `AGENTS.md` 单请求批量加载、目录作用域、文件分类、
+全量 Review Unit、上下文自动分批、OpenAI/Anthropic 统一适配、固定四 Agent DAG、版本化 RAG、
+严格结构化输出、稳定 Finding 指纹、Worker 接入、原子持久化、人工批准和 PR 汇总评论；尚未
+自动复核证据、发布 Check Run 或发布行内评论。
 
 ```text
-选择文件 -> 构建 Review Unit -> 加载相关规则
-         -> 调用统一审查器 -> 校验 Finding
-         -> 回读原始证据 -> 发布或更新一个 Check
+选择文件 -> 构建 Review Unit -> 加载相关规则与 RAG
+         -> 三路 Agent 并行审查 -> 汇总 Agent
+         -> 校验并保存 Finding -> 人工裁决与批准
+         -> 复核 PR/SHA -> 发布幂等 PR 汇总评论
+         -> 后续：回读原始证据 -> Check Run / 行内评论
 ```
 
 首版要求：
 
 - 模型供应商可替换，设置调用次数、Token、耗时和单 PR 总预算；
 - 所有变更文件都有明确处理去向，无法审查时降低覆盖状态；
-- 模型输出必须通过结构校验和证据复核；
-- 无法稳定锚定 diff 的问题只进入 Check Summary；
-- Check 使用稳定动作键更新，重试不重复创建；
+- 模型输出必须通过结构校验；证据复核仍是 Check/行内发布前的后续门槛；
+- 当前所有非驳回 Finding 只进入人工触发的 PR 汇总评论，不伪装成行内定位；
+- PR 评论使用稳定标记去重；未来 Check 也必须使用稳定动作键更新；
 - Agent 不执行 PR 代码，也不连接 NiuMa 服务器运行测试。
 
 验收条件：固定 PR 样本可以本地重放；真实 PR 能得到带 SHA、文件、证据、影响和建议的报告；
@@ -162,7 +172,7 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ### 阶段 E：真实 PR 评测
 
-先以 shadow mode 接入 NiuMa PR，不把 AI Check 设为合并必需条件。每个样本保存：
+先以 shadow mode 接入 NiuMa PR，不把 AI 发布结果设为合并必需条件。每个样本保存：
 
 - 人工确认的预期问题；
 - CI 结果和 Agent Findings；
@@ -195,7 +205,7 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 | --- | --- |
 | 单元测试 | 签名、规范化、状态转换、指纹、预算和脱敏 |
 | 数据库集成测试 | 幂等、唯一约束、租约竞争、Outbox 和恢复 |
-| GitHub 契约测试 | 分页、限流、错误映射、Check 创建与更新 |
+| GitHub 契约测试 | 分页、限流、错误映射、stale SHA、评论查重与大小边界 |
 | 固定样本回放 | 同一 PR 输入应得到可比较的结构化结果 |
 | 故障注入 | 超时、重复事件、新提交、外部成功但本地回写失败 |
 
@@ -210,16 +220,17 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 - 不执行不可信 PR 中的 Maven、npm、Shell 或其他程序。
 - 不修改已发布的数据库迁移，只增加向后兼容的新迁移。
 - 不把 CI 缺失、模型失败或部分覆盖显示为审查通过。
-- 不在评测成熟前让 AI Check 阻止合并。
+- 不在评测成熟前让 AI 发布结果阻止合并。
 - 不允许模型直接创建分支、触发部署、批准或合并 PR。
 - 不自动回滚数据库结构，也不依赖可移动镜像标签判断部署版本。
 
 ## 7. 下一批具体产物
 
-按当前状态，双供应商模型候选阶段已经完成，下一批应继续阶段 D：
+按当前状态，双供应商、固定四 Agent DAG 与人工 PR 评论发布已经完成，下一批应继续阶段 D：
 
 1. 回读原始证据，校验 Finding 行号、diff side 和 `in_diff`；
 2. 为复核后的 Finding 增加状态转换、跨提交消解和行内定位准入；
-3. 发布一个使用稳定动作键的 GitHub Check，并在写入前重新校验当前 `head_sha`。
+3. 在评测证明有收益后，发布使用稳定动作键的 GitHub Check，并复用现有发布前版本校验。
 
-`ready_for_review` 只表示等待 AI 领取，不能显示为审查成功；模型结果保存后才进入 `completed`。
+`ready_for_review` 只表示等待 AI 领取，不能显示为审查成功；模型结果保存后进入
+`awaiting_approval`，只有人工批准并成功发布后才进入 `completed`。

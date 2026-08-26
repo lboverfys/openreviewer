@@ -1,4 +1,4 @@
-# M3 GitHub 上下文与阶段 D 模型 Worker 部署
+# OpenReviewer 固定多 Agent 与人工发布部署
 
 这是 `niuma-2` 的 M3 部署边界。Compose 运行以下组件：
 
@@ -17,8 +17,9 @@ https://openreviewer.lovecoding.store
 公网域名由 Cloudflare 代理，源站使用只读挂载的 Origin 证书。
 
 当前已包含 GitHub Webhook 验签、GitHub App 短期身份、PR/diff/CI 读取、CI 轮询、旧提交
-失效保护和模型审查。CI 终态任务进入 `ready_for_review` 后由 Worker 自动规划并按模型上下文
-分批调用 AI；结果保存后进入 `completed`。GitHub Check 发布仍未实现，不影响管理界面查看结果。
+失效保护、固定四 Agent 审查、版本化 Markdown RAG 和人工发布。CI 终态任务进入
+`ready_for_review` 后由 Worker 自动规划，安全、规范和逻辑 Agent 并行分批调用模型，汇总 Agent
+收口；结果停在人工批准门。批准后再次点击发布，API 才向同一 SHA 的 PR 写入幂等汇总评论。
 
 ## 镜像规则
 
@@ -137,6 +138,7 @@ OPENREVIEWER_CI_POLL_SECONDS=30
 OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS=3600
 OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS=600
 OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS=600
+OPENREVIEWER_KNOWLEDGE_ROOT=knowledge
 OPENREVIEWER_API_HOST_PORT=18090
 OPENREVIEWER_WEB_HOST_PORT=18443
 OPENREVIEWER_TLS_CERT_FILE=/opt/openreviewer/shared/tls/openreviewer.crt
@@ -147,7 +149,9 @@ OPENREVIEWER_LOG_LEVEL=INFO
 
 `.env` 必须是 `0600 root:root`。管理员密码哈希不是明文，但仍不提交 Git。
 AI 配置主密钥文件使用 `0600` 或 `0640 root:root`；API 与 Worker 容器都以 group 0 只读挂载。
-模型供应商、模型 ID、API Key、上下文窗口、超时、传输大小与价格在管理界面的设置页配置。
+四个 Agent 的供应商、模型 ID、API Key、上下文窗口、单批上限、推理档位、超时和重试数在
+管理界面的设置页分别配置。`knowledge/` 已打入 API/Worker 镜像；生产默认使用只读的
+`/app/knowledge`，无需额外挂载可写目录。
 
 ### GitHub App 仓库权限
 
@@ -156,24 +160,27 @@ AI 配置主密钥文件使用 `0600` 或 `0640 root:root`；API 与 Worker 容�
 | 权限 | 级别 | 用途 |
 | --- | --- | --- |
 | Metadata | Read-only | 校验仓库身份 |
-| Pull requests | Read-only | 读取 PR 元数据和 changed files |
+| Pull requests | Read and write | 读取 PR，并由 API 在人工发布时创建汇总评论 |
 | Contents | Read-only | 读取私有仓库 PR 的完整 diff 表示 |
 | Checks | Read-only | 读取 Check Runs |
 | Commit statuses | Read-only | 读取 Commit Statuses |
 
 只在 GitHub App 的 `Permissions & events` 页面保存权限还不够。已有安装会显示权限更新请求，
 管理员必须进入安装设置并接受该请求。Worker 会在进程内缓存短期 installation token，因此批准
-权限后只重启 Worker，使其重新签发 Token：
+权限后重启 API 与 Worker，使它们重新签发 Token：
 
 ```shell
-docker restart openreviewer-worker
+docker restart openreviewer-api openreviewer-worker
+docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+  openreviewer-api
 docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' \
   openreviewer-worker
 ```
 
-验证结果必须为 `running healthy`。完整权限和请求契约见
-[`docs/contracts/github-context.md`](../docs/contracts/github-context.md)。阶段 D 发布 GitHub Check
-时，再单独审批把 `Checks` 提升为 `Read and write`；当前阶段不授予其他写权限。
+两个验证结果都必须为 `running healthy`。完整权限和请求契约见
+[`docs/contracts/github-context.md`](../docs/contracts/github-context.md) 与
+[`docs/contracts/github-publishing.md`](../docs/contracts/github-publishing.md)。当前不创建 GitHub
+Check，`Checks` 保持只读，不授予其他写权限。
 
 ## Cloudflare Origin TLS
 
@@ -210,13 +217,14 @@ Origin 证书只用于 Cloudflare 到源站的连接，不应把源站 IP 当作
 
 宿主机 127.0.0.1:18090 -> API :18090
 backend 内部网络        -> PostgreSQL :5432
+api egress 网络          -> api.github.com:443（人工发布）
 worker egress 网络       -> api.github.com:443
                           -> api.openai.com:443 或 api.anthropic.com:443
 ```
 
 - PostgreSQL、Worker 不发布宿主机端口；
-- Worker 以 UID `10001`、GID `0` 运行，只为读取宿主机 `0640 root:root` 的 GitHub App
-  私钥和模型 API Key；容器仍移除全部 capabilities、使用只读根文件系统且禁止提权；
+- API 与 Worker 以 UID `10001`、GID `0` 运行，只读访问宿主机 `0640 root:root` 的 GitHub App
+  私钥和 AI 配置主密钥；模型 API Key 只以密文保存在数据库，解密后短暂存在进程内存；
 - API 不监听公网地址；
 - Nginx 拒绝未列入白名单的 `/api/` 路径；
 - 登录同时受 Nginx IP 限速和 API 失败窗口限制；

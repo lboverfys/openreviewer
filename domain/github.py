@@ -15,6 +15,11 @@ from domain.identifiers import normalize_sha
 from domain.paths import normalize_repository_path
 
 
+# GitHub 的统一 diff 会受客户端总响应上限保护；单文件保留到这个边界后，
+# 后续模型规划器会按 Token 预算继续切片，而不是在上下文阶段直接丢弃文件。
+MAX_PATCH_BYTES = 8 * 1024 * 1024
+
+
 class GitHubContractModel(BaseModel):
     """拒绝未知字段并禁止调用方修改的 GitHub 数据基类。"""
 
@@ -60,7 +65,7 @@ class PullRequestFile(GitHubContractModel):
     deletions: int = Field(ge=0)
     changes: int = Field(ge=0)
     patch_state: PatchState
-    patch: str | None = Field(default=None, max_length=524_288)
+    patch: str | None = Field(default=None, max_length=MAX_PATCH_BYTES)
 
     @field_validator("path", "previous_path")
     @classmethod

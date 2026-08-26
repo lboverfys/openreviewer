@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from domain.enums import ModelApiProtocol, ModelProvider
+from domain.enums import ModelApiProtocol, ModelProvider, ModelReasoningEffort
 from persistence.database import Database
 from persistence.models import (
     AiProviderSecretRecord,
@@ -108,6 +108,8 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
     assert tested[0].api_request_path("/v1/responses") == "responses"
     assert tested[0].api_key == "sk-test-secret-5678"
     assert tested[0].max_output_tokens == 512
+    assert tested[0].reasoning_effort is ModelReasoningEffort.NONE
+    assert tested[0].max_batch_input_tokens == 64_000
 
     activated = service.activate_provider(
         ModelProvider.OPENAI,

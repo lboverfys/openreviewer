@@ -10,28 +10,29 @@ OpenReviewer 是独立于被审查业务系统的代码审查平台，首个接�
 
 - 接收 GitHub PR 事件并跟踪每个 `head_sha`；
 - 结合 diff、周边代码和仓库规则生成结构化审查结果；
-- 把结果发布为 GitHub Check，必要时发布行内评论；
+- 当前由人工批准后发布 GitHub PR 汇总评论，后续可升级为 Check 和高置信行内评论；
 - 保存执行、证据、反馈、耗时和成本，支持重试与评测；
-- 在后续阶段接入人工确认、飞书通知和测试候选晋级。
+- 保存人工确认结果，并在后续阶段接入飞书通知和测试候选晋级。
 
 平台不替代普通 CI，也不直接决定是否合并主分支。编译、测试、静态检查继续由 GitHub Actions
 执行；AI 只处理需要语义理解的内容。
 
-当前仓库已完成 M3，并进入阶段 D：除结构化安全错误、路径边界、Webhook 验签、过滤、去重与
-原子入库外，还实现了 GitHub App 短期身份、PR/diff/CI 获取、CI 轮询、`head_sha` 生命周期、
-规则加载、全量 Review Plan 持久化、OpenAI/Anthropic 统一结构化调用、上下文自动分批，以及
-模型用量、成本和 Finding 持久化。自动证据复核、GitHub Check 发布和 LangGraph 工作流尚未接入。
+当前仓库已完成阶段 D 的人工发布闭环：除结构化安全错误、路径边界、Webhook 验签、过滤、去重
+与原子入库外，还实现了 GitHub App 短期身份、PR/diff/CI 获取、CI 轮询、`head_sha` 生命周期、
+规则加载、全量 Review Plan、OpenAI/Anthropic 统一结构化调用、固定四 Agent DAG、上下文自动
+分批、版本化 RAG、可恢复批次、用量成本、Finding 持久化，以及批准后幂等发布 PR 汇总评论。
+自动证据复核、GitHub Check 和行内评论尚未接入。
 
 ## 2. 核心决策
 
 1. 平台独立部署、独立存储，不进入 NiuMa 业务进程或复用其数据库。
 2. 服务使用 Python 3.12；API 使用 FastAPI，持久化使用 PostgreSQL、SQLAlchemy 和 Alembic。
-3. 目标工作流使用 LangGraph，但任务和外部副作用状态仍以 PostgreSQL 业务表为准。
+3. 工作流使用平台控制的固定 DAG；任务、批次和外部副作用状态以 PostgreSQL 业务表为准。
 4. GitHub 集成使用 GitHub App，不长期依赖个人 PAT。
 5. Webhook 先持久化，再由带租约的 Worker 异步处理；不使用进程内队列承载可靠任务。
 6. 能机械判断的规则交给 CI、静态分析或策略代码，不交给模型猜测。
-7. 首个审查版本使用一套统一审查器；只有评测证明有收益时才拆分专业审查器。
-8. AI Check 初期不阻止合并，先积累真实 PR 的有效问题和误报数据。
+7. 固定 DAG 使用安全、规范、逻辑和汇总四个独立 Agent；只有评测证明有收益时才继续拆分。
+8. 当前 PR 汇总评论和未来 AI Check 都不阻止合并，先积累真实 PR 的有效问题和误报数据。
 9. 审查进程只读受限上下文，不执行 PR 中的脚本、构建命令或可执行文件。
 10. 所有通知、评论和测试晋级都经过确定性策略，模型不能直接产生不受限制的副作用。
 
@@ -53,17 +54,20 @@ GitHub Actions CI        GitHub App Webhook
                       带租约的 Review Worker
                                |
                                v
-                     LangGraph 审查工作流
+                       固定审查 DAG
                                |
                  +-------------+-------------+
                  v                           v
         确定性规划与规则              模型语义审查
                  +-------------+-------------+
                                v
-                         Finding 复核
+                  Finding 校验与人工批准
                                |
                                v
-                  GitHub Check / 行内评论
+                    GitHub PR 汇总评论
+                               |
+                               v
+                  后续：Check / 行内评论
 ```
 
 各层职责：
@@ -73,10 +77,10 @@ GitHub Actions CI        GitHub App Webhook
 | API | 验签、限制事件和请求大小、保存投递与任务、快速响应 |
 | PostgreSQL | 审查运行、任务租约、Outbox、外部动作和反馈的权威状态 |
 | Worker | 领取、续租、重试、恢复和推进工作流 |
-| LangGraph | 编排可暂停、可恢复的审查节点；Checkpoint 不替代业务状态 |
+| 固定 DAG | 编排三路并行审查、汇总和人工节点；模型不能改变流程或触发副作用 |
 | 规则与规划 | 文件筛选、Review Unit、规则路由、预算和副作用决策 |
 | 模型适配器 | 统一结构化输入输出，隔离具体模型供应商 |
-| GitHub 适配器 | 读取 PR/CI，创建或更新 Check 与评论 |
+| GitHub 适配器 | 读取 PR/CI，当前发布 PR 评论，后续创建或更新 Check 与行内评论 |
 
 ## 4. 目标工作流
 
@@ -85,16 +89,17 @@ GitHub Actions CI        GitHub App Webhook
   -> 获取 PR、当前 head_sha 和 CI
   -> 分类变更并加载相关规则
   -> 选择文件并构建 Review Unit
-  -> 执行确定性检查和模型审查
-  -> 汇总、去重并复核证据
+  -> 安全、规范和逻辑 Agent 并行审查
+  -> 汇总 Agent 去重、排序并校验 Finding
+  -> 人工裁决并批准整份审查
   -> 再次确认 PR 与 head_sha 未变化
-  -> 发布或更新 GitHub Check
-  -> 后续：飞书通知 / 人工确认 / 测试候选晋级
+  -> 发布幂等 GitHub PR 汇总评论
+  -> 后续：证据复核 / Check / 行内评论 / 飞书通知 / 测试候选晋级
 ```
 
 较晚阶段的节点在真正实现前不得返回伪造的成功。当前 Worker 会把任务推进到
-`waiting_for_ci`，在 `ready_for_review` 阶段自动生成全量计划并按上下文调用模型；模型结果保存
-后写成 `completed`。人工候选标记是可选操作，GitHub Check 发布不属于当前完成条件。
+`waiting_for_ci`，在 `ready_for_review` 后自动生成全量计划并执行固定 DAG；模型结果保存后停在
+`awaiting_approval`。批准和发布是两个独立人工动作，PR 汇总评论成功写入后才进入 `completed`。
 
 ### PR 与 CI 竞态
 
@@ -159,8 +164,9 @@ Finding 的完整字段和验证规则以
 - 不是纯风格意见或普通测试建议；
 - 满足仓库策略和历史评测门槛。
 
-其他内容进入一个 Check Summary，避免重复评论和刷屏。模型输出的置信度只是一项参考，不能
-绕过证据、位置和评测门槛。
+当前所有未被人工驳回的候选只进入一条 PR 汇总评论；评论不会伪装成已经复核的行内结论。
+未来无法稳定定位的问题进入 Check Summary，避免重复评论和刷屏。模型输出的置信度只是一项
+参考，不能绕过证据、位置和评测门槛。
 
 ## 7. 状态、幂等和恢复
 
@@ -185,7 +191,8 @@ Finding 的完整字段和验证规则以
 
 ### GitHub 与凭据
 
-- GitHub App 只申请读取元数据、内容和 PR，以及写入 Checks 所需的最小权限。
+- GitHub App 当前以 Pull requests 读写权限发布 PR 评论，Metadata、Contents、Checks 和 Commit
+  statuses 保持只读；未来发布 Check 时再单独提升 Checks 权限。
 - 创建测试分支所需的内容写权限在对应阶段单独启用，不提前授予。
 - Webhook 必须基于原始请求体验签，再解析 JSON。
 - Token、私钥、模型密钥和密码不得进入仓库、日志、Prompt 或审查结果。
@@ -217,7 +224,7 @@ PR 代码、注释、README 和业务文档都视为不可信输入。代码中�
 
 上线顺序：
 
-1. Shadow mode：只发布汇总，不阻止合并。
+1. Shadow mode：人工确认后只发布 PR 汇总评论，不阻止合并。
 2. 有足够人工裁决数据后，对达到门槛的风险域开放高置信行内评论。
 3. 误报上升时按规则或风险域降级回 Summary。
 4. 测试候选晋级必须晚于稳定审查和人工反馈闭环，主分支仍由负责人批准。
@@ -227,8 +234,9 @@ PR 代码、注释、README 和业务文档都视为不可信输入。代码中�
 | 阶段 | 目标 |
 | --- | --- |
 | 已完成 M2 | 可靠任务、Worker、管理认证、Dashboard、部署闭环 |
-| 当前 M3 | GitHub App、Webhook 验签、PR/CI 获取和 `head_sha` 生命周期 |
-| 最小审查闭环 | Review Unit、模型适配、Finding 复核和 GitHub Check |
+| 已完成 M3 | GitHub App、Webhook 验签、PR/CI 获取和 `head_sha` 生命周期 |
+| 当前最小闭环 | Review Unit、固定四 Agent DAG、RAG、人工批准和 PR 汇总评论 |
+| 发布增强 | Finding 证据复核、GitHub Check、行内评论和跨提交消解 |
 | 真实评测 | NiuMa PR shadow mode、反馈标注、指纹去重和结果消解 |
 | 能力增强 | 按收益拆分专业审查器，接入脱敏知识库和飞书 |
 | 安全晋级 | 确定性策略、人工确认和隔离测试候选 |
@@ -239,8 +247,8 @@ PR 代码、注释、README 和业务文档都视为不可信输入。代码中�
 ## 11. 待确定事项
 
 - GitHub App 后续发布 Check 所需的最终写权限启用时机。
-- 首个模型供应商、预算、超时和降级策略。
-- NiuMa 的 Review Unit 归组规则及上下文上限。
+- 自动证据回读、diff 定位复核和跨提交消解策略。
+- NiuMa 的 Review Unit 归组规则及各 Agent 上下文上限。
 - 首批离线评测样本和各风险域准入门槛。
 - 飞书知识来源采用白名单实时读取还是脱敏同步。
 - 测试候选只创建分支，还是同时创建每 PR 隔离环境。

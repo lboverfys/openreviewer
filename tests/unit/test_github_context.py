@@ -3,9 +3,11 @@ from datetime import UTC, datetime
 import httpx
 
 from domain.enums import CiState, PatchState
+from domain.review_planning import RepositoryRulesSnapshot
 from domain.security import ErrorCode, SafeApplicationError
 from services.github import GitHubApiClient, GitHubClientSettings
 from services.github_context import GitHubContextSettings, GitHubReviewContextLoader
+from services.review_planning import DeterministicReviewPlanner
 from services.task_queue import ReviewTarget
 
 
@@ -193,6 +195,74 @@ def test_loader_stops_after_pr_metadata_when_head_sha_is_stale() -> None:
     assert context.files is None
     assert context.ci is None
     assert requests == ["/repos/lboverfys/NiuMa/pulls/48"]
+
+
+def test_diff_larger_than_legacy_limit_reaches_review_planner() -> None:
+    large_line = "x" * (600 * 1024)
+    full_diff = (
+        "diff --git a/src/large.py b/src/large.py\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/src/large.py\n"
+        "+++ b/src/large.py\n"
+        "@@ -0,0 +1 @@\n"
+        f"+{large_line}\n"
+    )
+    pull_request = {**_pull_request_payload(), "changed_files": 1}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/repos/lboverfys/NiuMa/pulls/48":
+            if request.headers["accept"] == "application/vnd.github.v3.diff":
+                return httpx.Response(200, text=full_diff)
+            return httpx.Response(200, json=pull_request)
+        if path == "/repos/lboverfys/NiuMa/pulls/48/files":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "filename": "src/large.py",
+                        "status": "added",
+                        "sha": "d" * 40,
+                        "additions": 1,
+                        "deletions": 0,
+                        "changes": 1,
+                    }
+                ],
+            )
+        if path == f"/repos/lboverfys/NiuMa/commits/{HEAD_SHA}/check-runs":
+            return httpx.Response(200, json={"total_count": 0, "check_runs": []})
+        if path == f"/repos/lboverfys/NiuMa/commits/{HEAD_SHA}/statuses":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"未预期的 GitHub 请求：{request.url}")
+
+    api = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    context = GitHubReviewContextLoader(api, StaticTokenProvider()).load(_target())
+
+    assert context.files is not None
+    assert context.files[0].patch_state is PatchState.AVAILABLE
+    assert len((context.files[0].patch or "").encode("utf-8")) > 512 * 1024
+    plan = DeterministicReviewPlanner().plan(
+        _target(),
+        context.files,
+        RepositoryRulesSnapshot(
+            repository_id=42,
+            repository="lboverfys/NiuMa",
+            head_sha=HEAD_SHA,
+            rules=(),
+            incomplete_files=(),
+            issues=(),
+            candidate_count=0,
+            requested_candidate_count=0,
+        ),
+    )
+    assert len(plan.units) == 1
+    assert plan.units[0].patch == context.files[0].patch
 
 
 def test_loader_enforces_total_time_budget_before_starting_next_request() -> None:

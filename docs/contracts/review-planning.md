@@ -3,8 +3,8 @@
 ## 1. 当前边界
 
 Worker 在精确 `head_sha` 上批量读取 `AGENTS.md`，再把数据库中的 changed files 编译成有界、
-可重放的 Review Plan，并原子保存。计划保存后任务保持 `ready_for_review`，下一次领取进入模型
-审查；只有模型结果保存成功后才写成 `completed`。
+可重放的 Review Plan，并原子保存。计划保存后任务保持 `ready_for_review`，下一次领取进入固定
+多 Agent 审查；模型结果保存后真实工作流进入 `awaiting_approval`，人工发布成功后才完成。
 
 规则内容只作为后续代码审查输入。仓库规则不能扩大 GitHub App 权限、读取凭据、连接服务器、执行
 PR 代码或覆盖平台安全边界。
@@ -53,7 +53,7 @@ services/auth/AGENTS.md
 | `generated` | 生成目录、压缩产物、source map 或依赖锁文件 |
 | `unsupported` | 首版不支持的文件类型 |
 | `patch_missing` | GitHub 没有提供可审查补丁 |
-| `patch_too_large` | 单文件补丁已在上下文阶段超过上限 |
+| `patch_too_large` | 单文件文本补丁在上下文阶段已超过 8 MiB 安全上限，无法送入模型 |
 | `rules_incomplete` | 无法证明该文件所需规则读取完整 |
 | `omitted_by_budget` | 仅用于读取旧版计划；v2 不再用预算省略可审查文件 |
 
@@ -70,7 +70,8 @@ services/auth/AGENTS.md
 100 个 Unit、单 PR 2 MiB”配置丢弃后面的文件。旧字段暂时保留用于配置和历史数据兼容，其中
 规则作用域深度仍然生效。
 
-模型适配器再按上下文窗口和 HTTP 大小分批，Token 使用保守的 `2 UTF-8 字节/Token` 估算，
+模型适配器再按单批输入配置、上下文窗口和 HTTP 大小分批，默认每批输入上限为 64K Token。
+Token 使用保守的 `2 UTF-8 字节/Token` 估算，
 并记录供应商返回的实际输入、输出、缓存与推理 Token、耗时和成本。文件按规范化路径排序，
 因此同一输入不会因 GitHub 列表顺序不同而改变结果。
 Unit 稳定键包含：

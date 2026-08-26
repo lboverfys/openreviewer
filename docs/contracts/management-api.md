@@ -32,12 +32,35 @@ API 进程按客户端和账号记录 15 分钟滑动失败窗口；Nginx 还对
 | `GET /api/v1/dashboard` | 状态计数、最近任务和最新 Worker 心跳 |
 | `GET /api/v1/reviews?limit=50` | 最近审查任务列表，`limit` 范围为 1 到 100 |
 | `POST /api/v1/reviews` | 创建幂等审查任务，详细规则见任务接口契约 |
+| `GET /api/v1/reviews/{review_run_id}` | 详情、双状态、四 Agent 进度、Finding、CI 和事件 |
+| `POST /api/v1/reviews/{review_run_id}/actions` | 暂停、恢复、重试、批准、驳回或人工发布 |
+| `POST /api/v1/reviews/{review_run_id}/findings/{finding_id}` | 确认或忽略单条 Finding |
 
 响应模型不会直接暴露数据库密码、会话密钥、密码哈希或任务幂等键。任务列表和 Dashboard
 返回 `last_error`、`last_error_code`、`last_error_retryable` 和安全详情；错误在 Worker 入库前
 统一脱敏，读取时再次执行防御性脱敏。原始异常、Token、密码和带凭据 URL 不属于响应契约。
 
-## 3. 实时事件
+动作和 Finding 写接口都要求 `Idempotency-Key` 与同源校验。动作响应同时返回旧队列
+`execution_status` 和真实 `workflow_status`；服务端在提交动作后重新读取已提交详情，不用旧字段
+猜测人工节点。模型结束后固定经过
+`awaiting_approval -> approved -> awaiting_publish -> publishing`；`approved` 与自动开放发布门
+分别写审计事件，批准和发布仍是两次独立点击。`retry_stage` 必须提供 CI、规划、Agent 批次或
+汇总目标；同一幂等键不得改用不同目标。发布失败返回 `503`，数据库工作流恢复为
+`awaiting_publish`，同一键可重试。
+
+## 3. 四 Agent 设置
+
+| 方法和路径 | 用途 |
+| --- | --- |
+| `GET /api/v1/settings/ai/agents` | 读取四个 Agent 的脱敏配置 |
+| `PUT /api/v1/settings/ai/agents/{agent}` | 保存一个 Agent 参数和可选新 API Key |
+| `POST /api/v1/settings/ai/agents/{agent}/test` | 在事务外执行真实结构化连接测试 |
+| `POST /api/v1/settings/ai/agents/{agent}/enabled` | 启用或停用已测试配置 |
+
+响应只提供是否配置密钥和末四位掩码，不返回密文或明文。所有写入携带
+`expected_revision`；revision 冲突返回 `409`。详细规则见 [ai-settings.md](ai-settings.md)。
+
+## 4. 实时事件
 
 `GET /api/v1/reviews/stream` 使用 Server-Sent Events（SSE，即服务器保持一条单向长连接）
 推送 `dashboard` 事件。每个事件包含与 Dashboard 接口相同的完整快照，前端断线后由浏览器
@@ -52,7 +75,7 @@ Nginx 必须关闭该路径的代理缓冲和缓存，API 返回 `X-Accel-Buffer
 到期时立即停止推送，需要在事件循环中重新校验会话，或者为 SSE 设置不超过会话剩余时间的
 最大连接时长。
 
-## 4. 公网边界
+## 5. 公网边界
 
 Nginx 只代理本文列出的管理路径，其他 `/api/` 路径返回 `404`。PostgreSQL 和 Worker 没有
 宿主机端口；API 在容器内监听 `0.0.0.0:18090`，Compose 只把它映射到宿主机回环地址

@@ -16,6 +16,7 @@ COPY --chown=openreviewer:openreviewer apps ./apps
 COPY --chown=openreviewer:openreviewer domain ./domain
 COPY --chown=openreviewer:openreviewer persistence ./persistence
 COPY --chown=openreviewer:openreviewer services ./services
+COPY --chown=openreviewer:openreviewer knowledge ./knowledge
 COPY --chown=openreviewer:openreviewer alembic.ini ./alembic.ini
 COPY --chown=openreviewer:openreviewer migrations ./migrations
 

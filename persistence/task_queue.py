@@ -14,6 +14,7 @@ from domain.enums import (
     CiState,
     CoverageStatus,
     ExecutionStatus,
+    ModelBatchStatus,
     PatchState,
     PullRequestState,
     ReviewConclusion,
@@ -28,6 +29,7 @@ from domain.model_review import (
     ModelReviewResult,
     materialize_findings,
 )
+from services.model_review import MAX_MODEL_REVIEW_BATCHES, ModelReviewBatch
 from domain.review_planning import (
     RepositoryRule,
     RepositoryRulesSnapshot,
@@ -38,6 +40,7 @@ from domain.security import ErrorCode, SafeError, redact_sensitive
 from persistence.models import (
     GitHubInstallationRecord,
     ModelCallRecord,
+    ModelReviewBatchRecord,
     OutboxEventRecord,
     PullRequestCiCheckRecord,
     PullRequestFileRecord,
@@ -53,6 +56,7 @@ from persistence.models import (
 )
 from services.task_queue import (
     ModelReviewConflictError,
+    ModelBatchBusyError,
     ModelReviewInputError,
     ReviewPlanConflictError,
     ReviewPlanInputError,
@@ -61,6 +65,7 @@ from services.task_queue import (
     ReviewTarget,
     StoredReviewPlan,
     StoredModelReview,
+    StoredModelBatch,
     TaskLeaseLostError,
     TaskQueueError,
 )
@@ -92,6 +97,8 @@ def _task_run_mutation_load_options() -> tuple[Load, Load]:
             ReviewTaskRecord.id,
             ReviewTaskRecord.review_run_id,
             ReviewTaskRecord.execution_status,
+            ReviewTaskRecord.workflow_status,
+            ReviewTaskRecord.workflow_paused_from,
             ReviewTaskRecord.attempt_count,
             ReviewTaskRecord.model_attempt_count,
             ReviewTaskRecord.max_attempts,
@@ -110,6 +117,8 @@ def _task_run_mutation_load_options() -> tuple[Load, Load]:
             ReviewRunRecord.pull_request_number,
             ReviewRunRecord.head_sha,
             ReviewRunRecord.execution_status,
+            ReviewRunRecord.workflow_status,
+            ReviewRunRecord.workflow_paused_from,
             ReviewRunRecord.coverage_status,
             ReviewRunRecord.created_at,
             raiseload=True,
@@ -238,6 +247,16 @@ class SqlAlchemyReviewTaskQueue:
                     .where(
                         ReviewTaskRecord.execution_status
                         == ExecutionStatus.RUNNING.value,
+                        or_(
+                            ReviewTaskRecord.workflow_status.is_(None),
+                            ReviewTaskRecord.workflow_status
+                            != ExecutionStatus.PAUSED.value,
+                        ),
+                        or_(
+                            ReviewRunRecord.workflow_status.is_(None),
+                            ReviewRunRecord.workflow_status
+                            != ExecutionStatus.PAUSED.value,
+                        ),
                         ReviewTaskRecord.lease_expires_at.is_not(None),
                         ReviewTaskRecord.lease_expires_at <= now,
                     )
@@ -338,6 +357,16 @@ class SqlAlchemyReviewTaskQueue:
                                 ExecutionStatus.WAITING_FOR_CI.value,
                                 ExecutionStatus.READY_FOR_REVIEW.value,
                             )
+                        ),
+                        or_(
+                            ReviewTaskRecord.workflow_status.is_(None),
+                            ReviewTaskRecord.workflow_status
+                            != ExecutionStatus.PAUSED.value,
+                        ),
+                        or_(
+                            ReviewRunRecord.workflow_status.is_(None),
+                            ReviewRunRecord.workflow_status
+                            != ExecutionStatus.PAUSED.value,
                         ),
                         ReviewTaskRecord.available_at <= now,
                         or_(
@@ -514,8 +543,18 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.attempt_count == lease.attempt_count,
                 ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
                 ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
-                ReviewTaskRecord.claimed_from_status
+                    ReviewTaskRecord.claimed_from_status
                 == lease.claimed_from_status.value,
+                or_(
+                    ReviewTaskRecord.workflow_status.is_(None),
+                    ReviewTaskRecord.workflow_status
+                    != ExecutionStatus.PAUSED.value,
+                ),
+                or_(
+                    ReviewRunRecord.workflow_status.is_(None),
+                    ReviewRunRecord.workflow_status
+                    != ExecutionStatus.PAUSED.value,
+                ),
                 ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
@@ -666,6 +705,12 @@ class SqlAlchemyReviewTaskQueue:
                             ExecutionStatus.TIMED_OUT,
                             now,
                         )
+                        self._set_workflow_status(
+                            task,
+                            run,
+                            ExecutionStatus.FAILED,
+                            now,
+                        )
                         self._add_event(
                             session,
                             task,
@@ -680,6 +725,12 @@ class SqlAlchemyReviewTaskQueue:
                             task,
                             run,
                             ExecutionStatus.WAITING_FOR_CI,
+                            now,
+                        )
+                        self._set_workflow_status(
+                            task,
+                            run,
+                            ExecutionStatus.CI,
                             now,
                         )
                         task.available_at = now + ci_poll_interval
@@ -697,6 +748,12 @@ class SqlAlchemyReviewTaskQueue:
                         task,
                         run,
                         ExecutionStatus.READY_FOR_REVIEW,
+                        now,
+                    )
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.PLANNING,
                         now,
                     )
                     self._add_event(
@@ -898,6 +955,8 @@ class SqlAlchemyReviewTaskQueue:
                         ),
                     )
 
+                # 只有“已经存在且指纹完全一致”的只读幂等重放允许使用已失效
+                # 租约；任何新建或冲突路径都必须在下面重新校验当前所有权。
                 task, run = self._locked_owned_task_with_run(session, lease, now)
                 if (
                     run.review_version_key != plan.review_version_key
@@ -1097,6 +1156,12 @@ class SqlAlchemyReviewTaskQueue:
                     task,
                     run,
                     ExecutionStatus.READY_FOR_REVIEW,
+                    now,
+                )
+                self._set_workflow_status(
+                    task,
+                    run,
+                    ExecutionStatus.AGENT_BATCHES,
                     now,
                 )
                 self._add_event(
@@ -1548,6 +1613,14 @@ class SqlAlchemyReviewTaskQueue:
                     ExecutionStatus.COMPLETED,
                     now,
                 )
+                # 旧 execution_status 保持 completed 以兼容现有队列；新的
+                # 工作流必须停在人工批准门，不得把结果误显示为已发布。
+                self._set_workflow_status(
+                    task,
+                    run,
+                    ExecutionStatus.AWAITING_APPROVAL,
+                    now,
+                )
                 self._add_event(
                     session,
                     task,
@@ -1597,10 +1670,24 @@ class SqlAlchemyReviewTaskQueue:
         lease: ReviewTaskLease,
         phase: str,
         payload: Mapping[str, object],
+        *,
+        agent: str = "default",
     ) -> None:
         """用短事务写入模型批次进度，不保存或伪造 Chain-of-Thought。"""
 
-        allowed_phases = {"batches_planned", "batch_started", "batch_completed"}
+        if not agent or len(agent) > 32:
+            raise ValueError("model progress agent name is invalid")
+        allowed_phases = {
+            "batches_planned",
+            "batch_started",
+            "request_started",
+            "request_completed",
+            "batch_completed",
+            "batch_failed",
+            "agent_completed",
+            "agent_failed",
+            "summary_completed",
+        }
         if phase not in allowed_phases:
             raise ValueError("unsupported model progress phase")
         if lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW:
@@ -1615,9 +1702,9 @@ class SqlAlchemyReviewTaskQueue:
                     session,
                     task,
                     f"review.model.{phase}",
-                    f"model-attempt-{task.model_attempt_count}",
+                    f"{agent}:model-attempt-{task.model_attempt_count}",
                     now,
-                    extra_payload=dict(payload),
+                    extra_payload={"agent": agent, **dict(payload)},
                 )
                 session.commit()
             except (ModelReviewConflictError, TaskLeaseLostError):
@@ -1626,6 +1713,429 @@ class SqlAlchemyReviewTaskQueue:
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise TaskQueueError("model progress could not be persisted") from exc
+
+    def mark_model_aggregating(self, lease: ReviewTaskLease) -> None:
+        """在三路 Agent 完成后，用短事务暴露固定 DAG 的汇总节点。"""
+
+        if lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW:
+            raise ModelReviewConflictError("当前租约不属于模型审查阶段")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                task, run = self._locked_owned_task_with_run(session, lease, now)
+                current = ExecutionStatus(task.workflow_status)
+                if current not in {
+                    ExecutionStatus.AGENT_BATCHES,
+                    ExecutionStatus.AGGREGATING,
+                }:
+                    raise ModelReviewConflictError("当前工作流不能进入结果汇总阶段")
+                if current is not ExecutionStatus.AGGREGATING:
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.AGGREGATING,
+                        now,
+                    )
+                    self._add_event(
+                        session,
+                        task,
+                        "review.model.aggregating_started",
+                        f"model-attempt-{task.model_attempt_count}",
+                        now,
+                        extra_payload={
+                            "review_plan_id": lease.review_plan_id,
+                            "agent_count": 3,
+                        },
+                    )
+                session.commit()
+            except (ModelReviewConflictError, TaskLeaseLostError):
+                session.rollback()
+                raise
+            except (SQLAlchemyError, ValueError) as exc:
+                session.rollback()
+                raise TaskQueueError("model aggregation state could not be persisted") from exc
+
+    def ensure_model_batches(
+        self,
+        lease: ReviewTaskLease,
+        batches: tuple[ModelReviewBatch, ...],
+        *,
+        agent: str = "default",
+    ) -> tuple[StoredModelBatch, ...]:
+        """幂等保存模型批次定义；恢复时不会覆盖已完成结果。"""
+
+        if not agent or len(agent) > 32:
+            raise ValueError("model batch agent name is invalid")
+        if lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW:
+            raise ModelReviewConflictError("当前租约不属于模型审查阶段")
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        if len(batches) > MAX_MODEL_REVIEW_BATCHES:
+            raise ModelReviewConflictError("模型批次数量超过持久化上限")
+        now = self._clock()
+        numbers = tuple(batch.number for batch in batches)
+        if len(numbers) != len(set(numbers)):
+            raise ModelReviewConflictError("模型批次号必须唯一")
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                plan = session.scalar(
+                    select(ReviewPlanRecord)
+                    .where(ReviewPlanRecord.id == lease.review_plan_id)
+                    .with_for_update()
+                )
+                if plan is None:
+                    raise ModelReviewConflictError("模型批次关联的计划不存在")
+                existing_rows = list(
+                    session.scalars(
+                        select(ModelReviewBatchRecord)
+                        .where(
+                            ModelReviewBatchRecord.review_plan_id
+                            == lease.review_plan_id,
+                            ModelReviewBatchRecord.agent == agent,
+                        )
+                        .order_by(ModelReviewBatchRecord.batch_number.asc())
+                        .with_for_update()
+                        .limit(MAX_MODEL_REVIEW_BATCHES + 1)
+                    )
+                )
+                if len(existing_rows) > MAX_MODEL_REVIEW_BATCHES:
+                    raise ModelReviewConflictError("已保存的模型批次数量超过上限")
+                existing = {row.batch_number: row for row in existing_rows}
+                for batch in batches:
+                    unit_keys = [unit.unit_key for unit in batch.review_input.units]
+                    row = existing.get(batch.number)
+                    if row is None:
+                        row = ModelReviewBatchRecord(
+                            id=str(self._uuid_factory()),
+                            review_plan_id=lease.review_plan_id,
+                            agent=agent,
+                            batch_number=batch.number,
+                            batch_count=batch.total,
+                            unit_keys=unit_keys,
+                            estimated_input_tokens=batch.estimated_input_tokens,
+                            status=ModelBatchStatus.PENDING.value,
+                            attempt_count=0,
+                            available_at=now,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(row)
+                        existing[batch.number] = row
+                    elif (
+                        row.batch_count != batch.total
+                        or tuple(row.unit_keys) != tuple(unit_keys)
+                        or row.estimated_input_tokens
+                        != batch.estimated_input_tokens
+                    ):
+                        raise ModelReviewConflictError("模型批次定义与已保存结果不一致")
+                self._add_event(
+                    session,
+                    None,
+                    "review.model.batches_persisted",
+                    f"{agent}:{lease.review_plan_id}:{len(batches)}",
+                    now,
+                    aggregate_id=lease.review_run_id,
+                    extra_payload={
+                        "review_plan_id": lease.review_plan_id,
+                        "agent": agent,
+                        "batch_count": len(batches),
+                    },
+                )
+                session.commit()
+                rows = sorted(existing.values(), key=lambda item: item.batch_number)
+                return tuple(self._stored_model_batch(row) for row in rows)
+            except (TaskLeaseLostError, ModelReviewConflictError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model batch definitions could not be persisted") from exc
+
+    def claim_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        *,
+        agent: str = "default",
+        lease_duration: timedelta,
+    ) -> StoredModelBatch:
+        """原子领取一个批次；成功批次只读返回。"""
+
+        if lease_duration.total_seconds() <= 0:
+            raise ValueError("model batch lease duration must be positive")
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                row = session.scalar(
+                    select(ModelReviewBatchRecord)
+                    .where(
+                        ModelReviewBatchRecord.review_plan_id == lease.review_plan_id,
+                        ModelReviewBatchRecord.agent == agent,
+                        ModelReviewBatchRecord.batch_number == batch_number,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise ModelReviewConflictError("模型批次不存在")
+                status = ModelBatchStatus(row.status)
+                if status is ModelBatchStatus.SUCCEEDED:
+                    session.commit()
+                    return self._stored_model_batch(row)
+                if (
+                    status is ModelBatchStatus.RUNNING
+                    and row.lease_expires_at is not None
+                    and _as_utc(row.lease_expires_at) > _as_utc(now)
+                ):
+                    # 即使 Worker ID 相同，也可能是同名副本或一次重入。调用方
+                    # 无法区分“自己已领取”和“另一个请求正在执行”，因此必须等待
+                    # 租约过期或结果落库，绝不能再次调用外部模型。
+                    raise ModelBatchBusyError()
+                if row.available_at is not None and _as_utc(row.available_at) > _as_utc(now):
+                    raise ModelBatchBusyError("模型批次尚未到重试时间")
+                row.status = ModelBatchStatus.RUNNING.value
+                row.attempt_count += 1
+                row.lease_owner = lease.worker_id
+                row.lease_expires_at = now + lease_duration
+                row.updated_at = now
+                self._add_event(
+                    session,
+                    None,
+                    "review.model.batch_claimed",
+                    f"{agent}:{lease.review_plan_id}:{batch_number}:{row.attempt_count}",
+                    now,
+                    aggregate_id=lease.review_run_id,
+                    extra_payload={
+                        "review_plan_id": lease.review_plan_id,
+                        "agent": agent,
+                        "batch_number": batch_number,
+                        "batch_count": row.batch_count,
+                        "attempt_count": row.attempt_count,
+                    },
+                )
+                session.commit()
+                return self._stored_model_batch(row)
+            except (
+                TaskLeaseLostError,
+                ModelReviewConflictError,
+                ModelBatchBusyError,
+            ):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model batch could not be claimed") from exc
+
+    def complete_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        result: ModelReviewResult,
+        *,
+        agent: str = "default",
+    ) -> StoredModelBatch:
+        """保存一次成功结果，并清除批次租约。"""
+
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                row = session.scalar(
+                    select(ModelReviewBatchRecord)
+                    .where(
+                        ModelReviewBatchRecord.review_plan_id == lease.review_plan_id,
+                        ModelReviewBatchRecord.agent == agent,
+                        ModelReviewBatchRecord.batch_number == batch_number,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise ModelReviewConflictError("模型批次不存在")
+                if row.status == ModelBatchStatus.SUCCEEDED.value:
+                    session.commit()
+                    return self._stored_model_batch(row)
+                if (
+                    row.status != ModelBatchStatus.RUNNING.value
+                    or row.lease_owner != lease.worker_id
+                    or row.lease_expires_at is None
+                    or _as_utc(row.lease_expires_at) <= _as_utc(now)
+                ):
+                    raise TaskLeaseLostError("模型批次租约已失效")
+                row.status = ModelBatchStatus.SUCCEEDED.value
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.request_fingerprint = result.request_fingerprint
+                row.provider_request_id = result.provider_request_id
+                row.response_status = result.response_status
+                row.duration_ms = result.duration_ms
+                row.result = result.model_dump(mode="json")
+                row.error_code = None
+                row.error_message = None
+                row.error_details = None
+                row.updated_at = now
+                self._add_event(
+                    session,
+                    None,
+                    "review.model.batch_persisted",
+                    f"{agent}:{lease.review_plan_id}:{batch_number}:{result.request_fingerprint}",
+                    now,
+                    aggregate_id=lease.review_run_id,
+                    extra_payload={
+                        "review_plan_id": lease.review_plan_id,
+                        "agent": agent,
+                        "batch_number": batch_number,
+                        "response_status": result.response_status,
+                        "duration_ms": result.duration_ms,
+                        "input_tokens": result.usage.input_tokens,
+                        "output_tokens": result.usage.output_tokens,
+                        "provider_request_id": result.provider_request_id,
+                    },
+                )
+                session.commit()
+                return self._stored_model_batch(row)
+            except (TaskLeaseLostError, ModelReviewConflictError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model batch result could not be persisted") from exc
+
+    def fail_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        error: SafeError,
+        *,
+        agent: str = "default",
+        retry_delay: timedelta | None = None,
+    ) -> StoredModelBatch:
+        """保存单批安全错误，供阶段级重试恢复。"""
+
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        now = self._clock()
+        delay = retry_delay or timedelta(seconds=self._retry_base_seconds)
+        if delay.total_seconds() < 0:
+            raise ValueError("model batch retry delay cannot be negative")
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                row = session.scalar(
+                    select(ModelReviewBatchRecord)
+                    .where(
+                        ModelReviewBatchRecord.review_plan_id == lease.review_plan_id,
+                        ModelReviewBatchRecord.agent == agent,
+                        ModelReviewBatchRecord.batch_number == batch_number,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise ModelReviewConflictError("模型批次不存在")
+                if row.status == ModelBatchStatus.SUCCEEDED.value:
+                    session.commit()
+                    return self._stored_model_batch(row)
+                if row.status == ModelBatchStatus.FAILED.value:
+                    # 失败上报可能因调用方重入而重复到达；保留第一次的退避和
+                    # 错误快照，避免重复写事件或缩短退避窗口。
+                    session.commit()
+                    return self._stored_model_batch(row)
+                if row.lease_owner not in {None, lease.worker_id}:
+                    raise TaskLeaseLostError("模型批次由其他 Worker 持有")
+                row.status = ModelBatchStatus.FAILED.value
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.available_at = now + delay
+                row.error_code = error.code.value
+                row.error_message = error.safe_message[:1000]
+                row.error_details = dict(error.details)
+                row.updated_at = now
+                self._add_event(
+                    session,
+                    None,
+                    "review.model.batch_retry_waiting",
+                    f"{agent}:{lease.review_plan_id}:{batch_number}:{row.attempt_count}:{error.code.value}",
+                    now,
+                    aggregate_id=lease.review_run_id,
+                    error=error,
+                    extra_payload={
+                        "review_plan_id": lease.review_plan_id,
+                        "agent": agent,
+                        "batch_number": batch_number,
+                        "attempt_count": row.attempt_count,
+                        "retry_at": (now + delay).isoformat(),
+                    },
+                )
+                session.commit()
+                return self._stored_model_batch(row)
+            except (TaskLeaseLostError, ModelReviewConflictError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model batch failure could not be persisted") from exc
+
+    def load_model_batches(
+        self,
+        lease: ReviewTaskLease,
+        *,
+        agent: str = "default",
+    ) -> tuple[StoredModelBatch, ...]:
+        """一次有界查询读取一个 Agent 的所有批次。"""
+
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                rows = list(
+                    session.scalars(
+                        select(ModelReviewBatchRecord)
+                        .where(
+                            ModelReviewBatchRecord.review_plan_id
+                            == lease.review_plan_id,
+                            ModelReviewBatchRecord.agent == agent,
+                        )
+                        .order_by(ModelReviewBatchRecord.batch_number.asc())
+                        .limit(MAX_MODEL_REVIEW_BATCHES + 1)
+                    )
+                )
+                if len(rows) > MAX_MODEL_REVIEW_BATCHES:
+                    raise ModelReviewConflictError("已保存的模型批次数量超过上限")
+                return tuple(self._stored_model_batch(row) for row in rows)
+            except (TaskLeaseLostError, ModelReviewConflictError):
+                raise
+            except SQLAlchemyError as exc:
+                raise TaskQueueError("model batches could not be loaded") from exc
+
+    @staticmethod
+    def _stored_model_batch(row: ModelReviewBatchRecord) -> StoredModelBatch:
+        result = None
+        if row.result is not None:
+            try:
+                result = ModelReviewResult.model_validate(row.result)
+            except (TypeError, ValueError):
+                raise TaskQueueError("已保存的模型批次结果无效")
+        return StoredModelBatch(
+            id=row.id,
+            review_plan_id=row.review_plan_id,
+            agent=row.agent,
+            batch_number=row.batch_number,
+            batch_count=row.batch_count,
+            unit_keys=tuple(str(item) for item in row.unit_keys),
+            estimated_input_tokens=row.estimated_input_tokens,
+            status=ModelBatchStatus(row.status),
+            attempt_count=row.attempt_count,
+            request_fingerprint=row.request_fingerprint,
+            result=result,
+            error_code=row.error_code,
+            error_message=row.error_message,
+        )
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
         """供兼容测试路径把任务直接推进到 ``waiting_for_ci``。
@@ -1654,6 +2164,12 @@ class SqlAlchemyReviewTaskQueue:
                 task.updated_at = now
                 run.execution_status = ExecutionStatus.WAITING_FOR_CI.value
                 run.updated_at = now
+                self._set_workflow_status(
+                    task,
+                    run,
+                    ExecutionStatus.CI,
+                    now,
+                )
                 self._add_event(
                     session,
                     task,
@@ -1782,6 +2298,16 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
                 ReviewTaskRecord.claimed_from_status
                 == lease.claimed_from_status.value,
+                or_(
+                    ReviewTaskRecord.workflow_status.is_(None),
+                    ReviewTaskRecord.workflow_status
+                    != ExecutionStatus.PAUSED.value,
+                ),
+                or_(
+                    ReviewRunRecord.workflow_status.is_(None),
+                    ReviewRunRecord.workflow_status
+                    != ExecutionStatus.PAUSED.value,
+                ),
                 ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
@@ -2047,11 +2573,30 @@ class SqlAlchemyReviewTaskQueue:
         now: datetime,
     ) -> None:
         task.execution_status = status.value
+        task.workflow_paused_from = None
         task.lease_owner = None
         task.lease_expires_at = None
         task.claimed_from_status = None
         task.updated_at = now
         run.execution_status = status.value
+        run.workflow_paused_from = None
+        run.updated_at = now
+
+    @staticmethod
+    def _set_workflow_status(
+        task: ReviewTaskRecord,
+        run: ReviewRunRecord,
+        status: ExecutionStatus,
+        now: datetime,
+    ) -> None:
+        """更新新 DAG 状态，不改变兼容队列使用的 execution_status。"""
+
+        task.workflow_status = status.value
+        run.workflow_status = status.value
+        if status is not ExecutionStatus.PAUSED:
+            task.workflow_paused_from = None
+            run.workflow_paused_from = None
+        task.updated_at = now
         run.updated_at = now
 
     def _reschedule_or_fail(
@@ -2102,11 +2647,20 @@ class SqlAlchemyReviewTaskQueue:
         task.lease_expires_at = None
         task.claimed_from_status = None
         task.updated_at = now
-        if not error.retryable or active_attempt_count >= task.max_attempts:
+        batch_retry_managed = (
+            is_model_stage
+            and error.details.get("batch_retry_managed") is True
+        )
+        if not error.retryable or (
+            active_attempt_count >= task.max_attempts
+            and not batch_retry_managed
+        ):
             task.execution_status = ExecutionStatus.FAILED.value
             run.execution_status = ExecutionStatus.FAILED.value
+            self._set_workflow_status(task, run, ExecutionStatus.FAILED, now)
             event_type = "review.task.failed"
             event_key = f"failed:{event_suffix}"
+            event_payload: dict[str, object] | None = None
         else:
             retry_status = (
                 claimed_from
@@ -2123,6 +2677,13 @@ class SqlAlchemyReviewTaskQueue:
             task.available_at = now + self._retry_delay(active_attempt_count)
             event_type = "review.task.retry_scheduled"
             event_key = f"retry:{event_suffix}"
+            event_payload = {
+                "retry_at": task.available_at.isoformat(),
+                "retry_delay_seconds": max(
+                    0,
+                    int((task.available_at - now).total_seconds()),
+                ),
+            }
         run.updated_at = now
         self._add_event(
             session,
@@ -2131,6 +2692,7 @@ class SqlAlchemyReviewTaskQueue:
             event_key,
             now,
             error=error,
+            extra_payload=event_payload,
         )
 
     def _retry_delay(self, attempt_count: int) -> timedelta:
@@ -2156,13 +2718,14 @@ class SqlAlchemyReviewTaskQueue:
     def _add_event(
         self,
         session: Session,
-        task: ReviewTaskRecord,
+        task: ReviewTaskRecord | None,
         event_type: str,
         key_suffix: str,
         occurred_at: datetime,
         *,
         error: SafeError | None = None,
         extra_payload: Mapping[str, object] | None = None,
+        aggregate_id: str | None = None,
     ) -> None:
         """在当前事务中追加一条不可重复的任务状态 Outbox 事件。
 
@@ -2183,13 +2746,19 @@ class SqlAlchemyReviewTaskQueue:
         该方法不会访问网络，也不会把 ``last_error`` 放入事件 payload，避免事件
         总线携带可能敏感的异常文本。
         """
-        payload: dict[str, object] = {
-            "review_run_id": task.review_run_id,
-            "review_task_id": task.id,
-            "attempt_count": task.attempt_count,
-            "model_attempt_count": task.model_attempt_count,
-            "ci_poll_count": task.ci_poll_count,
-        }
+        payload: dict[str, object] = {}
+        if task is not None:
+            payload.update(
+                {
+                    "review_run_id": task.review_run_id,
+                    "review_task_id": task.id,
+                    "attempt_count": task.attempt_count,
+                    "model_attempt_count": task.model_attempt_count,
+                    "ci_poll_count": task.ci_poll_count,
+                }
+            )
+        if aggregate_id is None:
+            aggregate_id = task.review_run_id if task is not None else "unknown"
         if error is not None:
             payload.update(
                 {
@@ -2202,8 +2771,9 @@ class SqlAlchemyReviewTaskQueue:
             payload.update(extra_payload)
         event_id = str(self._uuid_factory())
         event_identity = (
-            f"{event_type}:{task.id}:{key_suffix}:{event_id}".encode("utf-8")
-        )
+            f"{event_type}:{task.id if task is not None else aggregate_id}:"
+            f"{key_suffix}:{event_id}"
+        ).encode("utf-8")
         session.add(
             OutboxEventRecord(
                 id=event_id,
@@ -2211,7 +2781,7 @@ class SqlAlchemyReviewTaskQueue:
                 # 计数器重新从 1 开始的全新转换，避免旧事件键阻断整个 Worker。
                 event_key=f"review.task.event:{sha256(event_identity).hexdigest()}",
                 aggregate_type="review_run",
-                aggregate_id=task.review_run_id,
+            aggregate_id=aggregate_id,
                 event_type=event_type,
                 payload=payload,
                 occurred_at=occurred_at,

@@ -21,6 +21,7 @@ from domain.github import (
     CiCheckSnapshot,
     CiSnapshot,
     GitHubReviewContext,
+    MAX_PATCH_BYTES,
     PullRequestFile,
     PullRequestSnapshot,
 )
@@ -50,7 +51,7 @@ class GitHubContextSettings:
     page_size: int = 100
     max_files: int = 3000
     max_checks: int = 1000
-    max_patch_bytes: int = 512 * 1024
+    max_patch_bytes: int = MAX_PATCH_BYTES
     max_load_seconds: float = 8 * 60
 
     def __post_init__(self) -> None:
@@ -60,8 +61,10 @@ class GitHubContextSettings:
             raise ValueError("GitHub changed file limit must be between 1 and 3000")
         if not 1 <= self.max_checks <= 1000:
             raise ValueError("GitHub CI check limit must be between 1 and 1000")
-        if not 1024 <= self.max_patch_bytes <= 512 * 1024:
-            raise ValueError("GitHub per-file patch limit must be between 1 KiB and 512 KiB")
+        if not 1024 <= self.max_patch_bytes <= MAX_PATCH_BYTES:
+            raise ValueError(
+                "GitHub per-file patch limit must be between 1 KiB and 8 MiB"
+            )
         if not 30 <= self.max_load_seconds <= 30 * 60:
             raise ValueError("GitHub context time budget must be between 30 and 1800 seconds")
 
