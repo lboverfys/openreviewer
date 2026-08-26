@@ -33,7 +33,12 @@ from persistence.models import (
     ConfigurationAuditRecord,
 )
 from services.model_providers import create_model_reviewer
-from services.model_review import ModelPricing, ModelReviewer, ModelServiceSettings
+from services.model_review import (
+    ModelPricing,
+    ModelReviewer,
+    ModelServiceSettings,
+    normalize_api_base_url,
+)
 from services.review_planning import (
     DeterministicReviewPlanner,
     ReviewPlanningSettings,
@@ -199,6 +204,7 @@ class AiSecretCipher:
 class AiProviderDraft:
     model: str
     api_protocol: ModelApiProtocol
+    api_base_url: str | None = None
     max_output_tokens: int = 8192
     connect_timeout_seconds: float = 5.0
     read_timeout_seconds: float = 180.0
@@ -227,6 +233,7 @@ class AiProviderView:
     active: bool
     model: str
     api_protocol: ModelApiProtocol
+    api_base_url: str | None
     api_key_configured: bool
     api_key_mask: str | None
     max_output_tokens: int
@@ -377,10 +384,26 @@ class AiSettingsService:
                 if not changed_fields:
                     session.rollback()
                     return self.get()
-                record.tested_configuration_fingerprint = None
-                record.test_status = None
-                record.tested_at = None
-                if settings.active_provider == provider.value:
+                configuration_fields = changed_fields.intersection(
+                    {
+                        "model",
+                        "api_protocol",
+                        "api_base_url",
+                        "max_output_tokens",
+                        "connect_timeout_seconds",
+                        "read_timeout_seconds",
+                        "write_timeout_seconds",
+                        "pool_timeout_seconds",
+                        "max_request_bytes",
+                        "max_response_bytes",
+                        "api_key",
+                    }
+                )
+                if configuration_fields:
+                    record.tested_configuration_fingerprint = None
+                    record.test_status = None
+                    record.tested_at = None
+                if configuration_fields and settings.active_provider == provider.value:
                     settings.active_provider = None
                     changed_fields.add("active_provider")
                 self._commit_revision(
@@ -720,6 +743,7 @@ class AiSettingsService:
                     active=active is provider,
                     model=record.model,
                     api_protocol=ModelApiProtocol(record.api_protocol),
+                    api_base_url=record.api_base_url,
                     api_key_configured=secret is not None,
                     api_key_mask=(f"****{api_key[-4:]}" if api_key else None),
                     max_output_tokens=record.max_output_tokens,
@@ -775,6 +799,7 @@ class AiSettingsService:
                 if provider is ModelProvider.OPENAI
                 else ModelApiProtocol.MESSAGES
             ),
+            api_base_url=None,
             api_key_configured=False,
             api_key_mask=None,
             max_output_tokens=8192,
@@ -860,6 +885,7 @@ class AiSettingsService:
         names = (
             "model",
             "api_protocol",
+            "api_base_url",
             "max_output_tokens",
             "connect_timeout_seconds",
             "read_timeout_seconds",
@@ -880,7 +906,11 @@ class AiSettingsService:
             if (
                 ModelApiProtocol(record.api_protocol) != draft.api_protocol
                 if name == "api_protocol"
-                else getattr(record, name) != getattr(draft, name)
+                else (
+                    record.api_base_url != normalize_api_base_url(draft.api_base_url)
+                    if name == "api_base_url"
+                    else getattr(record, name) != getattr(draft, name)
+                )
             )
         }
 
@@ -894,6 +924,7 @@ class AiSettingsService:
         for name in (
             "model",
             "api_protocol",
+            "api_base_url",
             "max_output_tokens",
             "connect_timeout_seconds",
             "read_timeout_seconds",
@@ -907,6 +938,8 @@ class AiSettingsService:
             "cache_write_usd_per_million",
         ):
             value = getattr(draft, name)
+            if name == "api_base_url":
+                value = normalize_api_base_url(value)
             setattr(
                 record,
                 name,
@@ -924,6 +957,7 @@ class AiSettingsService:
         draft = AiProviderDraft(
             model=record.model,
             api_protocol=ModelApiProtocol(record.api_protocol),
+            api_base_url=record.api_base_url,
             max_output_tokens=record.max_output_tokens,
             connect_timeout_seconds=record.connect_timeout_seconds,
             read_timeout_seconds=record.read_timeout_seconds,
@@ -968,6 +1002,7 @@ class AiSettingsService:
                 model=draft.model,
                 api_key=api_key,
                 api_protocol=draft.api_protocol,
+                api_base_url=normalize_api_base_url(draft.api_base_url),
                 pricing=pricing,
                 max_output_tokens=draft.max_output_tokens,
                 connect_timeout_seconds=draft.connect_timeout_seconds,
@@ -994,11 +1029,11 @@ class AiSettingsService:
 
     @staticmethod
     def _configuration_fingerprint(settings: ModelServiceSettings) -> str:
-        pricing = settings.pricing
         identity = {
             "provider": settings.provider.value,
             "api_protocol": settings.resolved_api_protocol.value,
             "model": settings.model,
+            "api_base_url": settings.resolved_api_base_url,
             "api_key_sha256": sha256(settings.api_key.encode("utf-8")).hexdigest(),
             "max_output_tokens": settings.max_output_tokens,
             "timeouts": [
@@ -1008,24 +1043,6 @@ class AiSettingsService:
                 settings.pool_timeout_seconds,
             ],
             "limits": [settings.max_request_bytes, settings.max_response_bytes],
-            "pricing": (
-                [
-                    str(pricing.input_usd_per_million),
-                    str(pricing.output_usd_per_million),
-                    (
-                        str(pricing.cache_read_usd_per_million)
-                        if pricing.cache_read_usd_per_million is not None
-                        else None
-                    ),
-                    (
-                        str(pricing.cache_write_usd_per_million)
-                        if pricing.cache_write_usd_per_million is not None
-                        else None
-                    ),
-                ]
-                if pricing is not None
-                else None
-            ),
         }
         encoded = json.dumps(
             identity,

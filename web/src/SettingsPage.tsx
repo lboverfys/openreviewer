@@ -20,7 +20,6 @@ import type {
 } from "./types";
 import { errorMessage, formatDate } from "./utils";
 
-
 interface SettingsPageProps {
   user: AuthUser;
   onBack: () => void;
@@ -30,6 +29,8 @@ interface SettingsPageProps {
 interface ProviderDraft {
   model: string;
   apiProtocol: AiApiProtocol;
+  useCustomEndpoint: boolean;
+  apiBaseUrl: string;
   apiKey: string;
   clearApiKey: boolean;
   maxOutputTokens: string;
@@ -52,21 +53,39 @@ interface PolicyDraft {
   maxTotalInputBytes: string;
 }
 
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
 const providerLabels: Record<AiProvider, string> = {
+  openai: "OpenAI 兼容",
+  anthropic: "Anthropic 兼容",
+};
+
+const providerShortLabels: Record<AiProvider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
 };
 
+const officialEndpoints: Record<AiProvider, string> = {
+  openai: "https://api.openai.com",
+  anthropic: "https://api.anthropic.com",
+};
+
+const modelPlaceholders: Record<AiProvider, string> = {
+  openai: "例如 gpt-4.1-mini 或中转站提供的模型 ID",
+  anthropic: "例如 claude-sonnet-4-5 或中转站提供的模型 ID",
+};
+
 const openAiProtocolLabels: Record<
   Extract<AiApiProtocol, "responses" | "chat_completions">,
-  string
+  { title: string; note: string }
 > = {
-  responses: "Responses",
-  chat_completions: "Chat Completions",
+  chat_completions: { title: "通用兼容", note: "多数中转站支持" },
+  responses: { title: "Responses", note: "官方与新式中转站" },
 };
 
 const testStatusLabels = {
-  untested: "待测试",
+  untested: "等待测试",
   succeeded: "连接正常",
   failed: "测试失败",
 } as const;
@@ -80,36 +99,118 @@ const auditActionLabels: Record<string, string> = {
   "provider.anthropic.test_failed": "Anthropic 连接测试失败",
   "provider.openai.activated": "激活 OpenAI",
   "provider.anthropic.activated": "激活 Anthropic",
-  "review_policy.updated": "更新审查预算",
+  "review_policy.updated": "更新审查范围",
 };
 
 const fieldLabels: Record<string, string> = {
-  active_provider: "激活供应商",
-  api_protocol: "接口协议",
+  active_provider: "当前使用的服务",
+  api_protocol: "接口格式",
+  api_base_url: "API 地址",
   api_key: "API Key",
-  model: "模型",
-  max_output_tokens: "输出 Token 上限",
-  connect_timeout_seconds: "连接超时",
-  read_timeout_seconds: "读取超时",
-  write_timeout_seconds: "写入超时",
-  pool_timeout_seconds: "连接池超时",
-  max_request_bytes: "请求大小",
-  max_response_bytes: "响应大小",
-  input_usd_per_million: "输入单价",
-  output_usd_per_million: "输出单价",
-  cache_read_usd_per_million: "缓存读取单价",
-  cache_write_usd_per_million: "缓存写入单价",
+  model: "模型 ID",
+  max_output_tokens: "单次回答长度",
+  connect_timeout_seconds: "连接等待时间",
+  read_timeout_seconds: "回答等待时间",
+  write_timeout_seconds: "发送等待时间",
+  pool_timeout_seconds: "连接排队时间",
+  max_request_bytes: "请求保护上限",
+  max_response_bytes: "响应保护上限",
+  input_usd_per_million: "输入统计单价",
+  output_usd_per_million: "输出统计单价",
+  cache_read_usd_per_million: "缓存读取统计单价",
+  cache_write_usd_per_million: "缓存写入统计单价",
   test_status: "测试状态",
-  max_units: "Review Unit 数量",
-  max_scope_depth: "规则目录深度",
-  max_unit_input_bytes: "单 Unit 输入",
-  max_total_input_bytes: "总输入",
+  max_units: "最多审查文件",
+  max_scope_depth: "规则查找深度",
+  max_unit_input_bytes: "单文件输入上限",
+  max_total_input_bytes: "整次输入上限",
 };
+
+const callPresets = {
+  economy: {
+    label: "省钱日常",
+    note: "适合小型 PR",
+    values: {
+      maxOutputTokens: "4096",
+      connectTimeoutSeconds: "5",
+      readTimeoutSeconds: "120",
+      writeTimeoutSeconds: "30",
+      poolTimeoutSeconds: "5",
+      maxRequestBytes: String(2 * MIB),
+      maxResponseBytes: String(1 * MIB),
+    },
+  },
+  balanced: {
+    label: "均衡推荐",
+    note: "大多数情况",
+    values: {
+      maxOutputTokens: "8192",
+      connectTimeoutSeconds: "5",
+      readTimeoutSeconds: "180",
+      writeTimeoutSeconds: "30",
+      poolTimeoutSeconds: "5",
+      maxRequestBytes: String(4 * MIB),
+      maxResponseBytes: String(2 * MIB),
+    },
+  },
+  deep: {
+    label: "长文深度",
+    note: "复杂或大型改动",
+    values: {
+      maxOutputTokens: "16384",
+      connectTimeoutSeconds: "10",
+      readTimeoutSeconds: "300",
+      writeTimeoutSeconds: "60",
+      poolTimeoutSeconds: "10",
+      maxRequestBytes: String(8 * MIB),
+      maxResponseBytes: String(4 * MIB),
+    },
+  },
+} as const;
+
+type CallPreset = keyof typeof callPresets;
+
+const policyPresets = {
+  light: {
+    label: "轻量日常",
+    note: "小型改动，费用更稳",
+    values: {
+      maxUnits: "30",
+      maxScopeDepth: "16",
+      maxUnitInputBytes: String(128 * KIB),
+      maxTotalInputBytes: String(1 * MIB),
+    },
+  },
+  balanced: {
+    label: "均衡推荐",
+    note: "覆盖常见 PR",
+    values: {
+      maxUnits: "100",
+      maxScopeDepth: "32",
+      maxUnitInputBytes: String(192 * KIB),
+      maxTotalInputBytes: String(2 * MIB),
+    },
+  },
+  large: {
+    label: "大型改动",
+    note: "覆盖更广，成本更高",
+    values: {
+      maxUnits: "300",
+      maxScopeDepth: "48",
+      maxUnitInputBytes: String(256 * KIB),
+      maxTotalInputBytes: String(8 * MIB),
+    },
+  },
+} as const;
+
+type PolicyPreset = keyof typeof policyPresets;
 
 function providerDraft(settings: AiProviderSettings): ProviderDraft {
   return {
     model: settings.model,
     apiProtocol: settings.api_protocol,
+    useCustomEndpoint: Boolean(settings.api_base_url),
+    apiBaseUrl: settings.api_base_url ?? "",
     apiKey: "",
     clearApiKey: false,
     maxOutputTokens: String(settings.max_output_tokens),
@@ -136,6 +237,7 @@ function policyDraft(settings: AiSettings): PolicyDraft {
 }
 
 function requiredNumber(value: string, label: string): number {
+  if (!value.trim()) throw new Error(`请填写${label}`);
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`${label}必须是数字`);
   return parsed;
@@ -144,6 +246,81 @@ function requiredNumber(value: string, label: string): number {
 function optionalDecimal(value: string): string | null {
   const normalized = value.trim();
   return normalized ? normalized : null;
+}
+
+function bytesToInput(value: string, unit: number): string {
+  if (!value) return "";
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? String(parsed / unit) : "";
+}
+
+function inputToBytes(value: string, unit: number): string {
+  if (!value) return "";
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? String(Math.round(parsed * unit)) : "";
+}
+
+function formatBytes(value: string | number): string {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes)) return "--";
+  if (bytes >= MIB) return `${Number((bytes / MIB).toFixed(2))} MiB`;
+  return `${Number((bytes / KIB).toFixed(1))} KiB`;
+}
+
+function matchingCallPreset(draft: ProviderDraft): CallPreset | null {
+  return (
+    (Object.keys(callPresets) as CallPreset[]).find((preset) =>
+      Object.entries(callPresets[preset].values).every(
+        ([field, value]) => draft[field as keyof ProviderDraft] === value,
+      ),
+    ) ?? null
+  );
+}
+
+function matchingPolicyPreset(draft: PolicyDraft): PolicyPreset | null {
+  return (
+    (Object.keys(policyPresets) as PolicyPreset[]).find((preset) =>
+      Object.entries(policyPresets[preset].values).every(
+        ([field, value]) => draft[field as keyof PolicyDraft] === value,
+      ),
+    ) ?? null
+  );
+}
+
+function providerHasChanges(
+  settings: AiProviderSettings,
+  draft: ProviderDraft,
+): boolean {
+  const effectiveBaseUrl = draft.useCustomEndpoint
+    ? draft.apiBaseUrl.trim() || null
+    : null;
+  return (
+    draft.model.trim() !== settings.model ||
+    draft.apiProtocol !== settings.api_protocol ||
+    effectiveBaseUrl !== settings.api_base_url ||
+    Boolean(draft.apiKey.trim()) ||
+    draft.clearApiKey ||
+    Number(draft.maxOutputTokens) !== settings.max_output_tokens ||
+    Number(draft.connectTimeoutSeconds) !== settings.connect_timeout_seconds ||
+    Number(draft.readTimeoutSeconds) !== settings.read_timeout_seconds ||
+    Number(draft.writeTimeoutSeconds) !== settings.write_timeout_seconds ||
+    Number(draft.poolTimeoutSeconds) !== settings.pool_timeout_seconds ||
+    Number(draft.maxRequestBytes) !== settings.max_request_bytes ||
+    Number(draft.maxResponseBytes) !== settings.max_response_bytes ||
+    draft.inputPrice !== (settings.input_usd_per_million ?? "") ||
+    draft.outputPrice !== (settings.output_usd_per_million ?? "") ||
+    draft.cacheReadPrice !== (settings.cache_read_usd_per_million ?? "") ||
+    draft.cacheWritePrice !== (settings.cache_write_usd_per_million ?? "")
+  );
+}
+
+function policyHasChanges(settings: AiSettings, draft: PolicyDraft): boolean {
+  return (
+    Number(draft.maxUnits) !== settings.max_units ||
+    Number(draft.maxScopeDepth) !== settings.max_scope_depth ||
+    Number(draft.maxUnitInputBytes) !== settings.max_unit_input_bytes ||
+    Number(draft.maxTotalInputBytes) !== settings.max_total_input_bytes
+  );
 }
 
 function ProviderStatus({ settings }: { settings: AiProviderSettings }) {
@@ -157,7 +334,7 @@ function ProviderStatus({ settings }: { settings: AiProviderSettings }) {
       <span className="settings-key-state">
         {settings.api_key_configured
           ? `密钥 ${settings.api_key_mask}`
-          : "未配置密钥"}
+          : "未保存密钥"}
       </span>
     </div>
   );
@@ -170,11 +347,8 @@ export default function SettingsPage({
 }: SettingsPageProps) {
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [audits, setAudits] = useState<ConfigurationAudit[]>([]);
-  const [selectedProvider, setSelectedProvider] =
-    useState<AiProvider>("openai");
-  const [drafts, setDrafts] = useState<
-    Partial<Record<AiProvider, ProviderDraft>>
-  >({});
+  const [selectedProvider, setSelectedProvider] = useState<AiProvider>("openai");
+  const [drafts, setDrafts] = useState<Partial<Record<AiProvider, ProviderDraft>>>({});
   const [policy, setPolicy] = useState<PolicyDraft | null>(null);
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
@@ -190,10 +364,7 @@ export default function SettingsPage({
     setSettings(next);
     setDrafts(
       Object.fromEntries(
-        next.providers.map((provider) => [
-          provider.provider,
-          providerDraft(provider),
-        ]),
+        next.providers.map((provider) => [provider.provider, providerDraft(provider)]),
       ) as Record<AiProvider, ProviderDraft>,
     );
     setPolicy(policyDraft(next));
@@ -237,16 +408,17 @@ export default function SettingsPage({
   );
   const draft = drafts[selectedProvider];
 
-  function updateDraft<K extends keyof ProviderDraft>(
-    field: K,
-    value: ProviderDraft[K],
-  ) {
+  function updateDraft<K extends keyof ProviderDraft>(field: K, value: ProviderDraft[K]) {
     setDrafts((current) => ({
       ...current,
-      [selectedProvider]: {
-        ...current[selectedProvider]!,
-        [field]: value,
-      },
+      [selectedProvider]: { ...current[selectedProvider]!, [field]: value },
+    }));
+  }
+
+  function updateDraftValues(values: Partial<ProviderDraft>) {
+    setDrafts((current) => ({
+      ...current,
+      [selectedProvider]: { ...current[selectedProvider]!, ...values },
     }));
   }
 
@@ -288,31 +460,23 @@ export default function SettingsPage({
     event.preventDefault();
     if (!settings || !draft) return;
     try {
+      if (draft.useCustomEndpoint && !draft.apiBaseUrl.trim()) {
+        throw new Error("选择中转站后，请填写中转站提供的 API 地址");
+      }
       const payload: AiProviderUpdate = {
         expected_revision: settings.revision,
         model: draft.model.trim(),
         api_protocol: draft.apiProtocol,
+        api_base_url: draft.useCustomEndpoint ? draft.apiBaseUrl.trim() : null,
         api_key: draft.apiKey.trim() || null,
         clear_api_key: draft.clearApiKey,
-        max_output_tokens: requiredNumber(
-          draft.maxOutputTokens,
-          "输出 Token 上限",
-        ),
-        connect_timeout_seconds: requiredNumber(
-          draft.connectTimeoutSeconds,
-          "连接超时",
-        ),
-        read_timeout_seconds: requiredNumber(draft.readTimeoutSeconds, "读取超时"),
-        write_timeout_seconds: requiredNumber(
-          draft.writeTimeoutSeconds,
-          "写入超时",
-        ),
-        pool_timeout_seconds: requiredNumber(
-          draft.poolTimeoutSeconds,
-          "连接池超时",
-        ),
-        max_request_bytes: requiredNumber(draft.maxRequestBytes, "请求大小"),
-        max_response_bytes: requiredNumber(draft.maxResponseBytes, "响应大小"),
+        max_output_tokens: requiredNumber(draft.maxOutputTokens, "单次回答长度"),
+        connect_timeout_seconds: requiredNumber(draft.connectTimeoutSeconds, "连接等待时间"),
+        read_timeout_seconds: requiredNumber(draft.readTimeoutSeconds, "回答等待时间"),
+        write_timeout_seconds: requiredNumber(draft.writeTimeoutSeconds, "发送等待时间"),
+        pool_timeout_seconds: requiredNumber(draft.poolTimeoutSeconds, "连接排队时间"),
+        max_request_bytes: requiredNumber(draft.maxRequestBytes, "请求保护上限"),
+        max_response_bytes: requiredNumber(draft.maxResponseBytes, "响应保护上限"),
         input_usd_per_million: optionalDecimal(draft.inputPrice),
         output_usd_per_million: optionalDecimal(draft.outputPrice),
         cache_read_usd_per_million: optionalDecimal(draft.cacheReadPrice),
@@ -321,7 +485,7 @@ export default function SettingsPage({
       await handleAction(
         `save-${selectedProvider}`,
         () => api.updateAiProvider(selectedProvider, payload),
-        `${providerLabels[selectedProvider]} 配置已保存`,
+        `${providerShortLabels[selectedProvider]} 配置已保存，下一步请测试连接`,
       );
     } catch (error) {
       setMessageKind("error");
@@ -334,7 +498,7 @@ export default function SettingsPage({
     await handleAction(
       `test-${selectedProvider}`,
       () => api.testAiProvider(selectedProvider, settings.revision),
-      `${providerLabels[selectedProvider]} 连接测试通过`,
+      `${providerShortLabels[selectedProvider]} 连接正常，现在可以启用`,
       true,
     );
   }
@@ -344,7 +508,7 @@ export default function SettingsPage({
     await handleAction(
       `activate-${selectedProvider}`,
       () => api.activateAiProvider(selectedProvider, settings.revision),
-      `${providerLabels[selectedProvider]} 已激活`,
+      `${providerShortLabels[selectedProvider]} 已启用，后续审查会使用这套配置`,
     );
   }
 
@@ -354,18 +518,15 @@ export default function SettingsPage({
     try {
       const payload: ReviewPolicyUpdate = {
         expected_revision: settings.revision,
-        max_units: requiredNumber(policy.maxUnits, "Review Unit 数量"),
-        max_scope_depth: requiredNumber(policy.maxScopeDepth, "规则目录深度"),
-        max_unit_input_bytes: requiredNumber(
-          policy.maxUnitInputBytes,
-          "单 Unit 输入",
-        ),
-        max_total_input_bytes: requiredNumber(policy.maxTotalInputBytes, "总输入"),
+        max_units: requiredNumber(policy.maxUnits, "最多审查文件"),
+        max_scope_depth: requiredNumber(policy.maxScopeDepth, "规则查找深度"),
+        max_unit_input_bytes: requiredNumber(policy.maxUnitInputBytes, "单文件输入上限"),
+        max_total_input_bytes: requiredNumber(policy.maxTotalInputBytes, "整次输入上限"),
       };
       await handleAction(
         "save-policy",
         () => api.updateReviewPolicy(payload),
-        "审查预算已保存",
+        "审查范围已保存",
       );
     } catch (error) {
       setMessageKind("error");
@@ -381,53 +542,34 @@ export default function SettingsPage({
     }
   }
 
+  const providerDirty = Boolean(
+    selectedSettings && draft && providerHasChanges(selectedSettings, draft),
+  );
+  const policyDirty = Boolean(settings && policy && policyHasChanges(settings, policy));
+  const activeCallPreset = draft ? matchingCallPreset(draft) : null;
+  const activePolicyPreset = policy ? matchingPolicyPreset(policy) : null;
+
   return (
     <div className="settings-page-layout">
       <header className="settings-navbar">
         <div className="settings-nav-start">
-          <button className="settings-icon-btn" onClick={onBack} title="返回审查控制台">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M19 12H5" />
-              <path d="m12 19-7-7 7-7" />
-            </svg>
+          <button className="settings-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
           </button>
           <div className="settings-heading-lockup">
             <div className="settings-heading-icon">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.6.67 1.02 1.29 1.03H21v4h-.31c-.62 0-1.15.42-1.29 1.03Z" />
-              </svg>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.6.67 1.02 1.29 1.03H21v4h-.31c-.62 0-1.15.42-1.29 1.03Z" /></svg>
             </div>
-            <div>
-              <strong>AI 运行设置</strong>
-              <span>OpenReviewer</span>
-            </div>
+            <div><strong>AI 设置</strong><span>OpenReviewer</span></div>
           </div>
         </div>
         <div className="settings-nav-end">
-          <button
-            className="settings-icon-btn"
-            onClick={() => void refresh()}
-            disabled={loading || Boolean(busyAction)}
-            title="刷新设置"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M20 6v6h-6" />
-              <path d="M4 18v-6h6" />
-              <path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" />
-              <path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" />
-            </svg>
+          <button className="settings-icon-btn" onClick={() => void refresh()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
           </button>
-          <div className="settings-user">
-            <span>{user.username.slice(0, 1).toUpperCase()}</span>
-            <strong>{user.username}</strong>
-          </div>
-          <button className="settings-icon-btn" onClick={logout} title="退出登录">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-              <path d="m16 17 5-5-5-5" />
-              <path d="M21 12H9" />
-            </svg>
+          <div className="settings-user"><span>{user.username.slice(0, 1).toUpperCase()}</span><strong>{user.username}</strong></div>
+          <button className="settings-icon-btn" onClick={logout} title="退出登录" aria-label="退出登录">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
           </button>
         </div>
       </header>
@@ -435,245 +577,231 @@ export default function SettingsPage({
       <main className="settings-main">
         <div className="settings-title-row">
           <div>
-            <h1>模型与审查策略</h1>
+            <h1>模型服务</h1>
+            <p className="settings-intro">支持官方接口和兼容中转站，日常只需配置地址、模型和密钥。</p>
             <div className="settings-meta-line">
-              <span>配置版本 {settings?.revision ?? "—"}</span>
-              <span>最近更新 {formatDate(settings?.updated_at ?? null)}</span>
-              <span>修改人 {settings?.updated_by ?? "—"}</span>
+              <span>配置版本 {settings?.revision ?? "--"}</span>
+              <span>更新于 {formatDate(settings?.updated_at ?? null)}</span>
+              <span>修改人 {settings?.updated_by ?? "--"}</span>
             </div>
           </div>
           <div className={`settings-runtime-state ${settings?.active_provider ? "is-active" : "is-idle"}`}>
             <span className="settings-status-dot" />
-            {settings?.active_provider
-              ? `${providerLabels[settings.active_provider]} 已激活`
-              : "未激活供应商"}
+            {settings?.active_provider ? `${providerShortLabels[settings.active_provider]} 运行中` : "还未启用模型"}
           </div>
         </div>
 
-        {message && (
-          <div className={`settings-message is-${messageKind}`} role="alert">
-            {message}
-          </div>
-        )}
+        {message && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
 
         {loading || !settings || !selectedSettings || !draft || !policy ? (
-          <div className="settings-loading">正在读取设置…</div>
+          <div className="settings-loading">正在读取设置...</div>
         ) : (
           <>
             <section className="settings-provider-workspace">
-              <aside className="settings-provider-nav" aria-label="AI 供应商">
-                <span className="settings-nav-label">供应商</span>
+              <aside className="settings-provider-nav" aria-label="接口类型">
+                <span className="settings-nav-label">接口类型</span>
                 {settings.providers.map((provider) => (
-                  <button
-                    key={provider.provider}
-                    className={selectedProvider === provider.provider ? "is-selected" : ""}
-                    onClick={() => setSelectedProvider(provider.provider)}
-                  >
-                    <span className={`provider-mark is-${provider.provider}`}>
-                      {provider.provider === "openai" ? "O" : "A"}
-                    </span>
-                    <span>
-                      <strong>{providerLabels[provider.provider]}</strong>
-                      <small>
-                        {provider.active
-                          ? "正在使用"
-                          : testStatusLabels[provider.test_status]}
-                      </small>
-                    </span>
+                  <button key={provider.provider} type="button" className={selectedProvider === provider.provider ? "is-selected" : ""} onClick={() => setSelectedProvider(provider.provider)}>
+                    <span className={`provider-mark is-${provider.provider}`}>{provider.provider === "openai" ? "O" : "A"}</span>
+                    <span><strong>{providerShortLabels[provider.provider]}</strong><small>{provider.active ? "正在使用" : testStatusLabels[provider.test_status]}</small></span>
                     {provider.active && <i className="provider-active-dot" />}
                   </button>
                 ))}
+                <div className="settings-provider-tip">选择中转站使用的兼容格式，不代表必须向对应官方购买。</div>
               </aside>
 
               <div className="settings-provider-content">
                 <div className="settings-section-heading">
                   <div>
+                    <span className="settings-eyebrow">MODEL CONNECTION</span>
                     <h2>{providerLabels[selectedProvider]}</h2>
                     <ProviderStatus settings={selectedSettings} />
                   </div>
+                  {providerDirty && <span className="settings-unsaved-badge">有修改待保存</span>}
                 </div>
 
                 <form onSubmit={saveProvider}>
-                  <fieldset className="settings-fieldset" disabled={Boolean(busyAction)}>
-                    <legend>基础连接</legend>
+                  <fieldset className="settings-fieldset settings-quick-fieldset" disabled={Boolean(busyAction)}>
+                    <legend>快速配置</legend>
+                    <div className="settings-config-block">
+                      <div className="settings-block-heading">
+                        <span className="settings-step-number">1</span>
+                        <div><strong>选择服务地址</strong><small>中转站会给你一个以 https:// 开头的 API 地址</small></div>
+                      </div>
+                      <div className="settings-source-control" role="group" aria-label="服务地址类型">
+                        <button type="button" className={!draft.useCustomEndpoint ? "is-selected" : ""} aria-pressed={!draft.useCustomEndpoint} onClick={() => updateDraft("useCustomEndpoint", false)}>
+                          <span>官方直连</span><small>{providerShortLabels[selectedProvider]} 官方地址</small>
+                        </button>
+                        <button type="button" className={draft.useCustomEndpoint ? "is-selected" : ""} aria-pressed={draft.useCustomEndpoint} onClick={() => updateDraft("useCustomEndpoint", true)}>
+                          <span>中转站 / 自定义</span><small>兼容接口，通常更灵活</small>
+                        </button>
+                      </div>
+                      {draft.useCustomEndpoint ? (
+                        <label className="settings-wide-field">
+                          <span>API 地址</span>
+                          <input id={`settings-${selectedProvider}-api-base-url`} name={`settings-${selectedProvider}-api-base-url`} type="url" inputMode="url" required maxLength={500} value={draft.apiBaseUrl} onChange={(event) => updateDraft("apiBaseUrl", event.target.value)} placeholder="https://你的中转站地址/v1" autoComplete="url" />
+                          <small>直接粘贴中转站文档里的 Base URL；结尾带不带 /v1 都可以。</small>
+                        </label>
+                      ) : (
+                        <div className="settings-endpoint-preview">
+                          <span className="settings-endpoint-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="10" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg></span>
+                          <div><strong>{officialEndpoints[selectedProvider]}</strong><small>使用官方安全地址</small></div>
+                        </div>
+                      )}
+                    </div>
+
                     {selectedProvider === "openai" && (
-                      <div className="settings-protocol-field">
-                        <span>接口协议</span>
-                        <div
-                          className="settings-segmented-control"
-                          role="group"
-                          aria-label="OpenAI 接口协议"
-                        >
-                          {(
-                            Object.keys(openAiProtocolLabels) as Array<
-                              keyof typeof openAiProtocolLabels
-                            >
-                          ).map((protocol) => (
-                            <button
-                              key={protocol}
-                              type="button"
-                              className={
-                                draft.apiProtocol === protocol ? "is-selected" : ""
-                              }
-                              aria-pressed={draft.apiProtocol === protocol}
-                              onClick={() => updateDraft("apiProtocol", protocol)}
-                            >
-                              {openAiProtocolLabels[protocol]}
+                      <div className="settings-config-block">
+                        <div className="settings-block-heading is-compact">
+                          <span className="settings-step-number">2</span>
+                          <div><strong>选择接口格式</strong><small>不确定时，中转站优先选择“通用兼容”</small></div>
+                        </div>
+                        <div className="settings-protocol-options" role="group" aria-label="OpenAI 接口格式">
+                          {(Object.keys(openAiProtocolLabels) as Array<keyof typeof openAiProtocolLabels>).map((protocol) => (
+                            <button key={protocol} type="button" className={draft.apiProtocol === protocol ? "is-selected" : ""} aria-pressed={draft.apiProtocol === protocol} onClick={() => updateDraft("apiProtocol", protocol)}>
+                              <span>{openAiProtocolLabels[protocol].title}</span><small>{openAiProtocolLabels[protocol].note}</small>
                             </button>
                           ))}
                         </div>
                       </div>
                     )}
-                    <div className="settings-form-grid settings-form-grid-primary">
-                      <label>
-                        <span>模型 ID</span>
-                        <input
-                          id={`settings-${selectedProvider}-model`}
-                          name={`settings-${selectedProvider}-model`}
-                          required
-                          maxLength={200}
-                          value={draft.model}
-                          onChange={(event) => updateDraft("model", event.target.value)}
-                          placeholder={selectedProvider === "openai" ? "gpt-5" : "claude-sonnet-4-5"}
-                          autoComplete="off"
-                        />
-                      </label>
-                      <label>
-                        <span>API Key</span>
-                        <div className="settings-secret-input">
-                          <input
-                            id={`settings-${selectedProvider}-api-key`}
-                            name={`settings-${selectedProvider}-api-key`}
-                            type={showApiKey[selectedProvider] ? "text" : "password"}
-                            value={draft.apiKey}
-                            onChange={(event) => updateDraft("apiKey", event.target.value)}
-                            placeholder={selectedSettings.api_key_configured ? `已保存 ${selectedSettings.api_key_mask}` : "输入 API Key"}
-                            autoComplete="new-password"
-                            disabled={draft.clearApiKey}
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setShowApiKey((current) => ({
-                                ...current,
-                                [selectedProvider]: !current[selectedProvider],
-                              }))
-                            }
-                            title={showApiKey[selectedProvider] ? "隐藏 API Key" : "显示 API Key"}
-                          >
-                            {showApiKey[selectedProvider] ? (
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3l18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c5 0 9 5 9 8a9.6 9.6 0 0 1-2 3.5"/><path d="M6.6 6.6C4.4 8 3 10.2 3 12c0 3 4 8 9 8 1.2 0 2.3-.3 3.3-.8"/></svg>
-                            ) : (
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
-                            )}
-                          </button>
-                        </div>
-                      </label>
+
+                    <div className="settings-config-block">
+                      <div className="settings-block-heading is-compact">
+                        <span className="settings-step-number">{selectedProvider === "openai" ? "3" : "2"}</span>
+                        <div><strong>填写模型和密钥</strong><small>模型 ID 必须与服务商后台显示的名称完全一致</small></div>
+                      </div>
+                      <div className="settings-form-grid settings-form-grid-primary">
+                        <label>
+                          <span>模型 ID</span>
+                          <input id={`settings-${selectedProvider}-model`} name={`settings-${selectedProvider}-model`} required maxLength={200} value={draft.model} onChange={(event) => updateDraft("model", event.target.value)} placeholder={modelPlaceholders[selectedProvider]} autoComplete="off" />
+                          <small>请从官方或中转站的模型列表复制，不要凭感觉填写。</small>
+                        </label>
+                        <label>
+                          <span>API Key</span>
+                          <div className="settings-secret-input">
+                            <input id={`settings-${selectedProvider}-api-key`} name={`settings-${selectedProvider}-api-key`} type={showApiKey[selectedProvider] ? "text" : "password"} value={draft.apiKey} onChange={(event) => updateDraft("apiKey", event.target.value)} placeholder={selectedSettings.api_key_configured ? `已安全保存 ${selectedSettings.api_key_mask}` : "粘贴服务商提供的 API Key"} autoComplete="new-password" disabled={draft.clearApiKey} />
+                            <button type="button" onClick={() => setShowApiKey((current) => ({ ...current, [selectedProvider]: !current[selectedProvider] }))} title={showApiKey[selectedProvider] ? "隐藏 API Key" : "显示 API Key"} aria-label={showApiKey[selectedProvider] ? "隐藏 API Key" : "显示 API Key"}>
+                              {showApiKey[selectedProvider] ? (
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3l18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c5 0 9 5 9 8a9.6 9.6 0 0 1-2 3.5"/><path d="M6.6 6.6C4.4 8 3 10.2 3 12c0 3 4 8 9 8 1.2 0 2.3-.3 3.3-.8"/></svg>
+                              ) : (
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+                              )}
+                            </button>
+                          </div>
+                          <small>{selectedSettings.api_key_configured ? "留空会保留原密钥；填入新值才会替换。" : "密钥只会加密保存，之后不再显示完整内容。"}</small>
+                        </label>
+                      </div>
                     </div>
+
                     {selectedSettings.api_key_configured && (
-                      <label className="settings-checkbox-row">
-                        <input
-                          id={`settings-${selectedProvider}-clear-api-key`}
-                          name={`settings-${selectedProvider}-clear-api-key`}
-                          type="checkbox"
-                          checked={draft.clearApiKey}
-                          onChange={(event) => updateDraft("clearApiKey", event.target.checked)}
-                        />
-                        <span>清除已保存的 API Key</span>
-                      </label>
+                      <details className="settings-key-management">
+                        <summary>密钥管理</summary>
+                        <label className="settings-checkbox-row"><input id={`settings-${selectedProvider}-clear-api-key`} name={`settings-${selectedProvider}-clear-api-key`} type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft("clearApiKey", event.target.checked)} /><span>保存时删除现有 API Key</span></label>
+                      </details>
                     )}
                   </fieldset>
 
-                  <fieldset className="settings-fieldset" disabled={Boolean(busyAction)}>
-                    <legend>调用边界</legend>
-                    <div className="settings-form-grid settings-form-grid-compact">
-                      <NumberField name="max-output-tokens" label="输出 Token 上限" value={draft.maxOutputTokens} min="256" max="131072" onChange={(value) => updateDraft("maxOutputTokens", value)} />
-                      <NumberField name="connect-timeout-seconds" label="连接超时（秒）" value={draft.connectTimeoutSeconds} min="0.1" max="3600" step="0.1" onChange={(value) => updateDraft("connectTimeoutSeconds", value)} />
-                      <NumberField name="read-timeout-seconds" label="读取超时（秒）" value={draft.readTimeoutSeconds} min="0.1" max="3600" step="0.1" onChange={(value) => updateDraft("readTimeoutSeconds", value)} />
-                      <NumberField name="write-timeout-seconds" label="写入超时（秒）" value={draft.writeTimeoutSeconds} min="0.1" max="3600" step="0.1" onChange={(value) => updateDraft("writeTimeoutSeconds", value)} />
-                      <NumberField name="pool-timeout-seconds" label="连接池超时（秒）" value={draft.poolTimeoutSeconds} min="0.1" max="3600" step="0.1" onChange={(value) => updateDraft("poolTimeoutSeconds", value)} />
-                      <NumberField name="max-request-bytes" label="请求上限（字节）" value={draft.maxRequestBytes} min="65536" max="10485760" onChange={(value) => updateDraft("maxRequestBytes", value)} />
-                      <NumberField name="max-response-bytes" label="响应上限（字节）" value={draft.maxResponseBytes} min="65536" max="10485760" onChange={(value) => updateDraft("maxResponseBytes", value)} />
-                    </div>
-                  </fieldset>
+                  <details className="settings-disclosure">
+                    <summary>
+                      <span><strong>调用范围与稳定性</strong><small>推荐使用预设，通常无需逐项修改</small></span>
+                      <span className="settings-summary-value">{activeCallPreset ? callPresets[activeCallPreset].label : "自定义"}</span>
+                    </summary>
+                    <fieldset disabled={Boolean(busyAction)}>
+                      <div className="settings-preset-control" role="group" aria-label="调用范围预设">
+                        {(Object.keys(callPresets) as CallPreset[]).map((preset) => (
+                          <button key={preset} type="button" className={activeCallPreset === preset ? "is-selected" : ""} onClick={() => updateDraftValues(callPresets[preset].values)}><strong>{callPresets[preset].label}</strong><small>{callPresets[preset].note}</small></button>
+                        ))}
+                      </div>
+                      <div className="settings-form-grid settings-form-grid-compact">
+                        <SelectField name="max-output-tokens" label="单次回答长度" value={draft.maxOutputTokens} options={[["2048", "简短（约 2K Token）"], ["4096", "日常（约 4K Token）"], ["8192", "标准（约 8K Token）"], ["16384", "详细（约 16K Token）"], ["32768", "超长（约 32K Token）"]]} onChange={(value) => updateDraft("maxOutputTokens", value)} />
+                        <NumberField name="read-timeout-seconds" label="最多等待回答" value={draft.readTimeoutSeconds} min="10" max="3600" step="1" suffix="秒" onChange={(value) => updateDraft("readTimeoutSeconds", value)} />
+                        <NumberField name="max-request-mib" label="请求保护上限" value={bytesToInput(draft.maxRequestBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxRequestBytes", inputToBytes(value, MIB))} />
+                        <NumberField name="max-response-mib" label="响应保护上限" value={bytesToInput(draft.maxResponseBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxResponseBytes", inputToBytes(value, MIB))} />
+                      </div>
+                      <details className="settings-nested-disclosure">
+                        <summary>网络超时细项</summary>
+                        <div className="settings-form-grid settings-form-grid-compact">
+                          <NumberField name="connect-timeout-seconds" label="建立连接" value={draft.connectTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("connectTimeoutSeconds", value)} />
+                          <NumberField name="write-timeout-seconds" label="发送请求" value={draft.writeTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("writeTimeoutSeconds", value)} />
+                          <NumberField name="pool-timeout-seconds" label="等待空闲连接" value={draft.poolTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("poolTimeoutSeconds", value)} />
+                        </div>
+                      </details>
+                    </fieldset>
+                  </details>
 
-                  <fieldset className="settings-fieldset" disabled={Boolean(busyAction)}>
-                    <legend>成本估算（美元 / 百万 Token）</legend>
-                    <div className="settings-form-grid settings-form-grid-pricing">
-                      <NumberField name="input-price" label="输入" value={draft.inputPrice} min="0" max="1000000" step="0.000001" required={false} onChange={(value) => updateDraft("inputPrice", value)} />
-                      <NumberField name="output-price" label="输出" value={draft.outputPrice} min="0" max="1000000" step="0.000001" required={false} onChange={(value) => updateDraft("outputPrice", value)} />
-                      <NumberField name="cache-read-price" label="缓存读取" value={draft.cacheReadPrice} min="0" max="1000000" step="0.000001" required={false} onChange={(value) => updateDraft("cacheReadPrice", value)} />
-                      <NumberField name="cache-write-price" label="缓存写入" value={draft.cacheWritePrice} min="0" max="1000000" step="0.000001" required={false} onChange={(value) => updateDraft("cacheWritePrice", value)} />
-                    </div>
-                  </fieldset>
+                  <details className="settings-disclosure">
+                    <summary>
+                      <span><strong>费用统计（可选）</strong><small>按你的中转站账单填写，也可以全部留空</small></span>
+                      <span className="settings-summary-value is-neutral">不影响实际扣费</span>
+                    </summary>
+                    <fieldset disabled={Boolean(busyAction)}>
+                      <div className="settings-info-band">这里只估算审查记录的成本，不会替你充值、扣费或改变服务商价格。单位统一为美元 / 100 万 Token。</div>
+                      <div className="settings-form-grid settings-form-grid-pricing">
+                        <NumberField name="input-price" label="输入单价" value={draft.inputPrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("inputPrice", value)} />
+                        <NumberField name="output-price" label="输出单价" value={draft.outputPrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("outputPrice", value)} />
+                        <NumberField name="cache-read-price" label="缓存读取单价" value={draft.cacheReadPrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("cacheReadPrice", value)} />
+                        <NumberField name="cache-write-price" label="缓存写入单价" value={draft.cacheWritePrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("cacheWritePrice", value)} />
+                      </div>
+                    </fieldset>
+                  </details>
+
+                  <div className="settings-activation-flow" aria-label="启用流程">
+                    <div className={selectedSettings.configured && !providerDirty ? "is-done" : "is-current"}><span>1</span><strong>保存</strong><small>{providerDirty ? "等待保存" : selectedSettings.configured ? "已保存" : "填写配置"}</small></div>
+                    <i />
+                    <div className={selectedSettings.test_status === "succeeded" && !providerDirty ? "is-done" : ""}><span>2</span><strong>测试</strong><small>{providerDirty ? "先保存" : testStatusLabels[selectedSettings.test_status]}</small></div>
+                    <i />
+                    <div className={selectedSettings.active ? "is-done" : ""}><span>3</span><strong>启用</strong><small>{selectedSettings.active ? "运行中" : "测试后启用"}</small></div>
+                  </div>
 
                   <div className="settings-action-bar">
-                    <button className="settings-secondary-btn" type="button" onClick={() => void testProvider()} disabled={!selectedSettings.configured || !selectedSettings.api_key_configured || Boolean(busyAction)}>
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>
-                      {busyAction === `test-${selectedProvider}` ? "测试中…" : "测试连接"}
-                    </button>
-                    <button className="settings-secondary-btn is-activate" type="button" onClick={() => void activateProvider()} disabled={selectedSettings.test_status !== "succeeded" || selectedSettings.active || Boolean(busyAction)}>
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m5 12 4 4L19 6"/></svg>
-                      {selectedSettings.active ? "已激活" : "激活供应商"}
-                    </button>
-                    <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction)}>
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
-                      {busyAction === `save-${selectedProvider}` ? "保存中…" : "保存配置"}
-                    </button>
+                    <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || (!providerDirty && selectedSettings.configured)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>{busyAction === `save-${selectedProvider}` ? "保存中..." : "保存配置"}</button>
+                    <button className="settings-secondary-btn" type="button" onClick={() => void testProvider()} disabled={!selectedSettings.configured || !selectedSettings.api_key_configured || providerDirty || Boolean(busyAction)} title={providerDirty ? "请先保存当前修改" : "测试当前已保存配置"}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>{busyAction === `test-${selectedProvider}` ? "测试中..." : "测试连接"}</button>
+                    <button className="settings-secondary-btn is-activate" type="button" onClick={() => void activateProvider()} disabled={selectedSettings.test_status !== "succeeded" || selectedSettings.active || providerDirty || Boolean(busyAction)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m5 12 4 4L19 6"/></svg>{selectedSettings.active ? "已启用" : "启用这套配置"}</button>
                   </div>
                 </form>
               </div>
             </section>
 
             <section className="settings-policy-section">
-              <div className="settings-section-heading">
-                <div>
-                  <span className="settings-eyebrow">REVIEW POLICY</span>
-                  <h2>审查输入预算</h2>
-                </div>
+              <div className="settings-section-heading settings-policy-heading">
+                <div><span className="settings-eyebrow">REVIEW SCOPE</span><h2>每次审查的范围</h2><p>范围越大，能覆盖更多代码，同时会使用更多模型额度。</p></div>
+                <div className="settings-policy-readout"><strong>最多 {policy.maxUnits} 个文件</strong><span>整次输入不超过 {formatBytes(policy.maxTotalInputBytes)}</span></div>
               </div>
               <form onSubmit={savePolicy}>
                 <fieldset disabled={Boolean(busyAction)}>
-                  <div className="settings-form-grid settings-policy-grid">
-                    <NumberField name="max-review-units" label="Review Unit 上限" value={policy.maxUnits} min="1" max="3000" onChange={(value) => setPolicy((current) => ({ ...current!, maxUnits: value }))} />
-                    <NumberField name="max-scope-depth" label="规则目录深度" value={policy.maxScopeDepth} min="1" max="64" onChange={(value) => setPolicy((current) => ({ ...current!, maxScopeDepth: value }))} />
-                    <NumberField name="max-unit-input-bytes" label="单 Unit 输入上限（字节）" value={policy.maxUnitInputBytes} min="4096" max="10485760" onChange={(value) => setPolicy((current) => ({ ...current!, maxUnitInputBytes: value }))} />
-                    <NumberField name="max-total-input-bytes" label="总输入上限（字节）" value={policy.maxTotalInputBytes} min="4096" max="104857600" onChange={(value) => setPolicy((current) => ({ ...current!, maxTotalInputBytes: value }))} />
+                  <div className="settings-preset-control settings-policy-presets" role="group" aria-label="审查范围预设">
+                    {(Object.keys(policyPresets) as PolicyPreset[]).map((preset) => (
+                      <button key={preset} type="button" className={activePolicyPreset === preset ? "is-selected" : ""} onClick={() => setPolicy({ ...policyPresets[preset].values })}><strong>{policyPresets[preset].label}</strong><small>{policyPresets[preset].note}</small></button>
+                    ))}
                   </div>
+                  <details className="settings-nested-disclosure settings-policy-custom">
+                    <summary>自定义详细范围{activePolicyPreset ? "" : "（当前）"}</summary>
+                    <div className="settings-form-grid settings-policy-grid">
+                      <NumberField name="max-review-units" label="最多审查文件" value={policy.maxUnits} min="1" max="3000" suffix="个" onChange={(value) => setPolicy((current) => ({ ...current!, maxUnits: value }))} />
+                      <NumberField name="max-scope-depth" label="规则查找深度" value={policy.maxScopeDepth} min="1" max="64" suffix="层" onChange={(value) => setPolicy((current) => ({ ...current!, maxScopeDepth: value }))} />
+                      <NumberField name="max-unit-input-kib" label="单文件输入上限" value={bytesToInput(policy.maxUnitInputBytes, KIB)} min="4" max="10240" suffix="KiB" onChange={(value) => setPolicy((current) => ({ ...current!, maxUnitInputBytes: inputToBytes(value, KIB) }))} />
+                      <NumberField name="max-total-input-mib" label="整次输入上限" value={bytesToInput(policy.maxTotalInputBytes, MIB)} min="0.004" max="100" step="0.125" suffix="MiB" onChange={(value) => setPolicy((current) => ({ ...current!, maxTotalInputBytes: inputToBytes(value, MIB) }))} />
+                    </div>
+                  </details>
                   <div className="settings-policy-action">
-                    <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction)}>
-                      保存审查预算
-                    </button>
+                    <span>{activePolicyPreset ? `当前为“${policyPresets[activePolicyPreset].label}”` : "当前为自定义范围"}</span>
+                    <button className="settings-primary-btn" type="submit" disabled={!policyDirty || Boolean(busyAction)}>{busyAction === "save-policy" ? "保存中..." : "保存审查范围"}</button>
                   </div>
                 </fieldset>
               </form>
             </section>
 
-            <section className="settings-audit-section">
-              <div className="settings-section-heading">
-                <div>
-                  <span className="settings-eyebrow">AUDIT LOG</span>
-                  <h2>配置变更记录</h2>
-                </div>
-              </div>
+            <details className="settings-audit-section">
+              <summary><span><strong>配置变更记录</strong><small>最近 {audits.length} 条，不包含密钥内容</small></span><span>展开查看</span></summary>
               <div className="settings-audit-table-wrap">
                 <table className="settings-audit-table">
-                  <thead><tr><th>版本</th><th>操作</th><th>变更字段</th><th>管理员</th><th>时间</th></tr></thead>
-                  <tbody>
-                    {audits.map((audit) => (
-                      <tr key={audit.revision}>
-                        <td className="code-font">r{audit.revision}</td>
-                        <td>{auditActionLabels[audit.action] ?? audit.action}</td>
-                        <td>{audit.changed_fields.map((field) => fieldLabels[field] ?? field).join("、")}</td>
-                        <td>{audit.actor}</td>
-                        <td>{formatDate(audit.created_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
+                  <thead><tr><th>版本</th><th>操作</th><th>变更内容</th><th>管理员</th><th>时间</th></tr></thead>
+                  <tbody>{audits.map((audit) => <tr key={audit.revision}><td className="code-font">r{audit.revision}</td><td>{auditActionLabels[audit.action] ?? audit.action}</td><td>{audit.changed_fields.map((field) => fieldLabels[field] ?? field).join("、")}</td><td>{audit.actor}</td><td>{formatDate(audit.created_at)}</td></tr>)}</tbody>
                 </table>
                 {audits.length === 0 && <div className="settings-empty-audit">暂无配置变更</div>}
               </div>
-            </section>
+            </details>
           </>
         )}
       </main>
@@ -688,34 +816,40 @@ interface NumberFieldProps {
   min: string;
   max: string;
   step?: string;
+  suffix?: string;
   required?: boolean;
   onChange: (value: string) => void;
 }
 
-function NumberField({
-  name,
-  label,
-  value,
-  min,
-  max,
-  step = "1",
-  required = true,
-  onChange,
-}: NumberFieldProps) {
+function NumberField({ name, label, value, min, max, step = "1", suffix, required = true, onChange }: NumberFieldProps) {
   return (
     <label>
       <span>{label}</span>
-      <input
-        id={`settings-${name}`}
-        name={`settings-${name}`}
-        type="number"
-        value={value}
-        min={min}
-        max={max}
-        step={step}
-        required={required}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <span className="settings-input-with-suffix">
+        <input id={`settings-${name}`} name={`settings-${name}`} type="number" value={value} min={min} max={max} step={step} required={required} onChange={(event) => onChange(event.target.value)} />
+        {suffix && <i>{suffix}</i>}
+      </span>
+    </label>
+  );
+}
+
+interface SelectFieldProps {
+  name: string;
+  label: string;
+  value: string;
+  options: Array<[string, string]>;
+  onChange: (value: string) => void;
+}
+
+function SelectField({ name, label, value, options, onChange }: SelectFieldProps) {
+  const knownValue = options.some(([option]) => option === value);
+  return (
+    <label>
+      <span>{label}</span>
+      <select id={`settings-${name}`} name={`settings-${name}`} value={value} onChange={(event) => onChange(event.target.value)}>
+        {!knownValue && <option value={value}>自定义（{value} Token）</option>}
+        {options.map(([option, text]) => <option key={option} value={option}>{text}</option>)}
+      </select>
     </label>
   );
 }

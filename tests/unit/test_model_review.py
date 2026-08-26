@@ -238,3 +238,49 @@ def test_model_settings_reject_provider_protocol_mismatch() -> None:
             api_key="test-key",
             api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
         )
+
+
+def test_model_settings_accept_relay_prefix_and_reject_unsafe_base_urls() -> None:
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="relay-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        api_base_url=" HTTPS://relay.example/api/v1/ ",
+    )
+
+    assert settings.resolved_api_base_url == "https://relay.example/api/v1"
+    assert settings.api_request_path("/v1/chat/completions") == "chat/completions"
+
+    nested_settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="relay-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        api_base_url="https://relay.example/v1/account/gateway/openai",
+    )
+    assert nested_settings.api_request_path("/v1/chat/completions") == "v1/chat/completions"
+
+    root_settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="relay-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.RESPONSES,
+        api_base_url="https://relay.example/gateway",
+    )
+    assert root_settings.api_request_path("/v1/responses") == "v1/responses"
+
+    for unsafe_url in (
+        "http://relay.example/v1",
+        "https://user:password@relay.example/v1",
+        "https://relay.example/v1?key=secret",
+        "https://relay.example/v1#fragment",
+        "https://relay.example:invalid/v1",
+    ):
+        with pytest.raises(ValueError, match="API base URL"):
+            ModelServiceSettings(
+                provider=ModelProvider.OPENAI,
+                model="relay-model",
+                api_key="relay-key",
+                api_base_url=unsafe_url,
+            )

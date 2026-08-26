@@ -244,6 +244,7 @@ class AiProviderResponse(BaseModel):
     active: bool
     model: str
     api_protocol: ModelApiProtocol
+    api_base_url: str | None
     api_key_configured: bool
     api_key_mask: str | None
     max_output_tokens: int
@@ -322,6 +323,7 @@ class AiProviderUpdateRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     model: str = Field(min_length=1, max_length=200)
     api_protocol: ModelApiProtocol
+    api_base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, min_length=1, max_length=65_536)
     clear_api_key: bool = False
     max_output_tokens: int = Field(ge=256, le=131_072)

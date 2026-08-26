@@ -16,6 +16,7 @@ def _settings(
     pricing: ModelPricing | None = None,
     *,
     api_protocol: ModelApiProtocol | None = None,
+    api_base_url: str | None = None,
 ):
     return ModelServiceSettings(
         provider=provider,
@@ -23,7 +24,7 @@ def _settings(
         api_key="test-only-api-key",
         api_protocol=api_protocol,
         pricing=pricing,
-        api_base_url=f"https://api.{provider.value}.test",
+        api_base_url=api_base_url or f"https://api.{provider.value}.test",
     )
 
 
@@ -140,7 +141,7 @@ def test_openai_chat_completions_request_and_usage_are_normalized() -> None:
 
     ticks = iter((20.0, 20.125))
     client = httpx.Client(
-        base_url="https://api.openai.test",
+        base_url="https://api.openai.test/v1",
         transport=httpx.MockTransport(handler),
     )
     reviewer = create_model_reviewer(
@@ -152,6 +153,7 @@ def test_openai_chat_completions_request_and_usage_are_normalized() -> None:
                 cache_read_usd_per_million=Decimal("0.5"),
             ),
             api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://api.openai.test/v1",
         ),
         client=client,
         monotonic=lambda: next(ticks),

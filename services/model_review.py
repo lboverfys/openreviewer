@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -24,6 +24,45 @@ from domain.model_review import (
 OPENAI_API_BASE_URL = "https://api.openai.com"
 ANTHROPIC_API_BASE_URL = "https://api.anthropic.com"
 _MAX_API_KEY_BYTES = 64 * 1024
+_MAX_API_BASE_URL_LENGTH = 500
+
+
+def normalize_api_base_url(value: str | None) -> str | None:
+    """规范化管理员填写的模型 API 地址。
+
+    ``None`` 或空字符串表示使用供应商官方地址；自定义地址允许携带中转站
+    常见的 ``/v1`` 前缀，但不允许把凭据、查询参数或片段混入 URL。
+    """
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if len(normalized) > _MAX_API_BASE_URL_LENGTH:
+        raise ValueError("model API base URL is too long")
+    try:
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("model API base URL is malformed") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in parsed.netloc)
+        or any(character.isspace() for character in parsed.path)
+        or "\\" in parsed.path
+    ):
+        raise ValueError(
+            "model API base URL must be an absolute HTTPS URL without credentials or query"
+        )
+    path = parsed.path.rstrip("/")
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc, path, "", ""))
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,25 +174,27 @@ class ModelServiceSettings:
             raise ValueError("model request limit must be between 64 KiB and 10 MiB")
         if not 64 * 1024 <= self.max_response_bytes <= 10 * 1024 * 1024:
             raise ValueError("model response limit must be between 64 KiB and 10 MiB")
-        parsed = urlsplit(self.resolved_api_base_url)
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.path not in {"", "/"}
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("model API base URL must be an absolute HTTPS origin")
+        normalize_api_base_url(self.api_base_url)
 
     @property
     def resolved_api_base_url(self) -> str:
-        if self.api_base_url is not None:
-            return self.api_base_url
+        custom = normalize_api_base_url(self.api_base_url)
+        if custom is not None:
+            return custom
         if self.provider is ModelProvider.OPENAI:
             return OPENAI_API_BASE_URL
         return ANTHROPIC_API_BASE_URL
+
+    def api_request_path(self, endpoint_path: str) -> str:
+        """返回相对当前 Base URL 的请求路径，避免中转地址重复拼接 ``/v1``。"""
+
+        endpoint = endpoint_path.strip().lstrip("/")
+        if endpoint.startswith("v1/"):
+            endpoint = endpoint[3:]
+        base_path = urlsplit(self.resolved_api_base_url).path.rstrip("/")
+        if base_path.lower().endswith("/v1"):
+            return endpoint
+        return f"v1/{endpoint}"
 
     @property
     def resolved_api_protocol(self) -> ModelApiProtocol:

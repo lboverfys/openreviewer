@@ -159,6 +159,10 @@ def test_initial_migration_creates_durable_review_task_schema(
             column["name"]
             for column in inspector.get_columns("ai_provider_configs")
         }
+        assert "api_base_url" in {
+            column["name"]
+            for column in inspector.get_columns("ai_provider_configs")
+        }
         assert {
             constraint["name"]
             for constraint in inspector.get_unique_constraints("ai_settings")
@@ -177,7 +181,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_file_plans_decision_value",
             "ck_review_file_plans_ordinal_nonnegative",
         }
-        assert revision == "20260825_0008"
+        assert revision == "20260826_0009"
     finally:
         engine.dispose()
 
@@ -262,16 +266,21 @@ def test_protocol_migration_backfills_existing_provider_configs(
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            protocols = dict(
-                connection.execute(
-                    text(
-                        "SELECT provider, api_protocol FROM ai_provider_configs"
-                    )
-                ).all()
-            )
+            rows = connection.execute(
+                text(
+                    "SELECT provider, api_protocol, api_base_url "
+                    "FROM ai_provider_configs"
+                )
+            ).all()
+            protocols = {row.provider: row.api_protocol for row in rows}
+            api_base_urls = {row.provider: row.api_base_url for row in rows}
         assert protocols == {
             "openai": "responses",
             "anthropic": "messages",
+        }
+        assert api_base_urls == {
+            "openai": None,
+            "anthropic": None,
         }
     finally:
         engine.dispose()

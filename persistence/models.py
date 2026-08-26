@@ -406,6 +406,7 @@ class AiProviderConfigRecord(Base):
     provider: Mapped[str] = mapped_column(String(20), primary_key=True)
     model: Mapped[str] = mapped_column(String(200), nullable=False)
     api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
+    api_base_url: Mapped[str | None] = mapped_column(String(500))
     max_output_tokens: Mapped[int] = mapped_column(
         Integer, nullable=False, default=8192
     )

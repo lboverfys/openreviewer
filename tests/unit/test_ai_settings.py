@@ -74,6 +74,7 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
         AiProviderDraft(
             model="gpt-5",
             api_protocol=ModelApiProtocol.RESPONSES,
+            api_base_url="https://relay.example.test/v1/",
             input_usd_per_million=Decimal("1.25"),
             output_usd_per_million=Decimal("10.00"),
         ),
@@ -83,6 +84,7 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
     )
     assert saved.revision == 1
     assert saved.providers[0].api_key_mask == "****5678"
+    assert saved.providers[0].api_base_url == "https://relay.example.test/v1"
     assert saved.providers[0].test_status == "untested"
 
     with pytest.raises(AiProviderNotReadyError, match="必须先通过连接测试"):
@@ -102,6 +104,8 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
     assert len(tested) == 1
     assert tested[0].provider is ModelProvider.OPENAI
     assert tested[0].resolved_api_protocol is ModelApiProtocol.RESPONSES
+    assert tested[0].resolved_api_base_url == "https://relay.example.test/v1"
+    assert tested[0].api_request_path("/v1/responses") == "responses"
     assert tested[0].api_key == "sk-test-secret-5678"
     assert tested[0].max_output_tokens == 512
 
@@ -118,6 +122,7 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
     assert active.revision == 3
     assert active.model.model == "gpt-5"
     assert active.model.resolved_api_protocol is ModelApiProtocol.RESPONSES
+    assert active.model.resolved_api_base_url == "https://relay.example.test/v1"
     assert active.model.api_key == "sk-test-secret-5678"
 
     updated = service.update_review_policy(
@@ -264,3 +269,106 @@ def test_switching_openai_protocol_invalidates_test_and_activation(
         ModelApiProtocol.RESPONSES,
         ModelApiProtocol.CHAT_COMPLETIONS,
     ]
+
+
+def test_switching_api_base_url_invalidates_test_and_active_provider(
+    database: Database,
+) -> None:
+    tested: list[str] = []
+    service = AiSettingsService(
+        database.sessions,
+        AiSecretCipher(b"u" * 32),
+        connection_tester=lambda settings: tested.append(
+            settings.resolved_api_base_url
+        ),
+    )
+    initial = AiProviderDraft(
+        model="relay-model",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        api_base_url="https://relay-one.example/v1",
+    )
+    service.update_provider(
+        ModelProvider.OPENAI,
+        initial,
+        expected_revision=0,
+        actor="administrator",
+        api_key="relay-key",
+    )
+    service.test_provider(
+        ModelProvider.OPENAI,
+        expected_revision=1,
+        actor="administrator",
+    )
+    service.activate_provider(
+        ModelProvider.OPENAI,
+        expected_revision=2,
+        actor="administrator",
+    )
+
+    changed = service.update_provider(
+        ModelProvider.OPENAI,
+        AiProviderDraft(
+            model="relay-model",
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://relay-two.example/api/v1/",
+        ),
+        expected_revision=3,
+        actor="administrator",
+    )
+
+    assert changed.active_provider is None
+    assert changed.providers[0].api_base_url == "https://relay-two.example/api/v1"
+    assert changed.providers[0].test_status == "untested"
+    with pytest.raises(AiProviderNotReadyError, match="必须先通过连接测试"):
+        service.activate_provider(
+            ModelProvider.OPENAI,
+            expected_revision=4,
+            actor="administrator",
+        )
+    assert tested == ["https://relay-one.example/v1"]
+
+
+def test_updating_pricing_keeps_test_status_and_active_provider(
+    database: Database,
+) -> None:
+    service = AiSettingsService(
+        database.sessions,
+        AiSecretCipher(b"c" * 32),
+        connection_tester=lambda _settings: None,
+    )
+    service.update_provider(
+        ModelProvider.OPENAI,
+        AiProviderDraft(
+            model="priced-model",
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        ),
+        expected_revision=0,
+        actor="administrator",
+        api_key="priced-key",
+    )
+    service.test_provider(
+        ModelProvider.OPENAI,
+        expected_revision=1,
+        actor="administrator",
+    )
+    service.activate_provider(
+        ModelProvider.OPENAI,
+        expected_revision=2,
+        actor="administrator",
+    )
+
+    updated = service.update_provider(
+        ModelProvider.OPENAI,
+        AiProviderDraft(
+            model="priced-model",
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            input_usd_per_million=Decimal("0.50"),
+            output_usd_per_million=Decimal("2.00"),
+        ),
+        expected_revision=3,
+        actor="administrator",
+    )
+
+    assert updated.active_provider is ModelProvider.OPENAI
+    assert updated.providers[0].active is True
+    assert updated.providers[0].test_status == "succeeded"

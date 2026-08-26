@@ -87,7 +87,7 @@ class _StructuredModelReviewer(ModelReviewer):
             )
 
         payload, audit = self._post_json(
-            self.request_path,
+            self._settings.api_request_path(self.request_path),
             headers=self._request_headers(),
             body=self._request_body(prompt),
         )

@@ -76,6 +76,7 @@ export interface AiProviderSettings {
   active: boolean;
   model: string;
   api_protocol: AiApiProtocol;
+  api_base_url: string | null;
   api_key_configured: boolean;
   api_key_mask: string | null;
   max_output_tokens: number;
@@ -110,6 +111,7 @@ export interface AiProviderUpdate {
   expected_revision: number;
   model: string;
   api_protocol: AiApiProtocol;
+  api_base_url: string | null;
   api_key: string | null;
   clear_api_key: boolean;
   max_output_tokens: number;

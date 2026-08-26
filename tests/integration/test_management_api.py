@@ -282,6 +282,7 @@ def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
                     "expected_revision": 0,
                     "model": "gpt-5",
                     "api_protocol": "chat_completions",
+                    "api_base_url": "https://relay.example.test/v1/",
                     "api_key": api_key,
                     "clear_api_key": False,
                     "max_output_tokens": 8192,
@@ -302,6 +303,9 @@ def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
             assert saved.json()["providers"][0]["api_key_mask"] == "****9876"
             assert saved.json()["providers"][0]["api_protocol"] == (
                 "chat_completions"
+            )
+            assert saved.json()["providers"][0]["api_base_url"] == (
+                "https://relay.example.test/v1"
             )
 
             premature = await client.post(

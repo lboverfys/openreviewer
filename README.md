@@ -54,8 +54,9 @@ deployment/         niuma-2 Compose 部署配置
 - `AGENTS.md` 单请求批量加载、目录作用域、确定性 Review Plan，以及四表原子持久化和幂等复用。
 - OpenAI Responses、OpenAI Chat Completions 与 Anthropic Messages 统一适配、严格 JSON Schema、
   模型调用审计、独立重试、Token/耗时/可配置成本和未复核 Finding 原子持久化。
-- 管理界面动态保存 OpenAI/Anthropic 草稿、真实连接测试和单供应商激活；API Key 使用
-  AES-256-GCM 加密，OpenAI 可动态选择接口协议，Worker 按配置 revision 在下一条任务生效。
+- 管理界面动态保存 OpenAI/Anthropic 草稿、官方或中转站 API 地址、真实连接测试和单供应商
+  激活；API Key 使用 AES-256-GCM 加密，OpenAI 可动态选择接口协议，Worker 按配置 revision
+  在下一条任务生效。
 
 ## 当前前端入口
 
@@ -81,7 +82,7 @@ python -m alembic upgrade head
 本地配置需要数据库连接、管理员用户名、Argon2id 密码哈希、至少 32 字节的会话密钥和
 至少 32 字节的 GitHub Webhook secret。
 API 和 Worker 还需要同一份 32 字节 AI 配置加密主密钥。Worker 需要 GitHub App ID 和只读
-私钥文件路径；模型供应商、模型 ID、API Key 与预算在登录后的设置页保存。完整
+私钥文件路径；模型供应商、API 地址、模型 ID、API Key 与预算在登录后的设置页保存。完整
 配置见 [`docs/contracts/github-context.md`](docs/contracts/github-context.md) 和
 [`docs/contracts/ai-settings.md`](docs/contracts/ai-settings.md)。
 可以使用交互式输入生成哈希，明文不会写入命令历史：
