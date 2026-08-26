@@ -807,6 +807,21 @@ def create_app(
         if configured_service is not None:
             return configured_service
 
+        with initialization_lock:
+            configured_service = application.state.ai_settings_service
+            if configured_service is None:
+                try:
+                    cipher = AiSecretCipher.from_environment()
+                    database = get_database()
+                except AiSettingsConfigurationError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="AI settings encryption is not configured",
+                    ) from exc
+                configured_service = AiSettingsService(database.sessions, cipher)
+                application.state.ai_settings_service = configured_service
+            return configured_service
+
     def get_review_management_service() -> ReviewManagementService:
         """返回任务详情与人工控制服务。"""
 
@@ -822,20 +837,6 @@ def create_app(
                     SqlAlchemyReviewManagementRepository(get_database().sessions)
                 )
                 application.state.review_management_service = configured_service
-            return configured_service
-        with initialization_lock:
-            configured_service = application.state.ai_settings_service
-            if configured_service is None:
-                try:
-                    cipher = AiSecretCipher.from_environment()
-                    database = get_database()
-                except AiSettingsConfigurationError as exc:
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail="AI settings encryption is not configured",
-                    ) from exc
-                configured_service = AiSettingsService(database.sessions, cipher)
-                application.state.ai_settings_service = configured_service
             return configured_service
 
     def ai_settings_response() -> AiSettingsResponse:

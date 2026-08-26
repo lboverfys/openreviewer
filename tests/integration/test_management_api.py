@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from pathlib import Path
 
 import httpx
@@ -350,3 +351,37 @@ def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
             )
 
     asyncio.run(exercise())
+
+
+def test_dynamic_ai_settings_are_lazy_loaded_when_not_injected(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """生产入口未注入服务时，设置接口也必须能按环境懒加载。"""
+
+    monkeypatch.setenv(
+        "OPENREVIEWER_DATABASE_URL",
+        database.engine.url.render_as_string(hide_password=False),
+    )
+    monkeypatch.setenv(
+        "OPENREVIEWER_AI_CONFIG_KEY",
+        base64.urlsafe_b64encode(b"b" * 32).decode().rstrip("="),
+    )
+    application = create_app(auth_service=make_auth_service())
+
+    async def exercise() -> httpx.Response:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+            )
+            assert login.status_code == 200
+            return await client.get("/api/v1/settings/ai")
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 200
+    assert response.json()["revision"] == 0

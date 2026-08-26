@@ -31,10 +31,20 @@ describe("Nginx API allowlist", () => {
   });
 
   it.each([
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/actions",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings/finding-1",
+  ])("proxies the supported review detail route %s", (path) => {
+    expect(isProxied(path)).toBe(true);
+  });
+
+  it.each([
     "/api/v1/settings",
     "/api/v1/settings/ai/providers/custom",
     "/api/v1/settings/ai/providers/openai/delete",
     "/api/v1/settings/audits/export",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/unknown",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings",
   ])("does not proxy the unsupported settings route %s", (path) => {
     expect(isProxied(path)).toBe(false);
   });
