@@ -10,6 +10,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY tsconfig.json vite.config.ts index.html ./
+COPY nginx.conf ./
 COPY src ./src
 COPY public ./public
 
