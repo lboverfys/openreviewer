@@ -5,7 +5,13 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from domain.enums import ExecutionStatus, WorkerStatus
-from domain.github import GitHubReviewContext
+from domain.github import GitHubReviewContext, PullRequestFile
+from domain.model_review import (
+    MaterializedFinding,
+    ModelReviewInput,
+    ModelReviewResult,
+)
+from domain.review_planning import RepositoryRulesSnapshot, ReviewPlan
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 
 
@@ -36,6 +42,62 @@ class TaskLeaseLostError(TaskQueueError):
         )
 
 
+class ReviewPlanInputError(TaskQueueError):
+    """数据库里的 PR 文件快照不足以生成可信计划。"""
+
+    def __init__(self, message: str = "PR 文件快照不完整，无法生成审查计划") -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.REVIEW_PLAN_INPUT_INCOMPLETE,
+                safe_message=message,
+                retryable=False,
+            ),
+        )
+
+
+class ReviewPlanConflictError(TaskQueueError):
+    """同一运行已经保存了不同指纹，或目标版本已经过期。"""
+
+    def __init__(self, message: str = "审查计划与当前任务版本冲突") -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.REVIEW_PLAN_CONFLICT,
+                safe_message=message,
+                retryable=False,
+            ),
+        )
+
+
+class ModelReviewInputError(TaskQueueError):
+    """持久化计划无法构造成可信的模型输入。"""
+
+    def __init__(self, message: str = "模型审查输入不完整") -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.MODEL_REVIEW_INPUT_INVALID,
+                safe_message=message,
+                retryable=False,
+            ),
+        )
+
+
+class ModelReviewConflictError(TaskQueueError):
+    """模型结果来自旧租约、旧 SHA 或不同 Review Plan。"""
+
+    def __init__(self, message: str = "模型审查结果与当前计划冲突") -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.MODEL_REVIEW_CONFLICT,
+                safe_message=message,
+                retryable=False,
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewTaskLease:
     task_id: str
@@ -45,6 +107,8 @@ class ReviewTaskLease:
     lease_expires_at: datetime
     claimed_from_status: ExecutionStatus = ExecutionStatus.QUEUED
     ci_poll_count: int = 0
+    model_attempt_count: int = 0
+    review_plan_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +122,33 @@ class ReviewTarget:
     head_sha: str
     review_version_key: str
     context_fetched_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewPlanningInput:
+    """一次有界数据库读取产生的计划目标和 changed files。"""
+
+    target: ReviewTarget
+    files: tuple[PullRequestFile, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StoredReviewPlan:
+    """计划原子保存或幂等复用的结果。"""
+
+    plan_id: str | None
+    created: bool
+    execution_status: ExecutionStatus
+
+
+@dataclass(frozen=True, slots=True)
+class StoredModelReview:
+    """模型调用与候选 Finding 原子保存或幂等复用的结果。"""
+
+    model_call_id: str | None
+    created: bool
+    finding_count: int
+    execution_status: ExecutionStatus
 
 
 class ReviewTaskQueue(Protocol):
@@ -95,7 +186,13 @@ class ReviewTaskQueue(Protocol):
         """
         ...
 
-    def claim_next(self, worker_id: str, lease_duration: timedelta) -> ReviewTaskLease | None:
+    def claim_next(
+        self,
+        worker_id: str,
+        lease_duration: timedelta,
+        *,
+        ai_configured: bool = True,
+    ) -> ReviewTaskLease | None:
         """按队列顺序原子领取一个当前可执行的任务。
 
         参数：
@@ -147,6 +244,35 @@ class ReviewTaskQueue(Protocol):
         ci_wait_timeout: timedelta,
     ) -> ExecutionStatus:
         """原子保存 GitHub 快照并推进、等待、取消或淘汰当前任务。"""
+        ...
+
+    def load_planning_input(self, lease: ReviewTaskLease) -> ReviewPlanningInput:
+        """一次有界 JOIN 读取当前 SHA 的目标和全部持久化 changed files。"""
+        ...
+
+    def store_review_plan(
+        self,
+        lease: ReviewTaskLease,
+        rules: RepositoryRulesSnapshot,
+        plan: ReviewPlan,
+    ) -> StoredReviewPlan:
+        """验证租约与 SHA，并原子批量保存规则、Unit、文件结果和 Outbox。"""
+        ...
+
+    def load_model_review_input(self, lease: ReviewTaskLease) -> ModelReviewInput:
+        """用固定三次有界查询读取计划、规则和全部 Review Unit。"""
+        ...
+
+    def store_model_review(
+        self,
+        lease: ReviewTaskLease,
+        review_input: ModelReviewInput,
+        result: ModelReviewResult,
+        findings: tuple[MaterializedFinding, ...],
+        *,
+        configuration_revision: int | None = None,
+    ) -> StoredModelReview:
+        """验证租约、SHA 和计划指纹，并原子保存调用、Finding 与 Outbox。"""
         ...
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:

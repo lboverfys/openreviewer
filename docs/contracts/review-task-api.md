@@ -33,7 +33,8 @@ Content-Type: application/json
 3. 一个类型为 `review.requested` 的 `OutboxEvent`。
 
 只有事务整体提交成功才返回接受结果。当前 Worker 可以把任务从 `queued` 推进到
-`waiting_for_ci` 或 `ready_for_review`。模型审查尚未接入，因此不能进入 `completed`。
+`waiting_for_ci`，再在 `ready_for_review` 生成计划和未复核模型候选。证据复核与结果发布尚未
+接入，因此不能进入 `completed`。
 
 ## 3. 幂等行为
 

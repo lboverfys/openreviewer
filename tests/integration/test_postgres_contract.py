@@ -1,5 +1,6 @@
 import os
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
 from alembic import command
 from alembic.config import Config
@@ -7,12 +8,43 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
-from domain.enums import ExecutionStatus, PullRequestAction
+from domain.enums import (
+    ChangedFileStatus,
+    CiState,
+    ExecutionStatus,
+    FindingCategory,
+    LocationSide,
+    ModelApiProtocol,
+    ModelCallStatus,
+    ModelProvider,
+    PatchState,
+    PullRequestAction,
+    PullRequestState,
+    Severity,
+)
+from domain.github import (
+    CiSnapshot,
+    GitHubReviewContext,
+    PullRequestFile,
+    PullRequestSnapshot,
+)
 from domain.models import PullRequestWebhook, ReviewRequest
+from domain.model_review import (
+    ModelFindingCandidate,
+    ModelFindingLocation,
+    ModelReviewOutput,
+    ModelReviewResult,
+    ModelTokenUsage,
+    materialize_findings,
+)
+from domain.review_planning import RepositoryRule, RepositoryRulesSnapshot
 from persistence.database import Database
 from persistence.models import (
     Base,
     GitHubWebhookDeliveryRecord,
+    ModelCallRecord,
+    ReviewFindingRecord,
+    ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
 )
@@ -20,6 +52,7 @@ from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.reviews import ReviewService
+from services.review_planning import DeterministicReviewPlanner
 
 
 @pytest.fixture(scope="module")
@@ -132,3 +165,172 @@ def test_postgres_webhook_creation_respects_foreign_keys(
         created.review_run_id,
         created.review_task_id,
     )
+
+
+def test_postgres_review_plan_is_claimed_and_saved_atomically(
+    postgres_database: Database,
+) -> None:
+    """验证 PostgreSQL 行锁、JSON 快照、批量子表和 Outbox 同事务落库。"""
+
+    now = datetime.now(UTC)
+    submission = ReviewService(
+        SqlAlchemyReviewRepository(postgres_database.sessions)
+    ).submit(
+        ReviewRequest(
+            installation_id=30,
+            repository_id=77,
+            repository="lboverfys/ReviewPlanContract",
+            pull_request_number=501,
+            head_sha="d" * 40,
+        ),
+        "postgres-review-plan-contract",
+    )
+    with postgres_database.sessions() as session:
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        assert task is not None
+        task.priority = 30_000
+        session.commit()
+
+    queue = SqlAlchemyReviewTaskQueue(postgres_database.sessions)
+    context_lease = queue.claim_next("worker-plan-pg", timedelta(seconds=30))
+    assert context_lease is not None
+    assert context_lease.task_id == submission.review_task_id
+    changed_file = PullRequestFile(
+        path="src/contract.py",
+        status=ChangedFileStatus.MODIFIED,
+        blob_sha="e" * 40,
+        additions=1,
+        deletions=1,
+        changes=2,
+        patch_state=PatchState.AVAILABLE,
+        patch="@@ -1 +1 @@\n-old\n+new\n",
+    )
+    assert queue.store_github_context(
+        context_lease,
+        GitHubReviewContext(
+            pull_request=PullRequestSnapshot(
+                repository_id=77,
+                repository="lboverfys/ReviewPlanContract",
+                pull_request_number=501,
+                base_sha="b" * 40,
+                head_sha="d" * 40,
+                state=PullRequestState.OPEN,
+                draft=False,
+                title="PostgreSQL plan contract",
+                changed_files=1,
+                updated_at=now,
+            ),
+            files=(changed_file,),
+            files_complete=True,
+            diff_complete=True,
+            ci=CiSnapshot(
+                head_sha="d" * 40,
+                state=CiState.SUCCESS,
+                checks=(),
+                complete=True,
+                checked_at=now,
+            ),
+        ),
+        ci_poll_interval=timedelta(seconds=30),
+        ci_wait_timeout=timedelta(hours=1),
+    ) is ExecutionStatus.READY_FOR_REVIEW
+
+    plan_lease = queue.claim_next("worker-plan-pg", timedelta(seconds=30))
+    assert plan_lease is not None
+    assert plan_lease.claimed_from_status is ExecutionStatus.READY_FOR_REVIEW
+    planning_input = queue.load_planning_input(plan_lease)
+    rule_content = "# PostgreSQL contract\n"
+    encoded_rule = rule_content.encode("utf-8")
+    rules = RepositoryRulesSnapshot(
+        repository_id=77,
+        repository="lboverfys/ReviewPlanContract",
+        head_sha="d" * 40,
+        rules=(
+            RepositoryRule(
+                path="AGENTS.md",
+                scope=None,
+                blob_sha="f" * 40,
+                content=rule_content,
+                content_sha256=sha256(encoded_rule).hexdigest(),
+                byte_size=len(encoded_rule),
+            ),
+        ),
+        incomplete_files=(),
+        issues=(),
+        candidate_count=1,
+        requested_candidate_count=1,
+    )
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    stored = queue.store_review_plan(plan_lease, rules, plan)
+
+    assert stored.created is True
+    assert stored.execution_status is ExecutionStatus.READY_FOR_REVIEW
+    model_lease = queue.claim_next("worker-plan-pg", timedelta(seconds=30))
+    assert model_lease is not None
+    assert model_lease.review_plan_id == stored.plan_id
+    model_input = queue.load_model_review_input(model_lease)
+    model_output = ModelReviewOutput(
+        findings=(
+            ModelFindingCandidate(
+                unit_key=model_input.units[0].unit_key,
+                severity=Severity.MEDIUM,
+                category=FindingCategory.RELIABILITY,
+                location=ModelFindingLocation(
+                    file="src/contract.py",
+                    start_line=1,
+                    end_line=1,
+                    side=LocationSide.RIGHT,
+                    symbol=None,
+                ),
+                title="错误路径缺少恢复处理",
+                evidence="新增路径直接返回且没有恢复状态。",
+                impact="瞬时失败可能让任务永久停留。",
+                suggestion="保存恢复状态并让 Worker 可重试。",
+                required_test=None,
+                confidence=0.9,
+                rule_reference="AGENTS.md",
+            ),
+        )
+    )
+    model_result = ModelReviewResult(
+        provider=ModelProvider.ANTHROPIC,
+        api_protocol=ModelApiProtocol.MESSAGES,
+        model="postgres-contract-model",
+        status=ModelCallStatus.SUCCEEDED,
+        prompt_version="structured-review-v1",
+        request_fingerprint="1" * 64,
+        provider_response_id="msg_postgres_contract",
+        provider_request_id="req_postgres_contract",
+        response_status=200,
+        duration_ms=100,
+        usage=ModelTokenUsage(input_tokens=50, output_tokens=10),
+        estimated_cost_microusd=25,
+        output=model_output,
+    )
+    findings = materialize_findings(model_input, model_output)
+    stored_model = queue.store_model_review(
+        model_lease,
+        model_input,
+        model_result,
+        findings,
+    )
+
+    assert stored_model.created is True
+    assert stored_model.finding_count == 1
+    with postgres_database.sessions() as session:
+        persisted = session.get(ReviewPlanRecord, stored.plan_id)
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        assert persisted is not None
+        assert task is not None
+        assert persisted.plan_fingerprint == plan.plan_fingerprint
+        assert persisted.model_review_completed_at is not None
+        assert task.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert task.claimed_from_status is None
+        assert session.scalar(select(ModelCallRecord.id)) == stored_model.model_call_id
+        assert session.scalar(select(ReviewFindingRecord.verification_status)) == (
+            "unverified"
+        )

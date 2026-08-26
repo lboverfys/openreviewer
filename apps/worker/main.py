@@ -9,13 +9,24 @@ import socket
 from threading import Event, Thread
 
 from domain.enums import ExecutionStatus, WorkerStatus
+from domain.model_review import materialize_findings
 from domain.security import SafeError, install_redacting_log_filters
 from persistence.database import Database
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
+from services.ai_settings import (
+    ActiveAiRuntime,
+    AiRuntimeProvider,
+    AiSecretCipher,
+    AiSettingsService,
+    SqlAlchemyAiRuntimeProvider,
+)
 from services.task_queue import ReviewTaskLease, ReviewTaskQueue, TaskQueueError
 from services.github import GitHubApiClient
 from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
 from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
+from services.github_rules import GitHubRepositoryRuleLoader, RepositoryRuleLoader
+from services.review_planning import ReviewPlanner
+from services.model_review import ModelReviewer
 
 
 LOGGER = logging.getLogger("openreviewer.worker")
@@ -54,6 +65,7 @@ class WorkerSettings:
     ci_poll_interval: timedelta = timedelta(seconds=30)
     ci_wait_timeout: timedelta = timedelta(hours=1)
     github_context_lease_duration: timedelta = timedelta(minutes=10)
+    model_review_lease_duration: timedelta = timedelta(minutes=10)
 
     def __post_init__(self) -> None:
         if not self.worker_id or len(self.worker_id) > 200:
@@ -68,6 +80,8 @@ class WorkerSettings:
             raise ValueError("CI wait timeout must exceed the poll interval")
         if self.github_context_lease_duration <= self.lease_duration:
             raise ValueError("GitHub context lease must exceed the normal lease")
+        if self.model_review_lease_duration <= self.lease_duration:
+            raise ValueError("model review lease must exceed the normal lease")
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
@@ -120,6 +134,12 @@ class WorkerSettings:
         )
         if context_lease_seconds <= lease_seconds:
             raise ValueError("GitHub context lease must exceed the normal lease")
+        model_lease_seconds = _positive_float(
+            os.environ.get("OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS", "600"),
+            "OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS",
+        )
+        if model_lease_seconds <= lease_seconds:
+            raise ValueError("model review lease must exceed the normal lease")
         return cls(
             worker_id=worker_id,
             poll_interval=timedelta(seconds=poll_seconds),
@@ -129,6 +149,7 @@ class WorkerSettings:
             github_context_lease_duration=timedelta(
                 seconds=context_lease_seconds
             ),
+            model_review_lease_duration=timedelta(seconds=model_lease_seconds),
         )
 
 
@@ -207,6 +228,10 @@ class WorkerRuntime:
         settings: WorkerSettings,
         *,
         context_loader: ReviewContextLoader | None = None,
+        rule_loader: RepositoryRuleLoader | None = None,
+        planner: ReviewPlanner | None = None,
+        model_reviewer: ModelReviewer | None = None,
+        ai_runtime_provider: AiRuntimeProvider | None = None,
         stop_event: Event | None = None,
     ) -> None:
         """保存队列适配器、运行参数和可选的停止事件。
@@ -225,6 +250,10 @@ class WorkerRuntime:
         self._queue = queue
         self._settings = settings
         self._context_loader = context_loader
+        self._rule_loader = rule_loader
+        self._planner = planner
+        self._model_reviewer = model_reviewer
+        self._ai_runtime_provider = ai_runtime_provider
         self._stop_event = stop_event or Event()
 
     @property
@@ -297,7 +326,20 @@ class WorkerRuntime:
             LOGGER.warning("已恢复 %s 个租约超时任务", recovered)
 
         self._queue.record_heartbeat(worker_id, WorkerStatus.IDLE)
-        lease = self._queue.claim_next(worker_id, self._settings.lease_duration)
+        ai_runtime = (
+            self._ai_runtime_provider.current()
+            if self._ai_runtime_provider is not None
+            else None
+        )
+        lease = self._queue.claim_next(
+            worker_id,
+            self._settings.lease_duration,
+            ai_configured=(
+                ai_runtime is not None
+                if self._ai_runtime_provider is not None
+                else True
+            ),
+        )
         if lease is None:
             return False
 
@@ -310,13 +352,18 @@ class WorkerRuntime:
                 lease.task_id,
                 self._settings.poll_interval,
             )
-            if self._context_loader is not None
+            if (
+                self._context_loader is not None
+                or self._rule_loader is not None
+                or self._model_reviewer is not None
+                or self._ai_runtime_provider is not None
+            )
             else None
         )
         if busy_heartbeat is not None:
             busy_heartbeat.start()
         try:
-            next_status = self._advance_to_supported_boundary(cursor)
+            next_status = self._advance_to_supported_boundary(cursor, ai_runtime)
             LOGGER.info(
                 "任务 %s 已进入 %s",
                 lease.task_id,
@@ -348,6 +395,7 @@ class WorkerRuntime:
     def _advance_to_supported_boundary(
         self,
         cursor: _LeaseCursor,
+        ai_runtime: ActiveAiRuntime | None = None,
     ) -> ExecutionStatus:
         """把任务推进到当前版本真正支持的边界。
 
@@ -367,6 +415,46 @@ class WorkerRuntime:
             TaskLeaseLostError/TaskQueueError: 租约失效或数据库状态转换失败，
             由 ``run_once`` 交给重试/失败处理。
         """
+
+        if cursor.lease.claimed_from_status is ExecutionStatus.READY_FOR_REVIEW:
+            if cursor.lease.review_plan_id is not None:
+                model_reviewer = (
+                    ai_runtime.reviewer
+                    if ai_runtime is not None
+                    else self._model_reviewer
+                )
+                if model_reviewer is None:
+                    raise TaskQueueError("Worker 未配置模型审查适配器")
+                cursor.renew(self._settings.model_review_lease_duration)
+                model_input = self._queue.load_model_review_input(cursor.lease)
+                model_result = model_reviewer.review(model_input)
+                findings = materialize_findings(model_input, model_result.output)
+                stored_model = self._queue.store_model_review(
+                    cursor.lease,
+                    model_input,
+                    model_result,
+                    findings,
+                    configuration_revision=(
+                        ai_runtime.revision if ai_runtime is not None else None
+                    ),
+                )
+                return stored_model.execution_status
+            planner = ai_runtime.planner if ai_runtime is not None else self._planner
+            if self._rule_loader is None or planner is None:
+                raise TaskQueueError("Worker 未配置 Review Plan 依赖")
+            cursor.renew(self._settings.github_context_lease_duration)
+            planning_input = self._queue.load_planning_input(cursor.lease)
+            rules = self._rule_loader.load(
+                planning_input.target,
+                planning_input.files,
+            )
+            plan = planner.plan(
+                planning_input.target,
+                planning_input.files,
+                rules,
+            )
+            stored = self._queue.store_review_plan(cursor.lease, rules, plan)
+            return stored.execution_status
 
         if self._context_loader is None:
             self._queue.mark_waiting_for_ci(cursor.lease)
@@ -403,19 +491,30 @@ def main() -> None:
     install_redacting_log_filters()
     settings = WorkerSettings.from_environment()
     github_api = GitHubApiClient()
+    ai_runtime_provider: SqlAlchemyAiRuntimeProvider | None = None
     try:
         github_tokens = GitHubAppTokenProvider(
             github_api,
             GitHubAppSettings.from_environment(),
         )
         database = Database.from_environment()
+        ai_runtime_provider = SqlAlchemyAiRuntimeProvider(
+            AiSettingsService(
+                database.sessions,
+                AiSecretCipher.from_environment(),
+            )
+        )
     except Exception:
+        if ai_runtime_provider is not None:
+            ai_runtime_provider.close()
         github_api.close()
         raise
     runtime = WorkerRuntime(
         SqlAlchemyReviewTaskQueue(database.sessions),
         settings,
         context_loader=GitHubReviewContextLoader(github_api, github_tokens),
+        rule_loader=GitHubRepositoryRuleLoader(github_api, github_tokens),
+        ai_runtime_provider=ai_runtime_provider,
     )
 
     def stop_worker(_signum: int, _frame: object) -> None:
@@ -436,6 +535,7 @@ def main() -> None:
     try:
         runtime.run()
     finally:
+        ai_runtime_provider.close()
         github_api.close()
         database.dispose()
 

@@ -1,8 +1,13 @@
 import type {
   AuthUser,
+  AiProvider,
+  AiProviderUpdate,
+  AiSettings,
+  ConfigurationAuditList,
   DashboardSnapshot,
   ReviewAccepted,
   ReviewRequest,
+  ReviewPolicyUpdate,
 } from "./types";
 
 export class ApiError extends Error {
@@ -128,4 +133,30 @@ export const api = {
       headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(payload),
     }),
+  aiSettings: () => request<AiSettings>("/api/v1/settings/ai"),
+  updateAiProvider: (provider: AiProvider, payload: AiProviderUpdate) =>
+    request<AiSettings>(`/api/v1/settings/ai/providers/${provider}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  testAiProvider: (provider: AiProvider, expectedRevision: number) =>
+    request<AiSettings>(`/api/v1/settings/ai/providers/${provider}/test`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    }),
+  activateAiProvider: (provider: AiProvider, expectedRevision: number) =>
+    request<AiSettings>(
+      `/api/v1/settings/ai/providers/${provider}/activate`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    ),
+  updateReviewPolicy: (payload: ReviewPolicyUpdate) =>
+    request<AiSettings>("/api/v1/settings/ai/review-policy", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+  configurationAudits: () =>
+    request<ConfigurationAuditList>("/api/v1/settings/audits?limit=20"),
 };

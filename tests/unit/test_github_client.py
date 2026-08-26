@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -149,4 +151,58 @@ def test_github_client_rejects_zero_response_limit_instead_of_using_default() ->
             "/bounded",
             bearer_token=FAKE_TOKEN,
             max_response_bytes=0,
+        )
+
+
+def test_github_client_sends_bounded_json_without_exposing_it_in_audit() -> None:
+    """验证 GraphQL 所需 JSON 请求体被正确编码，审计仍只记录方法和路径。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["content-type"] == "application/json"
+        assert json.loads(request.content) == {
+            "query": "query Test { viewer { login } }",
+            "variables": {"name": "测试"},
+        }
+        return httpx.Response(200, json={"data": {"viewer": {"login": "octocat"}}})
+
+    client = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    result = client.request_json(
+        "POST",
+        "/graphql",
+        bearer_token=FAKE_TOKEN,
+        json_body={
+            "query": "query Test { viewer { login } }",
+            "variables": {"name": "测试"},
+        },
+    )
+
+    assert result.payload == {"data": {"viewer": {"login": "octocat"}}}
+    assert result.audit.request_path == "/graphql"
+    assert "测试" not in str(result.audit)
+
+
+def test_github_client_rejects_json_body_on_get_before_network() -> None:
+    client = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(
+                lambda _request: pytest.fail("invalid request must not be sent")
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError):
+        client.request_json(
+            "GET",
+            "/graphql",
+            bearer_token=FAKE_TOKEN,
+            json_body={"query": "query Test { viewer { login } }"},
         )

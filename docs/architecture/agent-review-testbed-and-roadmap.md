@@ -6,8 +6,9 @@
 
 ## 1. 当前结论
 
-OpenReviewer 目前处于 M3 GitHub 上下文准备阶段。可靠任务、Worker、管理界面、部署链路、
-GitHub 安全入口以及 PR/CI 读取代码已经具备，但模型审查与结果发布闭环尚未实现。
+OpenReviewer 已完成 M3 GitHub 上下文准备，目前处于阶段 D 的模型候选生成。可靠任务、Worker、
+管理界面、部署链路、GitHub 安全入口、PR/CI 读取、规则规划和模型调用已经具备，但 Finding
+证据复核与结果发布闭环尚未实现。
 
 当前 Worker 会读取与任务 `head_sha` 匹配的 PR、diff 和 CI；CI 未结束时进入
 `waiting_for_ci`，终止后进入 `ready_for_review`。两个状态都不代表 AI 审查完成。
@@ -34,6 +35,10 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
   五项只读仓库权限。
 - PR 元数据、changed files、完整 diff、Check Runs 和 Commit Statuses 分页读取。
 - 文件/CI 有界快照、CI 轮询与超时，以及旧 `head_sha` 批量失效保护。
+- 当前 SHA 的 `AGENTS.md` 单请求批量加载、确定性 Review Plan、四表原子持久化、幂等复用和
+  保存前新 SHA 防护。
+- OpenAI Responses/Chat Completions 与 Anthropic Messages 统一结构化适配、整计划单次调用、独立模型重试，
+  调用耗时/Token/可配置成本和未复核 Finding 原子持久化。
 
 稳定语义已经拆分到以下契约中：
 
@@ -43,6 +48,8 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - [`management-api.md`](../contracts/management-api.md)：登录、Dashboard 和实时事件。
 - [`github-webhook.md`](../contracts/github-webhook.md)：验签、过滤、去重和原子入库。
 - [`github-context.md`](../contracts/github-context.md)：短期身份、PR/diff/CI 读取和版本保护。
+- [`review-planning.md`](../contracts/review-planning.md)：仓库规则、Review Unit 和输入预算。
+- [`model-review.md`](../contracts/model-review.md)：双供应商协议、调用审计和未复核 Finding。
 
 ### NiuMa 测试场
 
@@ -65,11 +72,8 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ### 审查执行
 
-- 仓库规则和 `AGENTS.md` 加载；
-- 文件筛选、Review Unit 构建和上下文预算；
-- 模型适配、结构化输出、证据复核和失败降级；
-- GitHub Check、行内评论、问题指纹和跨提交消解；
-- Token、成本和模型调用耗时记录。
+- Finding 原始证据回读、diff 位置复核和失败降级；
+- GitHub Check、行内评论和跨提交消解；
 
 ### 反馈与平台能力
 
@@ -132,6 +136,10 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 验收条件：乱序 Webhook、重复事件和连续推送新提交都不会让旧结果覆盖新结果。
 
 ### 阶段 D：最小审查闭环
+
+状态：开发中。已实现精确 SHA 的 `AGENTS.md` 单请求批量加载、目录作用域、文件分类、
+Review Unit、字节预算、OpenAI/Anthropic 统一适配、严格结构化输出、稳定 Finding 指纹、
+Worker 接入和原子持久化；尚未复核证据或发布 Check。
 
 ```text
 选择文件 -> 构建 Review Unit -> 加载相关规则
@@ -207,12 +215,10 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ## 7. 下一批具体产物
 
-按当前状态，下一批实现应集中在阶段 D：
+按当前状态，双供应商模型候选阶段已经完成，下一批应继续阶段 D：
 
-1. 加载仓库根目录和相关子目录的 `AGENTS.md`，把规则限制在对应文件范围；
-2. 按文件类型、大小和补丁完整度筛选文件，构建有总预算的 Review Unit；
-3. 定义可替换模型适配器、结构化 Finding 输出、调用次数、Token、耗时和成本记录；
-4. 对模型 Finding 做 Schema 校验、原始证据回读、指纹去重和行内定位准入；
-5. 发布一个使用稳定动作键的 GitHub Check，并在写入前重新校验当前 `head_sha`。
+1. 回读原始证据，校验 Finding 行号、diff side 和 `in_diff`；
+2. 为复核后的 Finding 增加状态转换、跨提交消解和行内定位准入；
+3. 发布一个使用稳定动作键的 GitHub Check，并在写入前重新校验当前 `head_sha`。
 
 阶段 D 完成前，`ready_for_review` 仍只是明确的待处理边界，不能显示为审查成功。

@@ -7,16 +7,16 @@
 
 Worker 在一个事务内查询满足以下条件的任务：
 
-- `execution_status = queued` 或 `waiting_for_ci`；
+- `execution_status = queued`、`waiting_for_ci`，或模型阶段尚未完成的 `ready_for_review`；
 - `available_at <= 当前时间`；
 - 按优先级、可用时间和创建时间排序。
 
 PostgreSQL 查询使用 `FOR UPDATE SKIP LOCKED`。领取成功时，在同一事务内：
 
 1. 任务和运行状态都改为 `running`；
-2. 从 `queued` 领取时 `attempt_count` 加一，从 `waiting_for_ci` 领取时只增加
-   `ci_poll_count`；
-3. 写入 `lease_owner` 和 `lease_expires_at`；
+2. 从 `queued` 或无计划的 `ready_for_review` 领取时 `attempt_count` 加一；已有计划的模型阶段只
+   增加独立 `model_attempt_count`；从 `waiting_for_ci` 领取时只增加 `ci_poll_count`；
+3. 写入 `lease_owner`、`lease_expires_at` 和 `claimed_from_status`；
 4. 追加 `review.task.running` Outbox 事件。
 
 ## 2. 租约与恢复
@@ -28,7 +28,8 @@ Worker 的旧轮询租约也不能覆盖新一轮结果。
 
 发现 `running` 任务的租约已过期时：
 
-- 仍有尝试次数：清除租约，回到 `queued`，按指数退避设置下一次 `available_at`；
+- 仍有尝试次数：清除租约，回到领取前的 `queued`、`waiting_for_ci` 或
+  `ready_for_review`，按指数退避设置下一次 `available_at`；
 - 已达到 `max_attempts`：任务和运行都改为 `failed`；
 - 两种情况都保存结构化安全错误并追加 Outbox 事件。
 
@@ -50,8 +51,12 @@ Worker 已能使用短期 GitHub App installation token 获取 PR 上下文和�
 读取期间由独立短生命周期线程刷新 `busy` 心跳，外部请求不持有数据库事务。
 
 `waiting_for_ci` 是明确的未完成状态，不等于“审查成功”。CI 进入任意终态后，任务进入
-`ready_for_review`；这个状态只表示后续模型审查可以开始。模型调用和结果发布尚未实现，
-因此 Worker 仍不得写入 `completed`。旧 SHA、关闭/Draft PR 和 CI 超时分别进入
+`ready_for_review`。Worker 随后一次批量读取当前 SHA 的文件快照、一次 GraphQL 读取规则，
+生成确定性 Review Plan，并在短事务内原子保存规则、Unit、文件结果与
+`review.plan.prepared` Outbox；随后通过 OpenAI 或 Anthropic 发起一次整计划结构化请求，再原子
+保存调用审计、Token、耗时、成本、未复核 Finding 和 `review.model.completed` Outbox。模型 HTTP
+请求发生在事务外，保存前重新检查租约、计划指纹和 SHA。证据复核与结果发布尚未实现，因此
+Worker 仍保持 `ready_for_review`，不得写入 `completed`。旧 SHA、关闭/Draft PR 和 CI 超时分别进入
 `superseded`、`cancelled` 和 `timed_out`。
 
 ## 4. 心跳

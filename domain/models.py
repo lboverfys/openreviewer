@@ -192,8 +192,8 @@ class ReviewRequest(ContractModel):
 class FindingLocation(ContractModel):
     file: str = Field(min_length=1, max_length=1024)
     blob_sha: str | None = Field(default=None, min_length=40, max_length=64)
-    start_line: int = Field(gt=0)
-    end_line: int = Field(gt=0)
+    start_line: int = Field(gt=0, le=2_147_483_647)
+    end_line: int = Field(gt=0, le=2_147_483_647)
     side: LocationSide = LocationSide.RIGHT
     in_diff: bool = False
     symbol: str | None = Field(default=None, max_length=512)

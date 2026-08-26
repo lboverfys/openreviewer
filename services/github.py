@@ -15,6 +15,7 @@ _ALLOWED_ACCEPT_HEADERS = {
     "application/vnd.github+json",
     "application/vnd.github.v3.diff",
 }
+_MAX_JSON_REQUEST_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +118,7 @@ class GitHubApiClient:
         *,
         bearer_token: str,
         params: dict[str, str | int] | None = None,
+        json_body: object | None = None,
         max_response_bytes: int | None = None,
     ) -> GitHubApiResult:
         result = self.request_bytes(
@@ -124,6 +126,7 @@ class GitHubApiClient:
             path,
             bearer_token=bearer_token,
             params=params,
+            json_body=json_body,
             accept="application/vnd.github+json",
             max_response_bytes=max_response_bytes,
         )
@@ -180,6 +183,7 @@ class GitHubApiClient:
         *,
         bearer_token: str,
         params: dict[str, str | int] | None = None,
+        json_body: object | None = None,
         accept: str = "application/vnd.github+json",
         max_response_bytes: int | None = None,
     ) -> GitHubBytesResult:
@@ -204,6 +208,21 @@ class GitHubApiClient:
             raise ValueError("GitHub bearer token must not be empty or contain whitespace")
         if accept not in _ALLOWED_ACCEPT_HEADERS:
             raise ValueError("unsupported GitHub Accept header")
+        request_content: bytes | None = None
+        if json_body is not None:
+            if normalized_method not in {"POST", "PATCH", "PUT"}:
+                raise ValueError("GitHub JSON request bodies require a write-capable method")
+            try:
+                request_content = json.dumps(
+                    json_body,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise ValueError("GitHub JSON request body must be serializable") from exc
+            if len(request_content) > _MAX_JSON_REQUEST_BYTES:
+                raise ValueError("GitHub JSON request body exceeds the 1 MiB limit")
         response_limit = (
             self.settings.max_response_bytes
             if max_response_bytes is None
@@ -214,15 +233,19 @@ class GitHubApiClient:
 
         started = self._monotonic()
         try:
+            headers = {
+                "Accept": accept,
+                "Authorization": f"Bearer {bearer_token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+            if request_content is not None:
+                headers["Content-Type"] = "application/json"
             with self._client.stream(
                 normalized_method,
                 path,
                 params=params,
-                headers={
-                    "Accept": accept,
-                    "Authorization": f"Bearer {bearer_token}",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
+                headers=headers,
+                content=request_content,
                 timeout=self.settings.timeout,
             ) as response:
                 if not 200 <= response.status_code < 300:

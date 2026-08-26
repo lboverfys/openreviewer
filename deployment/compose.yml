@@ -78,6 +78,7 @@ services:
     <<: *openreviewer-container
     container_name: openreviewer-api
     restart: unless-stopped
+    user: "10001:0"
     environment:
       <<: *openreviewer-environment
       OPENREVIEWER_ADMIN_USERNAME: "${OPENREVIEWER_ADMIN_USERNAME:?Set the administrator username}"
@@ -87,6 +88,13 @@ services:
       OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES: "${OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES:-262144}"
       OPENREVIEWER_SESSION_TTL_SECONDS: "${OPENREVIEWER_SESSION_TTL_SECONDS:-28800}"
       OPENREVIEWER_COOKIE_SECURE: "true"
+      OPENREVIEWER_AI_CONFIG_KEY_FILE: /run/secrets/ai-config-key
+      OPENREVIEWER_AI_CONFIG_KEY_VERSION: "${OPENREVIEWER_AI_CONFIG_KEY_VERSION:-1}"
+    volumes:
+      - type: bind
+        source: "${OPENREVIEWER_AI_CONFIG_KEY_FILE:?Set the AI configuration encryption key file}"
+        target: /run/secrets/ai-config-key
+        read_only: true
     networks:
       - backend
       - edge
@@ -112,12 +120,19 @@ services:
       OPENREVIEWER_CI_POLL_SECONDS: "${OPENREVIEWER_CI_POLL_SECONDS:-30}"
       OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS: "${OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS:-3600}"
       OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS: "${OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS:-600}"
+      OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS: "${OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS:-600}"
       OPENREVIEWER_GITHUB_APP_ID: "${OPENREVIEWER_GITHUB_APP_ID:?Set the GitHub App ID}"
       OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE: /run/secrets/github-app-private-key.pem
+      OPENREVIEWER_AI_CONFIG_KEY_FILE: /run/secrets/ai-config-key
+      OPENREVIEWER_AI_CONFIG_KEY_VERSION: "${OPENREVIEWER_AI_CONFIG_KEY_VERSION:-1}"
     volumes:
       - type: bind
         source: "${OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE:?Set the GitHub App private key file}"
         target: /run/secrets/github-app-private-key.pem
+        read_only: true
+      - type: bind
+        source: "${OPENREVIEWER_AI_CONFIG_KEY_FILE:?Set the AI configuration encryption key file}"
+        target: /run/secrets/ai-config-key
         read_only: true
     networks:
       - backend

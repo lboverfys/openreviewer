@@ -2,10 +2,14 @@
 
 OpenReviewer 是独立的 AI 代码审查编排平台，首个接入项目是 NiuMa。
 
-当前仓库已完成 M3 GitHub 上下文准备：除 PostgreSQL 任务、单并发 Worker、管理员登录、
+当前仓库已完成 M3 GitHub 上下文准备，并进入阶段 D 的模型审查执行：除 PostgreSQL 任务、
+单并发 Worker、管理员登录、
 实时 Dashboard、React 管理前端和 Webhook 安全入口外，Worker 已能用 GitHub App 短期身份
 读取 PR 元数据、变更文件、完整 diff 和当前提交的 CI，并安全处理轮询、超时和新提交淘汰。
-模型调用、Finding 复核、GitHub Check 发布和 LangGraph 工作流仍将在后续里程碑加入。
+Finding 复核、GitHub Check 发布和 LangGraph 工作流仍将在后续里程碑加入。阶段 D 已把
+`AGENTS.md` 批量规则加载、有预算的 Review Unit 规划、OpenAI/Anthropic 严格结构化调用接入
+Worker，并原子保存规则、计划、模型用量、成本和未复核 Finding。运行链路仍停在
+`ready_for_review`，不会把“模型候选已生成”误报成审查完成。
 
 ## 目录
 
@@ -27,8 +31,8 @@ deployment/         niuma-2 Compose 部署配置
 - Agent 服务与 NiuMa 业务服务独立部署、独立存储。
 - Agent 只读取受限的 PR 上下文，不执行 PR 提供的脚本或构建命令。
 - 不在仓库提交 Token、私钥、明文密码、密码哈希或真实部署配置。
-- 当前 Worker 会把 CI 终态任务推进到 `ready_for_review`；模型尚未接入，因此不会伪装成
-  `completed`。
+- 当前 Worker 会在 CI 终态后生成计划和未复核模型候选；证据复核尚未接入，因此保持
+  `ready_for_review`，不会伪装成 `completed`。
 
 ## 已实现能力
 
@@ -47,6 +51,11 @@ deployment/         niuma-2 Compose 部署配置
 - GitHub App JWT 与短期 installation token，Token 只缓存在 Worker 内存。
 - 分页读取 PR changed files、完整 diff、Check Runs 和 Commit Statuses。
 - 文件/CI 有界快照、CI 定时轮询与超时，以及旧 `head_sha` 批量失效保护。
+- `AGENTS.md` 单请求批量加载、目录作用域、确定性 Review Plan，以及四表原子持久化和幂等复用。
+- OpenAI Responses、OpenAI Chat Completions 与 Anthropic Messages 统一适配、严格 JSON Schema、
+  模型调用审计、独立重试、Token/耗时/可配置成本和未复核 Finding 原子持久化。
+- 管理界面动态保存 OpenAI/Anthropic 草稿、真实连接测试和单供应商激活；API Key 使用
+  AES-256-GCM 加密，OpenAI 可动态选择接口协议，Worker 按配置 revision 在下一条任务生效。
 
 ## 当前前端入口
 
@@ -71,8 +80,10 @@ python -m alembic upgrade head
 
 本地配置需要数据库连接、管理员用户名、Argon2id 密码哈希、至少 32 字节的会话密钥和
 至少 32 字节的 GitHub Webhook secret。
-Worker 还需要 GitHub App ID 和只读私钥文件路径；完整配置见
-[`docs/contracts/github-context.md`](docs/contracts/github-context.md)。
+API 和 Worker 还需要同一份 32 字节 AI 配置加密主密钥。Worker 需要 GitHub App ID 和只读
+私钥文件路径；模型供应商、模型 ID、API Key 与预算在登录后的设置页保存。完整
+配置见 [`docs/contracts/github-context.md`](docs/contracts/github-context.md) 和
+[`docs/contracts/ai-settings.md`](docs/contracts/ai-settings.md)。
 可以使用交互式输入生成哈希，明文不会写入命令历史：
 
 ```shell
@@ -103,7 +114,8 @@ npm run dev
 - `POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`；
 - `GET /api/v1/dashboard`；
 - `GET /api/v1/reviews`、`POST /api/v1/reviews`；
-- `GET /api/v1/reviews/stream`，使用 SSE 推送最新 Dashboard 快照。
+- `GET /api/v1/reviews/stream`，使用 SSE 推送最新 Dashboard 快照；
+- `GET/PUT/POST /api/v1/settings/...`，管理动态 AI 配置、连接测试、激活和配置审计。
 
 任务创建仍要求 `Idempotency-Key`。相同键和相同内容返回原任务；相同键但内容不同返回
 `409 Conflict`。

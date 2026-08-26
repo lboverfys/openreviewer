@@ -10,6 +10,7 @@ from persistence.database import Database
 from persistence.models import Base, ReviewTaskRecord
 from persistence.repositories import SqlAlchemyReviewRepository
 from services.dashboard import DashboardService
+from services.ai_settings import AiSecretCipher, AiSettingsService
 from services.reviews import ReviewService
 from tests.support import TEST_PASSWORD, TEST_USERNAME, make_auth_service
 
@@ -235,3 +236,113 @@ def test_dashboard_redacts_legacy_error_text_and_details(database: Database) -> 
         assert item["last_error_code"] == "future_worker_error"
         assert item["last_error_retryable"] is True
         assert "<redacted>" in str(item)
+
+
+def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(
+    database: Database,
+) -> None:
+    """验证管理页配置链路不会把 API Key 明文或密文返回浏览器。"""
+
+    tested_models: list[str] = []
+    settings_service = AiSettingsService(
+        database.sessions,
+        AiSecretCipher(b"a" * 32),
+        connection_tester=lambda settings: tested_models.append(settings.model),
+    )
+    application = create_app(
+        ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+        auth_service=make_auth_service(),
+        dashboard_service=DashboardService(
+            SqlAlchemyDashboardRepository(database.sessions)
+        ),
+        ai_settings_service=settings_service,
+    )
+    api_key = "sk-test-management-secret-9876"
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            assert (await client.get("/api/v1/settings/ai")).status_code == 401
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+            )
+            assert login.status_code == 200
+
+            initial = await client.get("/api/v1/settings/ai")
+            assert initial.status_code == 200
+            assert initial.json()["revision"] == 0
+
+            saved = await client.put(
+                "/api/v1/settings/ai/providers/openai",
+                json={
+                    "expected_revision": 0,
+                    "model": "gpt-5",
+                    "api_protocol": "chat_completions",
+                    "api_key": api_key,
+                    "clear_api_key": False,
+                    "max_output_tokens": 8192,
+                    "connect_timeout_seconds": 5,
+                    "read_timeout_seconds": 180,
+                    "write_timeout_seconds": 30,
+                    "pool_timeout_seconds": 5,
+                    "max_request_bytes": 4194304,
+                    "max_response_bytes": 2097152,
+                    "input_usd_per_million": "1.25",
+                    "output_usd_per_million": "10",
+                    "cache_read_usd_per_million": None,
+                    "cache_write_usd_per_million": None,
+                },
+            )
+            assert saved.status_code == 200
+            assert api_key not in saved.text
+            assert saved.json()["providers"][0]["api_key_mask"] == "****9876"
+            assert saved.json()["providers"][0]["api_protocol"] == (
+                "chat_completions"
+            )
+
+            premature = await client.post(
+                "/api/v1/settings/ai/providers/openai/activate",
+                json={"expected_revision": 1},
+            )
+            assert premature.status_code == 422
+
+            tested = await client.post(
+                "/api/v1/settings/ai/providers/openai/test",
+                json={"expected_revision": 1},
+            )
+            assert tested.status_code == 200
+            assert tested.json()["revision"] == 2
+            assert tested_models == ["gpt-5"]
+
+            activated = await client.post(
+                "/api/v1/settings/ai/providers/openai/activate",
+                json={"expected_revision": 2},
+            )
+            assert activated.status_code == 200
+            assert activated.json()["active_provider"] == "openai"
+            assert api_key not in activated.text
+
+            stale = await client.put(
+                "/api/v1/settings/ai/review-policy",
+                json={
+                    "expected_revision": 1,
+                    "max_units": 50,
+                    "max_scope_depth": 16,
+                    "max_unit_input_bytes": 131072,
+                    "max_total_input_bytes": 1048576,
+                },
+            )
+            assert stale.status_code == 409
+
+            audits = await client.get("/api/v1/settings/audits")
+            assert audits.status_code == 200
+            assert api_key not in audits.text
+            assert audits.json()["items"][0]["action"] == (
+                "provider.openai.activated"
+            )
+
+    asyncio.run(exercise())

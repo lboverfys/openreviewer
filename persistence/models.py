@@ -1,6 +1,7 @@
 """持久化审查任务提交所需的 SQLAlchemy 记录。"""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
@@ -9,10 +10,13 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Float,
     Index,
     Integer,
     JSON,
+    LargeBinary,
     MetaData,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -27,9 +31,17 @@ from domain.enums import (
     CoverageStatus,
     ExecutionStatus,
     ExternalActionState,
+    FindingCategory,
+    LocationSide,
+    ModelApiProtocol,
+    ModelCallStatus,
+    ModelProvider,
     PatchState,
     PullRequestState,
+    ReviewFileDecision,
     ReviewConclusion,
+    Severity,
+    VerificationStatus,
     WorkerStatus,
 )
 
@@ -149,8 +161,17 @@ class ReviewTaskRecord(Base):
             name="execution_status_value",
         ),
         CheckConstraint("attempt_count >= 0", name="attempt_count_nonnegative"),
+        CheckConstraint(
+            "model_attempt_count >= 0",
+            name="model_attempt_count_nonnegative",
+        ),
         CheckConstraint("max_attempts > 0", name="max_attempts_positive"),
         CheckConstraint("ci_poll_count >= 0", name="ci_poll_count_nonnegative"),
+        CheckConstraint(
+            "claimed_from_status IS NULL OR claimed_from_status IN "
+            "('queued', 'waiting_for_ci', 'ready_for_review')",
+            name="claimed_from_status_value",
+        ),
         UniqueConstraint("review_run_id"),
         Index(
             "ix_review_tasks_claimable",
@@ -174,6 +195,11 @@ class ReviewTaskRecord(Base):
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
     priority: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=100)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     available_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -182,6 +208,7 @@ class ReviewTaskRecord(Base):
     )
     lease_owner: Mapped[str | None] = mapped_column(String(200))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_from_status: Mapped[str | None] = mapped_column(String(32))
     ci_wait_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ci_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ci_poll_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -276,6 +303,188 @@ class GitHubInstallationRecord(Base):
         DateTime(timezone=True), nullable=False, default=utc_now
     )
     last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class AiSettingsRecord(Base):
+    """管理界面维护的全局 AI 配置版本与 Review Planning 预算。"""
+
+    __tablename__ = "ai_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton_id"),
+        CheckConstraint("revision >= 0", name="revision_nonnegative"),
+        UniqueConstraint("revision"),
+        CheckConstraint(
+            "active_provider IS NULL OR "
+            f"active_provider IN ({enum_values(ModelProvider)})",
+            name="active_provider_value",
+        ),
+        CheckConstraint("max_units BETWEEN 1 AND 3000", name="max_units_range"),
+        CheckConstraint(
+            "max_scope_depth BETWEEN 1 AND 64",
+            name="max_scope_depth_range",
+        ),
+        CheckConstraint(
+            "max_unit_input_bytes BETWEEN 4096 AND 10485760",
+            name="max_unit_input_bytes_range",
+        ),
+        CheckConstraint(
+            "max_total_input_bytes >= max_unit_input_bytes "
+            "AND max_total_input_bytes <= 104857600",
+            name="max_total_input_bytes_range",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_provider: Mapped[str | None] = mapped_column(String(20))
+    max_units: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    max_scope_depth: Mapped[int] = mapped_column(Integer, nullable=False, default=32)
+    max_unit_input_bytes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=192 * 1024
+    )
+    max_total_input_bytes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2 * 1024 * 1024
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class AiProviderConfigRecord(Base):
+    """一个供应商的非敏感模型参数与最近连接测试状态。"""
+
+    __tablename__ = "ai_provider_configs"
+    __table_args__ = (
+        CheckConstraint(
+            f"provider IN ({enum_values(ModelProvider)})",
+            name="provider_value",
+        ),
+        CheckConstraint(
+            "(provider = 'openai' AND api_protocol IN "
+            "('responses', 'chat_completions')) OR "
+            "(provider = 'anthropic' AND api_protocol = 'messages')",
+            name="api_protocol_provider",
+        ),
+        CheckConstraint(
+            "max_output_tokens BETWEEN 256 AND 131072",
+            name="max_output_tokens_range",
+        ),
+        CheckConstraint(
+            "connect_timeout_seconds > 0 AND read_timeout_seconds > 0 "
+            "AND write_timeout_seconds > 0 AND pool_timeout_seconds > 0",
+            name="timeouts_positive",
+        ),
+        CheckConstraint(
+            "max_request_bytes BETWEEN 65536 AND 10485760",
+            name="max_request_bytes_range",
+        ),
+        CheckConstraint(
+            "max_response_bytes BETWEEN 65536 AND 10485760",
+            name="max_response_bytes_range",
+        ),
+        CheckConstraint(
+            "test_status IS NULL OR test_status IN ('succeeded', 'failed')",
+            name="test_status_value",
+        ),
+        CheckConstraint(
+            "(input_usd_per_million IS NULL OR "
+            "input_usd_per_million BETWEEN 0 AND 1000000) AND "
+            "(output_usd_per_million IS NULL OR "
+            "output_usd_per_million BETWEEN 0 AND 1000000) AND "
+            "(cache_read_usd_per_million IS NULL OR "
+            "cache_read_usd_per_million BETWEEN 0 AND 1000000) AND "
+            "(cache_write_usd_per_million IS NULL OR "
+            "cache_write_usd_per_million BETWEEN 0 AND 1000000)",
+            name="prices_range",
+        ),
+        Index("ix_ai_provider_configs_updated_at", "updated_at"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
+    max_output_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=8192
+    )
+    connect_timeout_seconds: Mapped[float] = mapped_column(
+        Float, nullable=False, default=5.0
+    )
+    read_timeout_seconds: Mapped[float] = mapped_column(
+        Float, nullable=False, default=180.0
+    )
+    write_timeout_seconds: Mapped[float] = mapped_column(
+        Float, nullable=False, default=30.0
+    )
+    pool_timeout_seconds: Mapped[float] = mapped_column(
+        Float, nullable=False, default=5.0
+    )
+    max_request_bytes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=4 * 1024 * 1024
+    )
+    max_response_bytes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2 * 1024 * 1024
+    )
+    input_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    output_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    cache_read_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    cache_write_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    tested_configuration_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    test_status: Mapped[str | None] = mapped_column(String(20))
+    tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class AiProviderSecretRecord(Base):
+    """使用应用主密钥加密的一份供应商 API Key。"""
+
+    __tablename__ = "ai_provider_secrets"
+    __table_args__ = (
+        CheckConstraint(
+            f"provider IN ({enum_values(ModelProvider)})",
+            name="provider_value",
+        ),
+        CheckConstraint("key_version > 0", name="key_version_positive"),
+    )
+
+    provider: Mapped[str] = mapped_column(
+        String(20),
+        ForeignKey(
+            "ai_provider_configs.provider",
+            name="fk_ai_provider_secrets_provider",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ConfigurationAuditRecord(Base):
+    """不含配置值和密钥内容的管理员配置变更审计。"""
+
+    __tablename__ = "configuration_audits"
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="revision_positive"),
+        UniqueConstraint("revision"),
+        Index("ix_configuration_audits_created_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    changed_fields: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
 
@@ -420,6 +629,394 @@ class PullRequestCiCheckRecord(Base):
     conclusion: Mapped[str | None] = mapped_column(String(50))
     app_id: Mapped[int | None] = mapped_column(BigInteger)
     observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReviewPlanRecord(Base):
+    """一个审查运行在精确 PR 版本上的不可变规划结果。"""
+
+    __tablename__ = "review_plans"
+    __table_args__ = (
+        CheckConstraint("candidate_count >= 0", name="candidate_count_nonnegative"),
+        CheckConstraint(
+            "requested_candidate_count >= 0",
+            name="requested_candidate_count_nonnegative",
+        ),
+        CheckConstraint("rule_count >= 0", name="rule_count_nonnegative"),
+        CheckConstraint("unit_count >= 0", name="unit_count_nonnegative"),
+        CheckConstraint("file_count >= 0", name="file_count_nonnegative"),
+        CheckConstraint(
+            "total_estimated_input_bytes >= 0",
+            name="total_estimated_input_bytes_nonnegative",
+        ),
+        UniqueConstraint("review_run_id"),
+        Index(
+            "ix_review_plans_version_fingerprint",
+            "review_version_key",
+            "plan_fingerprint",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_run_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_runs.id",
+            name="fk_review_plans_review_run",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    pull_request_version_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "pull_request_versions.id",
+            name="fk_review_plans_pr_version",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    review_version_key: Mapped[str] = mapped_column(String(360), nullable=False)
+    head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    planner_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    rules_complete: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    incomplete_files: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    rule_issues: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    rule_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_estimated_input_bytes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    model_review_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReviewPlanRuleRecord(Base):
+    """Review Plan 保存时使用的一份 AGENTS.md 规则内容快照。"""
+
+    __tablename__ = "review_plan_rules"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint("byte_size > 0", name="byte_size_positive"),
+        UniqueConstraint(
+            "review_plan_id",
+            "path",
+            name="uq_review_plan_rules_plan_path",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "ordinal",
+            name="uq_review_plan_rules_plan_ordinal",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_plan_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_plans.id",
+            name="fk_review_plan_rules_plan",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    scope: Mapped[str | None] = mapped_column(String(1014))
+    blob_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ReviewUnitRecord(Base):
+    """计划中一个确定性的单文件模型输入。"""
+
+    __tablename__ = "review_units"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint(
+            "estimated_input_bytes > 0",
+            name="estimated_input_bytes_positive",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "unit_key",
+            name="uq_review_units_plan_unit_key",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "file",
+            name="uq_review_units_plan_file",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "ordinal",
+            name="uq_review_units_plan_ordinal",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_plan_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_plans.id",
+            name="fk_review_units_plan",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    file: Mapped[str] = mapped_column(String(1024), nullable=False)
+    blob_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    language: Mapped[str] = mapped_column(String(50), nullable=False)
+    patch: Mapped[str] = mapped_column(Text, nullable=False)
+    patch_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_paths: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    estimated_input_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    planner_version: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
+class ReviewFilePlanRecord(Base):
+    """每个 changed file 在计划中的唯一去向。"""
+
+    __tablename__ = "review_file_plans"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
+        CheckConstraint(
+            f"decision IN ({enum_values(ReviewFileDecision)})",
+            name="decision_value",
+        ),
+        CheckConstraint(
+            "(decision = 'planned' AND review_unit_id IS NOT NULL) OR "
+            "(decision <> 'planned' AND review_unit_id IS NULL)",
+            name="decision_unit_consistency",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "file",
+            name="uq_review_file_plans_plan_file",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "ordinal",
+            name="uq_review_file_plans_plan_ordinal",
+        ),
+        UniqueConstraint("review_unit_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_plan_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_plans.id",
+            name="fk_review_file_plans_plan",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    review_unit_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_units.id",
+            name="fk_review_file_plans_unit",
+            ondelete="CASCADE",
+        ),
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    file: Mapped[str] = mapped_column(String(1024), nullable=False)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class ModelCallRecord(Base):
+    """一份 Review Plan 已完成的模型阶段调用审计。"""
+
+    __tablename__ = "model_calls"
+    __table_args__ = (
+        CheckConstraint(
+            f"provider IN ({enum_values(ModelProvider)})",
+            name="provider_value",
+        ),
+        CheckConstraint(
+            "(provider = 'openai' AND api_protocol IN "
+            "('responses', 'chat_completions')) OR "
+            "(provider = 'anthropic' AND api_protocol = 'messages')",
+            name="api_protocol_provider",
+        ),
+        CheckConstraint(
+            f"status IN ({enum_values(ModelCallStatus)})",
+            name="status_value",
+        ),
+        CheckConstraint("duration_ms >= 0", name="duration_ms_nonnegative"),
+        CheckConstraint("input_tokens >= 0", name="input_tokens_nonnegative"),
+        CheckConstraint("output_tokens >= 0", name="output_tokens_nonnegative"),
+        CheckConstraint(
+            "cache_read_input_tokens >= 0",
+            name="cache_read_input_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "cache_write_input_tokens >= 0",
+            name="cache_write_input_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "reasoning_output_tokens >= 0",
+            name="reasoning_output_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "estimated_cost_microusd IS NULL OR estimated_cost_microusd >= 0",
+            name="estimated_cost_microusd_nonnegative",
+        ),
+        CheckConstraint("finding_count >= 0", name="finding_count_nonnegative"),
+        CheckConstraint(
+            "response_status IS NULL OR "
+            "(response_status >= 100 AND response_status <= 599)",
+            name="response_status_range",
+        ),
+        UniqueConstraint("review_plan_id"),
+        Index("ix_model_calls_provider_model_created", "provider", "model", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_plan_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_plans.id",
+            name="fk_model_calls_review_plan",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    configuration_revision: Mapped[int | None] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_response_id: Mapped[str | None] = mapped_column(String(200))
+    provider_request_id: Mapped[str | None] = mapped_column(String(200))
+    response_status: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cache_read_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cache_write_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    reasoning_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    estimated_cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ReviewFindingRecord(Base):
+    """模型候选经平台补齐身份后保存的、默认未复核 Finding。"""
+
+    __tablename__ = "review_findings"
+    __table_args__ = (
+        CheckConstraint(
+            f"severity IN ({enum_values(Severity)})",
+            name="severity_value",
+        ),
+        CheckConstraint(
+            f"category IN ({enum_values(FindingCategory)})",
+            name="category_value",
+        ),
+        CheckConstraint(
+            "location_side IS NULL OR "
+            f"location_side IN ({enum_values(LocationSide)})",
+            name="location_side_value",
+        ),
+        CheckConstraint(
+            f"verification_status IN ({enum_values(VerificationStatus)})",
+            name="verification_status_value",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="confidence_range",
+        ),
+        CheckConstraint(
+            "(location_file IS NULL AND location_blob_sha IS NULL AND "
+            "location_start_line IS NULL AND location_end_line IS NULL AND "
+            "location_side IS NULL AND location_symbol IS NULL) OR "
+            "(location_file IS NOT NULL AND location_blob_sha IS NOT NULL AND "
+            "location_start_line > 0 AND location_end_line >= location_start_line "
+            "AND location_side IS NOT NULL)",
+            name="location_shape",
+        ),
+        UniqueConstraint(
+            "review_run_id",
+            "fingerprint",
+            name="uq_review_findings_run_fingerprint",
+        ),
+        Index(
+            "ix_review_findings_run_verification",
+            "review_run_id",
+            "verification_status",
+        ),
+        Index("ix_review_findings_head_fingerprint", "head_sha", "fingerprint"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_run_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_runs.id",
+            name="fk_review_findings_review_run",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    review_plan_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_plans.id",
+            name="fk_review_findings_review_plan",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    model_call_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "model_calls.id",
+            name="fk_review_findings_model_call",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    source_unit_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    location_file: Mapped[str | None] = mapped_column(String(1024))
+    location_blob_sha: Mapped[str | None] = mapped_column(String(64))
+    location_start_line: Mapped[int | None] = mapped_column(Integer)
+    location_end_line: Mapped[int | None] = mapped_column(Integer)
+    location_side: Mapped[str | None] = mapped_column(String(10))
+    location_in_diff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    location_symbol: Mapped[str | None] = mapped_column(String(512))
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    impact: Mapped[str] = mapped_column(Text, nullable=False)
+    suggestion: Mapped[str] = mapped_column(Text, nullable=False)
+    required_test: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    rule_reference: Mapped[str | None] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
 

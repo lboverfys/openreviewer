@@ -41,6 +41,20 @@ class ErrorCode(str, Enum):
     GITHUB_INVALID_RESPONSE = "github_invalid_response"
     GITHUB_RESPONSE_TOO_LARGE = "github_response_too_large"
     CI_WAIT_TIMEOUT = "ci_wait_timeout"
+    REVIEW_PLAN_INPUT_INCOMPLETE = "review_plan_input_incomplete"
+    REVIEW_PLAN_CONFLICT = "review_plan_conflict"
+    MODEL_TIMEOUT = "model_timeout"
+    MODEL_RATE_LIMITED = "model_rate_limited"
+    MODEL_AUTHENTICATION_FAILED = "model_authentication_failed"
+    MODEL_PERMISSION_DENIED = "model_permission_denied"
+    MODEL_SERVER_ERROR = "model_server_error"
+    MODEL_REQUEST_REJECTED = "model_request_rejected"
+    MODEL_INVALID_RESPONSE = "model_invalid_response"
+    MODEL_RESPONSE_TOO_LARGE = "model_response_too_large"
+    MODEL_OUTPUT_REFUSED = "model_output_refused"
+    MODEL_OUTPUT_TRUNCATED = "model_output_truncated"
+    MODEL_REVIEW_INPUT_INVALID = "model_review_input_invalid"
+    MODEL_REVIEW_CONFLICT = "model_review_conflict"
 
 
 _SENSITIVE_KEYS = {

@@ -65,3 +65,82 @@ export interface ReviewAccepted {
   accepted_at: string;
   created: boolean;
 }
+
+export type AiProvider = "openai" | "anthropic";
+export type AiApiProtocol = "responses" | "chat_completions" | "messages";
+export type AiTestStatus = "untested" | "succeeded" | "failed";
+
+export interface AiProviderSettings {
+  provider: AiProvider;
+  configured: boolean;
+  active: boolean;
+  model: string;
+  api_protocol: AiApiProtocol;
+  api_key_configured: boolean;
+  api_key_mask: string | null;
+  max_output_tokens: number;
+  connect_timeout_seconds: number;
+  read_timeout_seconds: number;
+  write_timeout_seconds: number;
+  pool_timeout_seconds: number;
+  max_request_bytes: number;
+  max_response_bytes: number;
+  input_usd_per_million: string | null;
+  output_usd_per_million: string | null;
+  cache_read_usd_per_million: string | null;
+  cache_write_usd_per_million: string | null;
+  test_status: AiTestStatus;
+  tested_at: string | null;
+  updated_at: string | null;
+}
+
+export interface AiSettings {
+  revision: number;
+  active_provider: AiProvider | null;
+  max_units: number;
+  max_scope_depth: number;
+  max_unit_input_bytes: number;
+  max_total_input_bytes: number;
+  updated_at: string | null;
+  updated_by: string | null;
+  providers: AiProviderSettings[];
+}
+
+export interface AiProviderUpdate {
+  expected_revision: number;
+  model: string;
+  api_protocol: AiApiProtocol;
+  api_key: string | null;
+  clear_api_key: boolean;
+  max_output_tokens: number;
+  connect_timeout_seconds: number;
+  read_timeout_seconds: number;
+  write_timeout_seconds: number;
+  pool_timeout_seconds: number;
+  max_request_bytes: number;
+  max_response_bytes: number;
+  input_usd_per_million: string | null;
+  output_usd_per_million: string | null;
+  cache_read_usd_per_million: string | null;
+  cache_write_usd_per_million: string | null;
+}
+
+export interface ReviewPolicyUpdate {
+  expected_revision: number;
+  max_units: number;
+  max_scope_depth: number;
+  max_unit_input_bytes: number;
+  max_total_input_bytes: number;
+}
+
+export interface ConfigurationAudit {
+  revision: number;
+  actor: string;
+  action: string;
+  changed_fields: string[];
+  created_at: string;
+}
+
+export interface ConfigurationAuditList {
+  items: ConfigurationAudit[];
+}

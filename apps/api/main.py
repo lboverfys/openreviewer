@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
+from decimal import Decimal
 from hashlib import sha256
 from threading import RLock
 from typing import Annotated, Literal
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from domain.enums import ExecutionStatus, WorkerStatus
+from domain.enums import ExecutionStatus, ModelApiProtocol, ModelProvider, WorkerStatus
 from domain.security import (
     ErrorCode,
     SafeApplicationError,
@@ -33,6 +34,20 @@ from services.auth import (
     LoginAttemptLimiter,
     LoginRateLimitError,
     SessionPrincipal,
+)
+from services.ai_settings import (
+    AiConnectionTestError,
+    AiProviderDraft,
+    AiProviderNotReadyError,
+    AiSecretCipher,
+    AiSettingsConfigurationError,
+    AiSettingsConflictError,
+    AiSettingsPersistenceError,
+    AiSettingsService,
+    AiSettingsValidationError,
+    AiSettingsView,
+    ConfigurationAuditView,
+    ReviewPolicyDraft,
 )
 from services.dashboard import (
     DashboardPersistenceError,
@@ -219,12 +234,173 @@ class DashboardResponse(BaseModel):
         )
 
 
+class AiProviderResponse(BaseModel):
+    """一个供应商可公开给管理页面的脱敏配置。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider: ModelProvider
+    configured: bool
+    active: bool
+    model: str
+    api_protocol: ModelApiProtocol
+    api_key_configured: bool
+    api_key_mask: str | None
+    max_output_tokens: int
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+    write_timeout_seconds: float
+    pool_timeout_seconds: float
+    max_request_bytes: int
+    max_response_bytes: int
+    input_usd_per_million: str | None
+    output_usd_per_million: str | None
+    cache_read_usd_per_million: str | None
+    cache_write_usd_per_million: str | None
+    test_status: Literal["untested", "succeeded", "failed"]
+    tested_at: datetime | None
+    updated_at: datetime | None
+
+
+class AiSettingsResponse(BaseModel):
+    """管理页面需要的完整 AI 配置，不包含密钥明文或密文。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    revision: int
+    active_provider: ModelProvider | None
+    max_units: int
+    max_scope_depth: int
+    max_unit_input_bytes: int
+    max_total_input_bytes: int
+    updated_at: datetime | None
+    updated_by: str | None
+    providers: tuple[AiProviderResponse, ...]
+
+    @classmethod
+    def from_view(cls, view: AiSettingsView) -> "AiSettingsResponse":
+        price_names = (
+            "input_usd_per_million",
+            "output_usd_per_million",
+            "cache_read_usd_per_million",
+            "cache_write_usd_per_million",
+        )
+        providers = []
+        for item in view.providers:
+            payload = {
+                field: getattr(item, field)
+                for field in AiProviderResponse.model_fields
+                if field not in price_names
+            }
+            payload.update(
+                {
+                    name: (
+                        format(getattr(item, name), "f")
+                        if getattr(item, name) is not None
+                        else None
+                    )
+                    for name in price_names
+                }
+            )
+            providers.append(AiProviderResponse(**payload))
+        return cls(
+            revision=view.revision,
+            active_provider=view.active_provider,
+            max_units=view.max_units,
+            max_scope_depth=view.max_scope_depth,
+            max_unit_input_bytes=view.max_unit_input_bytes,
+            max_total_input_bytes=view.max_total_input_bytes,
+            updated_at=view.updated_at,
+            updated_by=view.updated_by,
+            providers=tuple(providers),
+        )
+
+
+class AiProviderUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=0)
+    model: str = Field(min_length=1, max_length=200)
+    api_protocol: ModelApiProtocol
+    api_key: str | None = Field(default=None, min_length=1, max_length=65_536)
+    clear_api_key: bool = False
+    max_output_tokens: int = Field(ge=256, le=131_072)
+    connect_timeout_seconds: float = Field(gt=0, le=3600)
+    read_timeout_seconds: float = Field(gt=0, le=3600)
+    write_timeout_seconds: float = Field(gt=0, le=3600)
+    pool_timeout_seconds: float = Field(gt=0, le=3600)
+    max_request_bytes: int = Field(ge=65_536, le=10 * 1024 * 1024)
+    max_response_bytes: int = Field(ge=65_536, le=10 * 1024 * 1024)
+    input_usd_per_million: Decimal | None = Field(
+        default=None, ge=0, le=1_000_000, decimal_places=6
+    )
+    output_usd_per_million: Decimal | None = Field(
+        default=None, ge=0, le=1_000_000, decimal_places=6
+    )
+    cache_read_usd_per_million: Decimal | None = Field(
+        default=None, ge=0, le=1_000_000, decimal_places=6
+    )
+    cache_write_usd_per_million: Decimal | None = Field(
+        default=None, ge=0, le=1_000_000, decimal_places=6
+    )
+
+    def to_draft(self) -> AiProviderDraft:
+        return AiProviderDraft(
+            **{
+                field: getattr(self, field)
+                for field in AiProviderDraft.__dataclass_fields__
+            }
+        )
+
+
+class AiRevisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_revision: int = Field(ge=0)
+
+
+class ReviewPolicyUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_revision: int = Field(ge=0)
+    max_units: int = Field(ge=1, le=3000)
+    max_scope_depth: int = Field(ge=1, le=64)
+    max_unit_input_bytes: int = Field(ge=4096, le=10 * 1024 * 1024)
+    max_total_input_bytes: int = Field(ge=4096, le=100 * 1024 * 1024)
+
+
+class ConfigurationAuditResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    revision: int
+    actor: str
+    action: str
+    changed_fields: tuple[str, ...]
+    created_at: datetime
+
+    @classmethod
+    def from_view(
+        cls,
+        view: ConfigurationAuditView,
+    ) -> "ConfigurationAuditResponse":
+        return cls(
+            **{field: getattr(view, field) for field in cls.model_fields}
+        )
+
+
+class ConfigurationAuditListResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    items: tuple[ConfigurationAuditResponse, ...]
+
+
 def create_app(
     review_service: ReviewService | None = None,
     auth_service: AuthService | None = None,
     dashboard_service: DashboardService | None = None,
     login_limiter: LoginAttemptLimiter | None = None,
     webhook_service: GitHubWebhookService | None = None,
+    ai_settings_service: AiSettingsService | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -276,6 +452,7 @@ def create_app(
     application.state.auth_service = auth_service
     application.state.dashboard_service = dashboard_service
     application.state.webhook_service = webhook_service
+    application.state.ai_settings_service = ai_settings_service
     application.state.login_limiter = login_limiter or LoginAttemptLimiter()
     application.state.owned_database = None
     initialization_lock = RLock()
@@ -415,6 +592,63 @@ def create_app(
                 )
                 application.state.webhook_service = configured_service
             return configured_service
+
+    def get_ai_settings_service() -> AiSettingsService:
+        """返回注入的或按需创建的动态 AI 配置服务。"""
+
+        configured_service: AiSettingsService | None = (
+            application.state.ai_settings_service
+        )
+        if configured_service is not None:
+            return configured_service
+        with initialization_lock:
+            configured_service = application.state.ai_settings_service
+            if configured_service is None:
+                try:
+                    cipher = AiSecretCipher.from_environment()
+                    database = get_database()
+                except AiSettingsConfigurationError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="AI settings encryption is not configured",
+                    ) from exc
+                configured_service = AiSettingsService(database.sessions, cipher)
+                application.state.ai_settings_service = configured_service
+            return configured_service
+
+    def ai_settings_response() -> AiSettingsResponse:
+        try:
+            return AiSettingsResponse.from_view(get_ai_settings_service().get())
+        except AiSettingsPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AI settings are temporarily unavailable",
+            ) from exc
+
+    def translate_ai_settings_error(exc: Exception) -> HTTPException:
+        """把配置领域错误转换成稳定且不含敏感信息的 HTTP 错误。"""
+
+        if isinstance(exc, AiSettingsConflictError):
+            return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        if isinstance(exc, (AiSettingsValidationError, AiProviderNotReadyError)):
+            return HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            )
+        if isinstance(exc, AiSettingsPersistenceError):
+            return HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AI settings are temporarily unavailable",
+            )
+        if isinstance(exc, AiSettingsConfigurationError):
+            return HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AI settings encryption is not configured",
+            )
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AI settings operation failed",
+        )
 
     def require_principal(request: Request) -> SessionPrincipal:
         """从请求 Cookie 验证当前管理员身份。
@@ -763,6 +997,161 @@ def create_app(
         return AuthResponse(
             username=principal.username,
             expires_at=principal.expires_at,
+        )
+
+    @application.get(
+        "/api/v1/settings/ai",
+        response_model=AiSettingsResponse,
+    )
+    def get_ai_settings(
+        _: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> AiSettingsResponse:
+        """返回管理员可见的脱敏 AI 配置。"""
+
+        return ai_settings_response()
+
+    @application.put(
+        "/api/v1/settings/ai/providers/{provider}",
+        response_model=AiSettingsResponse,
+    )
+    def update_ai_provider(
+        provider: ModelProvider,
+        request_body: AiProviderUpdateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> AiSettingsResponse:
+        """保存一个供应商草稿；密钥只交给加密服务，不进入响应。"""
+
+        try:
+            view = get_ai_settings_service().update_provider(
+                provider,
+                request_body.to_draft(),
+                expected_revision=request_body.expected_revision,
+                actor=principal.username,
+                api_key=request_body.api_key,
+                clear_api_key=request_body.clear_api_key,
+            )
+        except (
+            AiSettingsConfigurationError,
+            AiSettingsConflictError,
+            AiSettingsPersistenceError,
+            AiSettingsValidationError,
+        ) as exc:
+            raise translate_ai_settings_error(exc) from exc
+        return AiSettingsResponse.from_view(view)
+
+    @application.post(
+        "/api/v1/settings/ai/providers/{provider}/test",
+        response_model=AiSettingsResponse,
+    )
+    def test_ai_provider(
+        provider: ModelProvider,
+        request_body: AiRevisionRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> AiSettingsResponse:
+        """在数据库事务外发送一个最小结构化模型请求并保存测试状态。"""
+
+        try:
+            view = get_ai_settings_service().test_provider(
+                provider,
+                expected_revision=request_body.expected_revision,
+                actor=principal.username,
+            )
+        except AiConnectionTestError as exc:
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_503_SERVICE_UNAVAILABLE
+                    if exc.retryable
+                    else status.HTTP_422_UNPROCESSABLE_CONTENT
+                ),
+                detail=str(exc),
+            ) from exc
+        except (
+            AiProviderNotReadyError,
+            AiSettingsConfigurationError,
+            AiSettingsConflictError,
+            AiSettingsPersistenceError,
+            AiSettingsValidationError,
+        ) as exc:
+            raise translate_ai_settings_error(exc) from exc
+        return AiSettingsResponse.from_view(view)
+
+    @application.post(
+        "/api/v1/settings/ai/providers/{provider}/activate",
+        response_model=AiSettingsResponse,
+    )
+    def activate_ai_provider(
+        provider: ModelProvider,
+        request_body: AiRevisionRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> AiSettingsResponse:
+        """仅激活已经通过当前配置指纹测试的供应商。"""
+
+        try:
+            view = get_ai_settings_service().activate_provider(
+                provider,
+                expected_revision=request_body.expected_revision,
+                actor=principal.username,
+            )
+        except (
+            AiProviderNotReadyError,
+            AiSettingsConfigurationError,
+            AiSettingsConflictError,
+            AiSettingsPersistenceError,
+        ) as exc:
+            raise translate_ai_settings_error(exc) from exc
+        return AiSettingsResponse.from_view(view)
+
+    @application.put(
+        "/api/v1/settings/ai/review-policy",
+        response_model=AiSettingsResponse,
+    )
+    def update_review_policy(
+        request_body: ReviewPolicyUpdateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> AiSettingsResponse:
+        """保存下一份 Review Plan 使用的动态输入预算。"""
+
+        try:
+            view = get_ai_settings_service().update_review_policy(
+                ReviewPolicyDraft(
+                    max_units=request_body.max_units,
+                    max_scope_depth=request_body.max_scope_depth,
+                    max_unit_input_bytes=request_body.max_unit_input_bytes,
+                    max_total_input_bytes=request_body.max_total_input_bytes,
+                ),
+                expected_revision=request_body.expected_revision,
+                actor=principal.username,
+            )
+        except (
+            AiSettingsConflictError,
+            AiSettingsPersistenceError,
+            AiSettingsValidationError,
+        ) as exc:
+            raise translate_ai_settings_error(exc) from exc
+        return AiSettingsResponse.from_view(view)
+
+    @application.get(
+        "/api/v1/settings/audits",
+        response_model=ConfigurationAuditListResponse,
+    )
+    def list_configuration_audits(
+        _: Annotated[SessionPrincipal, Depends(require_principal)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> ConfigurationAuditListResponse:
+        """返回有界的配置变更审计；审计行只记录字段名。"""
+
+        try:
+            audits = get_ai_settings_service().audits(limit)
+        except AiSettingsPersistenceError as exc:
+            raise translate_ai_settings_error(exc) from exc
+        return ConfigurationAuditListResponse(
+            items=tuple(
+                ConfigurationAuditResponse.from_view(item) for item in audits
+            )
         )
 
     @application.get(

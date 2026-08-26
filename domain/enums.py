@@ -35,6 +35,28 @@ class VerificationStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class ModelProvider(str, Enum):
+    """模型调用适配器支持的供应商。"""
+
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+
+
+class ModelApiProtocol(str, Enum):
+    """供应商调用使用的稳定 HTTP API 协议。"""
+
+    RESPONSES = "responses"
+    CHAT_COMPLETIONS = "chat_completions"
+    MESSAGES = "messages"
+
+
+class ModelCallStatus(str, Enum):
+    """一次模型阶段完成记录的状态。"""
+
+    SUCCEEDED = "succeeded"
+    SKIPPED = "skipped"
+
+
 class ExecutionStatus(str, Enum):
     QUEUED = "queued"
     WAITING_FOR_CI = "waiting_for_ci"
@@ -87,6 +109,31 @@ class FileDisposition(str, Enum):
     BINARY = "binary"
     UNSUPPORTED = "unsupported"
     OMITTED_BY_LIMIT = "omitted_by_limit"
+
+
+class ReviewFileDecision(str, Enum):
+    """模型调用前，规划器为每个 changed file 给出的明确去向。"""
+
+    PLANNED = "planned"
+    BINARY = "binary"
+    GENERATED = "generated"
+    UNSUPPORTED = "unsupported"
+    PATCH_MISSING = "patch_missing"
+    PATCH_TOO_LARGE = "patch_too_large"
+    RULES_INCOMPLETE = "rules_incomplete"
+    OMITTED_BY_BUDGET = "omitted_by_budget"
+
+
+class RepositoryRuleIssueKind(str, Enum):
+    """AGENTS.md 批量读取不能完整用于某些文件的确定性原因。"""
+
+    CANDIDATE_LIMIT = "candidate_limit"
+    SCOPE_DEPTH_LIMIT = "scope_depth_limit"
+    RESPONSE_TOO_LARGE = "response_too_large"
+    BINARY = "binary"
+    TOO_LARGE = "too_large"
+    CONTENT_UNAVAILABLE = "content_unavailable"
+    TOTAL_LIMIT = "total_limit"
 
 
 class LocationSide(str, Enum):

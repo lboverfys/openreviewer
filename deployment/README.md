@@ -1,11 +1,11 @@
-# M3 GitHub 上下文 Worker、管理前端与 PostgreSQL 部署
+# M3 GitHub 上下文与阶段 D 模型 Worker 部署
 
 这是 `niuma-2` 的 M3 部署边界。Compose 运行以下组件：
 
 - `postgres`：OpenReviewer 独享的 PostgreSQL 16，不映射宿主机端口；
 - `migrate`：每次发布前执行 `alembic upgrade head`，成功后正常退出；
 - `api`：健康检查和认证后的管理 API，只绑定宿主机 `127.0.0.1:18090`；
-- `worker`：单并发数据库任务 Worker，只出站访问 GitHub API，无公网端口；
+- `worker`：单并发数据库任务 Worker，只出站访问 GitHub 和所选模型 API，无公网端口；
 - `web`：React 静态文件、HTTPS 和 API 反向代理，公开宿主机 `18443`。
 
 当前测试环境前端入口：
@@ -97,6 +97,8 @@ release 的 `release.info`，不包含任何密码或会话密钥。
     ├── postgres-password    # 已有数据库密码，仅用于生成发布 .env
     ├── github/
     │   └── github-app-private-key.pem  # 0640 root:root，只读挂载给 Worker
+    ├── secrets/
+    │   └── ai-config-key               # 0640 root:root，API/Worker 共用的 32 字节 Base64 密钥
     └── tls/                 # 0700 root:root
         ├── openreviewer.crt
         └── openreviewer.key
@@ -128,10 +130,13 @@ OPENREVIEWER_SESSION_SECRET=<随机会话签名密钥>
 OPENREVIEWER_GITHUB_WEBHOOK_SECRET=<至少 32 字节的 Webhook 密钥>
 OPENREVIEWER_GITHUB_APP_ID=<GitHub App 数字 ID>
 OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE=/opt/openreviewer/shared/github/github-app-private-key.pem
+OPENREVIEWER_AI_CONFIG_KEY_FILE=/opt/openreviewer/shared/secrets/ai-config-key
+OPENREVIEWER_AI_CONFIG_KEY_VERSION=1
 OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES=262144
 OPENREVIEWER_CI_POLL_SECONDS=30
 OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS=3600
 OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS=600
+OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS=600
 OPENREVIEWER_API_HOST_PORT=18090
 OPENREVIEWER_WEB_HOST_PORT=18443
 OPENREVIEWER_TLS_CERT_FILE=/opt/openreviewer/shared/tls/openreviewer.crt
@@ -141,6 +146,8 @@ OPENREVIEWER_LOG_LEVEL=INFO
 ```
 
 `.env` 必须是 `0600 root:root`。管理员密码哈希不是明文，但仍不提交 Git。
+AI 配置主密钥文件使用 `0600` 或 `0640 root:root`；API 与 Worker 容器都以 group 0 只读挂载。
+模型供应商、模型 ID、API Key、超时、大小、价格与审查预算在管理界面的设置页配置。
 
 ### GitHub App 仓库权限
 
@@ -204,18 +211,19 @@ Origin 证书只用于 Cloudflare 到源站的连接，不应把源站 IP 当作
 宿主机 127.0.0.1:18090 -> API :18090
 backend 内部网络        -> PostgreSQL :5432
 worker egress 网络       -> api.github.com:443
+                          -> api.openai.com:443 或 api.anthropic.com:443
 ```
 
 - PostgreSQL、Worker 不发布宿主机端口；
 - Worker 以 UID `10001`、GID `0` 运行，只为读取宿主机 `0640 root:root` 的 GitHub App
-  私钥；容器仍移除全部 capabilities、使用只读根文件系统且禁止提权；
+  私钥和模型 API Key；容器仍移除全部 capabilities、使用只读根文件系统且禁止提权；
 - API 不监听公网地址；
 - Nginx 拒绝未列入白名单的 `/api/` 路径；
 - 登录同时受 Nginx IP 限速和 API 失败窗口限制；
 - Cookie 为 Secure、HttpOnly、SameSite=Strict；
 - Web、API 和 Worker 使用只读根文件系统、移除 Linux capabilities 并启用
   `no-new-privileges`；
-- 不在日志中输出密码、Cookie、数据库连接密码或完整 Compose 配置。
+- 不在日志中输出密码、Cookie、数据库连接密码、模型 API Key 或完整 Compose 配置。
 
 ## 安全验证命令
 

@@ -8,6 +8,7 @@ import {
 
 import { api, ApiError } from "./api";
 import { loadSavedCredentials, saveCredentials } from "./credentials";
+import SettingsPage from "./SettingsPage";
 import type {
   AuthUser,
   DashboardSnapshot,
@@ -133,10 +134,6 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
       <section className="warm-showcase-panel">
         <div className="showcase-topbar">
           <Brand />
-          <div className="milestone-pill">
-            <span className="live-orange-dot" />
-            <span>M2 · 调度中枢已就绪</span>
-          </div>
         </div>
 
         <div className="showcase-content">
@@ -605,9 +602,10 @@ function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) 
 interface DashboardProps {
   user: AuthUser;
   onSignedOut: (message?: string) => void;
+  onOpenSettings: () => void;
 }
 
-function Dashboard({ user, onSignedOut }: DashboardProps) {
+function Dashboard({ user, onSignedOut, onOpenSettings }: DashboardProps) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [streamState, setStreamState] = useState<StreamState>("connecting");
   const [pageMessage, setPageMessage] = useState("");
@@ -740,6 +738,18 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
             </svg>
             <span>刷新</span>
+          </button>
+
+          <button
+            className="bento-settings-icon-btn"
+            onClick={onOpenSettings}
+            title="AI 运行设置"
+            aria-label="打开 AI 运行设置"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.6.67 1.02 1.29 1.03H21v4h-.31c-.62 0-1.15.42-1.29 1.03Z" />
+            </svg>
           </button>
 
           <div className="bento-nav-divider" />
@@ -1016,30 +1026,6 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
               }}
               onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
             />
-
-            {/* M2 Protocol Card */}
-            <div className="bento-protocol-card">
-              <div className="protocol-head">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                </svg>
-                <span>M2 里程碑系统契约</span>
-              </div>
-              <ul className="protocol-checklist">
-                <li>
-                  <span className="dot-orange" />
-                  <span><strong>自动故障重试</strong>：超时任务自动指数退避重派</span>
-                </li>
-                <li>
-                  <span className="dot-caramel" />
-                  <span><strong>CI 门禁保护</strong>：在 <code>waiting_for_ci</code> 安全阻断</span>
-                </li>
-                <li>
-                  <span className="dot-green" />
-                  <span><strong>M3 路线展望</strong>：接入大模型深度审查与回写</span>
-                </li>
-              </ul>
-            </div>
           </aside>
         </div>
       </main>
@@ -1049,6 +1035,17 @@ function Dashboard({ user, onSignedOut }: DashboardProps) {
 
 export default function App() {
   const [session, setSession] = useState<SessionState>({ phase: "checking" });
+  const [view, setView] = useState<"dashboard" | "settings">(
+    window.location.hash === "#settings" ? "settings" : "dashboard",
+  );
+
+  useEffect(() => {
+    function syncViewWithHash() {
+      setView(window.location.hash === "#settings" ? "settings" : "dashboard");
+    }
+    window.addEventListener("hashchange", syncViewWithHash);
+    return () => window.removeEventListener("hashchange", syncViewWithHash);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1081,10 +1078,27 @@ export default function App() {
       />
     );
   }
+  if (view === "settings") {
+    return (
+      <SettingsPage
+        user={session.user}
+        onBack={() => {
+          window.location.hash = "";
+        }}
+        onSignedOut={(message) => {
+          window.location.hash = "";
+          setSession({ phase: "guest", message });
+        }}
+      />
+    );
+  }
   return (
     <Dashboard
       user={session.user}
       onSignedOut={(message) => setSession({ phase: "guest", message })}
+      onOpenSettings={() => {
+        window.location.hash = "settings";
+      }}
     />
   );
 }

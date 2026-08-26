@@ -34,16 +34,26 @@ def test_initial_migration_creates_durable_review_task_schema(
     try:
         inspector = inspect(engine)
         assert set(inspector.get_table_names()) == {
+            "ai_provider_configs",
+            "ai_provider_secrets",
+            "ai_settings",
             "alembic_version",
+            "configuration_audits",
             "external_actions",
             "github_installations",
             "github_webhook_deliveries",
+            "model_calls",
             "outbox_events",
             "pull_request_ci_checks",
             "pull_request_files",
             "pull_request_versions",
+            "review_file_plans",
+            "review_findings",
+            "review_plan_rules",
+            "review_plans",
             "review_runs",
             "review_tasks",
+            "review_units",
             "worker_heartbeats",
         }
         assert {
@@ -66,6 +76,8 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ci_wait_started_at",
             "ci_deadline_at",
             "ci_poll_count",
+            "claimed_from_status",
+            "model_attempt_count",
         } <= task_columns
         assert {
             constraint["name"]
@@ -100,6 +112,8 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_tasks_execution_status_value",
             "ck_review_tasks_max_attempts_positive",
             "ck_review_tasks_ci_poll_count_nonnegative",
+            "ck_review_tasks_claimed_from_status_value",
+            "ck_review_tasks_model_attempt_count_nonnegative",
         }
         assert {
             constraint["name"]
@@ -124,7 +138,46 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_pull_request_versions_pull_request_number_positive",
             "ck_pull_request_versions_repository_id_positive",
         }
-        assert revision == "20260824_0004"
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("review_plans")
+        } == {"uq_review_plans_review_run_id"}
+        assert "model_review_completed_at" in {
+            column["name"] for column in inspector.get_columns("review_plans")
+        }
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("model_calls")
+        } == {"uq_model_calls_review_plan_id"}
+        assert "configuration_revision" in {
+            column["name"] for column in inspector.get_columns("model_calls")
+        }
+        assert "api_protocol" in {
+            column["name"] for column in inspector.get_columns("model_calls")
+        }
+        assert "api_protocol" in {
+            column["name"]
+            for column in inspector.get_columns("ai_provider_configs")
+        }
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("ai_settings")
+        } == {"uq_ai_settings_revision"}
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("review_findings")
+        } == {"uq_review_findings_run_fingerprint"}
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints(
+                "review_file_plans"
+            )
+        } == {
+            "ck_review_file_plans_decision_unit_consistency",
+            "ck_review_file_plans_decision_value",
+            "ck_review_file_plans_ordinal_nonnegative",
+        }
+        assert revision == "20260825_0008"
     finally:
         engine.dispose()
 
@@ -157,3 +210,68 @@ def test_postgres_migration_keeps_execution_constraint_names_fixed(
     ) in output
     assert "DROP CONSTRAINT ck_review_runs_ck_review_runs_" not in output
     assert "DROP CONSTRAINT ck_review_tasks_ck_review_tasks_" not in output
+
+
+def test_protocol_migration_backfills_existing_provider_configs(
+    tmp_path: Path,
+) -> None:
+    database_path = (tmp_path / "protocol-backfill.sqlite3").as_posix()
+    database_url = f"sqlite:///{database_path}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "20260825_0007")
+
+    engine = create_engine(database_url)
+    try:
+        values = {
+            "max_output_tokens": 8192,
+            "connect_timeout_seconds": 5,
+            "read_timeout_seconds": 180,
+            "write_timeout_seconds": 30,
+            "pool_timeout_seconds": 5,
+            "max_request_bytes": 4194304,
+            "max_response_bytes": 2097152,
+            "updated_by": "migration-test",
+            "updated_at": "2026-08-25 00:00:00",
+        }
+        with engine.begin() as connection:
+            for provider, model in (
+                ("openai", "gpt-test"),
+                ("anthropic", "claude-test"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO ai_provider_configs ("
+                        "provider, model, max_output_tokens, "
+                        "connect_timeout_seconds, read_timeout_seconds, "
+                        "write_timeout_seconds, pool_timeout_seconds, "
+                        "max_request_bytes, max_response_bytes, updated_by, updated_at"
+                        ") VALUES ("
+                        ":provider, :model, :max_output_tokens, "
+                        ":connect_timeout_seconds, :read_timeout_seconds, "
+                        ":write_timeout_seconds, :pool_timeout_seconds, "
+                        ":max_request_bytes, :max_response_bytes, :updated_by, :updated_at"
+                        ")"
+                    ),
+                    {**values, "provider": provider, "model": model},
+                )
+    finally:
+        engine.dispose()
+
+    command.upgrade(configuration, "head")
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            protocols = dict(
+                connection.execute(
+                    text(
+                        "SELECT provider, api_protocol FROM ai_provider_configs"
+                    )
+                ).all()
+            )
+        assert protocols == {
+            "openai": "responses",
+            "anthropic": "messages",
+        }
+    finally:
+        engine.dispose()

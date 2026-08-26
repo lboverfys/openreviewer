@@ -4,32 +4,60 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Load, Session, sessionmaker
 
 from domain.enums import (
+    ChangedFileStatus,
     CiState,
     CoverageStatus,
     ExecutionStatus,
+    PatchState,
     PullRequestState,
     WorkerStatus,
 )
-from domain.github import GitHubReviewContext
+from domain.github import GitHubReviewContext, PullRequestFile
+from domain.identifiers import build_review_version_key
+from domain.model_review import (
+    MaterializedFinding,
+    ModelReviewInput,
+    ModelReviewResult,
+    materialize_findings,
+)
+from domain.review_planning import (
+    RepositoryRule,
+    RepositoryRulesSnapshot,
+    ReviewPlan,
+    ReviewUnit,
+)
 from domain.security import ErrorCode, SafeError
 from persistence.models import (
     GitHubInstallationRecord,
+    ModelCallRecord,
     OutboxEventRecord,
     PullRequestCiCheckRecord,
     PullRequestFileRecord,
     PullRequestVersionRecord,
+    ReviewFilePlanRecord,
+    ReviewFindingRecord,
+    ReviewPlanRecord,
+    ReviewPlanRuleRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
+    ReviewUnitRecord,
     WorkerHeartbeatRecord,
 )
 from services.task_queue import (
+    ModelReviewConflictError,
+    ModelReviewInputError,
+    ReviewPlanConflictError,
+    ReviewPlanInputError,
+    ReviewPlanningInput,
     ReviewTaskLease,
     ReviewTarget,
+    StoredReviewPlan,
+    StoredModelReview,
     TaskLeaseLostError,
     TaskQueueError,
 )
@@ -62,7 +90,9 @@ def _task_run_mutation_load_options() -> tuple[Load, Load]:
             ReviewTaskRecord.review_run_id,
             ReviewTaskRecord.execution_status,
             ReviewTaskRecord.attempt_count,
+            ReviewTaskRecord.model_attempt_count,
             ReviewTaskRecord.max_attempts,
+            ReviewTaskRecord.claimed_from_status,
             ReviewTaskRecord.ci_poll_count,
             ReviewTaskRecord.ci_wait_started_at,
             ReviewTaskRecord.ci_deadline_at,
@@ -76,7 +106,9 @@ def _task_run_mutation_load_options() -> tuple[Load, Load]:
             ReviewRunRecord.repository,
             ReviewRunRecord.pull_request_number,
             ReviewRunRecord.head_sha,
+            ReviewRunRecord.execution_status,
             ReviewRunRecord.coverage_status,
+            ReviewRunRecord.created_at,
             raiseload=True,
         ),
     )
@@ -218,13 +250,22 @@ class SqlAlchemyReviewTaskQueue:
                     retryable=True,
                 )
                 for task, run in expired_tasks:
+                    is_model_stage = (
+                        task.claimed_from_status
+                        == ExecutionStatus.READY_FOR_REVIEW.value
+                        and task.model_attempt_count > 0
+                    )
                     self._reschedule_or_fail(
                         session,
                         task,
                         run,
                         now,
                         lease_error,
-                        event_suffix=f"lease-expired-{task.attempt_count}",
+                        event_suffix=(
+                            f"lease-expired-model-{task.model_attempt_count}"
+                            if is_model_stage
+                            else f"lease-expired-{task.attempt_count}"
+                        ),
                     )
                 session.commit()
                 return len(expired_tasks)
@@ -236,13 +277,15 @@ class SqlAlchemyReviewTaskQueue:
         self,
         worker_id: str,
         lease_duration: timedelta,
+        *,
+        ai_configured: bool = True,
     ) -> ReviewTaskLease | None:
         """原子领取一个当前可执行的任务。
 
-        选择 ``queued`` 或已经到下一次检查时间的 ``waiting_for_ci`` 任务，并按优先级、
-        可用时间和创建时间排序。锁定后同时更新任务和运行状态、尝试次数、租约
-        所有者及过期时间，再写入 ``review.task.running`` 事件；没有可领取任务时
-        返回 ``None``。
+        选择 ``queued``、到期的 ``waiting_for_ci``，或尚未保存计划的
+        ``ready_for_review`` 任务，并按优先级、可用时间和创建时间排序。锁定后
+        同时更新任务和运行状态、原阶段、尝试次数、租约所有者及过期时间，再写入
+        ``review.task.running`` 事件；没有可领取任务时返回 ``None``。
 
         参数：
             worker_id: 领取者的稳定身份，会写入 ``lease_owner``。
@@ -265,8 +308,22 @@ class SqlAlchemyReviewTaskQueue:
         lease_expires_at = now + lease_duration
         with self._sessions() as session:
             try:
+                plan_id_query = (
+                    select(ReviewPlanRecord.id)
+                    .where(ReviewPlanRecord.review_run_id == ReviewRunRecord.id)
+                    .scalar_subquery()
+                )
+                model_completed_query = (
+                    select(ReviewPlanRecord.model_review_completed_at)
+                    .where(ReviewPlanRecord.review_run_id == ReviewRunRecord.id)
+                    .scalar_subquery()
+                )
                 statement = (
-                    select(ReviewTaskRecord, ReviewRunRecord)
+                    select(
+                        ReviewTaskRecord,
+                        ReviewRunRecord,
+                        plan_id_query.label("review_plan_id"),
+                    )
                     .join(
                         ReviewRunRecord,
                         ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
@@ -276,9 +333,21 @@ class SqlAlchemyReviewTaskQueue:
                             (
                                 ExecutionStatus.QUEUED.value,
                                 ExecutionStatus.WAITING_FOR_CI.value,
+                                ExecutionStatus.READY_FOR_REVIEW.value,
                             )
                         ),
                         ReviewTaskRecord.available_at <= now,
+                        or_(
+                            ai_configured,
+                            ReviewTaskRecord.execution_status
+                            != ExecutionStatus.READY_FOR_REVIEW.value,
+                        ),
+                        or_(
+                            ReviewTaskRecord.execution_status
+                            != ExecutionStatus.READY_FOR_REVIEW.value,
+                            plan_id_query.is_(None),
+                            model_completed_query.is_(None),
+                        ),
                     )
                     .order_by(
                         ReviewTaskRecord.priority.desc(),
@@ -294,14 +363,24 @@ class SqlAlchemyReviewTaskQueue:
                 if row is None:
                     session.commit()
                     return None
-                task, run = row
+                task, run, review_plan_id = row
 
                 claimed_from_status = ExecutionStatus(task.execution_status)
                 task.execution_status = ExecutionStatus.RUNNING.value
-                if claimed_from_status is ExecutionStatus.QUEUED:
+                is_model_stage = (
+                    claimed_from_status is ExecutionStatus.READY_FOR_REVIEW
+                    and review_plan_id is not None
+                )
+                if is_model_stage:
+                    task.model_attempt_count += 1
+                elif claimed_from_status in {
+                    ExecutionStatus.QUEUED,
+                    ExecutionStatus.READY_FOR_REVIEW,
+                }:
                     task.attempt_count += 1
                 else:
                     task.ci_poll_count += 1
+                task.claimed_from_status = claimed_from_status.value
                 task.lease_owner = worker_id
                 task.lease_expires_at = lease_expires_at
                 task.last_error = None
@@ -315,7 +394,12 @@ class SqlAlchemyReviewTaskQueue:
                     session,
                     task,
                     "review.task.running",
-                    f"running:{task.attempt_count}:ci-poll-{task.ci_poll_count}",
+                    (
+                        f"model-review:{task.model_attempt_count}"
+                        if is_model_stage
+                        else f"{claimed_from_status.value}:{task.attempt_count}:"
+                        f"ci-poll-{task.ci_poll_count}"
+                    ),
                     now,
                 )
                 session.commit()
@@ -324,9 +408,11 @@ class SqlAlchemyReviewTaskQueue:
                     review_run_id=task.review_run_id,
                     worker_id=worker_id,
                     attempt_count=task.attempt_count,
+                    model_attempt_count=task.model_attempt_count,
                     lease_expires_at=lease_expires_at,
                     ci_poll_count=task.ci_poll_count,
                     claimed_from_status=claimed_from_status,
+                    review_plan_id=review_plan_id,
                 )
             except TaskQueueError:
                 session.rollback()
@@ -376,9 +462,11 @@ class SqlAlchemyReviewTaskQueue:
                     review_run_id=lease.review_run_id,
                     worker_id=lease.worker_id,
                     attempt_count=lease.attempt_count,
+                    model_attempt_count=lease.model_attempt_count,
                     lease_expires_at=renewed_until,
                     ci_poll_count=lease.ci_poll_count,
                     claimed_from_status=lease.claimed_from_status,
+                    review_plan_id=lease.review_plan_id,
                 )
             except TaskLeaseLostError:
                 session.rollback()
@@ -421,7 +509,11 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_owner == lease.worker_id,
                 ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
                 ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+                ReviewTaskRecord.claimed_from_status
+                == lease.claimed_from_status.value,
+                ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
             )
@@ -459,6 +551,11 @@ class SqlAlchemyReviewTaskQueue:
     ) -> ExecutionStatus:
         """保存有界快照并按当前 PR/CI 状态原子推进任务。"""
 
+        if lease.claimed_from_status not in {
+            ExecutionStatus.QUEUED,
+            ExecutionStatus.WAITING_FOR_CI,
+        }:
+            raise TaskLeaseLostError("当前租约不属于 GitHub 上下文阶段")
         if ci_poll_interval.total_seconds() <= 0:
             raise ValueError("CI poll interval must be positive")
         if ci_wait_timeout <= ci_poll_interval:
@@ -617,6 +714,861 @@ class SqlAlchemyReviewTaskQueue:
                 session.rollback()
                 raise TaskQueueError("GitHub review context could not be stored") from exc
 
+    def load_planning_input(self, lease: ReviewTaskLease) -> ReviewPlanningInput:
+        """一次读取精确版本及其最多 3000 个 changed files。"""
+
+        if lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW:
+            raise ReviewPlanInputError("只有可审查阶段的任务才能读取规划输入")
+        now = self._clock()
+        statement = (
+            select(
+                ReviewRunRecord.installation_id.label("installation_id"),
+                ReviewRunRecord.repository_id.label("repository_id"),
+                ReviewRunRecord.repository.label("repository"),
+                ReviewRunRecord.pull_request_number.label("pull_request_number"),
+                ReviewRunRecord.head_sha.label("run_head_sha"),
+                ReviewRunRecord.review_version_key.label("review_version_key"),
+                PullRequestVersionRecord.id.label("version_id"),
+                PullRequestVersionRecord.head_sha.label("version_head_sha"),
+                PullRequestVersionRecord.context_fetched_at.label(
+                    "context_fetched_at"
+                ),
+                PullRequestVersionRecord.files_complete.label("files_complete"),
+                PullRequestVersionRecord.changed_files_count.label(
+                    "changed_files_count"
+                ),
+                PullRequestFileRecord.id.label("file_id"),
+                PullRequestFileRecord.path.label("file_path"),
+                PullRequestFileRecord.previous_path.label("previous_path"),
+                PullRequestFileRecord.status.label("file_status"),
+                PullRequestFileRecord.blob_sha.label("blob_sha"),
+                PullRequestFileRecord.additions.label("additions"),
+                PullRequestFileRecord.deletions.label("deletions"),
+                PullRequestFileRecord.changes.label("changes"),
+                PullRequestFileRecord.patch_state.label("patch_state"),
+                PullRequestFileRecord.patch.label("patch"),
+            )
+            .select_from(ReviewTaskRecord)
+            .join(
+                ReviewRunRecord,
+                ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
+            )
+            .join(
+                PullRequestVersionRecord,
+                PullRequestVersionRecord.review_version_key
+                == ReviewRunRecord.review_version_key,
+            )
+            .outerjoin(
+                PullRequestFileRecord,
+                PullRequestFileRecord.pull_request_version_id
+                == PullRequestVersionRecord.id,
+            )
+            .where(
+                ReviewTaskRecord.id == lease.task_id,
+                ReviewTaskRecord.review_run_id == lease.review_run_id,
+                ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
+                ReviewTaskRecord.lease_owner == lease.worker_id,
+                ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
+                ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+                ReviewTaskRecord.claimed_from_status
+                == ExecutionStatus.READY_FOR_REVIEW.value,
+                ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
+                ReviewTaskRecord.lease_expires_at.is_not(None),
+                ReviewTaskRecord.lease_expires_at > now,
+            )
+            .order_by(PullRequestFileRecord.path.asc())
+            .limit(3001)
+        )
+        with self._sessions() as session:
+            try:
+                rows = session.execute(statement).all()
+            except SQLAlchemyError as exc:
+                raise TaskQueueError("review planning input could not be loaded") from exc
+        if not rows:
+            raise TaskLeaseLostError()
+
+        first = rows[0]
+        if (
+            first.run_head_sha != first.version_head_sha
+            or first.review_version_key
+            != build_review_version_key(
+                first.repository_id,
+                first.pull_request_number,
+                first.run_head_sha,
+            )
+        ):
+            raise ReviewPlanConflictError(
+                "持久化 PR 版本与当前审查任务身份不一致"
+            )
+        if first.context_fetched_at is None or first.files_complete is not True:
+            raise ReviewPlanInputError()
+        if (
+            first.changed_files_count is None
+            or first.changed_files_count < 0
+            or first.changed_files_count > 3000
+        ):
+            raise ReviewPlanInputError("PR changed files 数量超出规划边界")
+
+        file_rows = [row for row in rows if row.file_id is not None]
+        if len(file_rows) > 3000 or len(file_rows) != first.changed_files_count:
+            raise ReviewPlanInputError("PR 文件快照数量与 GitHub 元数据不一致")
+        try:
+            files = tuple(
+                PullRequestFile(
+                    path=row.file_path,
+                    previous_path=row.previous_path,
+                    status=ChangedFileStatus(row.file_status),
+                    blob_sha=row.blob_sha,
+                    additions=row.additions,
+                    deletions=row.deletions,
+                    changes=row.changes,
+                    patch_state=PatchState(row.patch_state),
+                    patch=row.patch,
+                )
+                for row in file_rows
+            )
+        except (TypeError, ValueError) as exc:
+            raise ReviewPlanInputError("PR 文件快照字段不符合规划契约") from exc
+        return ReviewPlanningInput(
+            target=ReviewTarget(
+                installation_id=first.installation_id,
+                repository_id=first.repository_id,
+                repository=first.repository,
+                pull_request_number=first.pull_request_number,
+                head_sha=first.run_head_sha,
+                review_version_key=first.review_version_key,
+                context_fetched_at=_as_utc(first.context_fetched_at),
+            ),
+            files=files,
+        )
+
+    def store_review_plan(
+        self,
+        lease: ReviewTaskLease,
+        rules: RepositoryRulesSnapshot,
+        plan: ReviewPlan,
+    ) -> StoredReviewPlan:
+        """短事务校验版本并批量保存完整 Review Plan。"""
+
+        if lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW:
+            raise ReviewPlanConflictError("计划只能由可审查阶段的租约保存")
+        if (
+            rules.repository_id != plan.repository_id
+            or rules.repository != plan.repository
+            or rules.head_sha != plan.head_sha
+            or tuple(rules.rules) != tuple(plan.rules)
+        ):
+            raise ReviewPlanConflictError("规则快照与 Review Plan 身份不一致")
+
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                existing = session.execute(
+                    select(
+                        ReviewPlanRecord.id,
+                        ReviewPlanRecord.plan_fingerprint,
+                        ReviewPlanRecord.review_version_key,
+                        ReviewPlanRecord.head_sha,
+                        ReviewRunRecord.execution_status,
+                    )
+                    .join(
+                        ReviewRunRecord,
+                        ReviewRunRecord.id == ReviewPlanRecord.review_run_id,
+                    )
+                    .where(ReviewPlanRecord.review_run_id == lease.review_run_id)
+                ).one_or_none()
+                if existing is not None:
+                    if (
+                        existing.plan_fingerprint != plan.plan_fingerprint
+                        or existing.review_version_key != plan.review_version_key
+                        or existing.head_sha != plan.head_sha
+                    ):
+                        raise ReviewPlanConflictError(
+                            "同一审查运行已经保存了不同指纹的计划"
+                        )
+                    return StoredReviewPlan(
+                        plan_id=existing.id,
+                        created=False,
+                        execution_status=ExecutionStatus(
+                            existing.execution_status
+                        ),
+                    )
+
+                task, run = self._locked_owned_task_with_run(session, lease, now)
+                if (
+                    run.review_version_key != plan.review_version_key
+                    or run.repository_id != plan.repository_id
+                    or run.repository != plan.repository
+                    or run.pull_request_number != plan.pull_request_number
+                    or run.head_sha != plan.head_sha
+                ):
+                    raise ReviewPlanConflictError(
+                        "Review Plan 与被锁定任务的精确版本不一致"
+                    )
+
+                version = session.scalar(
+                    select(PullRequestVersionRecord)
+                    .where(
+                        PullRequestVersionRecord.review_version_key
+                        == run.review_version_key
+                    )
+                    .options(
+                        Load(PullRequestVersionRecord).load_only(
+                            PullRequestVersionRecord.id,
+                            PullRequestVersionRecord.review_version_key,
+                            PullRequestVersionRecord.repository_id,
+                            PullRequestVersionRecord.repository,
+                            PullRequestVersionRecord.pull_request_number,
+                            PullRequestVersionRecord.head_sha,
+                            PullRequestVersionRecord.files_complete,
+                            PullRequestVersionRecord.changed_files_count,
+                            raiseload=True,
+                        )
+                    )
+                    .with_for_update()
+                )
+                if version is None:
+                    raise ReviewPlanInputError("当前 SHA 没有持久化 PR 版本")
+                if (
+                    version.review_version_key != plan.review_version_key
+                    or version.repository_id != plan.repository_id
+                    or version.repository != plan.repository
+                    or version.pull_request_number != plan.pull_request_number
+                    or version.head_sha != plan.head_sha
+                ):
+                    raise ReviewPlanConflictError(
+                        "当前 PR 版本已经不再匹配 Review Plan"
+                    )
+                if version.files_complete is not True:
+                    raise ReviewPlanInputError()
+                if version.changed_files_count != len(plan.files):
+                    raise ReviewPlanInputError(
+                        "Review Plan 文件数与当前 SHA 快照不一致"
+                    )
+
+                newer_run_id = session.scalar(
+                    select(ReviewRunRecord.id)
+                    .where(
+                        ReviewRunRecord.repository_id == run.repository_id,
+                        ReviewRunRecord.pull_request_number
+                        == run.pull_request_number,
+                        ReviewRunRecord.id != run.id,
+                        ReviewRunRecord.head_sha != run.head_sha,
+                        ReviewRunRecord.created_at >= run.created_at,
+                    )
+                    .order_by(ReviewRunRecord.created_at.desc())
+                    .limit(1)
+                )
+                if newer_run_id is not None:
+                    self._set_owned_status(
+                        task,
+                        run,
+                        ExecutionStatus.SUPERSEDED,
+                        now,
+                    )
+                    run.coverage_status = CoverageStatus.STALE.value
+                    self._add_event(
+                        session,
+                        task,
+                        "review.superseded",
+                        f"plan-head-stale:{task.attempt_count}",
+                        now,
+                    )
+                    session.commit()
+                    return StoredReviewPlan(
+                        plan_id=None,
+                        created=False,
+                        execution_status=ExecutionStatus.SUPERSEDED,
+                    )
+
+                plan_id = str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        "openreviewer:plan:"
+                        f"{run.id}:{plan.plan_fingerprint}",
+                    )
+                )
+                session.add(
+                    ReviewPlanRecord(
+                        id=plan_id,
+                        review_run_id=run.id,
+                        pull_request_version_id=version.id,
+                        review_version_key=plan.review_version_key,
+                        head_sha=plan.head_sha,
+                        plan_fingerprint=plan.plan_fingerprint,
+                        planner_version=plan.planner_version,
+                        rules_complete=rules.complete,
+                        incomplete_files=list(rules.incomplete_files),
+                        rule_issues=[
+                            issue.model_dump(mode="json") for issue in rules.issues
+                        ],
+                        candidate_count=rules.candidate_count,
+                        requested_candidate_count=rules.requested_candidate_count,
+                        rule_count=len(plan.rules),
+                        unit_count=len(plan.units),
+                        file_count=len(plan.files),
+                        total_estimated_input_bytes=(
+                            plan.total_estimated_input_bytes
+                        ),
+                        created_at=now,
+                    )
+                )
+                session.flush()
+
+                rule_rows = [
+                    {
+                        "id": str(
+                            uuid5(
+                                NAMESPACE_URL,
+                                f"openreviewer:plan-rule:{plan_id}:{rule.path}",
+                            )
+                        ),
+                        "review_plan_id": plan_id,
+                        "ordinal": ordinal,
+                        "path": rule.path,
+                        "scope": rule.scope,
+                        "blob_sha": rule.blob_sha,
+                        "content": rule.content,
+                        "content_sha256": rule.content_sha256,
+                        "byte_size": rule.byte_size,
+                    }
+                    for ordinal, rule in enumerate(plan.rules)
+                ]
+                if rule_rows:
+                    session.execute(insert(ReviewPlanRuleRecord), rule_rows)
+
+                unit_ids = {
+                    unit.unit_key: str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"openreviewer:review-unit:{plan_id}:{unit.unit_key}",
+                        )
+                    )
+                    for unit in plan.units
+                }
+                unit_rows = [
+                    {
+                        "id": unit_ids[unit.unit_key],
+                        "review_plan_id": plan_id,
+                        "ordinal": ordinal,
+                        "unit_key": unit.unit_key,
+                        "file": unit.file,
+                        "blob_sha": unit.blob_sha,
+                        "language": unit.language,
+                        "patch": unit.patch,
+                        "patch_sha256": unit.patch_sha256,
+                        "rule_paths": list(unit.rule_paths),
+                        "estimated_input_bytes": unit.estimated_input_bytes,
+                        "planner_version": unit.planner_version,
+                    }
+                    for ordinal, unit in enumerate(plan.units)
+                ]
+                if unit_rows:
+                    session.execute(insert(ReviewUnitRecord), unit_rows)
+
+                file_rows = [
+                    {
+                        "id": str(
+                            uuid5(
+                                NAMESPACE_URL,
+                                f"openreviewer:file-plan:{plan_id}:{item.file}",
+                            )
+                        ),
+                        "review_plan_id": plan_id,
+                        "review_unit_id": (
+                            unit_ids[item.unit_key]
+                            if item.unit_key is not None
+                            else None
+                        ),
+                        "ordinal": ordinal,
+                        "file": item.file,
+                        "decision": item.decision.value,
+                    }
+                    for ordinal, item in enumerate(plan.files)
+                ]
+                if file_rows:
+                    session.execute(insert(ReviewFilePlanRecord), file_rows)
+
+                self._set_owned_status(
+                    task,
+                    run,
+                    ExecutionStatus.READY_FOR_REVIEW,
+                    now,
+                )
+                self._add_event(
+                    session,
+                    task,
+                    "review.plan.prepared",
+                    plan.plan_fingerprint,
+                    now,
+                    extra_payload={
+                        "review_plan_id": plan_id,
+                        "plan_fingerprint": plan.plan_fingerprint,
+                        "rule_count": len(plan.rules),
+                        "unit_count": len(plan.units),
+                        "file_count": len(plan.files),
+                        "rules_complete": rules.complete,
+                    },
+                )
+                session.commit()
+                return StoredReviewPlan(
+                    plan_id=plan_id,
+                    created=True,
+                    execution_status=ExecutionStatus.READY_FOR_REVIEW,
+                )
+            except (ReviewPlanConflictError, ReviewPlanInputError, TaskLeaseLostError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("Review Plan could not be persisted") from exc
+
+    def load_model_review_input(self, lease: ReviewTaskLease) -> ModelReviewInput:
+        """用三次有界查询读取计划元数据、规则和全部 Review Unit。"""
+
+        if (
+            lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW
+            or lease.review_plan_id is None
+        ):
+            raise ModelReviewInputError("当前租约不属于模型审查阶段")
+        now = self._clock()
+        plan_statement = (
+            select(
+                ReviewPlanRecord.id.label("plan_id"),
+                ReviewPlanRecord.review_run_id,
+                ReviewPlanRecord.plan_fingerprint,
+                ReviewPlanRecord.planner_version,
+                ReviewPlanRecord.review_version_key,
+                ReviewPlanRecord.head_sha.label("plan_head_sha"),
+                ReviewPlanRecord.rule_count,
+                ReviewPlanRecord.unit_count,
+                ReviewPlanRecord.total_estimated_input_bytes,
+                ReviewPlanRecord.model_review_completed_at,
+                ReviewRunRecord.repository_id,
+                ReviewRunRecord.repository,
+                ReviewRunRecord.pull_request_number,
+                ReviewRunRecord.head_sha.label("run_head_sha"),
+            )
+            .select_from(ReviewTaskRecord)
+            .join(
+                ReviewRunRecord,
+                ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
+            )
+            .join(
+                ReviewPlanRecord,
+                ReviewPlanRecord.review_run_id == ReviewRunRecord.id,
+            )
+            .where(
+                ReviewTaskRecord.id == lease.task_id,
+                ReviewTaskRecord.review_run_id == lease.review_run_id,
+                ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
+                ReviewTaskRecord.lease_owner == lease.worker_id,
+                ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
+                ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+                ReviewTaskRecord.claimed_from_status
+                == ExecutionStatus.READY_FOR_REVIEW.value,
+                ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
+                ReviewPlanRecord.id == lease.review_plan_id,
+                ReviewPlanRecord.model_review_completed_at.is_(None),
+                ReviewTaskRecord.lease_expires_at.is_not(None),
+                ReviewTaskRecord.lease_expires_at > now,
+            )
+            .limit(1)
+        )
+        rules_statement = (
+            select(
+                ReviewPlanRuleRecord.path,
+                ReviewPlanRuleRecord.scope,
+                ReviewPlanRuleRecord.blob_sha,
+                ReviewPlanRuleRecord.content,
+                ReviewPlanRuleRecord.content_sha256,
+                ReviewPlanRuleRecord.byte_size,
+            )
+            .where(ReviewPlanRuleRecord.review_plan_id == lease.review_plan_id)
+            .order_by(ReviewPlanRuleRecord.ordinal.asc())
+            .limit(257)
+        )
+        units_statement = (
+            select(
+                ReviewUnitRecord.unit_key,
+                ReviewUnitRecord.file,
+                ReviewUnitRecord.blob_sha,
+                ReviewUnitRecord.language,
+                ReviewUnitRecord.patch,
+                ReviewUnitRecord.patch_sha256,
+                ReviewUnitRecord.rule_paths,
+                ReviewUnitRecord.estimated_input_bytes,
+                ReviewUnitRecord.planner_version,
+            )
+            .where(ReviewUnitRecord.review_plan_id == lease.review_plan_id)
+            .order_by(ReviewUnitRecord.ordinal.asc())
+            .limit(3001)
+        )
+        with self._sessions() as session:
+            try:
+                plan_row = session.execute(plan_statement).one_or_none()
+                if plan_row is None:
+                    raise TaskLeaseLostError()
+                rule_rows = session.execute(rules_statement).all()
+                unit_rows = session.execute(units_statement).all()
+            except TaskLeaseLostError:
+                raise
+            except SQLAlchemyError as exc:
+                raise TaskQueueError("model review input could not be loaded") from exc
+
+        if plan_row.plan_head_sha != plan_row.run_head_sha:
+            raise ModelReviewConflictError("Review Plan 与运行的 head SHA 不一致")
+        if len(rule_rows) > 256 or len(rule_rows) != plan_row.rule_count:
+            raise ModelReviewInputError("Review Plan 规则快照数量不一致")
+        if len(unit_rows) > 3000 or len(unit_rows) != plan_row.unit_count:
+            raise ModelReviewInputError("Review Plan Unit 数量不一致")
+        try:
+            rules = tuple(
+                RepositoryRule(
+                    path=row.path,
+                    scope=row.scope,
+                    blob_sha=row.blob_sha,
+                    content=row.content,
+                    content_sha256=row.content_sha256,
+                    byte_size=row.byte_size,
+                )
+                for row in rule_rows
+            )
+            units = tuple(
+                ReviewUnit(
+                    unit_key=row.unit_key,
+                    review_version_key=plan_row.review_version_key,
+                    head_sha=plan_row.plan_head_sha,
+                    file=row.file,
+                    blob_sha=row.blob_sha,
+                    language=row.language,
+                    patch=row.patch,
+                    patch_sha256=row.patch_sha256,
+                    rule_paths=tuple(row.rule_paths),
+                    estimated_input_bytes=row.estimated_input_bytes,
+                    planner_version=row.planner_version,
+                )
+                for row in unit_rows
+            )
+            return ModelReviewInput(
+                review_plan_id=plan_row.plan_id,
+                review_run_id=plan_row.review_run_id,
+                plan_fingerprint=plan_row.plan_fingerprint,
+                planner_version=plan_row.planner_version,
+                review_version_key=plan_row.review_version_key,
+                repository_id=plan_row.repository_id,
+                repository=plan_row.repository,
+                pull_request_number=plan_row.pull_request_number,
+                head_sha=plan_row.plan_head_sha,
+                rules=rules,
+                units=units,
+                total_estimated_input_bytes=plan_row.total_estimated_input_bytes,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ModelReviewInputError(
+                "持久化 Review Plan 不符合模型输入契约"
+            ) from exc
+
+    def store_model_review(
+        self,
+        lease: ReviewTaskLease,
+        review_input: ModelReviewInput,
+        result: ModelReviewResult,
+        findings: tuple[MaterializedFinding, ...],
+        *,
+        configuration_revision: int | None = None,
+    ) -> StoredModelReview:
+        """短事务原子保存调用审计、未复核 Finding、阶段标记和 Outbox。"""
+
+        if (
+            lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW
+            or lease.review_plan_id is None
+            or lease.review_plan_id != review_input.review_plan_id
+            or lease.review_run_id != review_input.review_run_id
+        ):
+            raise ModelReviewConflictError("模型结果不属于当前租约的 Review Plan")
+        try:
+            expected_findings = materialize_findings(review_input, result.output)
+        except ValueError as exc:
+            raise ModelReviewConflictError(
+                "模型 Finding 引用了计划外的 Unit、文件或规则"
+            ) from exc
+        if findings != expected_findings:
+            raise ModelReviewConflictError("模型 Finding 没有按平台契约完成身份补齐")
+        if not review_input.units and result.status.value != "skipped":
+            raise ModelReviewConflictError("空 Review Plan 不应调用模型")
+        if review_input.units and result.status.value != "succeeded":
+            raise ModelReviewConflictError("非空 Review Plan 缺少成功模型调用")
+
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                existing = session.execute(
+                    select(
+                        ModelCallRecord.id,
+                        ModelCallRecord.provider,
+                        ModelCallRecord.model,
+                        ModelCallRecord.request_fingerprint,
+                        ModelCallRecord.finding_count,
+                        ReviewRunRecord.execution_status,
+                    )
+                    .join(
+                        ReviewPlanRecord,
+                        ReviewPlanRecord.id == ModelCallRecord.review_plan_id,
+                    )
+                    .join(
+                        ReviewRunRecord,
+                        ReviewRunRecord.id == ReviewPlanRecord.review_run_id,
+                    )
+                    .where(ModelCallRecord.review_plan_id == review_input.review_plan_id)
+                ).one_or_none()
+                if existing is not None:
+                    if (
+                        existing.provider != result.provider.value
+                        or existing.model != result.model
+                        or existing.request_fingerprint != result.request_fingerprint
+                    ):
+                        raise ModelReviewConflictError(
+                            "同一 Review Plan 已保存不同模型请求"
+                        )
+                    return StoredModelReview(
+                        model_call_id=existing.id,
+                        created=False,
+                        finding_count=existing.finding_count,
+                        execution_status=ExecutionStatus(existing.execution_status),
+                    )
+
+                task, run = self._locked_owned_task_with_run(session, lease, now)
+                plan = session.scalar(
+                    select(ReviewPlanRecord)
+                    .where(
+                        ReviewPlanRecord.id == review_input.review_plan_id,
+                        ReviewPlanRecord.review_run_id == run.id,
+                    )
+                    .options(
+                        Load(ReviewPlanRecord).load_only(
+                            ReviewPlanRecord.id,
+                            ReviewPlanRecord.review_run_id,
+                            ReviewPlanRecord.review_version_key,
+                            ReviewPlanRecord.head_sha,
+                            ReviewPlanRecord.plan_fingerprint,
+                            ReviewPlanRecord.model_review_completed_at,
+                            raiseload=True,
+                        )
+                    )
+                    .with_for_update()
+                )
+                if plan is None:
+                    raise ModelReviewInputError("当前任务没有对应 Review Plan")
+                if plan.model_review_completed_at is not None:
+                    raise ModelReviewConflictError("Review Plan 模型阶段已经完成")
+                if (
+                    run.review_version_key != review_input.review_version_key
+                    or run.repository_id != review_input.repository_id
+                    or run.repository != review_input.repository
+                    or run.pull_request_number != review_input.pull_request_number
+                    or run.head_sha != review_input.head_sha
+                    or plan.review_version_key != review_input.review_version_key
+                    or plan.head_sha != review_input.head_sha
+                    or plan.plan_fingerprint != review_input.plan_fingerprint
+                ):
+                    raise ModelReviewConflictError(
+                        "模型结果与被锁定任务的计划身份不一致"
+                    )
+
+                newer_run_id = session.scalar(
+                    select(ReviewRunRecord.id)
+                    .where(
+                        ReviewRunRecord.repository_id == run.repository_id,
+                        ReviewRunRecord.pull_request_number
+                        == run.pull_request_number,
+                        ReviewRunRecord.id != run.id,
+                        ReviewRunRecord.head_sha != run.head_sha,
+                        ReviewRunRecord.created_at >= run.created_at,
+                    )
+                    .order_by(ReviewRunRecord.created_at.desc())
+                    .limit(1)
+                )
+                if newer_run_id is not None:
+                    self._set_owned_status(
+                        task,
+                        run,
+                        ExecutionStatus.SUPERSEDED,
+                        now,
+                    )
+                    run.coverage_status = CoverageStatus.STALE.value
+                    self._add_event(
+                        session,
+                        task,
+                        "review.superseded",
+                        f"model-head-stale:{task.model_attempt_count}",
+                        now,
+                    )
+                    session.commit()
+                    return StoredModelReview(
+                        model_call_id=None,
+                        created=False,
+                        finding_count=0,
+                        execution_status=ExecutionStatus.SUPERSEDED,
+                    )
+
+                model_call_id = str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        "openreviewer:model-call:"
+                        f"{plan.id}:{result.request_fingerprint}",
+                    )
+                )
+                session.add(
+                    ModelCallRecord(
+                        id=model_call_id,
+                        review_plan_id=plan.id,
+                        configuration_revision=configuration_revision,
+                        provider=result.provider.value,
+                        api_protocol=result.api_protocol.value,
+                        model=result.model,
+                        status=result.status.value,
+                        prompt_version=result.prompt_version,
+                        request_fingerprint=result.request_fingerprint,
+                        provider_response_id=result.provider_response_id,
+                        provider_request_id=result.provider_request_id,
+                        response_status=result.response_status,
+                        duration_ms=result.duration_ms,
+                        input_tokens=result.usage.input_tokens,
+                        output_tokens=result.usage.output_tokens,
+                        cache_read_input_tokens=(
+                            result.usage.cache_read_input_tokens
+                        ),
+                        cache_write_input_tokens=(
+                            result.usage.cache_write_input_tokens
+                        ),
+                        reasoning_output_tokens=(
+                            result.usage.reasoning_output_tokens
+                        ),
+                        estimated_cost_microusd=(
+                            result.estimated_cost_microusd
+                        ),
+                        finding_count=len(findings),
+                        created_at=now,
+                    )
+                )
+                session.flush()
+                finding_rows: list[dict[str, object]] = []
+                for item in findings:
+                    finding = item.finding
+                    if (
+                        finding.head_sha != review_input.head_sha
+                        or finding.verification_status.value != "unverified"
+                    ):
+                        raise ModelReviewConflictError(
+                            "模型 Finding 的 SHA 或复核状态无效"
+                        )
+                    location = finding.location
+                    finding_rows.append(
+                        {
+                            "id": str(
+                                uuid5(
+                                    NAMESPACE_URL,
+                                    "openreviewer:finding:"
+                                    f"{run.id}:{finding.fingerprint}",
+                                )
+                            ),
+                            "review_run_id": run.id,
+                            "review_plan_id": plan.id,
+                            "model_call_id": model_call_id,
+                            "source_unit_key": item.source_unit_key,
+                            "fingerprint": finding.fingerprint,
+                            "head_sha": finding.head_sha,
+                            "severity": finding.severity.value,
+                            "category": finding.category.value,
+                            "location_file": location.file if location else None,
+                            "location_blob_sha": (
+                                location.blob_sha if location else None
+                            ),
+                            "location_start_line": (
+                                location.start_line if location else None
+                            ),
+                            "location_end_line": (
+                                location.end_line if location else None
+                            ),
+                            "location_side": (
+                                location.side.value if location else None
+                            ),
+                            "location_in_diff": (
+                                location.in_diff if location else False
+                            ),
+                            "location_symbol": (
+                                location.symbol if location else None
+                            ),
+                            "title": finding.title,
+                            "evidence": finding.evidence,
+                            "impact": finding.impact,
+                            "suggestion": finding.suggestion,
+                            "required_test": finding.required_test,
+                            "confidence": finding.confidence,
+                            "verification_status": (
+                                finding.verification_status.value
+                            ),
+                            "rule_reference": finding.rule_reference,
+                            "created_at": now,
+                        }
+                    )
+                if finding_rows:
+                    session.execute(insert(ReviewFindingRecord), finding_rows)
+
+                plan.model_review_completed_at = now
+                self._set_owned_status(
+                    task,
+                    run,
+                    ExecutionStatus.READY_FOR_REVIEW,
+                    now,
+                )
+                self._add_event(
+                    session,
+                    task,
+                    "review.model.completed",
+                    result.request_fingerprint,
+                    now,
+                    extra_payload={
+                        "review_plan_id": plan.id,
+                        "model_call_id": model_call_id,
+                        "provider": result.provider.value,
+                        "model": result.model,
+                        "model_call_status": result.status.value,
+                        "finding_count": len(findings),
+                        "input_tokens": result.usage.input_tokens,
+                        "output_tokens": result.usage.output_tokens,
+                        "cache_read_input_tokens": (
+                            result.usage.cache_read_input_tokens
+                        ),
+                        "cache_write_input_tokens": (
+                            result.usage.cache_write_input_tokens
+                        ),
+                        "estimated_cost_microusd": (
+                            result.estimated_cost_microusd
+                        ),
+                    },
+                )
+                session.commit()
+                return StoredModelReview(
+                    model_call_id=model_call_id,
+                    created=True,
+                    finding_count=len(findings),
+                    execution_status=ExecutionStatus.READY_FOR_REVIEW,
+                )
+            except (
+                ModelReviewConflictError,
+                ModelReviewInputError,
+                TaskLeaseLostError,
+            ):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model review could not be persisted") from exc
+
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
         """供兼容测试路径把任务直接推进到 ``waiting_for_ci``。
 
@@ -640,6 +1592,7 @@ class SqlAlchemyReviewTaskQueue:
                 task.execution_status = ExecutionStatus.WAITING_FOR_CI.value
                 task.lease_owner = None
                 task.lease_expires_at = None
+                task.claimed_from_status = None
                 task.updated_at = now
                 run.execution_status = ExecutionStatus.WAITING_FOR_CI.value
                 run.updated_at = now
@@ -688,7 +1641,11 @@ class SqlAlchemyReviewTaskQueue:
                     run,
                     now,
                     error,
-                    event_suffix=f"attempt-{task.attempt_count}",
+                    event_suffix=(
+                        f"model-attempt-{task.model_attempt_count}"
+                        if lease.review_plan_id is not None
+                        else f"attempt-{task.attempt_count}"
+                    ),
                 )
                 session.commit()
             except (TaskLeaseLostError, TaskQueueError):
@@ -753,13 +1710,21 @@ class SqlAlchemyReviewTaskQueue:
         """
         statement = (
             select(ReviewTaskRecord)
+            .join(
+                ReviewRunRecord,
+                ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
+            )
             .where(
                 ReviewTaskRecord.id == lease.task_id,
                 ReviewTaskRecord.review_run_id == lease.review_run_id,
                 ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_owner == lease.worker_id,
                 ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
                 ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+                ReviewTaskRecord.claimed_from_status
+                == lease.claimed_from_status.value,
+                ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
             )
@@ -796,7 +1761,11 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_owner == lease.worker_id,
                 ReviewTaskRecord.attempt_count == lease.attempt_count,
+                ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
                 ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+                ReviewTaskRecord.claimed_from_status
+                == lease.claimed_from_status.value,
+                ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
             )
@@ -992,6 +1961,7 @@ class SqlAlchemyReviewTaskQueue:
                 execution_status=ExecutionStatus.SUPERSEDED.value,
                 lease_owner=None,
                 lease_expires_at=None,
+                claimed_from_status=None,
                 updated_at=now,
             )
             .execution_options(synchronize_session=False)
@@ -1021,6 +1991,7 @@ class SqlAlchemyReviewTaskQueue:
         task.execution_status = status.value
         task.lease_owner = None
         task.lease_expires_at = None
+        task.claimed_from_status = None
         task.updated_at = now
         run.execution_status = status.value
         run.updated_at = now
@@ -1055,22 +2026,43 @@ class SqlAlchemyReviewTaskQueue:
         异常：
             TaskQueueError: 找不到关联运行。此方法不提交事务，异常由调用方负责回滚。
         """
+        claimed_from = ExecutionStatus(
+            task.claimed_from_status or ExecutionStatus.QUEUED.value
+        )
+        is_model_stage = (
+            claimed_from is ExecutionStatus.READY_FOR_REVIEW
+            and task.model_attempt_count > 0
+        )
+        active_attempt_count = (
+            task.model_attempt_count if is_model_stage else task.attempt_count
+        )
         task.last_error = error.safe_message[:4000]
         task.last_error_code = error.code.value
         task.last_error_retryable = error.retryable
         task.last_error_details = dict(error.details)
         task.lease_owner = None
         task.lease_expires_at = None
+        task.claimed_from_status = None
         task.updated_at = now
-        if not error.retryable or task.attempt_count >= task.max_attempts:
+        if not error.retryable or active_attempt_count >= task.max_attempts:
             task.execution_status = ExecutionStatus.FAILED.value
             run.execution_status = ExecutionStatus.FAILED.value
             event_type = "review.task.failed"
             event_key = f"failed:{event_suffix}"
         else:
-            task.execution_status = ExecutionStatus.QUEUED.value
-            run.execution_status = ExecutionStatus.QUEUED.value
-            task.available_at = now + self._retry_delay(task.attempt_count)
+            retry_status = (
+                claimed_from
+                if claimed_from
+                in {
+                    ExecutionStatus.QUEUED,
+                    ExecutionStatus.WAITING_FOR_CI,
+                    ExecutionStatus.READY_FOR_REVIEW,
+                }
+                else ExecutionStatus.QUEUED
+            )
+            task.execution_status = retry_status.value
+            run.execution_status = retry_status.value
+            task.available_at = now + self._retry_delay(active_attempt_count)
             event_type = "review.task.retry_scheduled"
             event_key = f"retry:{event_suffix}"
         run.updated_at = now
@@ -1137,6 +2129,7 @@ class SqlAlchemyReviewTaskQueue:
             "review_run_id": task.review_run_id,
             "review_task_id": task.id,
             "attempt_count": task.attempt_count,
+            "model_attempt_count": task.model_attempt_count,
             "ci_poll_count": task.ci_poll_count,
         }
         if error is not None:
