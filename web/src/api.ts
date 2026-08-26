@@ -5,7 +5,10 @@ import type {
   AiSettings,
   ConfigurationAuditList,
   DashboardSnapshot,
+  FindingDecision,
   ReviewAccepted,
+  ReviewAction,
+  ReviewDetails,
   ReviewRequest,
   ReviewPolicyUpdate,
 } from "./types";
@@ -133,6 +136,37 @@ export const api = {
       headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(payload),
     }),
+  reviewDetails: (reviewRunId: string) =>
+    request<ReviewDetails>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}`),
+  reviewAction: (
+    reviewRunId: string,
+    action: ReviewAction,
+    idempotencyKey: string,
+  ) =>
+    request<{
+      action: ReviewAction;
+      review_run_id: string;
+      review_task_id: string;
+      execution_status: string;
+    }>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/actions`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ action }),
+    }),
+  decideFinding: (
+    reviewRunId: string,
+    findingId: string,
+    decision: FindingDecision,
+    idempotencyKey: string,
+  ) =>
+    request<ReviewDetails>(
+      `/api/v1/reviews/${encodeURIComponent(reviewRunId)}/findings/${encodeURIComponent(findingId)}`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ decision }),
+      },
+    ),
   aiSettings: () => request<AiSettings>("/api/v1/settings/ai"),
   updateAiProvider: (provider: AiProvider, payload: AiProviderUpdate) =>
     request<AiSettings>(`/api/v1/settings/ai/providers/${provider}`, {

@@ -9,6 +9,7 @@ import {
 import { api, ApiError } from "./api";
 import { loadSavedCredentials, saveCredentials } from "./credentials";
 import SettingsPage from "./SettingsPage";
+import ReviewDetailPage from "./ReviewDetailPage";
 import type {
   AuthUser,
   DashboardSnapshot,
@@ -21,6 +22,7 @@ import {
   shortSha,
   statusLabels,
   workerLabels,
+  reviewDisplayLabel,
 } from "./utils";
 
 type SessionState =
@@ -333,16 +335,16 @@ function Login({ initialMessage, onAuthenticated }: LoginProps) {
   );
 }
 
-function StatusBadge({ status }: { status: ExecutionStatus }) {
+function StatusBadge({ status, label }: { status: ExecutionStatus; label?: string }) {
   return (
     <span className={`warm-status-pill status-${status}`}>
       <span className="pill-dot" />
-      {statusLabels[status]}
+      {label ?? statusLabels[status]}
     </span>
   );
 }
 
-function ReviewRow({ review }: { review: ReviewItem }) {
+function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunId: string) => void }) {
   return (
     <tr className="warm-table-row">
       <td>
@@ -378,7 +380,19 @@ function ReviewRow({ review }: { review: ReviewItem }) {
         </span>
       </td>
       <td>
-        <StatusBadge status={review.execution_status} />
+        <StatusBadge status={review.execution_status} label={reviewDisplayLabel(review)} />
+        {review.finding_count > 0 && (
+          <small className="warm-row-substatus warm-row-findings">
+            {review.unverified_finding_count > 0
+              ? `${review.unverified_finding_count} 条待确认问题`
+              : `${review.finding_count} 条审查问题`}
+          </small>
+        )}
+        {review.last_error && (
+          <small className="warm-row-error" title={review.last_error}>
+            {review.last_error}
+          </small>
+        )}
       </td>
       <td>
         <div className="warm-attempts-track-block">
@@ -399,6 +413,16 @@ function ReviewRow({ review }: { review: ReviewItem }) {
         <span className="warm-time-badge">
           {formatDate(review.updated_at)}
         </span>
+      </td>
+      <td>
+        <button
+          type="button"
+          className="review-open-row-btn"
+          onClick={() => onOpen(review.review_run_id)}
+          title="查看任务详情、结果和日志"
+        >
+          查看详情 <span aria-hidden="true">→</span>
+        </button>
       </td>
     </tr>
   );
@@ -603,9 +627,10 @@ interface DashboardProps {
   user: AuthUser;
   onSignedOut: (message?: string) => void;
   onOpenSettings: () => void;
+  onOpenReview: (reviewRunId: string) => void;
 }
 
-function Dashboard({ user, onSignedOut, onOpenSettings }: DashboardProps) {
+function Dashboard({ user, onSignedOut, onOpenSettings, onOpenReview }: DashboardProps) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [streamState, setStreamState] = useState<StreamState>("connecting");
   const [pageMessage, setPageMessage] = useState("");
@@ -923,7 +948,7 @@ function Dashboard({ user, onSignedOut, onOpenSettings }: DashboardProps) {
                       className={`pill-btn ${activeFilter === "ready_for_review" ? "active" : ""}`}
                       onClick={() => setActiveFilter("ready_for_review")}
                     >
-                      可开始审查 ({snapshot?.status_counts.ready_for_review ?? 0})
+                      待处理 ({snapshot?.status_counts.ready_for_review ?? 0})
                     </button>
                     <button
                       className={`pill-btn ${activeFilter === "queued" ? "active" : ""}`}
@@ -947,6 +972,8 @@ function Dashboard({ user, onSignedOut, onOpenSettings }: DashboardProps) {
                       <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                     </svg>
                     <input
+                      id="review-search"
+                      name="review-search"
                       type="text"
                       placeholder="搜索仓库、PR、SHA…"
                       value={searchKeyword}
@@ -975,11 +1002,12 @@ function Dashboard({ user, onSignedOut, onOpenSettings }: DashboardProps) {
                       <th>流转状态</th>
                       <th>重试次数</th>
                       <th>更新时间</th>
+                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredReviews.map((review) => (
-                      <ReviewRow review={review} key={review.review_run_id} />
+                      <ReviewRow review={review} key={review.review_run_id} onOpen={onOpenReview} />
                     ))}
                   </tbody>
                 </table>
@@ -1033,15 +1061,28 @@ function Dashboard({ user, onSignedOut, onOpenSettings }: DashboardProps) {
   );
 }
 
+type AppView =
+  | { kind: "dashboard" }
+  | { kind: "settings" }
+  | { kind: "review"; reviewRunId: string };
+
+function readAppView(): AppView {
+  const hash = window.location.hash;
+  if (hash === "#settings") return { kind: "settings" };
+  if (hash.startsWith("#review/")) {
+    const reviewRunId = decodeURIComponent(hash.slice("#review/".length));
+    if (reviewRunId) return { kind: "review", reviewRunId };
+  }
+  return { kind: "dashboard" };
+}
+
 export default function App() {
   const [session, setSession] = useState<SessionState>({ phase: "checking" });
-  const [view, setView] = useState<"dashboard" | "settings">(
-    window.location.hash === "#settings" ? "settings" : "dashboard",
-  );
+  const [view, setView] = useState<AppView>(readAppView);
 
   useEffect(() => {
     function syncViewWithHash() {
-      setView(window.location.hash === "#settings" ? "settings" : "dashboard");
+      setView(readAppView());
     }
     window.addEventListener("hashchange", syncViewWithHash);
     return () => window.removeEventListener("hashchange", syncViewWithHash);
@@ -1078,12 +1119,30 @@ export default function App() {
       />
     );
   }
-  if (view === "settings") {
+  if (view.kind === "settings") {
     return (
       <SettingsPage
         user={session.user}
         onBack={() => {
           window.location.hash = "";
+        }}
+        onSignedOut={(message) => {
+          window.location.hash = "";
+          setSession({ phase: "guest", message });
+        }}
+      />
+    );
+  }
+  if (view.kind === "review") {
+    return (
+      <ReviewDetailPage
+        user={session.user}
+        reviewRunId={view.reviewRunId}
+        onBack={() => {
+          window.location.hash = "";
+        }}
+        onOpenReview={(reviewRunId) => {
+          window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;
         }}
         onSignedOut={(message) => {
           window.location.hash = "";
@@ -1098,6 +1157,9 @@ export default function App() {
       onSignedOut={(message) => setSession({ phase: "guest", message })}
       onOpenSettings={() => {
         window.location.hash = "settings";
+      }}
+      onOpenReview={(reviewRunId) => {
+        window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;
       }}
     />
   );

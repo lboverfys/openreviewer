@@ -18,7 +18,7 @@ describe("dashboard formatting", () => {
   it("keeps an explicit label for every visible task state", () => {
     // 关键状态必须有中文标签，否则状态卡片会出现未翻译的机器枚举值。
     expect(statusLabels.waiting_for_ci).toBe("等待 CI");
-    expect(statusLabels.ready_for_review).toBe("可开始审查");
+    expect(statusLabels.ready_for_review).toBe("待处理");
     expect(statusLabels.failed).toBe("失败");
   });
 });

@@ -12,7 +12,7 @@ class DashboardPersistenceError(RuntimeError):
     """无法从持久化存储读取 Dashboard 数据。"""
 
 
-def as_utc(value: datetime) -> datetime:
+def as_utc(value: datetime | None) -> datetime | None:
     """把数据库返回的时间统一转换为带 UTC 时区的时间。
 
     某些数据库驱动可能返回没有时区信息的 ``datetime``；项目内部统一使用
@@ -27,6 +27,8 @@ def as_utc(value: datetime) -> datetime:
 
     该函数不读取系统时区，也不修改传入对象。
     """
+    if value is None:
+        return None
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
@@ -46,6 +48,12 @@ class ReviewListItem:
     last_error_code: str | None
     last_error_retryable: bool | None
     last_error_details: Mapping[str, object] | None
+    review_conclusion: str | None
+    coverage_status: str
+    model_review_completed_at: datetime | None
+    finding_count: int
+    unverified_finding_count: int
+    model_attempt_count: int
     created_at: datetime
     updated_at: datetime
 

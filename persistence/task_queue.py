@@ -31,7 +31,7 @@ from domain.review_planning import (
     ReviewPlan,
     ReviewUnit,
 )
-from domain.security import ErrorCode, SafeError
+from domain.security import ErrorCode, SafeError, redact_sensitive
 from persistence.models import (
     GitHubInstallationRecord,
     ModelCallRecord,
@@ -2136,6 +2136,7 @@ class SqlAlchemyReviewTaskQueue:
             payload.update(
                 {
                     "error_code": error.code.value,
+                    "error_message": redact_sensitive(error.safe_message),
                     "error_retryable": error.retryable,
                 }
             )

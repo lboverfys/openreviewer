@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -25,6 +26,7 @@ from domain.models import ReviewRequest
 from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database, DatabaseConfigurationError
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.auth import (
     AuthConfigurationError,
@@ -59,6 +61,16 @@ from services.reviews import (
     IdempotencyConflictError,
     ReviewPersistenceError,
     ReviewService,
+)
+from services.review_management import (
+    FindingDecision,
+    ReviewAction,
+    ReviewActionConflictError,
+    ReviewManagementPersistenceError,
+    ReviewManagementService,
+    ReviewNotFoundError,
+    FindingNotFoundError,
+    ReviewDetails,
 )
 from services.webhooks import (
     GitHubWebhookService,
@@ -154,6 +166,12 @@ class ReviewItemResponse(BaseModel):
     last_error_code: str | None = Field(max_length=64)
     last_error_retryable: bool | None
     last_error_details: dict[str, object] | None
+    review_conclusion: str | None
+    coverage_status: str
+    model_review_completed_at: datetime | None
+    finding_count: int
+    unverified_finding_count: int
+    model_attempt_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -179,6 +197,189 @@ class ReviewListResponse(BaseModel):
 
     total: int
     items: tuple[ReviewItemResponse, ...]
+
+
+class ReviewEventResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    event_type: str
+    payload: dict[str, object]
+    occurred_at: datetime
+
+
+class ReviewCiCheckResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    kind: str
+    status: str
+    conclusion: str | None
+    observed_at: datetime
+
+
+class ReviewFindingResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    severity: str
+    category: str
+    title: str
+    evidence: str
+    impact: str
+    suggestion: str
+    required_test: str | None
+    confidence: float
+    verification_status: str
+    location_file: str | None
+    location_start_line: int | None
+    location_end_line: int | None
+    location_side: str | None
+    location_in_diff: bool
+    location_symbol: str | None
+    rule_reference: str | None
+    reviewed_at: datetime | None
+    reviewed_by: str | None
+    created_at: datetime
+
+
+class ReviewStageResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    detail_code: str | None
+
+
+class ReviewDetailsResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    review_run_id: str
+    review_task_id: str
+    review_version_key: str
+    installation_id: int
+    repository_id: int
+    repository: str
+    pull_request_number: int
+    head_sha: str
+    execution_status: ExecutionStatus
+    review_conclusion: str | None
+    coverage_status: str
+    priority: int
+    attempt_count: int
+    model_attempt_count: int
+    max_attempts: int
+    ci_poll_count: int
+    available_at: datetime
+    claimed_from_status: str | None
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    last_error: str | None
+    last_error_code: str | None
+    last_error_retryable: bool | None
+    last_error_details: dict[str, object] | None
+    created_at: datetime
+    updated_at: datetime
+    pr_title: str | None
+    pr_state: str | None
+    pr_is_draft: bool | None
+    changed_files_count: int | None
+    files_complete: bool | None
+    diff_complete: bool | None
+    context_fetched_at: datetime | None
+    ci_state: str | None
+    ci_checks_complete: bool | None
+    ci_checked_at: datetime | None
+    review_plan_id: str | None
+    plan_created_at: datetime | None
+    plan_file_count: int | None
+    plan_unit_count: int | None
+    plan_rule_count: int | None
+    plan_input_bytes: int | None
+    plan_rules_complete: bool | None
+    model_review_completed_at: datetime | None
+    model_call_id: str | None
+    model_provider: str | None
+    model_protocol: str | None
+    model_name: str | None
+    model_status: str | None
+    model_response_status: int | None
+    model_duration_ms: int | None
+    model_input_tokens: int | None
+    model_output_tokens: int | None
+    model_cache_read_tokens: int | None
+    model_cache_write_tokens: int | None
+    model_cost_microusd: int | None
+    model_finding_count: int | None
+    model_created_at: datetime | None
+    current_stage: str
+    phase: str
+    stages: tuple[ReviewStageResponse, ...]
+    available_actions: tuple[ReviewAction, ...]
+    verified_finding_count: int
+    rejected_finding_count: int
+    unverified_finding_count: int
+    findings: tuple[ReviewFindingResponse, ...]
+    ci_checks: tuple[ReviewCiCheckResponse, ...]
+    events: tuple[ReviewEventResponse, ...]
+
+    @classmethod
+    def from_details(cls, details: ReviewDetails) -> "ReviewDetailsResponse":
+        stored = details.stored
+        fields = {
+            field: getattr(stored, field)
+            for field in cls.model_fields
+            if hasattr(stored, field)
+        }
+        fields.update(
+            {
+                "current_stage": details.current_stage,
+                "phase": details.phase,
+                "stages": tuple(
+                    ReviewStageResponse(**asdict(stage)) for stage in details.stages
+                ),
+                "available_actions": details.available_actions,
+                "verified_finding_count": details.verified_finding_count,
+                "rejected_finding_count": details.rejected_finding_count,
+                "unverified_finding_count": details.unverified_finding_count,
+                "findings": tuple(
+                    ReviewFindingResponse(**asdict(finding))
+                    for finding in stored.findings
+                ),
+                "ci_checks": tuple(
+                    ReviewCiCheckResponse(**asdict(check))
+                    for check in stored.ci_checks
+                ),
+                "events": tuple(
+                    ReviewEventResponse(**asdict(event))
+                    for event in stored.events
+                ),
+            }
+        )
+        return cls(**fields)
+
+
+class ReviewActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action: ReviewAction
+
+
+class ReviewActionResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    action: ReviewAction
+    review_run_id: str
+    review_task_id: str
+    execution_status: ExecutionStatus
+
+
+class ReviewFindingDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: FindingDecision
 
 
 class WorkerResponse(BaseModel):
@@ -403,6 +604,7 @@ def create_app(
     login_limiter: LoginAttemptLimiter | None = None,
     webhook_service: GitHubWebhookService | None = None,
     ai_settings_service: AiSettingsService | None = None,
+    review_management_service: ReviewManagementService | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -455,6 +657,7 @@ def create_app(
     application.state.dashboard_service = dashboard_service
     application.state.webhook_service = webhook_service
     application.state.ai_settings_service = ai_settings_service
+    application.state.review_management_service = review_management_service
     application.state.login_limiter = login_limiter or LoginAttemptLimiter()
     application.state.owned_database = None
     initialization_lock = RLock()
@@ -602,6 +805,23 @@ def create_app(
             application.state.ai_settings_service
         )
         if configured_service is not None:
+            return configured_service
+
+    def get_review_management_service() -> ReviewManagementService:
+        """返回任务详情与人工控制服务。"""
+
+        configured_service: ReviewManagementService | None = (
+            application.state.review_management_service
+        )
+        if configured_service is not None:
+            return configured_service
+        with initialization_lock:
+            configured_service = application.state.review_management_service
+            if configured_service is None:
+                configured_service = ReviewManagementService(
+                    SqlAlchemyReviewManagementRepository(get_database().sessions)
+                )
+                application.state.review_management_service = configured_service
             return configured_service
         with initialization_lock:
             configured_service = application.state.ai_settings_service
@@ -1265,6 +1485,131 @@ def create_app(
                 "X-Accel-Buffering": "no",
             },
         )
+
+    def review_details_response(review_run_id: str) -> ReviewDetailsResponse:
+        """读取单条任务详情并统一转换存储异常。"""
+
+        try:
+            details = get_review_management_service().details(review_run_id)
+        except ReviewNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="review task not found",
+            ) from exc
+        except ReviewManagementPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="review details are temporarily unavailable",
+            ) from exc
+        return ReviewDetailsResponse.from_details(details)
+
+    @application.get(
+        "/api/v1/reviews/{review_run_id}",
+        response_model=ReviewDetailsResponse,
+    )
+    def get_review_details(
+        review_run_id: str,
+        _: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> ReviewDetailsResponse:
+        """返回任务的阶段、模型结果、Finding、CI 和结构化事件日志。"""
+
+        return review_details_response(review_run_id)
+
+    @application.post(
+        "/api/v1/reviews/{review_run_id}/actions",
+        response_model=ReviewActionResponse,
+    )
+    def apply_review_action(
+        review_run_id: str,
+        request_body: ReviewActionRequest,
+        idempotency_key: Annotated[
+            str,
+            Header(alias="Idempotency-Key", min_length=1, max_length=200),
+        ],
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        __: Annotated[None, Depends(require_same_origin)],
+    ) -> ReviewActionResponse:
+        """执行可审计的加速、重试、取消或重新审查动作。"""
+
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Idempotency-Key must not be blank",
+            )
+        try:
+            new_run_id, task_id, execution_status = (
+                get_review_management_service().apply_action(
+                    review_run_id,
+                    request_body.action,
+                    actor=principal.username,
+                    request_id=normalized_key,
+                )
+            )
+        except ReviewNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="review task not found",
+            ) from exc
+        except ReviewActionConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        except ReviewManagementPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="review action is temporarily unavailable",
+            ) from exc
+        return ReviewActionResponse(
+            action=request_body.action,
+            review_run_id=new_run_id,
+            review_task_id=task_id,
+            execution_status=execution_status,
+        )
+
+    @application.post(
+        "/api/v1/reviews/{review_run_id}/findings/{finding_id}",
+        response_model=ReviewDetailsResponse,
+    )
+    def decide_review_finding(
+        review_run_id: str,
+        finding_id: str,
+        request_body: ReviewFindingDecisionRequest,
+        idempotency_key: Annotated[
+            str,
+            Header(alias="Idempotency-Key", min_length=1, max_length=200),
+        ],
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        __: Annotated[None, Depends(require_same_origin)],
+    ) -> ReviewDetailsResponse:
+        """保存 Finding 的“确认问题/忽略”裁决并返回最新详情。"""
+
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Idempotency-Key must not be blank",
+            )
+        try:
+            details = get_review_management_service().review_finding(
+                review_run_id,
+                finding_id,
+                request_body.decision,
+                actor=principal.username,
+                request_id=normalized_key,
+            )
+        except (ReviewNotFoundError, FindingNotFoundError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="review finding not found",
+            ) from exc
+        except ReviewManagementPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="finding decision is temporarily unavailable",
+            ) from exc
+        return ReviewDetailsResponse.from_details(details)
 
     @application.post(
         "/api/v1/reviews",

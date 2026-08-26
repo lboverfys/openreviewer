@@ -27,8 +27,137 @@ export interface ReviewItem {
   attempt_count: number;
   max_attempts: number;
   last_error: string | null;
+  last_error_code?: string | null;
+  last_error_retryable?: boolean | null;
+  last_error_details?: Record<string, unknown> | null;
+  review_conclusion: string | null;
+  coverage_status: string;
+  model_review_completed_at: string | null;
+  finding_count: number;
+  unverified_finding_count: number;
+  model_attempt_count: number;
   created_at: string;
   updated_at: string;
+}
+
+export type ReviewAction = "expedite" | "retry" | "cancel" | "rerun";
+export type FindingDecision = "verified" | "rejected";
+
+export interface ReviewStage {
+  key: string;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  detail_code: string | null;
+}
+
+export interface ReviewEvent {
+  id: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+}
+
+export interface ReviewCiCheck {
+  name: string;
+  kind: string;
+  status: string;
+  conclusion: string | null;
+  observed_at: string;
+}
+
+export interface ReviewFinding {
+  id: string;
+  severity: string;
+  category: string;
+  title: string;
+  evidence: string;
+  impact: string;
+  suggestion: string;
+  required_test: string | null;
+  confidence: number;
+  verification_status: string;
+  location_file: string | null;
+  location_start_line: number | null;
+  location_end_line: number | null;
+  location_side: string | null;
+  location_in_diff: boolean;
+  location_symbol: string | null;
+  rule_reference: string | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+}
+
+export interface ReviewDetails {
+  review_run_id: string;
+  review_task_id: string;
+  review_version_key: string;
+  installation_id: number;
+  repository_id: number;
+  repository: string;
+  pull_request_number: number;
+  head_sha: string;
+  execution_status: ExecutionStatus;
+  review_conclusion: string | null;
+  coverage_status: string;
+  priority: number;
+  attempt_count: number;
+  model_attempt_count: number;
+  max_attempts: number;
+  ci_poll_count: number;
+  available_at: string;
+  claimed_from_status: string | null;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  last_error: string | null;
+  last_error_code: string | null;
+  last_error_retryable: boolean | null;
+  last_error_details: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  pr_title: string | null;
+  pr_state: string | null;
+  pr_is_draft: boolean | null;
+  changed_files_count: number | null;
+  files_complete: boolean | null;
+  diff_complete: boolean | null;
+  context_fetched_at: string | null;
+  ci_state: string | null;
+  ci_checks_complete: boolean | null;
+  ci_checked_at: string | null;
+  review_plan_id: string | null;
+  plan_created_at: string | null;
+  plan_file_count: number | null;
+  plan_unit_count: number | null;
+  plan_rule_count: number | null;
+  plan_input_bytes: number | null;
+  plan_rules_complete: boolean | null;
+  model_review_completed_at: string | null;
+  model_call_id: string | null;
+  model_provider: string | null;
+  model_protocol: string | null;
+  model_name: string | null;
+  model_status: string | null;
+  model_response_status: number | null;
+  model_duration_ms: number | null;
+  model_input_tokens: number | null;
+  model_output_tokens: number | null;
+  model_cache_read_tokens: number | null;
+  model_cache_write_tokens: number | null;
+  model_cost_microusd: number | null;
+  model_finding_count: number | null;
+  model_created_at: string | null;
+  current_stage: string;
+  phase: string;
+  stages: ReviewStage[];
+  available_actions: ReviewAction[];
+  verified_finding_count: number;
+  rejected_finding_count: number;
+  unverified_finding_count: number;
+  findings: ReviewFinding[];
+  ci_checks: ReviewCiCheck[];
+  events: ReviewEvent[];
 }
 
 export interface WorkerSnapshot {

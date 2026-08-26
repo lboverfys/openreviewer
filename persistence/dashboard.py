@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from domain.enums import ExecutionStatus, WorkerStatus
 from domain.security import redact_sensitive
 from persistence.models import (
+    ReviewFindingRecord,
+    ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
     WorkerHeartbeatRecord,
@@ -73,6 +75,25 @@ class SqlAlchemyDashboardRepository:
                     for status, count in grouped_counts
                 }
 
+                model_completed_query = (
+                    select(ReviewPlanRecord.model_review_completed_at)
+                    .where(ReviewPlanRecord.review_run_id == ReviewRunRecord.id)
+                    .scalar_subquery()
+                )
+                finding_count_query = (
+                    select(func.count(ReviewFindingRecord.id))
+                    .where(ReviewFindingRecord.review_run_id == ReviewRunRecord.id)
+                    .scalar_subquery()
+                )
+                unverified_finding_count_query = (
+                    select(func.count(ReviewFindingRecord.id))
+                    .where(
+                        ReviewFindingRecord.review_run_id == ReviewRunRecord.id,
+                        ReviewFindingRecord.verification_status == "unverified",
+                    )
+                    .scalar_subquery()
+                )
+
                 rows = session.execute(
                     select(
                         ReviewRunRecord.id.label("review_run_id"),
@@ -87,6 +108,14 @@ class SqlAlchemyDashboardRepository:
                         ReviewTaskRecord.last_error_code,
                         ReviewTaskRecord.last_error_retryable,
                         ReviewTaskRecord.last_error_details,
+                        ReviewRunRecord.review_conclusion,
+                        ReviewRunRecord.coverage_status,
+                        model_completed_query.label("model_review_completed_at"),
+                        finding_count_query.label("finding_count"),
+                        unverified_finding_count_query.label(
+                            "unverified_finding_count"
+                        ),
+                        ReviewTaskRecord.model_attempt_count,
                         ReviewRunRecord.created_at,
                         ReviewRunRecord.updated_at,
                     )
@@ -142,6 +171,16 @@ class SqlAlchemyDashboardRepository:
                                 if isinstance(safe_error_details, dict)
                                 else None
                             ),
+                            review_conclusion=row.review_conclusion,
+                            coverage_status=row.coverage_status,
+                            model_review_completed_at=as_utc(
+                                row.model_review_completed_at
+                            ),
+                            finding_count=int(row.finding_count or 0),
+                            unverified_finding_count=int(
+                                row.unverified_finding_count or 0
+                            ),
+                            model_attempt_count=row.model_attempt_count,
                             created_at=as_utc(row.created_at),
                             updated_at=as_utc(row.updated_at),
                         )

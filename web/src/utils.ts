@@ -1,10 +1,10 @@
-import type { ExecutionStatus, WorkerStatus } from "./types";
+import type { ExecutionStatus, ReviewItem, WorkerStatus } from "./types";
 
 export const statusLabels: Record<ExecutionStatus, string> = {
   queued: "排队中",
   waiting_for_ci: "等待 CI",
   running: "处理中",
-  ready_for_review: "可开始审查",
+  ready_for_review: "待处理",
   completed: "已完成",
   failed: "失败",
   timed_out: "已超时",
@@ -18,6 +18,43 @@ export const workerLabels: Record<WorkerStatus, string> = {
   busy: "处理中",
   stopping: "停止中",
 };
+
+export const stageLabels: Record<string, string> = {
+  intake: "接收任务",
+  context: "读取 PR",
+  ci: "等待 CI",
+  planning: "生成审查计划",
+  model: "AI 分析",
+  verification: "复核问题",
+  publication: "发布结果",
+};
+
+export const phaseLabels: Record<string, string> = {
+  queued: "任务已进入队列，等待 Worker 领取",
+  context_loading: "Worker 正在读取 PR、变更文件和 CI 状态",
+  waiting_ci: "代码已读取，正在等待 GitHub CI 结束",
+  ci_checking: "Worker 正在刷新 GitHub CI 状态",
+  planning_queued: "CI 已结束，等待生成审查计划",
+  planning_running: "正在整理规则、文件和审查范围",
+  model_queued: "审查计划已准备，等待 AI 分析",
+  model_running: "AI 正在分析变更，请稍候",
+  awaiting_verification: "AI 已返回结果，请逐条确认问题是否成立",
+  awaiting_publication: "结果已准备，等待发布流程",
+  model_failed: "AI 分析失败，请查看错误和日志后重试",
+  planning_failed: "审查计划生成失败，请查看日志后重试",
+  context_failed: "读取 GitHub 上下文失败，请查看日志后重试",
+  ci_timed_out: "等待 CI 超时，任务没有被视为审查通过",
+  completed: "审查流程已完成",
+  cancelled: "任务已取消",
+  superseded: "任务已被同一 PR 的新提交替代",
+};
+
+export function reviewDisplayLabel(review: Pick<ReviewItem, "execution_status" | "model_review_completed_at">): string {
+  if (review.execution_status === "ready_for_review" && review.model_review_completed_at) {
+    return "待复核结果";
+  }
+  return statusLabels[review.execution_status];
+}
 
 export function shortSha(sha: string): string {
   /**

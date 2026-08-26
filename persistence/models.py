@@ -272,6 +272,12 @@ class OutboxEventRecord(Base):
         ),
         UniqueConstraint("event_key"),
         Index("ix_outbox_events_pending", "published_at", "occurred_at"),
+        Index(
+            "ix_outbox_events_aggregate_occurred",
+            "aggregate_type",
+            "aggregate_id",
+            "occurred_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -1017,6 +1023,8 @@ class ReviewFindingRecord(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     verification_status: Mapped[str] = mapped_column(String(20), nullable=False)
     rule_reference: Mapped[str | None] = mapped_column(String(1024))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )

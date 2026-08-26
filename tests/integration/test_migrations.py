@@ -19,7 +19,7 @@ def test_initial_migration_creates_durable_review_task_schema(
     动作：加载仓库真实 ``alembic.ini``，仅覆盖当前测试数据库 URL，然后执行
     ``upgrade head`` 并通过 SQLAlchemy inspector 读取实际结构。
     预期：版本表、运行、任务、Outbox、心跳五张表都存在；幂等键和运行-任务
-    一对一唯一约束名称正确；Alembic 版本号为第二个迁移 revision。
+    一对一唯一约束名称正确；Alembic 版本号为当前最新迁移 revision。
 
     最后无论断言是否成功都释放检查引擎，避免 Windows 文件句柄阻止临时目录清理。
     """
@@ -87,6 +87,9 @@ def test_initial_migration_creates_durable_review_task_schema(
         } == {"uq_pull_request_versions_review_version_key"}
         assert "ix_review_tasks_expired_lease" in {
             index["name"] for index in inspector.get_indexes("review_tasks")
+        }
+        assert "ix_outbox_events_aggregate_occurred" in {
+            index["name"] for index in inspector.get_indexes("outbox_events")
         }
         assert {
             "ix_review_runs_created_at",
@@ -171,6 +174,9 @@ def test_initial_migration_creates_durable_review_task_schema(
             constraint["name"]
             for constraint in inspector.get_unique_constraints("review_findings")
         } == {"uq_review_findings_run_fingerprint"}
+        assert {"reviewed_at", "reviewed_by"} <= {
+            column["name"] for column in inspector.get_columns("review_findings")
+        }
         assert {
             constraint["name"]
             for constraint in inspector.get_check_constraints(
@@ -181,7 +187,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_file_plans_decision_value",
             "ck_review_file_plans_ordinal_nonnegative",
         }
-        assert revision == "20260826_0009"
+        assert revision == "20260826_0010"
     finally:
         engine.dispose()
 
