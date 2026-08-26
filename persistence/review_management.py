@@ -432,22 +432,26 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         raise ReviewNotFoundError("审查任务不存在")
                     return existing[1], existing[0], ExecutionStatus(existing[2])
 
+                # PostgreSQL 不允许 FOR UPDATE 锁定外连接的可空一侧。
+                # 运行记录和任务记录是必需的，先用内连接一起锁定；计划记录
+                # 是可选的，单独查询并锁定，既保留并发保护也兼容没有计划的早期阶段。
                 row = session.execute(
-                    select(ReviewRunRecord, ReviewTaskRecord, ReviewPlanRecord)
+                    select(ReviewRunRecord, ReviewTaskRecord)
                     .join(
                         ReviewTaskRecord,
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
-                    )
-                    .outerjoin(
-                        ReviewPlanRecord,
-                        ReviewPlanRecord.review_run_id == ReviewRunRecord.id,
                     )
                     .where(ReviewRunRecord.id == review_run_id)
                     .with_for_update()
                 ).one_or_none()
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
-                run, task, plan = row
+                run, task = row
+                plan = session.scalar(
+                    select(ReviewPlanRecord)
+                    .where(ReviewPlanRecord.review_run_id == review_run_id)
+                    .with_for_update()
+                )
                 now = self._clock()
                 current = ExecutionStatus(run.execution_status)
 

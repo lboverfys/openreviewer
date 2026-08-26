@@ -19,7 +19,7 @@ from domain.enums import (
     VerificationStatus,
 )
 from domain.model_review import ModelTokenUsage
-from domain.models import FindingLocation, ReviewFinding
+from domain.models import FindingLocation, ReviewFinding, ReviewRequest
 from persistence.database import Database
 from persistence.models import (
     Base,
@@ -27,6 +27,7 @@ from persistence.models import (
     OutboxEventRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
+    ReviewRunRecord,
     ReviewTaskRecord,
 )
 from persistence.repositories import SqlAlchemyReviewRepository
@@ -156,6 +157,87 @@ def test_rerun_creates_a_new_queued_run(database: Database) -> None:
             )
             assert repeated.status_code == 200
             assert repeated.json()["review_run_id"] == rerun.json()["review_run_id"]
+
+    asyncio.run(exercise())
+
+
+def test_failed_planned_run_can_retry_and_rerun(database: Database) -> None:
+    """失败且已有计划的任务可以重试，并可继续创建全新审查运行。"""
+
+    application = application_for(database)
+    now = datetime.now(UTC)
+
+    with database.sessions() as session:
+        # 先通过真实提交路径创建运行和任务，再模拟模型阶段失败并补上计划记录。
+        submission = ReviewService(
+            SqlAlchemyReviewRepository(database.sessions)
+        ).submit(
+            ReviewRequest(
+                installation_id=10,
+                repository_id=42,
+                repository="lboverfys/NiuMa",
+                pull_request_number=130,
+                head_sha="f" * 40,
+            ),
+            "detail-retry-source",
+        )
+        run = session.get(ReviewRunRecord, submission.review_run_id)
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        assert run is not None
+        assert task is not None
+        run.execution_status = "failed"
+        task.execution_status = "failed"
+        task.last_error = "model output truncated"
+        task.last_error_code = "model_output_truncated"
+        task.last_error_retryable = True
+        session.add(
+            ReviewPlanRecord(
+                id="plan-retry-001",
+                review_run_id=run.id,
+                pull_request_version_id="version-retry-missing",
+                review_version_key=run.review_version_key,
+                head_sha=run.head_sha,
+                plan_fingerprint="1" * 64,
+                planner_version="test",
+                rules_complete=True,
+                incomplete_files=[],
+                rule_issues=[],
+                candidate_count=1,
+                requested_candidate_count=1,
+                rule_count=0,
+                unit_count=1,
+                file_count=1,
+                total_estimated_input_bytes=10,
+                model_review_completed_at=None,
+                created_at=now,
+            )
+        )
+        session.commit()
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            retried = await client.post(
+                f"/api/v1/reviews/{submission.review_run_id}/actions",
+                headers={"Idempotency-Key": "detail-retry-001"},
+                json={"action": "retry"},
+            )
+            assert retried.status_code == 200
+            assert retried.json()["review_run_id"] == submission.review_run_id
+            assert retried.json()["execution_status"] == "ready_for_review"
+
+            rerun = await client.post(
+                f"/api/v1/reviews/{submission.review_run_id}/actions",
+                headers={"Idempotency-Key": "detail-rerun-after-retry-001"},
+                json={"action": "rerun"},
+            )
+            assert rerun.status_code == 200
+            assert rerun.json()["execution_status"] == "queued"
+            assert rerun.json()["review_run_id"] != submission.review_run_id
 
     asyncio.run(exercise())
 

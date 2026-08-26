@@ -49,9 +49,11 @@ from persistence.models import (
     ReviewTaskRecord,
 )
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.reviews import ReviewService
+from services.review_management import ReviewAction
 from services.review_planning import DeterministicReviewPlanner
 
 
@@ -117,6 +119,49 @@ def test_postgres_migrations_and_skip_locked_claim(postgres_database: Database) 
     with postgres_database.sessions() as session:
         task = session.get(ReviewTaskRecord, submission.review_task_id)
         assert task.execution_status == ExecutionStatus.RUNNING.value
+
+
+def test_postgres_manual_retry_handles_run_without_plan(
+    postgres_database: Database,
+) -> None:
+    """人工重试不能因可选 Review Plan 的行锁语义而失败。"""
+
+    submission = ReviewService(
+        SqlAlchemyReviewRepository(postgres_database.sessions)
+    ).submit(
+        ReviewRequest(
+            installation_id=11,
+            repository_id=44,
+            repository="lboverfys/NiuMa",
+            pull_request_number=131,
+            head_sha="f" * 40,
+        ),
+        "postgres-manual-retry-source",
+    )
+    with postgres_database.sessions() as session:
+        run = session.get(ReviewRunRecord, submission.review_run_id)
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        assert run is not None
+        assert task is not None
+        run.execution_status = ExecutionStatus.FAILED.value
+        task.execution_status = ExecutionStatus.FAILED.value
+        task.last_error_code = "model_output_truncated"
+        task.last_error_retryable = True
+        session.commit()
+
+    result = SqlAlchemyReviewManagementRepository(
+        postgres_database.sessions
+    ).apply_action(
+        submission.review_run_id,
+        ReviewAction.RETRY,
+        actor="postgres-contract",
+        request_id="postgres-manual-retry-action",
+    )
+    assert result == (
+        submission.review_run_id,
+        submission.review_task_id,
+        ExecutionStatus.QUEUED,
+    )
 
 
 def test_postgres_webhook_creation_respects_foreign_keys(
