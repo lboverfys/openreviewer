@@ -24,7 +24,7 @@ from domain.paths import normalize_repository_path
 from domain.review_planning import RepositoryRule, ReviewUnit
 
 
-PROMPT_VERSION = "structured-review-v2"
+PROMPT_VERSION = "structured-review-v3"
 MAX_MODEL_FINDINGS = 200
 MAX_MODEL_CHECKED_AREAS = 12
 MAX_MODEL_SUMMARY_LENGTH = 4_000

@@ -153,6 +153,7 @@ export interface ReviewDetails {
   head_ref: string | null;
   base_repository: string | null;
   base_ref: string | null;
+  identity_fetched_at: string | null;
   pr_state: string | null;
   pr_is_draft: boolean | null;
   changed_files_count: number | null;

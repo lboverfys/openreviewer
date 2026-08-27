@@ -27,6 +27,11 @@ Anthropic 格式字段。鉴权、权限、限流、普通校验错误和任意 
 稳定签名防止死循环。降级后响应仍必须通过本地 Pydantic 严格校验，不会接受额外字段或不合法
 Finding。错误正文、API Key 和完整请求体不持久化。
 
+Prompt 同时携带平台实际使用的完整 `output_contract`，避免中转站降级为普通 JSON Object 后
+丢失字段约束。供应商成功返回、但本地结构校验失败时，适配器会基于同一份有界输入自动纠正
+一次；第二次仍不合格或请求失败就终止，不会循环调用。两次请求的 Token、耗时和请求 ID 会
+合并进入审计，但模型原始响应和无界错误内容仍不会持久化。
+
 实现所依据的官方文档：
 
 - [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)

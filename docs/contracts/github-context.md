@@ -38,6 +38,11 @@ Worker 领取任务后按下面的顺序工作：
 保存新 SHA 的上下文。关闭或重新变为 Draft 的 PR 进入 `cancelled`。同一仓库和 PR 下其他
 活动旧版本通过批量更新进入 `superseded`，覆盖状态同时变为 `stale`。
 
+升级前创建、尚未保存完整 PR 身份的历史任务，可以由详情页调用
+`POST /api/v1/reviews/{review_run_id}/identity/sync` 单独读取一次 PR 元数据。该操作只回填作者、
+PR 链接、来源仓库/分支和目标仓库/分支，并记录 `identity_fetched_at`；即使 GitHub 当前
+`head_sha` 已变化，也不会用当前 SHA、标题、状态或文件数改写旧版本快照。
+
 ## 3. 文件与 diff
 
 changed files 每页最多 100 条，总数最多 3000 条。完整 diff 使用 PR diff 表示读取，并通过

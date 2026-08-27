@@ -33,6 +33,7 @@ API 进程按客户端和账号记录 15 分钟滑动失败窗口；Nginx 还对
 | `GET /api/v1/reviews?limit=50` | 最近审查任务列表，`limit` 范围为 1 到 100 |
 | `POST /api/v1/reviews` | 创建幂等审查任务，详细规则见任务接口契约 |
 | `GET /api/v1/reviews/{review_run_id}` | 详情、双状态、四 Agent 进度、Finding、CI 和事件 |
+| `POST /api/v1/reviews/{review_run_id}/identity/sync` | 从 GitHub 补全历史任务的 PR 作者、链接和来源/目标分支 |
 | `POST /api/v1/reviews/{review_run_id}/actions` | 暂停、恢复、重试、批准、驳回或人工发布 |
 | `POST /api/v1/reviews/{review_run_id}/findings/{finding_id}` | 确认或忽略单条 Finding |
 
@@ -40,7 +41,12 @@ API 进程按客户端和账号记录 15 分钟滑动失败窗口；Nginx 还对
 返回 `last_error`、`last_error_code`、`last_error_retryable` 和安全详情；错误在 Worker 入库前
 统一脱敏，读取时再次执行防御性脱敏。原始异常、Token、密码和带凭据 URL 不属于响应契约。
 
-动作和 Finding 写接口都要求 `Idempotency-Key` 与同源校验。动作响应同时返回旧队列
+身份同步、动作和 Finding 写接口都要求 `Idempotency-Key` 与同源校验。身份同步只回填作者、
+GitHub 链接、来源仓库/分支和目标仓库/分支，不使用 GitHub 当前标题、SHA 或文件数覆盖历史
+任务的不可变版本快照；成功或已完成的重复请求返回最新详情。GitHub App 未配置时返回 `503`，
+鉴权、权限、限流和上游故障使用脱敏的稳定错误契约。
+
+动作响应同时返回旧队列
 `execution_status` 和真实 `workflow_status`；服务端在提交动作后重新读取已提交详情，不用旧字段
 猜测人工节点。模型结束后固定经过
 `awaiting_approval -> approved -> awaiting_publish -> publishing`；`approved` 与自动开放发布门

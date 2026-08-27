@@ -7,6 +7,8 @@ from enum import Enum
 from typing import Protocol
 
 from domain.enums import ExecutionStatus
+from domain.github import PullRequestSnapshot
+from services.task_queue import ReviewTarget
 
 
 class ReviewManagementPersistenceError(RuntimeError):
@@ -27,6 +29,14 @@ class FindingNotFoundError(LookupError):
 
 class ReviewPublishUnavailableError(RuntimeError):
     """GitHub 人工发布器未配置或发布失败。"""
+
+
+class ReviewIdentitySyncUnavailableError(RuntimeError):
+    """GitHub PR 身份同步器未配置。"""
+
+
+class ReviewIdentitySyncConflictError(ValueError):
+    """GitHub 返回的 PR 身份与任务目标不一致。"""
 
 
 class ReviewAction(str, Enum):
@@ -161,6 +171,7 @@ class StoredReviewDetails:
     head_ref: str | None = None
     base_repository: str | None = None
     base_ref: str | None = None
+    identity_fetched_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,9 +195,32 @@ class ReviewDetails:
     unverified_finding_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewIdentityTarget:
+    target: ReviewTarget
+    fetched_at: datetime | None
+
+
+class PullRequestIdentityLoader(Protocol):
+    def load_pull_request(self, target: ReviewTarget) -> PullRequestSnapshot: ...
+
+
 class ReviewManagementRepository(Protocol):
     def get(self, review_run_id: str) -> StoredReviewDetails:
         """返回单条任务及其有界事件、CI 和 Finding 快照。"""
+
+    def get_identity_target(self, review_run_id: str) -> ReviewIdentityTarget:
+        """读取一次历史任务的 GitHub PR 身份，供事务外回查。"""
+
+    def save_pull_request_identity(
+        self,
+        review_run_id: str,
+        snapshot: PullRequestSnapshot,
+        *,
+        actor: str,
+        request_id: str,
+    ) -> None:
+        """在短事务内保存已校验的 GitHub PR 身份。"""
 
     def apply_action(
         self,
@@ -221,8 +255,41 @@ class ReviewManagementRepository(Protocol):
 
 
 class ReviewManagementService:
-    def __init__(self, repository: ReviewManagementRepository) -> None:
+    def __init__(
+        self,
+        repository: ReviewManagementRepository,
+        *,
+        identity_loader: PullRequestIdentityLoader | None = None,
+    ) -> None:
         self._repository = repository
+        self._identity_loader = identity_loader
+
+    def sync_identity(
+        self,
+        review_run_id: str,
+        *,
+        actor: str,
+        request_id: str,
+        loader: PullRequestIdentityLoader | None = None,
+    ) -> ReviewDetails:
+        """事务外回查 GitHub 并保存历史 PR 身份，再返回最新详情。"""
+
+        identity = self._repository.get_identity_target(review_run_id)
+        if identity.fetched_at is not None:
+            return self.details(review_run_id)
+        identity_loader = loader or self._identity_loader
+        if identity_loader is None:
+            raise ReviewIdentitySyncUnavailableError(
+                "GitHub PR 身份同步器尚未配置"
+            )
+        snapshot = identity_loader.load_pull_request(identity.target)
+        self._repository.save_pull_request_identity(
+            review_run_id,
+            snapshot,
+            actor=actor,
+            request_id=request_id,
+        )
+        return self.details(review_run_id)
 
     def details(self, review_run_id: str) -> ReviewDetails:
         stored = self._repository.get(review_run_id)

@@ -47,6 +47,13 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
         assert body["reasoning"] == {"effort": "medium"}
         assert body["text"]["format"]["type"] == "json_schema"
         assert body["text"]["format"]["strict"] is True
+        prompt_payload = json.loads(body["input"][1]["content"][0]["text"])
+        assert prompt_payload["output_contract"]["required"] == [
+            "verdict",
+            "summary",
+            "checked_areas",
+            "findings",
+        ]
         return httpx.Response(
             200,
             headers={"x-request-id": "req_openai_1"},
@@ -109,7 +116,11 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
 
 
 def test_live_provider_rejects_legacy_findings_only_output() -> None:
+    calls = 0
+
     def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         return httpx.Response(
             200,
             json={
@@ -142,7 +153,77 @@ def test_live_provider_rejects_legacy_findings_only_output() -> None:
     with pytest.raises(SafeApplicationError) as captured:
         reviewer.review(make_model_input())
 
+    assert calls == 2
     assert captured.value.error.code is ErrorCode.MODEL_INVALID_RESPONSE
+    assert captured.value.error.details["format_repair_attempted"] is True
+    assert captured.value.error.details["failed_input_tokens"] == 2
+    assert {
+        item["path"]
+        for item in captured.value.error.details["validation_issues"]
+    } == {"verdict", "summary", "checked_areas"}
+    client.close()
+
+
+def test_invalid_contract_is_repaired_once_and_usage_is_accumulated() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        repaired = len(requests) == 2
+        if repaired:
+            repair_text = body["input"][-1]["content"][0]["text"]
+            assert "verdict、summary、checked_areas、findings" in repair_text
+            assert "verdict, summary, checked_areas" in repair_text
+        return httpx.Response(
+            200,
+            headers={"x-request-id": f"req_repair_{len(requests)}"},
+            json={
+                "id": f"resp_repair_{len(requests)}",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    make_output().model_dump_json()
+                                    if repaired
+                                    else json.dumps({"findings": []})
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 12 if repaired else 10,
+                    "output_tokens": 3 if repaired else 2,
+                },
+            },
+        )
+
+    ticks = iter((10.0, 11.0, 20.0, 22.0))
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+        monotonic=lambda: next(ticks),
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert len(requests) == 2
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert result.provider_response_id == "resp_repair_2"
+    assert result.provider_request_id == "req_repair_1,req_repair_2"
+    assert result.duration_ms == 3000
+    assert result.usage.input_tokens == 22
+    assert result.usage.output_tokens == 5
+    assert result.output == make_output()
     client.close()
 
 

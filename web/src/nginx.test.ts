@@ -49,6 +49,7 @@ describe("Nginx API allowlist", () => {
   it.each([
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/actions",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/identity/sync",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings/finding-1",
   ])("proxies the supported review detail route %s", (path) => {
     expect(isProxied(path)).toBe(true);
@@ -65,6 +66,7 @@ describe("Nginx API allowlist", () => {
     "/api/v1/knowledge/documents/all/delete",
     "/api/v1/knowledge/documents/document-1/versions/0/restore",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/unknown",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/identity/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings",
   ])("does not proxy the unsupported settings route %s", (path) => {
     expect(isProxied(path)).toBe(false);

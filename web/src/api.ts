@@ -73,8 +73,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let message = `请求失败（HTTP ${response.status}）`;
     try {
-      const body = (await response.json()) as { detail?: string };
+      const body = (await response.json()) as {
+        detail?: string;
+        error?: { message?: string };
+      };
       if (body.detail) message = body.detail;
+      else if (body.error?.message) message = body.error.message;
     } catch {
       // 代理返回非 JSON 错误页面时，保留安全的 HTTP 兜底信息。
     }
@@ -144,6 +148,14 @@ export const api = {
     }),
   reviewDetails: (reviewRunId: string) =>
     request<ReviewDetails>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}`),
+  syncReviewIdentity: (reviewRunId: string, idempotencyKey: string) =>
+    request<ReviewDetails>(
+      `/api/v1/reviews/${encodeURIComponent(reviewRunId)}/identity/sync`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+      },
+    ),
   reviewAction: (
     reviewRunId: string,
     action: ReviewAction,

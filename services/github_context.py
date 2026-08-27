@@ -163,6 +163,17 @@ class GitHubReviewContextLoader:
             ci=ci,
         )
 
+    def load_pull_request(self, target: ReviewTarget) -> PullRequestSnapshot:
+        """只读取单条 PR 元数据，供历史任务补全身份信息使用。"""
+
+        budget = _RequestBudget(
+            deadline=self._monotonic() + self._settings.max_load_seconds,
+            monotonic=self._monotonic,
+        )
+        budget.ensure_available()
+        token = self._tokens.get_token(target.installation_id)
+        return self._fetch_pull_request(target, token, budget)
+
     def _fetch_pull_request(
         self,
         target: ReviewTarget,

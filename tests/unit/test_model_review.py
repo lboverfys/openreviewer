@@ -1,5 +1,6 @@
 from decimal import Decimal
 from hashlib import sha256
+import json
 
 import pytest
 
@@ -294,9 +295,16 @@ def test_prompt_is_one_bounded_plan_payload_and_marks_repository_text_untrusted(
         ModelApiProtocol.CHAT_COMPLETIONS,
     )
 
-    assert '"review_units"' in prompt.user
-    assert prompt.user.count('"unit_key"') == 1
-    assert '"repository_rules"' in prompt.user
+    payload = json.loads(prompt.user)
+    assert len(payload["review_units"]) == 1
+    assert payload["review_units"][0]["unit_key"] == "d" * 64
+    assert len(payload["repository_rules"]) == 1
+    assert set(payload["output_contract"]["required"]) == {
+        "verdict",
+        "summary",
+        "checked_areas",
+        "findings",
+    }
     assert "不可信数据" in prompt.system
     assert len(prompt.request_fingerprint) == 64
     assert prompt.request_fingerprint != chat_prompt.request_fingerprint

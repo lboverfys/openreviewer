@@ -50,6 +50,10 @@ _COMPATIBILITY_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("effort", ("effort",)),
     ("store", ("store",)),
 )
+_REQUIRED_OUTPUT_FIELDS = ("verdict", "summary", "checked_areas", "findings")
+_MAX_VALIDATION_ISSUES = 8
+_FORMAT_REPAIR_INSTRUCTION = """上一条回答没有通过结构化审查契约校验。请重新完成同一审查，只返回一个 JSON 对象，不要使用 Markdown 代码块或附加说明。
+顶层必须且只能包含 verdict、summary、checked_areas、findings。verdict 只能是 issues_found、no_actionable_issue、insufficient_context；summary 必须是简体中文非空字符串；checked_areas 必须是去重后的字符串数组。发现问题时 verdict=issues_found 且 findings 非空；没有可靠问题时 verdict=no_actionable_issue 且 findings=[]；上下文不足时使用 insufficient_context。每个 finding 必须严格符合原请求 output_contract。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +152,49 @@ class _StructuredModelReviewer(ModelReviewer):
                     raise
                 request_body = fallback
         try:
-            output, usage, response_id = self._parse_success(payload)
+            try:
+                output, usage, response_id = self._parse_success(payload)
+            except SafeApplicationError as exc:
+                if exc.error.details.get("contract_validation") is not True:
+                    raise
+                first_error = exc.error
+                first_audit = audit
+                repair_body = self._contract_repair_body(request_body, first_error)
+                repair_audit: ModelHttpAudit | None = None
+                try:
+                    repair_payload, repair_audit = self._post_json(
+                        request_path,
+                        headers=self._request_headers(),
+                        body=repair_body,
+                    )
+                    output, repair_usage, response_id = self._parse_success(
+                        repair_payload
+                    )
+                except SafeApplicationError as repair_exc:
+                    raise self._format_repair_failure(
+                        first_error,
+                        first_audit,
+                        repair_exc.error,
+                        repair_audit,
+                    ) from repair_exc
+                usage = _combine_usage(
+                    _failed_usage(first_error.details),
+                    repair_usage,
+                )
+                if repair_audit is None:
+                    raise self._error(
+                        ErrorCode.MODEL_INVALID_RESPONSE,
+                        "模型格式纠正缺少 HTTP 审计信息",
+                        retryable=False,
+                    )
+                audit = ModelHttpAudit(
+                    response_status=repair_audit.response_status,
+                    provider_request_id=_join_request_ids(
+                        first_audit.provider_request_id,
+                        repair_audit.provider_request_id,
+                    ),
+                    duration_ms=first_audit.duration_ms + repair_audit.duration_ms,
+                )
         except SafeApplicationError:
             raise
         except (TypeError, ValueError, ValidationError) as exc:
@@ -177,6 +223,102 @@ class _StructuredModelReviewer(ModelReviewer):
             usage=usage,
             estimated_cost_microusd=estimated_cost,
             output=output,
+        )
+
+    def _contract_repair_body(
+        self,
+        body: dict[str, object],
+        error: SafeError,
+    ) -> dict[str, object]:
+        """基于原始有界请求追加一次格式纠正指令。"""
+
+        candidate = deepcopy(body)
+        issue_paths = _validation_issue_paths(error.details)
+        instruction = _FORMAT_REPAIR_INSTRUCTION
+        if issue_paths:
+            instruction += f"\n本次未通过的字段：{', '.join(issue_paths)}。"
+        if self.api_protocol is ModelApiProtocol.RESPONSES:
+            messages = candidate.get("input")
+            if isinstance(messages, list):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": instruction}],
+                    }
+                )
+                return candidate
+        else:
+            messages = candidate.get("messages")
+            if isinstance(messages, list):
+                messages.append({"role": "user", "content": instruction})
+                return candidate
+        raise self._error(
+            ErrorCode.MODEL_REVIEW_INPUT_INVALID,
+            "模型格式纠正请求无法构造",
+            retryable=False,
+        )
+
+    def _format_repair_failure(
+        self,
+        first_error: SafeError,
+        first_audit: ModelHttpAudit,
+        repair_error: SafeError,
+        repair_audit: ModelHttpAudit | None,
+    ) -> SafeApplicationError:
+        """合并两次请求的安全诊断，不保存模型原文。"""
+
+        combined_usage = _combine_usage(
+            _failed_usage(first_error.details),
+            _failed_usage(repair_error.details),
+        )
+        repair_request_id = (
+            repair_audit.provider_request_id
+            if repair_audit is not None
+            else repair_error.details.get("provider_request_id")
+        )
+        request_id = _join_request_ids(
+            first_audit.provider_request_id,
+            repair_request_id if isinstance(repair_request_id, str) else None,
+        )
+        repair_duration = (
+            repair_audit.duration_ms
+            if repair_audit is not None
+            else repair_error.details.get("duration_ms")
+        )
+        details = {
+            **dict(repair_error.details),
+            **_failed_usage_details(combined_usage),
+            "format_repair_attempted": True,
+            "initial_validation_issues": first_error.details.get(
+                "validation_issues",
+                [],
+            ),
+            "initial_provider_request_id": first_audit.provider_request_id,
+            "provider_request_id": request_id,
+            "status_code": (
+                repair_audit.response_status
+                if repair_audit is not None
+                else repair_error.details.get("status_code")
+            ),
+            "duration_ms": first_audit.duration_ms
+            + (
+                repair_duration
+                if isinstance(repair_duration, int)
+                and not isinstance(repair_duration, bool)
+                and repair_duration >= 0
+                else 0
+            ),
+        }
+        message = repair_error.safe_message
+        if repair_error.details.get("contract_validation") is True:
+            message = f"{message}（自动纠正一次后仍不合格）"
+        return SafeApplicationError(
+            SafeError(
+                code=repair_error.code,
+                safe_message=message,
+                retryable=repair_error.retryable,
+                details=details,
+            )
         )
 
     def _compatibility_fallback_body(
@@ -460,16 +602,80 @@ class _StructuredModelReviewer(ModelReviewer):
                 retryable=False,
             )
         try:
-            output = ModelReviewOutput.model_validate_json(text)
-            if output.verdict is None or output.summary is None:
-                raise ValueError("model response is missing the current conclusion contract")
-            return output
-        except (ValidationError, ValueError) as exc:
-            raise self._error(
-                ErrorCode.MODEL_INVALID_RESPONSE,
-                "模型结构化审查内容不符合 Finding 契约",
-                retryable=False,
+            decoded = json.loads(text)
+        except (json.JSONDecodeError, UnicodeError, TypeError) as exc:
+            raise self._contract_error(
+                ({"path": "$", "code": "invalid_json", "message": "输出不是有效 JSON"},)
             ) from exc
+        if not isinstance(decoded, dict):
+            raise self._contract_error(
+                ({"path": "$", "code": "object_required", "message": "顶层必须是 JSON 对象"},)
+            )
+        missing = tuple(field for field in _REQUIRED_OUTPUT_FIELDS if field not in decoded)
+        if missing:
+            raise self._contract_error(
+                tuple(
+                    {
+                        "path": field,
+                        "code": "missing",
+                        "message": f"缺少 {field} 字段",
+                    }
+                    for field in missing
+                )
+            )
+        try:
+            output = ModelReviewOutput.model_validate(decoded)
+        except ValidationError as exc:
+            raise self._contract_error(_validation_issues(exc)) from exc
+        if output.verdict is None or output.summary is None:
+            invalid = []
+            if output.verdict is None:
+                invalid.append(
+                    {"path": "verdict", "code": "invalid", "message": "verdict 不能为空"}
+                )
+            if output.summary is None:
+                invalid.append(
+                    {"path": "summary", "code": "invalid", "message": "summary 不能为空"}
+                )
+            raise self._contract_error(tuple(invalid))
+        return output
+
+    def _contract_error(
+        self,
+        issues: tuple[dict[str, str], ...],
+    ) -> SafeApplicationError:
+        bounded = issues[:_MAX_VALIDATION_ISSUES] or (
+            {"path": "$", "code": "invalid", "message": "输出结构不符合要求"},
+        )
+        return self._error(
+            ErrorCode.MODEL_INVALID_RESPONSE,
+            f"模型结构化输出不符合审查契约：{bounded[0]['message']}",
+            retryable=False,
+            details={
+                "contract_validation": True,
+                "validation_issue_count": len(issues),
+                "validation_issues": list(bounded),
+            },
+        )
+
+    @staticmethod
+    def _attach_failed_usage(
+        error: SafeApplicationError,
+        usage: ModelTokenUsage,
+    ) -> SafeApplicationError:
+        if error.error.details.get("contract_validation") is not True:
+            return error
+        return SafeApplicationError(
+            SafeError(
+                code=error.error.code,
+                safe_message=error.error.safe_message,
+                retryable=error.error.retryable,
+                details={
+                    **dict(error.error.details),
+                    **_failed_usage_details(usage),
+                },
+            )
+        )
 
 
 class OpenAIResponsesReviewer(_StructuredModelReviewer):
@@ -559,8 +765,6 @@ class OpenAIResponsesReviewer(_StructuredModelReviewer):
                     text_parts.append(raw_text)
         if not text_parts:
             raise self._invalid_openai_response()
-        output = self._parse_structured_text("".join(text_parts))
-
         raw_usage = payload.get("usage")
         if not isinstance(raw_usage, dict):
             raise self._invalid_openai_response()
@@ -586,6 +790,10 @@ class OpenAIResponsesReviewer(_StructuredModelReviewer):
             cache_read_input_tokens=cached_tokens,
             reasoning_output_tokens=reasoning_tokens,
         )
+        try:
+            output = self._parse_structured_text("".join(text_parts))
+        except SafeApplicationError as exc:
+            raise self._attach_failed_usage(exc, usage) from exc
         return output, usage, _optional_identifier(payload.get("id"))
 
     def _invalid_openai_response(self) -> SafeApplicationError:
@@ -675,8 +883,6 @@ class OpenAIChatCompletionsReviewer(_StructuredModelReviewer):
         content = message.get("content")
         if not isinstance(content, str):
             raise self._invalid_chat_completions_response()
-        output = self._parse_structured_text(content)
-
         raw_usage = payload.get("usage")
         if not isinstance(raw_usage, dict):
             raise self._invalid_chat_completions_response()
@@ -702,6 +908,10 @@ class OpenAIChatCompletionsReviewer(_StructuredModelReviewer):
             cache_read_input_tokens=cached_tokens,
             reasoning_output_tokens=reasoning_tokens,
         )
+        try:
+            output = self._parse_structured_text(content)
+        except SafeApplicationError as exc:
+            raise self._attach_failed_usage(exc, usage) from exc
         return output, usage, _optional_identifier(payload.get("id"))
 
     def _invalid_chat_completions_response(self) -> SafeApplicationError:
@@ -780,8 +990,6 @@ class AnthropicModelReviewer(_StructuredModelReviewer):
                 text_parts.append(raw_text)
         if not text_parts:
             raise self._invalid_anthropic_response()
-        output = self._parse_structured_text("".join(text_parts))
-
         raw_usage = payload.get("usage")
         if not isinstance(raw_usage, dict):
             raise self._invalid_anthropic_response()
@@ -797,6 +1005,10 @@ class AnthropicModelReviewer(_StructuredModelReviewer):
                 "cache_creation_input_tokens",
             ),
         )
+        try:
+            output = self._parse_structured_text("".join(text_parts))
+        except SafeApplicationError as exc:
+            raise self._attach_failed_usage(exc, usage) from exc
         return output, usage, _optional_identifier(payload.get("id"))
 
     def _invalid_anthropic_response(self) -> SafeApplicationError:
@@ -845,6 +1057,125 @@ def _optional_nonnegative_int(payload: dict[str, object], name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
     return value
+
+
+def _validation_issues(error: ValidationError) -> tuple[dict[str, str], ...]:
+    """把 Pydantic 错误压缩成不含模型原文的字段级诊断。"""
+
+    issues: list[dict[str, str]] = []
+    for item in error.errors(include_url=False, include_context=False, include_input=False):
+        path = _safe_validation_path(item.get("loc", ()))
+        raw_type = item.get("type")
+        issue_type = raw_type if isinstance(raw_type, str) else "invalid"
+        if issue_type == "missing":
+            code = "missing"
+            message = f"缺少 {path} 字段"
+        elif issue_type == "extra_forbidden":
+            code = "extra"
+            message = f"{path} 是不允许的额外字段"
+        elif issue_type == "enum":
+            code = "enum"
+            message = f"{path} 使用了不支持的枚举值"
+        elif issue_type.startswith("json_"):
+            code = "invalid_json"
+            message = "输出不是有效 JSON"
+        elif path == "$":
+            code = "inconsistent"
+            message = "verdict 与 findings 的组合不一致"
+        else:
+            code = "invalid"
+            message = f"{path} 的类型或取值不符合要求"
+        issues.append({"path": path, "code": code, "message": message})
+        if len(issues) >= _MAX_VALIDATION_ISSUES:
+            break
+    return tuple(issues)
+
+
+def _safe_validation_path(location: object) -> str:
+    if not isinstance(location, (list, tuple)):
+        return "$"
+    parts: list[str] = []
+    for item in location[:12]:
+        if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+            parts.append(f"[{item}]")
+        elif isinstance(item, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", item):
+            parts.append(("." if parts else "") + item)
+        else:
+            parts.append(("." if parts else "") + "<field>")
+    return "".join(parts) or "$"
+
+
+def _validation_issue_paths(details: object) -> tuple[str, ...]:
+    if not isinstance(details, dict):
+        return ()
+    raw = details.get("validation_issues")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    paths = []
+    for item in raw[:_MAX_VALIDATION_ISSUES]:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if isinstance(path, str) and 0 < len(path) <= 256:
+            paths.append(path)
+    return tuple(dict.fromkeys(paths))
+
+
+def _failed_usage_details(usage: ModelTokenUsage) -> dict[str, int]:
+    return {
+        "failed_input_tokens": usage.input_tokens,
+        "failed_output_tokens": usage.output_tokens,
+        "failed_cache_read_tokens": usage.cache_read_input_tokens,
+        "failed_cache_write_tokens": usage.cache_write_input_tokens,
+        "failed_reasoning_tokens": usage.reasoning_output_tokens,
+    }
+
+
+def _failed_usage(details: object) -> ModelTokenUsage:
+    if not isinstance(details, dict):
+        return ModelTokenUsage(input_tokens=0, output_tokens=0)
+
+    def value(name: str) -> int:
+        candidate = details.get(name, 0)
+        return (
+            candidate
+            if isinstance(candidate, int)
+            and not isinstance(candidate, bool)
+            and candidate >= 0
+            else 0
+        )
+
+    return ModelTokenUsage(
+        input_tokens=value("failed_input_tokens"),
+        output_tokens=value("failed_output_tokens"),
+        cache_read_input_tokens=value("failed_cache_read_tokens"),
+        cache_write_input_tokens=value("failed_cache_write_tokens"),
+        reasoning_output_tokens=value("failed_reasoning_tokens"),
+    )
+
+
+def _combine_usage(first: ModelTokenUsage, second: ModelTokenUsage) -> ModelTokenUsage:
+    return ModelTokenUsage(
+        input_tokens=first.input_tokens + second.input_tokens,
+        output_tokens=first.output_tokens + second.output_tokens,
+        cache_read_input_tokens=(
+            first.cache_read_input_tokens + second.cache_read_input_tokens
+        ),
+        cache_write_input_tokens=(
+            first.cache_write_input_tokens + second.cache_write_input_tokens
+        ),
+        reasoning_output_tokens=(
+            first.reasoning_output_tokens + second.reasoning_output_tokens
+        ),
+    )
+
+
+def _join_request_ids(first: str | None, second: str | None) -> str | None:
+    values = tuple(dict.fromkeys(item for item in (first, second) if item))
+    if not values:
+        return None
+    joined = ",".join(values)
+    return joined if len(joined) <= 200 else values[-1]
 
 
 def _unsupported_parameters_from_response(

@@ -98,6 +98,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "head_ref",
             "base_repository",
             "base_ref",
+            "identity_fetched_at",
         } <= {
             column["name"]
             for column in inspector.get_columns("pull_request_versions")
@@ -298,7 +299,7 @@ def test_initial_migration_creates_durable_review_task_schema(
                 "knowledge_document_versions"
             )
         } == {"uq_knowledge_document_versions_document_id"}
-        assert revision == "20260827_0018"
+        assert revision == "20260827_0019"
     finally:
         engine.dispose()
 

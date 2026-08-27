@@ -34,6 +34,7 @@ from domain.model_review import (
     ModelFindingCandidate,
     ModelFindingLocation,
     ModelTokenUsage,
+    model_review_output_schema,
 )
 from domain.review_planning import RepositoryRule, ReviewUnit
 
@@ -450,6 +451,9 @@ class StructuredReviewPromptBuilder:
                 }
                 for unit in review_input.units
             ],
+            # 中转站可能把严格 JSON Schema 参数降级成普通 JSON Object。
+            # 把同一份契约也放进模型可见输入，确保降级后仍有明确格式依据。
+            "output_contract": model_review_output_schema(),
         }
         if review_input.review_agent is not None:
             payload["review_role"] = {

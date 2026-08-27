@@ -15,18 +15,22 @@ from domain.enums import (
     ModelApiProtocol,
     ModelCallStatus,
     ModelProvider,
+    PullRequestState,
     Severity,
     VerificationStatus,
 )
+from domain.github import PullRequestSnapshot
 from domain.model_review import ModelTokenUsage
 from domain.models import FindingLocation, ReviewFinding, ReviewRequest
-from domain.security import ErrorCode, SafeError
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 from persistence.database import Database
 from persistence.models import (
     Base,
+    GitHubInstallationRecord,
     ModelCallRecord,
     ModelReviewBatchRecord,
     OutboxEventRecord,
+    PullRequestVersionRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
     ReviewRunRecord,
@@ -118,6 +122,218 @@ def test_detail_is_readable_and_cancel_is_audited(database: Database) -> None:
             assert after.status_code == 200
             assert after.json()["phase"] == "cancelled"
             assert after.json()["events"][-1]["event_type"] == "review.manual.cancel"
+
+    asyncio.run(exercise())
+
+
+def test_historical_pull_request_identity_is_synced_once_without_rewriting_version(
+    database: Database,
+) -> None:
+    """历史身份同步只补展示字段，不把 GitHub 当前 SHA 混入旧版本快照。"""
+
+    calls = []
+    current_head_sha = "f" * 40
+
+    class IdentityLoader:
+        def load_pull_request(self, target):
+            calls.append(target)
+            return PullRequestSnapshot(
+                repository_id=42,
+                repository="lboverfys/NiuMa",
+                pull_request_number=128,
+                author_login="pull-author",
+                html_url="https://github.com/lboverfys/NiuMa/pull/128",
+                head_repository="contributor/NiuMa",
+                head_ref="feature/identity",
+                base_repository="lboverfys/NiuMa",
+                base_ref="main",
+                base_sha="e" * 40,
+                head_sha=current_head_sha,
+                state=PullRequestState.OPEN,
+                draft=False,
+                title="GitHub 当前标题",
+                changed_files=99,
+                updated_at=datetime(2026, 8, 27, 6, 0, tzinfo=UTC),
+            )
+
+    application = create_app(
+        ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+        auth_service=make_auth_service(),
+        dashboard_service=DashboardService(
+            SqlAlchemyDashboardRepository(database.sessions)
+        ),
+        review_management_service=ReviewManagementService(
+            SqlAlchemyReviewManagementRepository(database.sessions)
+        ),
+        identity_loader=IdentityLoader(),
+    )
+
+    async def exercise() -> str:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "identity-sync-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 128,
+                    "head_sha": "a" * 40,
+                },
+            )
+            run_id = created.json()["review_run_id"]
+            response = await client.post(
+                f"/api/v1/reviews/{run_id}/identity/sync",
+                headers={"Idempotency-Key": f"ui:identity:{run_id}"},
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["pr_author_login"] == "pull-author"
+            assert body["pr_html_url"].endswith("/pull/128")
+            assert body["head_repository"] == "contributor/NiuMa"
+            assert body["head_ref"] == "feature/identity"
+            assert body["base_repository"] == "lboverfys/NiuMa"
+            assert body["base_ref"] == "main"
+            assert body["identity_fetched_at"] is not None
+
+            repeated = await client.post(
+                f"/api/v1/reviews/{run_id}/identity/sync",
+                headers={"Idempotency-Key": f"ui:identity:{run_id}"},
+            )
+            assert repeated.status_code == 200
+            assert repeated.json()["identity_fetched_at"] == body["identity_fetched_at"]
+            return run_id
+
+    run_id = asyncio.run(exercise())
+
+    assert len(calls) == 1
+    assert calls[0].head_sha == "a" * 40
+    with database.sessions() as session:
+        version = session.scalar(
+            select(PullRequestVersionRecord).where(
+                PullRequestVersionRecord.review_version_key
+                == calls[0].review_version_key
+            )
+        )
+        assert version is not None
+        assert version.head_sha == "a" * 40
+        assert version.base_sha is None
+        assert version.title is None
+        assert version.changed_files_count is None
+        assert session.get(GitHubInstallationRecord, 10) is not None
+        events = session.scalars(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == run_id,
+                OutboxEventRecord.event_type == "review.github.identity_synced",
+            )
+        ).all()
+        assert len(events) == 1
+
+
+def test_historical_identity_sync_reports_missing_configuration(
+    database: Database,
+) -> None:
+    application = application_for(database)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "identity-sync-unavailable-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 129,
+                    "head_sha": "b" * 40,
+                },
+            )
+            run_id = created.json()["review_run_id"]
+
+            response = await client.post(
+                f"/api/v1/reviews/{run_id}/identity/sync",
+                headers={"Idempotency-Key": f"ui:identity:{run_id}"},
+            )
+
+            assert response.status_code == 503
+            assert response.json()["detail"] == (
+                "GitHub PR identity sync is not configured"
+            )
+
+    asyncio.run(exercise())
+
+
+def test_historical_identity_sync_exposes_only_safe_github_error(
+    database: Database,
+) -> None:
+    secret = "ghs_must-not-reach-the-browser"
+
+    class FailingIdentityLoader:
+        def load_pull_request(self, _target):
+            raise SafeApplicationError(
+                SafeError(
+                    code=ErrorCode.GITHUB_PERMISSION_DENIED,
+                    safe_message="GitHub App 无权读取该 Pull Request",
+                    retryable=False,
+                    details={"authorization": secret},
+                )
+            )
+
+    application = create_app(
+        ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+        auth_service=make_auth_service(),
+        dashboard_service=DashboardService(
+            SqlAlchemyDashboardRepository(database.sessions)
+        ),
+        review_management_service=ReviewManagementService(
+            SqlAlchemyReviewManagementRepository(database.sessions)
+        ),
+        identity_loader=FailingIdentityLoader(),
+    )
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "identity-sync-forbidden-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 130,
+                    "head_sha": "c" * 40,
+                },
+            )
+            run_id = created.json()["review_run_id"]
+
+            response = await client.post(
+                f"/api/v1/reviews/{run_id}/identity/sync",
+                headers={"Idempotency-Key": f"ui:identity:{run_id}"},
+            )
+
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == (
+                ErrorCode.GITHUB_PERMISSION_DENIED.value
+            )
+            assert response.json()["error"]["message"] == (
+                "GitHub App 无权读取该 Pull Request"
+            )
+            assert secret not in response.text
 
     asyncio.run(exercise())
 

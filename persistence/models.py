@@ -780,6 +780,9 @@ class PullRequestVersionRecord(Base):
     head_ref: Mapped[str | None] = mapped_column(String(1024))
     base_repository: Mapped[str | None] = mapped_column(String(255))
     base_ref: Mapped[str | None] = mapped_column(String(1024))
+    identity_fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     pr_state: Mapped[str | None] = mapped_column(String(16))
     is_draft: Mapped[bool | None] = mapped_column(Boolean)
     title: Mapped[str | None] = mapped_column(String(1000))

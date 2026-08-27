@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError } from "./api";
 import type {
@@ -710,6 +710,9 @@ function ReviewDetailPage({
   const [findingStatus, setFindingStatus] = useState("all");
   const [findingQuery, setFindingQuery] = useState("");
   const [eventFilter, setEventFilter] = useState<ReviewEventFilter>("all");
+  const [identitySyncBusy, setIdentitySyncBusy] = useState(false);
+  const [identitySyncError, setIdentitySyncError] = useState("");
+  const identitySyncAttempted = useRef<string | null>(null);
 
   const loadDetails = useCallback(async () => {
     try {
@@ -735,6 +738,47 @@ function ReviewDetailPage({
     const timer = window.setInterval(() => void loadDetails(), 2500);
     return () => window.clearInterval(timer);
   }, [autoRefresh, loadDetails]);
+
+  const identityNeedsSync = Boolean(
+    details
+      && !details.identity_fetched_at
+      && (
+        !details.pr_author_login
+        || !details.pr_html_url
+        || !details.head_repository
+        || !details.head_ref
+        || !details.base_repository
+        || !details.base_ref
+      ),
+  );
+
+  const syncIdentity = useCallback(async () => {
+    if (!details || identitySyncBusy) return;
+    setIdentitySyncBusy(true);
+    setIdentitySyncError("");
+    try {
+      setDetails(await api.syncReviewIdentity(
+        details.review_run_id,
+        `ui:identity:${details.review_run_id}`,
+      ));
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) {
+        onSignedOut("登录状态已失效，请重新登录");
+      } else {
+        setIdentitySyncError(errorMessage(reason));
+      }
+    } finally {
+      setIdentitySyncBusy(false);
+    }
+  }, [details, identitySyncBusy, onSignedOut]);
+
+  useEffect(() => {
+    if (!details || !identityNeedsSync || identitySyncAttempted.current === details.review_run_id) {
+      return;
+    }
+    identitySyncAttempted.current = details.review_run_id;
+    void syncIdentity();
+  }, [details, identityNeedsSync, syncIdentity]);
 
   const currentMessage = useMemo(
     () => (details ? phaseLabels[details.phase] ?? details.phase : "正在读取任务详情"),
@@ -956,7 +1000,11 @@ function ReviewDetailPage({
             <div className="review-pr-identity">
               <div className="review-pr-author">
                 <span>提起人</span>
-                <strong>{details.pr_author_login ? `@${details.pr_author_login}` : "历史任务未记录作者"}</strong>
+                <strong>{details.pr_author_login
+                  ? `@${details.pr_author_login}`
+                  : details.identity_fetched_at
+                    ? "GitHub 未返回作者"
+                    : "历史任务未记录作者"}</strong>
               </div>
               {hasBranchRoute ? (
                 <div className="review-pr-branch-flow" title={`${headBranchLabel} → ${baseBranchLabel}`}>
@@ -965,8 +1013,24 @@ function ReviewDetailPage({
                   <div><span>目标</span><code>{baseBranchLabel}</code></div>
                 </div>
               ) : (
-                <span className="review-pr-branch-legacy">历史任务未记录来源与目标分支</span>
+                <span className="review-pr-branch-legacy">{details.identity_fetched_at
+                  ? "GitHub 未返回完整的来源与目标分支"
+                  : "历史任务未记录来源与目标分支"}</span>
               )}
+              {identityNeedsSync && (
+                <div className="review-pr-identity-missing">
+                  <span className="review-pr-branch-legacy">PR 身份信息不完整</span>
+                  <button
+                    type="button"
+                    className="review-identity-sync-btn"
+                    onClick={() => void syncIdentity()}
+                    disabled={identitySyncBusy}
+                  >
+                    {identitySyncBusy ? "同步中…" : "从 GitHub 同步"}
+                  </button>
+                </div>
+              )}
+              {identitySyncError && <small className="review-identity-sync-error" role="alert">{identitySyncError}</small>}
             </div>
             <div className="review-hero-meta">
               <span><code>{shortSha(details.head_sha)}</code></span>

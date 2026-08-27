@@ -87,6 +87,7 @@ from services.dashboard import (
 )
 from services.github import GitHubApiClient
 from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
+from services.github_context import GitHubReviewContextLoader
 from services.github_publisher import GitHubReviewPublisher
 from services.reviews import (
     IdempotencyConflictError,
@@ -95,8 +96,11 @@ from services.reviews import (
 )
 from services.review_management import (
     FindingDecision,
+    PullRequestIdentityLoader,
     ReviewAction,
     ReviewActionConflictError,
+    ReviewIdentitySyncConflictError,
+    ReviewIdentitySyncUnavailableError,
     ReviewManagementPersistenceError,
     ReviewPublishUnavailableError,
     ReviewManagementService,
@@ -330,6 +334,7 @@ class ReviewDetailsResponse(BaseModel):
     head_ref: str | None
     base_repository: str | None
     base_ref: str | None
+    identity_fetched_at: datetime | None
     pr_state: str | None
     pr_is_draft: bool | None
     changed_files_count: int | None
@@ -893,6 +898,7 @@ def create_app(
     agent_settings_service: AgentSettingsService | None = None,
     knowledge_base: MarkdownKnowledgeBase | None = None,
     review_management_service: ReviewManagementService | None = None,
+    identity_loader: PullRequestIdentityLoader | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -951,6 +957,7 @@ def create_app(
     application.state.agent_settings_service = agent_settings_service
     application.state.knowledge_base = knowledge_base
     application.state.review_management_service = review_management_service
+    application.state.identity_loader = identity_loader
     application.state.login_limiter = login_limiter or LoginAttemptLimiter()
     application.state.owned_database = None
     application.state.owned_github_api = None
@@ -1172,6 +1179,7 @@ def create_app(
             configured_service = application.state.review_management_service
             if configured_service is None:
                 publisher = None
+                identity_loader = application.state.identity_loader
                 # 详情读取不依赖 GitHub 凭据。只有 App ID 和私钥路径都存在时
                 # 才装配人工发布器；配置缺失会在用户点击发布时准确返回 503，
                 # 配置存在但无效则同样不会伪造发布成功。
@@ -1182,23 +1190,33 @@ def create_app(
                         "",
                     ).strip()
                 ):
+                    github_api: GitHubApiClient | None = None
                     try:
                         github_api = GitHubApiClient()
                         github_tokens = GitHubAppTokenProvider(
                             github_api,
                             GitHubAppSettings.from_environment(),
                         )
-                        publisher = GitHubReviewPublisher(github_api, github_tokens)
+                        configured_identity_loader = GitHubReviewContextLoader(
+                            github_api,
+                            github_tokens,
+                        )
+                        configured_publisher = GitHubReviewPublisher(
+                            github_api,
+                            github_tokens,
+                        )
+                        identity_loader = configured_identity_loader
+                        publisher = configured_publisher
                         application.state.owned_github_api = github_api
                     except (ValueError, OSError):
-                        if "github_api" in locals():
+                        if github_api is not None:
                             github_api.close()
-                        publisher = None
                 configured_service = ReviewManagementService(
                     SqlAlchemyReviewManagementRepository(
                         get_database().sessions,
                         publisher=publisher,
-                    )
+                    ),
+                    identity_loader=identity_loader,
                 )
                 application.state.review_management_service = configured_service
             return configured_service
@@ -1376,6 +1394,25 @@ def create_app(
         ErrorCode.WEBHOOK_DELIVERY_CONFLICT: status.HTTP_409_CONFLICT,
         ErrorCode.WEBHOOK_NOT_CONFIGURED: status.HTTP_503_SERVICE_UNAVAILABLE,
         ErrorCode.WEBHOOK_PERSISTENCE_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.GITHUB_AUTHENTICATION_FAILED: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.GITHUB_PERMISSION_DENIED: status.HTTP_403_FORBIDDEN,
+        ErrorCode.GITHUB_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+        ErrorCode.GITHUB_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
+        ErrorCode.GITHUB_TIMEOUT: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.GITHUB_SERVER_ERROR: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.GITHUB_REQUEST_REJECTED: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.GITHUB_INVALID_RESPONSE: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.GITHUB_RESPONSE_TOO_LARGE: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.MODEL_AUTHENTICATION_FAILED: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.MODEL_PERMISSION_DENIED: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.MODEL_RATE_LIMITED: status.HTTP_429_TOO_MANY_REQUESTS,
+        ErrorCode.MODEL_TIMEOUT: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.MODEL_SERVER_ERROR: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.MODEL_REQUEST_REJECTED: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.MODEL_INVALID_RESPONSE: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.MODEL_RESPONSE_TOO_LARGE: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.MODEL_OUTPUT_REFUSED: status.HTTP_502_BAD_GATEWAY,
+        ErrorCode.MODEL_OUTPUT_TRUNCATED: status.HTTP_502_BAD_GATEWAY,
     }
 
     @application.exception_handler(SafeApplicationError)
@@ -2208,6 +2245,56 @@ def create_app(
         """返回任务的阶段、模型结果、Finding、CI 和结构化事件日志。"""
 
         return review_details_response(review_run_id)
+
+    @application.post(
+        "/api/v1/reviews/{review_run_id}/identity/sync",
+        response_model=ReviewDetailsResponse,
+    )
+    def sync_review_identity(
+        review_run_id: str,
+        idempotency_key: Annotated[
+            str,
+            Header(alias="Idempotency-Key", min_length=1, max_length=200),
+        ],
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        __: Annotated[None, Depends(require_same_origin)],
+    ) -> ReviewDetailsResponse:
+        """从 GitHub 回查并补全历史任务的 PR 作者、链接和分支信息。"""
+
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Idempotency-Key must not be blank",
+            )
+        try:
+            details = get_review_management_service().sync_identity(
+                review_run_id,
+                actor=principal.username,
+                request_id=normalized_key,
+                loader=application.state.identity_loader,
+            )
+        except ReviewNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="review task not found",
+            ) from exc
+        except ReviewIdentitySyncUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="GitHub PR identity sync is not configured",
+            ) from exc
+        except ReviewIdentitySyncConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        except ReviewManagementPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="review identity sync is temporarily unavailable",
+            ) from exc
+        return ReviewDetailsResponse.from_details(details)
 
     @application.post(
         "/api/v1/reviews/{review_run_id}/actions",

@@ -209,6 +209,36 @@ def test_loader_stops_after_pr_metadata_when_head_sha_is_stale() -> None:
     assert requests == ["/repos/lboverfys/NiuMa/pulls/48"]
 
 
+def test_identity_loader_fetches_only_pull_request_metadata() -> None:
+    current_head_sha = "f" * 40
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        return httpx.Response(200, json=_pull_request_payload(current_head_sha))
+
+    api = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    snapshot = GitHubReviewContextLoader(
+        api,
+        StaticTokenProvider(),
+    ).load_pull_request(_target())
+
+    assert snapshot.head_sha == current_head_sha
+    assert snapshot.author_login == "contributor"
+    assert snapshot.head_repository == "contributor/NiuMa"
+    assert snapshot.head_ref == "feature/review-context"
+    assert snapshot.base_repository == "lboverfys/NiuMa"
+    assert snapshot.base_ref == "main"
+    assert requests == ["/repos/lboverfys/NiuMa/pulls/48"]
+
+
 def test_loader_keeps_pr_metadata_when_author_and_source_fork_are_deleted() -> None:
     current_head_sha = "f" * 40
     payload = _pull_request_payload(current_head_sha)

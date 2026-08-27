@@ -2431,6 +2431,7 @@ class SqlAlchemyReviewTaskQueue:
         version.head_ref = pull_request.head_ref
         version.base_repository = pull_request.base_repository
         version.base_ref = pull_request.base_ref
+        version.identity_fetched_at = now
         version.pr_state = pull_request.state.value
         version.is_draft = pull_request.draft
         version.title = pull_request.title
