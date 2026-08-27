@@ -257,6 +257,14 @@ def test_postgres_review_plan_is_claimed_and_saved_atomically(
                 repository_id=77,
                 repository="lboverfys/ReviewPlanContract",
                 pull_request_number=501,
+                author_login="contributor",
+                html_url=(
+                    "https://github.com/lboverfys/ReviewPlanContract/pull/501"
+                ),
+                head_repository="contributor/ReviewPlanContract",
+                head_ref="feature/postgres-contract",
+                base_repository="lboverfys/ReviewPlanContract",
+                base_ref="main",
                 base_sha="b" * 40,
                 head_sha="d" * 40,
                 state=PullRequestState.OPEN,

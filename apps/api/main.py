@@ -191,6 +191,13 @@ class ReviewItemResponse(BaseModel):
     repository: str
     pull_request_number: int
     head_sha: str
+    pr_title: str | None
+    pr_author_login: str | None
+    pr_html_url: str | None
+    head_repository: str | None
+    head_ref: str | None
+    base_repository: str | None
+    base_ref: str | None
     execution_status: ExecutionStatus
     workflow_status: ExecutionStatus = ExecutionStatus.QUEUED
     attempt_count: int
@@ -317,6 +324,12 @@ class ReviewDetailsResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     pr_title: str | None
+    pr_author_login: str | None
+    pr_html_url: str | None
+    head_repository: str | None
+    head_ref: str | None
+    base_repository: str | None
+    base_ref: str | None
     pr_state: str | None
     pr_is_draft: bool | None
     changed_files_count: int | None

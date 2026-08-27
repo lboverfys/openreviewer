@@ -75,6 +75,14 @@ class ReviewAgent(str, Enum):
     SUMMARY = "summary"
 
 
+class ModelReviewVerdict(str, Enum):
+    """模型对当前可见审查范围给出的有界结论。"""
+
+    ISSUES_FOUND = "issues_found"
+    NO_ACTIONABLE_ISSUE = "no_actionable_issue"
+    INSUFFICIENT_CONTEXT = "insufficient_context"
+
+
 class ModelReasoningEffort(str, Enum):
     """模型推理强度；``none`` 表示不发送可选推理参数。"""
 

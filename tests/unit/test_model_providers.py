@@ -108,6 +108,44 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
     client.close()
 
 
+def test_live_provider_rejects_legacy_findings_only_output() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_legacy_output",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps({"findings": []}),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert captured.value.error.code is ErrorCode.MODEL_INVALID_RESPONSE
+    client.close()
+
+
 def test_openai_chat_completions_request_and_usage_are_normalized() -> None:
     requests: list[httpx.Request] = []
 

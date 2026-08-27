@@ -42,6 +42,7 @@ const actionLabels: Record<ReviewAction, string> = {
 type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
 type ReviewDetailTab = "overview" | "agents" | "findings" | "logs";
 type ReviewEventFilter = "all" | "model" | "workflow" | "errors";
+type ReviewVerdict = "issues_found" | "no_actionable_issue" | "insufficient_context";
 
 const retryTargetOptions: ReadonlyArray<[RetryTargetStage, string]> = [
   ["ci", "CI 检查"],
@@ -135,6 +136,12 @@ const reasoningEffortLabels: Record<string, string> = {
   max: "极致",
 };
 
+const verdictLabels: Record<ReviewVerdict, string> = {
+  issues_found: "发现需处理问题",
+  no_actionable_issue: "当前范围未发现可报告问题",
+  insufficient_context: "审查上下文不足",
+};
+
 function actionKey(action?: ReviewAction, reviewRunId?: string): string {
   if (action === "publish" && reviewRunId) {
     // 一次审查最多人工发布一次；稳定幂等键让网络超时或页面刷新后的
@@ -169,6 +176,19 @@ function payloadNumber(event: ReviewEvent | undefined, key: string): number | nu
 function payloadString(event: ReviewEvent | undefined, key: string): string | null {
   const value = event?.payload[key];
   return typeof value === "string" ? value : null;
+}
+
+function payloadVerdict(event: ReviewEvent | undefined): ReviewVerdict | null {
+  const value = payloadString(event, "verdict");
+  return value === "issues_found"
+    || value === "no_actionable_issue"
+    || value === "insufficient_context"
+    ? value
+    : null;
+}
+
+function branchLabel(repository: string | null, ref: string | null): string {
+  return `${repository ?? "未知仓库"}:${ref ?? "未知分支"}`;
 }
 
 function latestBatchPlanEvent(events: ReviewEvent[]): ReviewEvent | undefined {
@@ -465,6 +485,9 @@ function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
     ...stringArrayPayload(failedEvent, "references"),
     ...stringArrayPayload(summaryEvent, "references"),
   ])];
+  const verdict = payloadVerdict(terminal);
+  const conclusionSummary = payloadString(terminal, "summary");
+  const checkedAreas = stringArrayPayload(terminal, "checked_areas");
   return {
     events: scoped,
     planned,
@@ -482,6 +505,10 @@ function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
     errorCode,
     errorMessage,
     references,
+    verdict,
+    conclusionSummary,
+    checkedAreas,
+    hasStructuredConclusion: verdict !== null && conclusionSummary !== null,
   };
 }
 
@@ -536,8 +563,28 @@ function ModelBatchPanel({ details }: { details: ReviewDetails }) {
               {progress.requestIds.length > 0 && (
                 <div className="review-agent-detail"><span>请求 ID</span><code>{progress.requestIds.join(" · ")}</code></div>
               )}
-              {progress.status === "completed" && progress.findingCount === 0 && (
-                <p className="review-agent-empty"><span aria-hidden="true">✓</span>该 Agent 已完成，未发现问题</p>
+              {progress.status === "completed" && progress.hasStructuredConclusion && progress.verdict && (
+                <div className={`review-agent-conclusion verdict-${progress.verdict}`}>
+                  <div className="review-agent-conclusion-title">
+                    <span>Agent 结论</span>
+                    <strong>{verdictLabels[progress.verdict]}</strong>
+                  </div>
+                  <p>{progress.conclusionSummary}</p>
+                  {progress.checkedAreas.length > 0 && (
+                    <div className="review-checked-areas" aria-label="实际检查范围">
+                      {progress.checkedAreas.map((area) => <span key={area}>{area}</span>)}
+                    </div>
+                  )}
+                </div>
+              )}
+              {progress.status === "completed" && !progress.hasStructuredConclusion && (
+                <div className="review-agent-conclusion is-legacy">
+                  <div className="review-agent-conclusion-title">
+                    <span>Agent 结论</span>
+                    <strong>历史任务未保存结论</strong>
+                  </div>
+                  <p>这条记录只保存了执行状态和问题数量，不能据此判断 Agent 的实际分析结论；重新审查后会生成完整摘要。</p>
+                </div>
               )}
               {progress.errorMessage && progress.status === "failed" && (
                 <div className="review-agent-error">
@@ -840,6 +887,18 @@ function ReviewDetailPage({
   const failedAgentCount = agentSummaries.filter(
     (item) => item.progress.status === "failed",
   ).length;
+  const finalAgentProgress = agentSummaries.find(
+    (item) => item.key === "summary",
+  )!.progress;
+  const hasBranchRoute = Boolean(details.head_ref || details.base_ref);
+  const headBranchLabel = branchLabel(
+    details.head_repository ?? details.repository,
+    details.head_ref,
+  );
+  const baseBranchLabel = branchLabel(
+    details.base_repository ?? details.repository,
+    details.base_ref,
+  );
   const normalizedFindingQuery = findingQuery.trim().toLocaleLowerCase();
   const filteredFindings = details.findings.filter((finding) => (
     (findingSeverity === "all" || finding.severity === findingSeverity)
@@ -894,10 +953,30 @@ function ReviewDetailPage({
             <div className="review-hero-kicker"><span className="review-hero-pulse" />{details.repository} · PR #{details.pull_request_number}</div>
             <h1>{details.pr_title || `Pull Request #${details.pull_request_number}`}</h1>
             <p>{displayMessage}</p>
+            <div className="review-pr-identity">
+              <div className="review-pr-author">
+                <span>提起人</span>
+                <strong>{details.pr_author_login ? `@${details.pr_author_login}` : "历史任务未记录作者"}</strong>
+              </div>
+              {hasBranchRoute ? (
+                <div className="review-pr-branch-flow" title={`${headBranchLabel} → ${baseBranchLabel}`}>
+                  <div><span>来源</span><code>{headBranchLabel}</code></div>
+                  <b aria-hidden="true">→</b>
+                  <div><span>目标</span><code>{baseBranchLabel}</code></div>
+                </div>
+              ) : (
+                <span className="review-pr-branch-legacy">历史任务未记录来源与目标分支</span>
+              )}
+            </div>
             <div className="review-hero-meta">
               <span><code>{shortSha(details.head_sha)}</code></span>
               <span>{details.changed_files_count ?? "—"} 个变更文件</span>
               <span>更新于 {formatDate(details.updated_at)}</span>
+              {details.pr_html_url && (
+                <a href={details.pr_html_url} target="_blank" rel="noreferrer">
+                  在 GitHub 查看 PR ↗
+                </a>
+              )}
             </div>
           </div>
           <div className="review-hero-status">
@@ -971,6 +1050,32 @@ function ReviewDetailPage({
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
                 <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.unverified_finding_count > 0 && <span className="result-count result-count-pending">{details.unverified_finding_count} 未标记</span>}</div>
               </div>
+              {(finalAgentProgress.status === "completed" || details.model_review_completed_at) && (
+                finalAgentProgress.hasStructuredConclusion && finalAgentProgress.verdict ? (
+                  <div className={`review-final-conclusion verdict-${finalAgentProgress.verdict}`}>
+                    <div className="review-final-conclusion-heading">
+                      <div>
+                        <span>汇总 Agent 最终结论</span>
+                        <strong>{verdictLabels[finalAgentProgress.verdict]}</strong>
+                      </div>
+                      <b>{finalAgentProgress.findingCount} 条候选问题</b>
+                    </div>
+                    <p>{finalAgentProgress.conclusionSummary}</p>
+                    {finalAgentProgress.checkedAreas.length > 0 && (
+                      <div className="review-checked-areas" aria-label="最终结论覆盖范围">
+                        {finalAgentProgress.checkedAreas.map((area) => <span key={area}>{area}</span>)}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="review-final-conclusion is-legacy">
+                    <div className="review-final-conclusion-heading">
+                      <div><span>汇总 Agent 最终结论</span><strong>历史任务未保存结构化结论</strong></div>
+                    </div>
+                    <p>这条任务完成时还没有保存结论摘要和检查范围。当前只能确认候选问题数量，不能把“0 条”直接解释成“未发现问题”；重新审查后会显示真实结论。</p>
+                  </div>
+                )
+              )}
               {details.findings.length > 0 && (
                 <div className="review-finding-toolbar">
                   <label><span>严重程度</span><select id="review-finding-severity" name="review-finding-severity" value={findingSeverity} onChange={(event) => setFindingSeverity(event.target.value)}><option value="all">全部级别</option><option value="critical">严重</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></select></label>
@@ -986,7 +1091,7 @@ function ReviewDetailPage({
                 <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>AI 结果尚未生成</strong><p>模型完成后，候选问题会显示在这里。</p></div></div>
               )}
               {details.model_review_completed_at && details.findings.length === 0 && (
-                <div className="review-result-empty result-empty-positive"><DetailIcon>✓</DetailIcon><div><strong>AI 没有返回候选问题</strong><p>这表示模型在当前审查范围内没有发现可报告的问题。</p></div></div>
+                <div className={`review-result-empty ${finalAgentProgress.verdict === "no_actionable_issue" ? "result-empty-positive" : finalAgentProgress.verdict === "insufficient_context" ? "result-empty-limited" : ""}`}><DetailIcon>{finalAgentProgress.verdict === "insufficient_context" ? "!" : "✓"}</DetailIcon><div><strong>本次没有候选问题</strong><p>{finalAgentProgress.hasStructuredConclusion ? "具体判断、依据范围和限制见上方汇总 Agent 结论。" : "这条历史记录没有保存结论摘要，不能仅凭候选问题数量推断分析结果。"}</p></div></div>
               )}
               {details.findings.length > 0 && filteredFindings.length === 0 && (
                 <div className="review-result-empty"><DetailIcon>⌕</DetailIcon><div><strong>没有符合筛选条件的问题</strong><p>调整严重程度、状态或搜索关键词后再查看。</p></div></div>
@@ -1057,10 +1162,14 @@ function ReviewDetailPage({
               <div className="review-panel-heading"><div><span className="review-eyebrow">GITHUB CONTEXT</span><h2>代码与 CI</h2></div><span className={`review-ci-state ci-${details.ci_state ?? "unknown"}`}>{details.ci_state ?? "未知"}</span></div>
               <dl className="review-context-list">
                 <div><dt>PR 状态</dt><dd>{details.pr_state ?? "—"}{details.pr_is_draft ? " · Draft" : ""}</dd></div>
+                <div><dt>提起人</dt><dd>{details.pr_author_login ? `@${details.pr_author_login}` : "历史任务未记录"}</dd></div>
+                <div><dt>来源分支</dt><dd><code>{hasBranchRoute ? headBranchLabel : "历史任务未记录"}</code></dd></div>
+                <div><dt>目标分支</dt><dd><code>{hasBranchRoute ? baseBranchLabel : "历史任务未记录"}</code></dd></div>
                 <div><dt>变更文件</dt><dd>{details.changed_files_count ?? "—"} 个</dd></div>
                 <div><dt>文件快照</dt><dd>{details.files_complete === null ? "—" : details.files_complete ? "完整" : "部分"}</dd></div>
                 <div><dt>Diff 快照</dt><dd>{details.diff_complete === null ? "—" : details.diff_complete ? "完整" : "部分"}</dd></div>
                 <div><dt>CI 检查</dt><dd>{details.ci_checks.length} 项 · {details.ci_checks_complete ? "完整" : "持续刷新"}</dd></div>
+                {details.pr_html_url && <div><dt>Pull Request</dt><dd><a href={details.pr_html_url} target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></dd></div>}
               </dl>
               {details.ci_checks.length > 0 && <div className="review-ci-check-list">{details.ci_checks.slice(0, 8).map((check) => <div key={`${check.kind}:${check.name}`}><span className={`ci-check-dot ci-check-${check.conclusion ?? check.status}`} /><span>{check.name}</span><small>{check.conclusion ?? check.status}</small></div>)}</div>}
             </section>

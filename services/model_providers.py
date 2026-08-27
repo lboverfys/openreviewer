@@ -460,7 +460,10 @@ class _StructuredModelReviewer(ModelReviewer):
                 retryable=False,
             )
         try:
-            return ModelReviewOutput.model_validate_json(text)
+            output = ModelReviewOutput.model_validate_json(text)
+            if output.verdict is None or output.summary is None:
+                raise ValueError("model response is missing the current conclusion contract")
+            return output
         except (ValidationError, ValueError) as exc:
             raise self._error(
                 ErrorCode.MODEL_INVALID_RESPONSE,

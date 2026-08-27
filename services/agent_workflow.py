@@ -125,7 +125,10 @@ class FixedAgentWorkflow:
             begin = time.monotonic()
             try:
                 agent_input = review_input.model_copy(
-                    update={"knowledge_references": refs.get(agent, ())}
+                    update={
+                        "knowledge_references": refs.get(agent, ()),
+                        "review_agent": agent,
+                    }
                 )
                 result = reviewer.review(agent_input)
                 if (
@@ -198,12 +201,15 @@ class FixedAgentWorkflow:
                 update={
                     "knowledge_references": refs.get(ReviewAgent.SUMMARY, ()),
                     "prior_agent_results": _execution_context(ordered),
+                    "review_agent": ReviewAgent.SUMMARY,
                 }
             )
             try:
                 summary_result = self._summary_reviewer.review(summary_input)
                 if summary_result.status is ModelCallStatus.SUCCEEDED:
                     findings = _merge_candidates(findings, summary_result.output.findings)
+                    if summary_result.output.summary is not None:
+                        summary = summary_result.output.summary
                     summary_execution = AgentExecution(
                         ReviewAgent.SUMMARY,
                         "completed",
@@ -329,6 +335,22 @@ def _execution_context(executions: tuple[AgentExecution, ...]) -> tuple[str, ...
         payload = {
             "agent": execution.agent.value,
             "status": execution.status,
+            "verdict": (
+                execution.result.output.verdict.value
+                if execution.result is not None
+                and execution.result.output.verdict is not None
+                else None
+            ),
+            "summary": (
+                execution.result.output.summary
+                if execution.result is not None
+                else None
+            ),
+            "checked_areas": (
+                list(execution.result.output.checked_areas)
+                if execution.result is not None
+                else []
+            ),
             "findings": [
                 {
                     "unit_key": item.unit_key,

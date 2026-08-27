@@ -2425,6 +2425,12 @@ class SqlAlchemyReviewTaskQueue:
     ) -> None:
         pull_request = context.pull_request
         version.base_sha = pull_request.base_sha
+        version.author_login = pull_request.author_login
+        version.html_url = pull_request.html_url
+        version.head_repository = pull_request.head_repository
+        version.head_ref = pull_request.head_ref
+        version.base_repository = pull_request.base_repository
+        version.base_ref = pull_request.base_ref
         version.pr_state = pull_request.state.value
         version.is_draft = pull_request.draft
         version.title = pull_request.title

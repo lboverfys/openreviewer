@@ -11,7 +11,9 @@ from domain.enums import (
     ModelApiProtocol,
     ModelCallStatus,
     ModelProvider,
+    ModelReviewVerdict,
     ModelReasoningEffort,
+    ReviewAgent,
     Severity,
     VerificationStatus,
 )
@@ -87,6 +89,9 @@ def make_model_input() -> ModelReviewInput:
 
 def make_output(*, start_line: int = 2) -> ModelReviewOutput:
     return ModelReviewOutput(
+        verdict=ModelReviewVerdict.ISSUES_FOUND,
+        summary="发现授权路径可能绕过统一权限检查。",
+        checked_areas=("授权边界", "角色校验"),
         findings=(
             ModelFindingCandidate(
                 unit_key="d" * 64,
@@ -221,6 +226,20 @@ def test_model_schema_excludes_platform_owned_finding_fields() -> None:
     assert "head_sha" not in item["properties"]
     assert "verification_status" not in item["properties"]
     assert set(item["required"]) == set(item["properties"])
+    assert set(schema["required"]) == set(schema["properties"])
+    assert {"verdict", "summary", "checked_areas", "findings"} == set(
+        schema["properties"]
+    )
+
+
+def test_model_output_rejects_a_no_issue_verdict_with_findings() -> None:
+    with pytest.raises(ValueError, match="cannot contain findings"):
+        ModelReviewOutput(
+            verdict=ModelReviewVerdict.NO_ACTIONABLE_ISSUE,
+            summary="未发现可报告问题。",
+            checked_areas=("授权边界",),
+            findings=make_output().findings,
+        )
 
 
 def test_materialization_adds_trusted_identity_and_line_independent_fingerprint() -> None:
@@ -281,6 +300,49 @@ def test_prompt_is_one_bounded_plan_payload_and_marks_repository_text_untrusted(
     assert "不可信数据" in prompt.system
     assert len(prompt.request_fingerprint) == 64
     assert prompt.request_fingerprint != chat_prompt.request_fingerprint
+
+
+def test_prompt_carries_the_agent_specific_review_role() -> None:
+    review_input = make_model_input().model_copy(
+        update={"review_agent": ReviewAgent.SECURITY}
+    )
+    prompt = StructuredReviewPromptBuilder().build(
+        review_input,
+        ModelProvider.OPENAI,
+        "security-model",
+        ModelApiProtocol.RESPONSES,
+    )
+
+    assert '"agent":"security"' in prompt.user
+    assert "鉴权" in prompt.user
+    assert "不要输出思维链" in prompt.system
+
+
+def test_batch_conclusions_are_merged_without_losing_checked_areas() -> None:
+    first = ModelReviewOutput(
+        verdict=ModelReviewVerdict.NO_ACTIONABLE_ISSUE,
+        summary="检查了鉴权边界。",
+        checked_areas=("鉴权",),
+        findings=(),
+    )
+    second = ModelReviewOutput(
+        verdict=ModelReviewVerdict.NO_ACTIONABLE_ISSUE,
+        summary="检查了输入校验。",
+        checked_areas=("输入校验",),
+        findings=(),
+    )
+
+    combined = combine_model_review_results(
+        make_model_input(),
+        (
+            make_result(first, "8" * 64),
+            make_result(second, "9" * 64),
+        ),
+    )
+
+    assert combined.output.verdict is ModelReviewVerdict.NO_ACTIONABLE_ISSUE
+    assert "第1批：检查了鉴权边界。" in (combined.output.summary or "")
+    assert combined.output.checked_areas == ("鉴权", "输入校验")
 
 
 def test_model_batches_use_context_window_without_omitting_files() -> None:

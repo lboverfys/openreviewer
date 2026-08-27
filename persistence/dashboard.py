@@ -11,6 +11,7 @@ from persistence.models import (
     ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
+    PullRequestVersionRecord,
     WorkerHeartbeatRecord,
 )
 from services.dashboard import (
@@ -101,6 +102,15 @@ class SqlAlchemyDashboardRepository:
                         ReviewRunRecord.repository,
                         ReviewRunRecord.pull_request_number,
                         ReviewRunRecord.head_sha,
+                        PullRequestVersionRecord.title.label("pr_title"),
+                        PullRequestVersionRecord.author_login.label(
+                            "pr_author_login"
+                        ),
+                        PullRequestVersionRecord.html_url.label("pr_html_url"),
+                        PullRequestVersionRecord.head_repository,
+                        PullRequestVersionRecord.head_ref,
+                        PullRequestVersionRecord.base_repository,
+                        PullRequestVersionRecord.base_ref,
                         ReviewRunRecord.execution_status,
                         ReviewRunRecord.workflow_status,
                         ReviewTaskRecord.attempt_count,
@@ -123,6 +133,11 @@ class SqlAlchemyDashboardRepository:
                     .join(
                         ReviewTaskRecord,
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
+                    )
+                    .outerjoin(
+                        PullRequestVersionRecord,
+                        PullRequestVersionRecord.review_version_key
+                        == ReviewRunRecord.review_version_key,
                     )
                     .order_by(ReviewRunRecord.created_at.desc())
                     .limit(limit)
@@ -151,6 +166,13 @@ class SqlAlchemyDashboardRepository:
                             repository=row.repository,
                             pull_request_number=row.pull_request_number,
                             head_sha=row.head_sha,
+                            pr_title=row.pr_title,
+                            pr_author_login=row.pr_author_login,
+                            pr_html_url=row.pr_html_url,
+                            head_repository=row.head_repository,
+                            head_ref=row.head_ref,
+                            base_repository=row.base_repository,
+                            base_ref=row.base_ref,
                             execution_status=ExecutionStatus(
                                 row.execution_status
                             ),

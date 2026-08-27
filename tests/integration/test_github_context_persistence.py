@@ -24,6 +24,7 @@ from domain.github import (
 from domain.models import ReviewRequest
 from domain.security import ErrorCode
 from persistence.database import Database
+from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.models import (
     Base,
     PullRequestCiCheckRecord,
@@ -32,8 +33,11 @@ from persistence.models import (
     ReviewRunRecord,
     ReviewTaskRecord,
 )
+from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
+from services.dashboard import DashboardService
+from services.review_management import ReviewManagementService
 from services.reviews import ReviewService
 from services.task_queue import ReviewTarget, TaskLeaseLostError
 
@@ -122,6 +126,12 @@ def _context(
             repository_id=42,
             repository="lboverfys/NiuMa",
             pull_request_number=48,
+            author_login="contributor",
+            html_url="https://github.com/lboverfys/NiuMa/pull/48",
+            head_repository="contributor/NiuMa",
+            head_ref="feature/review-context",
+            base_repository="lboverfys/NiuMa",
+            base_ref="main",
             base_sha="b" * 40,
             head_sha=head_sha,
             state=PullRequestState.OPEN,
@@ -202,6 +212,12 @@ def test_pending_ci_is_polled_without_consuming_failure_attempts(
         assert task.attempt_count == 1
         assert task.ci_poll_count == 1
         assert version.ci_state == CiState.SUCCESS.value
+        assert version.author_login == "contributor"
+        assert version.html_url == "https://github.com/lboverfys/NiuMa/pull/48"
+        assert version.head_repository == "contributor/NiuMa"
+        assert version.head_ref == "feature/review-context"
+        assert version.base_repository == "lboverfys/NiuMa"
+        assert version.base_ref == "main"
         assert version.files_complete is True
         assert version.diff_complete is True
         assert session.scalar(
@@ -210,6 +226,32 @@ def test_pending_ci_is_polled_without_consuming_failure_attempts(
         assert session.scalar(
             select(func.count()).select_from(PullRequestCiCheckRecord)
         ) == 1
+
+    dashboard_item = DashboardService(
+        SqlAlchemyDashboardRepository(database.sessions),
+        clock=clock,
+    ).snapshot().recent_reviews[0]
+    assert dashboard_item.pr_title == "准备 GitHub 审查上下文"
+    assert dashboard_item.pr_author_login == "contributor"
+    assert dashboard_item.pr_html_url == (
+        "https://github.com/lboverfys/NiuMa/pull/48"
+    )
+    assert dashboard_item.head_repository == "contributor/NiuMa"
+    assert dashboard_item.head_ref == "feature/review-context"
+    assert dashboard_item.base_repository == "lboverfys/NiuMa"
+    assert dashboard_item.base_ref == "main"
+
+    stored_details = ReviewManagementService(
+        SqlAlchemyReviewManagementRepository(database.sessions)
+    ).details(run_id).stored
+    assert stored_details.pr_author_login == "contributor"
+    assert stored_details.pr_html_url == (
+        "https://github.com/lboverfys/NiuMa/pull/48"
+    )
+    assert stored_details.head_repository == "contributor/NiuMa"
+    assert stored_details.head_ref == "feature/review-context"
+    assert stored_details.base_repository == "lboverfys/NiuMa"
+    assert stored_details.base_ref == "main"
 
 
 def test_worker_runtime_wires_github_loader_to_ready_state(
@@ -337,6 +379,12 @@ def test_current_github_head_mismatch_supersedes_before_context_is_saved(
             repository_id=42,
             repository="lboverfys/NiuMa",
             pull_request_number=48,
+            author_login="contributor",
+            html_url="https://github.com/lboverfys/NiuMa/pull/48",
+            head_repository="contributor/NiuMa",
+            head_ref="feature/review-context",
+            base_repository="lboverfys/NiuMa",
+            base_ref="main",
             base_sha="b" * 40,
             head_sha=current_head_sha,
             state=PullRequestState.OPEN,

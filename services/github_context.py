@@ -180,10 +180,24 @@ class GitHubReviewContextLoader:
             base = payload["base"]
             head = payload["head"]
             repository = base["repo"]
+            author = payload.get("user")
+            head_repository = head.get("repo")
             snapshot = PullRequestSnapshot(
                 repository_id=repository["id"],
                 repository=repository["full_name"],
                 pull_request_number=payload["number"],
+                author_login=(
+                    author["login"] if isinstance(author, dict) else None
+                ),
+                html_url=payload["html_url"],
+                head_repository=(
+                    head_repository["full_name"]
+                    if isinstance(head_repository, dict)
+                    else None
+                ),
+                head_ref=head["ref"],
+                base_repository=repository["full_name"],
+                base_ref=base["ref"],
                 base_sha=base["sha"],
                 head_sha=head["sha"],
                 state=payload["state"],

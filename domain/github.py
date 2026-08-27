@@ -1,6 +1,7 @@
 """GitHub PR、变更文件和 CI 快照的严格领域契约。"""
 
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -40,6 +41,21 @@ class PullRequestSnapshot(GitHubContractModel):
         pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
     )
     pull_request_number: int = Field(gt=0)
+    author_login: str | None = Field(default=None, min_length=1, max_length=100)
+    html_url: str = Field(min_length=1, max_length=2048)
+    head_repository: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+    )
+    head_ref: str = Field(min_length=1, max_length=1024)
+    base_repository: str = Field(
+        min_length=3,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+    )
+    base_ref: str = Field(min_length=1, max_length=1024)
     base_sha: str = Field(min_length=40, max_length=64)
     head_sha: str = Field(min_length=40, max_length=64)
     state: PullRequestState
@@ -52,6 +68,20 @@ class PullRequestSnapshot(GitHubContractModel):
     @classmethod
     def validate_sha(cls, value: str) -> str:
         return normalize_sha(value)
+
+    @field_validator("html_url")
+    @classmethod
+    def validate_html_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError("pull request URL must be an absolute HTTPS URL")
+        return value
 
 
 class PullRequestFile(GitHubContractModel):

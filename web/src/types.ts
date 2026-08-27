@@ -33,6 +33,13 @@ export interface ReviewItem {
   repository: string;
   pull_request_number: number;
   head_sha: string;
+  pr_title: string | null;
+  pr_author_login: string | null;
+  pr_html_url: string | null;
+  head_repository: string | null;
+  head_ref: string | null;
+  base_repository: string | null;
+  base_ref: string | null;
   execution_status: ExecutionStatus;
   workflow_status: ExecutionStatus;
   attempt_count: number;
@@ -140,6 +147,12 @@ export interface ReviewDetails {
   created_at: string;
   updated_at: string;
   pr_title: string | null;
+  pr_author_login: string | null;
+  pr_html_url: string | null;
+  head_repository: string | null;
+  head_ref: string | null;
+  base_repository: string | null;
+  base_ref: string | null;
   pr_state: string | null;
   pr_is_draft: boolean | null;
   changed_files_count: number | null;

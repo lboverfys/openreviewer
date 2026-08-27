@@ -14,6 +14,7 @@ from hashlib import sha256
 from domain.enums import (
     ExecutionStatus,
     ModelCallStatus,
+    ModelReviewVerdict,
     ReviewAgent,
     WorkerStatus,
 )
@@ -599,6 +600,43 @@ def _workflow_result(
     fingerprint = sha256(
         "|".join(item.request_fingerprint for item in results).encode("ascii")
     ).hexdigest()
+    final_findings = tuple(getattr(execution, "findings"))
+    conclusion_source = (
+        summary_result.output
+        if summary_result is not None
+        else next(
+            (
+                item.output
+                for item in reversed(agent_results)
+                if item.output.verdict is not None
+            ),
+            None,
+        )
+    )
+    if (
+        all_skipped
+        or conclusion_source is None
+        or conclusion_source.verdict is None
+        or conclusion_source.summary is None
+    ):
+        output = ModelReviewOutput(findings=final_findings)
+    else:
+        verdict = (
+            ModelReviewVerdict.INSUFFICIENT_CONTEXT
+            if conclusion_source.verdict
+            is ModelReviewVerdict.INSUFFICIENT_CONTEXT
+            else (
+                ModelReviewVerdict.ISSUES_FOUND
+                if final_findings
+                else ModelReviewVerdict.NO_ACTIONABLE_ISSUE
+            )
+        )
+        output = ModelReviewOutput(
+            verdict=verdict,
+            summary=conclusion_source.summary,
+            checked_areas=conclusion_source.checked_areas,
+            findings=final_findings,
+        )
     return ModelReviewResult(
         provider=representative.provider,
         api_protocol=representative.api_protocol,
@@ -620,10 +658,21 @@ def _workflow_result(
             if all(item.estimated_cost_microusd is not None for item in results)
             else None
         ),
-        output=ModelReviewOutput(
-            findings=tuple(getattr(execution, "findings")),
-        ),
+        output=output,
     )
+
+
+def _agent_conclusion_payload(execution: object | None) -> dict[str, object]:
+    """提取可公开的 Agent 结论，不包含提示词、原始响应或思维链。"""
+
+    result = getattr(execution, "result", None)
+    output = getattr(result, "output", None)
+    verdict = getattr(output, "verdict", None)
+    return {
+        "verdict": verdict.value if verdict is not None else None,
+        "summary": getattr(output, "summary", None),
+        "checked_areas": list(getattr(output, "checked_areas", ())),
+    }
 
 
 class WorkerRuntime:
@@ -1225,6 +1274,7 @@ class WorkerRuntime:
                     "finding_count": item.finding_count,
                     "references": list(item.references),
                     "error": item.error,
+                    **_agent_conclusion_payload(item),
                 },
                 agent=item.agent.value,
             )
@@ -1240,6 +1290,7 @@ class WorkerRuntime:
                     "finding_count": item.finding_count,
                     "references": list(item.references),
                     "error": item.error,
+                    **_agent_conclusion_payload(item),
                 },
                 agent=item.agent.value,
             )
@@ -1253,7 +1304,7 @@ class WorkerRuntime:
                 "agent_status": execution.status,
                 "agent_count": len(execution.agents),
                 "finding_count": len(execution.findings),
-                "summary": execution.summary,
+                **_agent_conclusion_payload(execution.summary_execution),
             },
             agent="summary",
         )

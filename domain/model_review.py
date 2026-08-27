@@ -13,6 +13,8 @@ from domain.enums import (
     ModelApiProtocol,
     ModelCallStatus,
     ModelProvider,
+    ModelReviewVerdict,
+    ReviewAgent,
     Severity,
     VerificationStatus,
 )
@@ -22,8 +24,10 @@ from domain.paths import normalize_repository_path
 from domain.review_planning import RepositoryRule, ReviewUnit
 
 
-PROMPT_VERSION = "structured-review-v1"
+PROMPT_VERSION = "structured-review-v2"
 MAX_MODEL_FINDINGS = 200
+MAX_MODEL_CHECKED_AREAS = 12
+MAX_MODEL_SUMMARY_LENGTH = 4_000
 POSTGRES_INTEGER_MAX = 2_147_483_647
 POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807
 
@@ -79,9 +83,47 @@ class ModelFindingCandidate(ModelContract):
 class ModelReviewOutput(ModelContract):
     """两个供应商共同返回的严格结构化输出。"""
 
+    # 这三个字段带默认值只为兼容升级前已经持久化的批次 JSON；新模型响应的
+    # 自定义 JSON Schema 会把它们全部声明为必填。
+    verdict: ModelReviewVerdict | None = None
+    summary: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_MODEL_SUMMARY_LENGTH,
+    )
+    checked_areas: tuple[str, ...] = Field(
+        default=(),
+        max_length=MAX_MODEL_CHECKED_AREAS,
+    )
     findings: tuple[ModelFindingCandidate, ...] = Field(
         max_length=MAX_MODEL_FINDINGS
     )
+
+    @field_validator("checked_areas")
+    @classmethod
+    def validate_checked_areas(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value or len(value) > 300 for value in values):
+            raise ValueError("model checked area must contain 1 to 300 characters")
+        if len(values) != len(set(values)):
+            raise ValueError("model checked areas must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def validate_conclusion_shape(self) -> Self:
+        if self.verdict is None:
+            if self.summary is not None or self.checked_areas:
+                raise ValueError("legacy model output cannot contain a partial conclusion")
+            return self
+        if self.summary is None:
+            raise ValueError("model verdict must include a summary")
+        if (
+            self.verdict is ModelReviewVerdict.NO_ACTIONABLE_ISSUE
+            and self.findings
+        ):
+            raise ValueError("no-actionable-issue output cannot contain findings")
+        if self.verdict is ModelReviewVerdict.ISSUES_FOUND and not self.findings:
+            raise ValueError("issues-found output must contain at least one finding")
+        return self
 
 
 class ModelTokenUsage(ModelContract):
@@ -150,6 +192,7 @@ class ModelReviewInput(ModelContract):
         max_length=64,
         exclude=True,
     )
+    review_agent: ReviewAgent | None = Field(default=None, exclude=True)
 
     @field_validator("knowledge_references", "prior_agent_results")
     @classmethod
@@ -233,7 +276,14 @@ class ModelReviewResult(ModelContract):
         if self.status is ModelCallStatus.SKIPPED:
             if self.response_status is not None or self.provider_response_id is not None:
                 raise ValueError("skipped model calls cannot contain response identity")
-            if self.output.findings or self.usage.total_input_tokens or self.usage.output_tokens:
+            if (
+                self.output.findings
+                or self.output.verdict is not None
+                or self.output.summary is not None
+                or self.output.checked_areas
+                or self.usage.total_input_tokens
+                or self.usage.output_tokens
+            ):
                 raise ValueError("skipped model calls cannot contain output or usage")
         elif self.response_status is None:
             raise ValueError("successful model calls must contain an HTTP status")
@@ -301,12 +351,21 @@ def model_review_output_schema() -> dict[str, object]:
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": [item.value for item in ModelReviewVerdict],
+            },
+            "summary": {"type": "string"},
+            "checked_areas": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
             "findings": {
                 "type": "array",
                 "items": finding,
             }
         },
-        "required": ["findings"],
+        "required": ["verdict", "summary", "checked_areas", "findings"],
     }
 
 

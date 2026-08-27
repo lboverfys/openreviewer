@@ -57,6 +57,13 @@ class ReviewListItem:
     created_at: datetime
     updated_at: datetime
     workflow_status: ExecutionStatus = ExecutionStatus.QUEUED
+    pr_title: str | None = None
+    pr_author_login: str | None = None
+    pr_html_url: str | None = None
+    head_repository: str | None = None
+    head_ref: str | None = None
+    base_repository: str | None = None
+    base_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

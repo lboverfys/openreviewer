@@ -346,39 +346,70 @@ function StatusBadge({ status, label }: { status: ExecutionStatus; label?: strin
 }
 
 function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunId: string) => void }) {
+  const hasBranchRoute = Boolean(review.head_ref || review.base_ref);
+  const headRepository = review.head_repository ?? review.repository;
+  const baseRepository = review.base_repository ?? review.repository;
+
   return (
     <tr className="warm-table-row">
-      <td>
-        <div className="table-repo-block">
+      <td className="review-identity-column">
+        <div className="table-review-identity">
           <div className="repo-avatar-icon">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
             </svg>
           </div>
-          <div className="repo-name-stack">
-            <strong>{review.repository}</strong>
-            <span className="run-id-pill">
-              #{review.review_run_id.slice(0, 8).toUpperCase()}
+          <div className="review-identity-copy">
+            <div className="review-repository-line">
+              <strong>{review.repository}</strong>
+              <span className="warm-pr-badge">PR #{review.pull_request_number}</span>
+              {review.pr_html_url && (
+                <a
+                  className="review-github-link"
+                  href={review.pr_html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`在 GitHub 查看 PR #${review.pull_request_number}`}
+                  title="在 GitHub 查看 Pull Request"
+                >
+                  <span aria-hidden="true">↗</span>
+                </a>
+              )}
+            </div>
+            <span className="review-list-title">
+              {review.pr_title || `Pull Request #${review.pull_request_number}`}
             </span>
+            <div className="review-list-byline">
+              <span className={review.pr_author_login ? "review-author" : "is-muted"}>
+                {review.pr_author_login ? `@${review.pr_author_login}` : "作者信息未同步"}
+              </span>
+              <span className="run-id-pill">运行 {review.review_run_id.slice(0, 8).toUpperCase()}</span>
+              <span className="warm-sha-chip" title={review.head_sha}>
+                SHA <code>{shortSha(review.head_sha)}</code>
+              </span>
+            </div>
           </div>
         </div>
       </td>
-      <td>
-        <span className="warm-pr-badge">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="18" cy="18" r="3"/>
-            <circle cx="6" cy="6" r="3"/>
-            <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
-            <line x1="6" y1="9" x2="6" y2="21"/>
-          </svg>
-          #{review.pull_request_number}
-        </span>
-      </td>
-      <td>
-        <span className="warm-sha-chip" title={review.head_sha}>
-          <code>{shortSha(review.head_sha)}</code>
-        </span>
+      <td className="review-branch-column">
+        {hasBranchRoute ? (
+          <div className="review-branch-route" title={`${headRepository}:${review.head_ref ?? "?"} → ${baseRepository}:${review.base_ref ?? "?"}`}>
+            <div className="review-branch-endpoint is-head">
+              <span>来源</span>
+              <strong>{headRepository}</strong>
+              <code>{review.head_ref ?? "未知分支"}</code>
+            </div>
+            <span className="review-branch-arrow" aria-hidden="true">→</span>
+            <div className="review-branch-endpoint is-base">
+              <span>目标</span>
+              <strong>{baseRepository}</strong>
+              <code>{review.base_ref ?? "未知分支"}</code>
+            </div>
+          </div>
+        ) : (
+          <span className="review-branch-missing">历史任务未记录分支</span>
+        )}
       </td>
       <td>
         <StatusBadge status={review.execution_status} label={reviewDisplayLabel(review)} />
@@ -690,14 +721,22 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
 
   const filteredReviews = useMemo(() => {
     if (!snapshot?.recent_reviews) return [];
+    const keyword = searchKeyword.trim().toLocaleLowerCase();
     return snapshot.recent_reviews.filter((review) => {
       const matchStatus =
         activeFilter === "all" || review.execution_status === activeFilter;
       const matchKeyword =
-        !searchKeyword.trim() ||
-        review.repository.toLowerCase().includes(searchKeyword.toLowerCase()) ||
-        String(review.pull_request_number).includes(searchKeyword) ||
-        review.head_sha.toLowerCase().includes(searchKeyword.toLowerCase());
+        !keyword || [
+          review.repository,
+          String(review.pull_request_number),
+          review.head_sha,
+          review.pr_title ?? "",
+          review.pr_author_login ?? "",
+          review.head_repository ?? "",
+          review.head_ref ?? "",
+          review.base_repository ?? "",
+          review.base_ref ?? "",
+        ].some((value) => value.toLocaleLowerCase().includes(keyword));
       return matchStatus && matchKeyword;
     });
   }, [snapshot, activeFilter, searchKeyword]);
@@ -986,7 +1025,7 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
                       id="review-search"
                       name="review-search"
                       type="text"
-                      placeholder="搜索仓库、PR、SHA…"
+                      placeholder="搜索标题、作者、仓库或分支…"
                       value={searchKeyword}
                       onChange={(e) => setSearchKeyword(e.target.value)}
                     />
@@ -1007,9 +1046,8 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
                 <table className="bento-data-table">
                   <thead>
                     <tr>
-                      <th>仓库 / 批次 ID</th>
-                      <th>PR 编号</th>
-                      <th>Head Commit SHA</th>
+                      <th>Pull Request</th>
+                      <th>合并方向</th>
                       <th>流转状态</th>
                       <th>重试次数</th>
                       <th>更新时间</th>

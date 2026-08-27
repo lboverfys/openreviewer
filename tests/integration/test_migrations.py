@@ -91,6 +91,17 @@ def test_initial_migration_creates_durable_review_task_schema(
                 "pull_request_versions"
             )
         } == {"uq_pull_request_versions_review_version_key"}
+        assert {
+            "author_login",
+            "html_url",
+            "head_repository",
+            "head_ref",
+            "base_repository",
+            "base_ref",
+        } <= {
+            column["name"]
+            for column in inspector.get_columns("pull_request_versions")
+        }
         assert "ix_review_tasks_expired_lease" in {
             index["name"] for index in inspector.get_indexes("review_tasks")
         }
@@ -287,7 +298,7 @@ def test_initial_migration_creates_durable_review_task_schema(
                 "knowledge_document_versions"
             )
         } == {"uq_knowledge_document_versions_document_id"}
-        assert revision == "20260827_0017"
+        assert revision == "20260827_0018"
     finally:
         engine.dispose()
 

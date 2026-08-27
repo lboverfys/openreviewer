@@ -2,12 +2,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from apps.worker.main import _workflow_result
+from apps.worker.main import _agent_conclusion_payload, _workflow_result
 from domain.enums import (
     ExecutionStatus,
     ModelApiProtocol,
     ModelCallStatus,
     ModelProvider,
+    ModelReviewVerdict,
     ReviewAgent,
 )
 from domain.model_review import ModelReviewOutput, ModelReviewResult, ModelTokenUsage
@@ -71,7 +72,16 @@ def model_result(
             if succeeded
             else ModelTokenUsage(input_tokens=0, output_tokens=0)
         ),
-        output=ModelReviewOutput(findings=()),
+        output=(
+            ModelReviewOutput(
+                verdict=ModelReviewVerdict.NO_ACTIONABLE_ISSUE,
+                summary="当前审查范围内未发现可报告问题。",
+                checked_areas=("测试范围",),
+                findings=(),
+            )
+            if succeeded
+            else ModelReviewOutput(findings=())
+        ),
     )
 
 
@@ -290,6 +300,8 @@ def test_fixed_agents_receive_scoped_knowledge_references() -> None:
         "summary-reference",
     }
     assert by_reference["summary-reference"].prior_agent_results
+    for agent in ReviewAgent:
+        assert by_reference[f"{agent.value}-reference"].review_agent is agent
 
 
 def test_workflow_compatibility_result_uses_summary_configuration() -> None:
@@ -342,6 +354,68 @@ def test_workflow_compatibility_result_uses_summary_configuration() -> None:
     assert combined.usage.input_tokens == 40
     assert combined.usage.output_tokens == 8
     assert combined.duration_ms == 40
+    assert combined.output.verdict is ModelReviewVerdict.NO_ACTIONABLE_ISSUE
+    assert combined.output.summary == "当前审查范围内未发现可报告问题。"
+
+
+def test_agent_completion_event_exposes_only_the_structured_conclusion() -> None:
+    execution = AgentExecution(
+        ReviewAgent.SECURITY,
+        "completed",
+        model_result("1"),
+        10,
+        None,
+    )
+
+    payload = _agent_conclusion_payload(execution)
+
+    assert payload == {
+        "verdict": "no_actionable_issue",
+        "summary": "当前审查范围内未发现可报告问题。",
+        "checked_areas": ["测试范围"],
+    }
+    assert "findings" not in payload
+    assert "raw_response" not in payload
+
+
+def test_workflow_result_keeps_recovered_legacy_summary_compatible() -> None:
+    now = datetime(2026, 8, 27, tzinfo=UTC)
+    legacy_summary = model_result("4").model_copy(
+        update={"output": ModelReviewOutput(findings=())}
+    )
+    agent_results = tuple(model_result(str(index)) for index in range(1, 4))
+    execution = WorkflowExecution(
+        status="completed",
+        agents=tuple(
+            AgentExecution(agent, "completed", result, 10, None)
+            for agent, result in zip(
+                (
+                    ReviewAgent.SECURITY,
+                    ReviewAgent.CONVENTION,
+                    ReviewAgent.LOGIC,
+                ),
+                agent_results,
+                strict=True,
+            )
+        ),
+        findings=(),
+        summary="旧批次恢复完成",
+        started_at=now,
+        completed_at=now,
+        summary_execution=AgentExecution(
+            ReviewAgent.SUMMARY,
+            "completed",
+            legacy_summary,
+            10,
+            None,
+        ),
+    )
+
+    combined = _workflow_result(make_model_input(), execution)
+
+    assert combined.output.verdict is None
+    assert combined.output.summary is None
+    assert combined.output.checked_areas == ()
 
 
 def test_workflow_compatibility_result_rejects_partial_success() -> None:

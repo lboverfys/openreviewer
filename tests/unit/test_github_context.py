@@ -46,13 +46,20 @@ def _pull_request_payload(head_sha: str = HEAD_SHA) -> dict[str, object]:
         "state": "open",
         "draft": False,
         "title": "验证 GitHub 上下文读取",
+        "html_url": "https://github.com/lboverfys/NiuMa/pull/48",
+        "user": {"login": "contributor"},
         "changed_files": 2,
         "updated_at": "2026-08-24T11:59:00Z",
         "base": {
             "sha": BASE_SHA,
+            "ref": "main",
             "repo": {"id": 42, "full_name": "lboverfys/NiuMa"},
         },
-        "head": {"sha": head_sha},
+        "head": {
+            "sha": head_sha,
+            "ref": "feature/review-context",
+            "repo": {"full_name": "contributor/NiuMa"},
+        },
     }
 
 
@@ -152,6 +159,11 @@ Binary files /dev/null and b/assets/logo.png differ
 
     assert context.files_complete is True
     assert context.diff_complete is True
+    assert context.pull_request.author_login == "contributor"
+    assert context.pull_request.head_repository == "contributor/NiuMa"
+    assert context.pull_request.head_ref == "feature/review-context"
+    assert context.pull_request.base_repository == "lboverfys/NiuMa"
+    assert context.pull_request.base_ref == "main"
     assert context.files is not None
     assert [item.path for item in context.files] == [
         "src/app.py",
@@ -195,6 +207,38 @@ def test_loader_stops_after_pr_metadata_when_head_sha_is_stale() -> None:
     assert context.files is None
     assert context.ci is None
     assert requests == ["/repos/lboverfys/NiuMa/pulls/48"]
+
+
+def test_loader_keeps_pr_metadata_when_author_and_source_fork_are_deleted() -> None:
+    current_head_sha = "f" * 40
+    payload = _pull_request_payload(current_head_sha)
+    payload["user"] = None
+    payload["head"] = {
+        **payload["head"],
+        "repo": None,
+    }
+
+    api = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json=payload)
+            ),
+        ),
+    )
+
+    context = GitHubReviewContextLoader(
+        api,
+        StaticTokenProvider(),
+    ).load(_target())
+
+    assert context.pull_request.author_login is None
+    assert context.pull_request.head_repository is None
+    assert context.pull_request.head_ref == "feature/review-context"
+    assert context.pull_request.base_repository == "lboverfys/NiuMa"
+    assert context.files is None
+    assert context.ci is None
 
 
 def test_diff_larger_than_legacy_limit_reaches_review_planner() -> None:
