@@ -10,6 +10,7 @@ import { api, ApiError } from "./api";
 import { loadSavedCredentials, saveCredentials } from "./credentials";
 import SettingsPage from "./SettingsPage";
 import ReviewDetailPage from "./ReviewDetailPage";
+import KnowledgePage from "./KnowledgePage";
 import type {
   AuthUser,
   DashboardSnapshot,
@@ -627,10 +628,11 @@ interface DashboardProps {
   user: AuthUser;
   onSignedOut: (message?: string) => void;
   onOpenSettings: () => void;
+  onOpenKnowledge: () => void;
   onOpenReview: (reviewRunId: string) => void;
 }
 
-function Dashboard({ user, onSignedOut, onOpenSettings, onOpenReview }: DashboardProps) {
+function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenReview }: DashboardProps) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [streamState, setStreamState] = useState<StreamState>("connecting");
   const [pageMessage, setPageMessage] = useState("");
@@ -763,6 +765,15 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenReview }: Dashboar
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
             </svg>
             <span>刷新</span>
+          </button>
+
+          <button
+            className="bento-settings-icon-btn"
+            onClick={onOpenKnowledge}
+            title="管理 RAG 知识库"
+            aria-label="管理 RAG 知识库"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
           </button>
 
           <button
@@ -1064,11 +1075,13 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenReview }: Dashboar
 type AppView =
   | { kind: "dashboard" }
   | { kind: "settings" }
+  | { kind: "knowledge" }
   | { kind: "review"; reviewRunId: string };
 
 function readAppView(): AppView {
   const hash = window.location.hash;
   if (hash === "#settings") return { kind: "settings" };
+  if (hash === "#knowledge") return { kind: "knowledge" };
   if (hash.startsWith("#review/")) {
     const reviewRunId = decodeURIComponent(hash.slice("#review/".length));
     if (reviewRunId) return { kind: "review", reviewRunId };
@@ -1133,6 +1146,23 @@ export default function App() {
       />
     );
   }
+  if (view.kind === "knowledge") {
+    return (
+      <KnowledgePage
+        user={session.user}
+        onBack={() => {
+          window.location.hash = "";
+        }}
+        onOpenSettings={() => {
+          window.location.hash = "settings";
+        }}
+        onSignedOut={(message) => {
+          window.location.hash = "";
+          setSession({ phase: "guest", message });
+        }}
+      />
+    );
+  }
   if (view.kind === "review") {
     return (
       <ReviewDetailPage
@@ -1157,6 +1187,9 @@ export default function App() {
       onSignedOut={(message) => setSession({ phase: "guest", message })}
       onOpenSettings={() => {
         window.location.hash = "settings";
+      }}
+      onOpenKnowledge={() => {
+        window.location.hash = "knowledge";
       }}
       onOpenReview={(reviewRunId) => {
         window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;

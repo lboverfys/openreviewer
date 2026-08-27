@@ -46,7 +46,7 @@ from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
 from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
 from services.github_rules import GitHubRepositoryRuleLoader, RepositoryRuleLoader
 from services.review_planning import ReviewPlanner
-from services.rag import MarkdownKnowledgeBase
+from services.rag import ManagedMarkdownKnowledgeBase, MarkdownKnowledgeBase
 from services.model_review import (
     ModelReviewer,
     ModelServiceSettings,
@@ -1168,7 +1168,7 @@ class WorkerRuntime:
         }
         if self._knowledge_base is not None:
             # 首次调用在循环外完成有界文件读取并缓存；下面四次检索只做内存匹配。
-            self._knowledge_base.chunks()
+            knowledge_chunks = self._knowledge_base.chunks()
             common_query = " ".join(
                 (
                     model_input.repository,
@@ -1193,6 +1193,7 @@ class WorkerRuntime:
                 citations = self._knowledge_base.search(
                     f"{common_query} {responsibility}",
                     limit=8,
+                    chunks=knowledge_chunks,
                 )
                 reference_map[agent] = tuple(
                     (
@@ -1336,8 +1337,9 @@ def main() -> None:
         context_loader=GitHubReviewContextLoader(github_api, github_tokens),
         rule_loader=GitHubRepositoryRuleLoader(github_api, github_tokens),
         ai_runtime_provider=ai_runtime_provider,
-        knowledge_base=MarkdownKnowledgeBase(
-            os.environ.get("OPENREVIEWER_KNOWLEDGE_ROOT", "knowledge")
+        knowledge_base=ManagedMarkdownKnowledgeBase(
+            database.sessions,
+            os.environ.get("OPENREVIEWER_KNOWLEDGE_ROOT", "knowledge"),
         ),
     )
 

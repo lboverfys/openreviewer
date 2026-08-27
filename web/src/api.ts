@@ -13,6 +13,10 @@ import type {
   ReviewDetails,
   ReviewRequest,
   ReviewPolicyUpdate,
+  KnowledgeDocument,
+  KnowledgeLibrary,
+  KnowledgeMutation,
+  KnowledgeSearchResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -214,7 +218,64 @@ export const api = {
       body: JSON.stringify({ enabled, expected_revision: expectedRevision }),
     }),
   searchKnowledge: (query: string, limit = 5) =>
-    request<{ query: string; items: Array<{ source: string; heading: string; score: number; excerpt: string; version: string }> }>(
+    request<KnowledgeSearchResult>(
       `/api/v1/knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}`,
     ),
+  knowledgeDocuments: (includeArchived = false) =>
+    request<KnowledgeLibrary>(
+      `/api/v1/knowledge/documents?include_archived=${includeArchived ? "true" : "false"}&limit=128`,
+    ),
+  knowledgeDocument: (documentId: string) =>
+    request<KnowledgeDocument>(
+      `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}`,
+    ),
+  createKnowledgeDocument: (payload: {
+    expected_revision: number;
+    source: string;
+    content: string;
+    enabled: boolean;
+  }) => request<KnowledgeMutation>("/api/v1/knowledge/documents", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  updateKnowledgeDocument: (documentId: string, payload: {
+    expected_revision: number;
+    expected_document_version: number;
+    source: string;
+    content: string;
+    enabled: boolean;
+  }) => request<KnowledgeMutation>(
+    `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}`,
+    { method: "PUT", body: JSON.stringify(payload) },
+  ),
+  setKnowledgeDocumentArchived: (
+    documentId: string,
+    archived: boolean,
+    expectedRevision: number,
+    expectedDocumentVersion: number,
+  ) => request<KnowledgeMutation>(
+    `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}/${archived ? "archive" : "restore"}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        expected_document_version: expectedDocumentVersion,
+      }),
+    },
+  ),
+  restoreKnowledgeVersion: (
+    documentId: string,
+    version: number,
+    expectedRevision: number,
+    expectedDocumentVersion: number,
+  ) => request<KnowledgeMutation>(
+    `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}/versions/${version}/restore`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        expected_document_version: expectedDocumentVersion,
+      }),
+    },
+  ),
 };

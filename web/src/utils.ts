@@ -30,6 +30,7 @@ export const workerLabels: Record<WorkerStatus, string> = {
 };
 
 export const stageLabels: Record<string, string> = {
+  queued: "接收排队",
   intake: "接收任务",
   context: "读取 PR",
   ci: "等待 CI",
@@ -37,6 +38,13 @@ export const stageLabels: Record<string, string> = {
   model: "AI 分析",
   agent_batches: "三路 Agent",
   aggregating: "结果汇总",
+  awaiting_approval: "等待人工批准",
+  approved: "已批准",
+  rejected: "已驳回",
+  awaiting_publish: "等待人工发布",
+  publishing: "发布中",
+  paused: "已暂停",
+  completed: "已完成",
   approval: "人工批准",
   publish: "人工发布",
   result: "审查结果",

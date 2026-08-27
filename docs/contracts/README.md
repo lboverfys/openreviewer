@@ -28,3 +28,6 @@ OpenAI/Anthropic 结构化调用、上下文自动分批、模型用量、成本
 
 管理界面的 AI 草稿、连接测试、激活、密钥加密、revision 和审计契约见
 [ai-settings.md](ai-settings.md)。
+
+Markdown 知识库的数据库持久化、文档编辑、不可变版本、归档、检索、Worker 快照和管理 API
+见 [knowledge-management.md](knowledge-management.md)。

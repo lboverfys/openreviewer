@@ -11,7 +11,7 @@ from threading import RLock
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -65,7 +65,20 @@ from services.agent_settings import (
     AgentSettingsService,
     AgentSettingsView,
 )
-from services.rag import MarkdownKnowledgeBase, RagCitation
+from services.rag import (
+    KnowledgeConflictError,
+    KnowledgeDocumentSummary,
+    KnowledgeDocumentView,
+    KnowledgeLibraryView,
+    KnowledgeMutationView,
+    KnowledgeNotFoundError,
+    KnowledgePersistenceError,
+    KnowledgeValidationError,
+    KnowledgeVersionView,
+    ManagedMarkdownKnowledgeBase,
+    MarkdownKnowledgeBase,
+    RagCitation,
+)
 from services.dashboard import (
     DashboardPersistenceError,
     DashboardService,
@@ -649,6 +662,128 @@ class KnowledgeSearchResponse(BaseModel):
     items: tuple[KnowledgeCitationResponse, ...]
 
 
+class KnowledgeVersionResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    version: int
+    content_sha256: str
+    byte_size: int
+    created_by: str
+    created_at: datetime
+
+    @classmethod
+    def from_view(cls, view: KnowledgeVersionView) -> "KnowledgeVersionResponse":
+        return cls(**{name: getattr(view, name) for name in cls.model_fields})
+
+
+class KnowledgeDocumentSummaryResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    source: str
+    title: str
+    enabled: bool
+    archived: bool
+    current_version: int
+    content_sha256: str
+    byte_size: int
+    created_by: str
+    updated_by: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_view(
+        cls,
+        view: KnowledgeDocumentSummary,
+    ) -> "KnowledgeDocumentSummaryResponse":
+        return cls(**{name: getattr(view, name) for name in cls.model_fields})
+
+
+class KnowledgeDocumentResponse(KnowledgeDocumentSummaryResponse):
+    content: str
+    versions: tuple[KnowledgeVersionResponse, ...]
+
+    @classmethod
+    def from_view(
+        cls,
+        view: KnowledgeDocumentView,
+    ) -> "KnowledgeDocumentResponse":
+        return cls(
+            **{
+                name: getattr(view, name)
+                for name in KnowledgeDocumentSummaryResponse.model_fields
+            },
+            content=view.content,
+            versions=tuple(
+                KnowledgeVersionResponse.from_view(item) for item in view.versions
+            ),
+        )
+
+
+class KnowledgeDocumentListResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    revision: int
+    total: int
+    enabled_count: int
+    total_enabled_bytes: int
+    items: tuple[KnowledgeDocumentSummaryResponse, ...]
+
+    @classmethod
+    def from_view(
+        cls,
+        view: KnowledgeLibraryView,
+    ) -> "KnowledgeDocumentListResponse":
+        return cls(
+            revision=view.revision,
+            total=view.total,
+            enabled_count=view.enabled_count,
+            total_enabled_bytes=view.total_enabled_bytes,
+            items=tuple(
+                KnowledgeDocumentSummaryResponse.from_view(item)
+                for item in view.items
+            ),
+        )
+
+
+class KnowledgeMutationResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    revision: int
+    document: KnowledgeDocumentResponse
+
+    @classmethod
+    def from_view(
+        cls,
+        view: KnowledgeMutationView,
+    ) -> "KnowledgeMutationResponse":
+        return cls(
+            revision=view.revision,
+            document=KnowledgeDocumentResponse.from_view(view.document),
+        )
+
+
+class KnowledgeDocumentCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=0)
+    source: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=524_288)
+    enabled: bool = True
+
+
+class KnowledgeDocumentUpdateRequest(KnowledgeDocumentCreateRequest):
+    expected_document_version: int = Field(ge=1)
+
+
+class KnowledgeDocumentStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_revision: int = Field(ge=0)
+    expected_document_version: int = Field(ge=1)
+
+
 class AiProviderUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -993,10 +1128,23 @@ def create_app(
     def get_knowledge_base() -> MarkdownKnowledgeBase:
         configured = application.state.knowledge_base
         if configured is None:
-            configured = MarkdownKnowledgeBase(
-                os.environ.get("OPENREVIEWER_KNOWLEDGE_ROOT", "knowledge")
+            with initialization_lock:
+                configured = application.state.knowledge_base
+                if configured is None:
+                    configured = ManagedMarkdownKnowledgeBase(
+                        get_database().sessions,
+                        os.environ.get("OPENREVIEWER_KNOWLEDGE_ROOT", "knowledge"),
+                    )
+                    application.state.knowledge_base = configured
+        return configured
+
+    def get_managed_knowledge_base() -> ManagedMarkdownKnowledgeBase:
+        configured = get_knowledge_base()
+        if not isinstance(configured, ManagedMarkdownKnowledgeBase):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="knowledge management is not configured",
             )
-            application.state.knowledge_base = configured
         return configured
 
     def get_review_management_service() -> ReviewManagementService:
@@ -1074,6 +1222,26 @@ def create_app(
         return HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="AI settings operation failed",
+        )
+
+    def translate_knowledge_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, KnowledgeNotFoundError):
+            return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+        if isinstance(exc, KnowledgeConflictError):
+            return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        if isinstance(exc, KnowledgeValidationError):
+            return HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            )
+        if isinstance(exc, KnowledgePersistenceError):
+            return HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="knowledge base is temporarily unavailable",
+            )
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="knowledge operation failed",
         )
 
     def require_principal(request: Request) -> SessionPrincipal:
@@ -1703,7 +1871,13 @@ def create_app(
     ) -> KnowledgeSearchResponse:
         """检索版本化 Markdown 规则，返回可展示的引用来源。"""
 
-        items = get_knowledge_base().search(q, limit=limit)
+        try:
+            items = get_knowledge_base().search(q, limit=limit)
+        except (
+            KnowledgePersistenceError,
+            KnowledgeValidationError,
+        ) as exc:
+            raise translate_knowledge_error(exc) from exc
         return KnowledgeSearchResponse(
             query=q,
             items=tuple(
@@ -1716,6 +1890,172 @@ def create_app(
                 for item in items
             ),
         )
+
+    @application.get(
+        "/api/v1/knowledge/documents",
+        response_model=KnowledgeDocumentListResponse,
+    )
+    def list_knowledge_documents(
+        _: Annotated[SessionPrincipal, Depends(require_principal)],
+        include_archived: bool = False,
+        limit: Annotated[int, Query(ge=1, le=128)] = 128,
+    ) -> KnowledgeDocumentListResponse:
+        try:
+            view = get_managed_knowledge_base().list_documents(
+                include_archived=include_archived,
+                limit=limit,
+            )
+        except (
+            KnowledgeConflictError,
+            KnowledgePersistenceError,
+            KnowledgeValidationError,
+        ) as exc:
+            raise translate_knowledge_error(exc) from exc
+        return KnowledgeDocumentListResponse.from_view(view)
+
+    @application.post(
+        "/api/v1/knowledge/documents",
+        response_model=KnowledgeMutationResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_knowledge_document(
+        request_body: KnowledgeDocumentCreateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> KnowledgeMutationResponse:
+        try:
+            view = get_managed_knowledge_base().create_document(
+                source=request_body.source,
+                content=request_body.content,
+                enabled=request_body.enabled,
+                expected_revision=request_body.expected_revision,
+                actor=principal.username,
+            )
+        except (
+            KnowledgeConflictError,
+            KnowledgePersistenceError,
+            KnowledgeValidationError,
+        ) as exc:
+            raise translate_knowledge_error(exc) from exc
+        return KnowledgeMutationResponse.from_view(view)
+
+    @application.get(
+        "/api/v1/knowledge/documents/{document_id}",
+        response_model=KnowledgeDocumentResponse,
+    )
+    def get_knowledge_document(
+        document_id: str,
+        _: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> KnowledgeDocumentResponse:
+        try:
+            view = get_managed_knowledge_base().get_document(document_id)
+        except (KnowledgeNotFoundError, KnowledgePersistenceError) as exc:
+            raise translate_knowledge_error(exc) from exc
+        return KnowledgeDocumentResponse.from_view(view)
+
+    @application.put(
+        "/api/v1/knowledge/documents/{document_id}",
+        response_model=KnowledgeMutationResponse,
+    )
+    def update_knowledge_document(
+        document_id: str,
+        request_body: KnowledgeDocumentUpdateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> KnowledgeMutationResponse:
+        try:
+            view = get_managed_knowledge_base().update_document(
+                document_id,
+                source=request_body.source,
+                content=request_body.content,
+                enabled=request_body.enabled,
+                expected_revision=request_body.expected_revision,
+                expected_document_version=request_body.expected_document_version,
+                actor=principal.username,
+            )
+        except (
+            KnowledgeConflictError,
+            KnowledgeNotFoundError,
+            KnowledgePersistenceError,
+            KnowledgeValidationError,
+        ) as exc:
+            raise translate_knowledge_error(exc) from exc
+        return KnowledgeMutationResponse.from_view(view)
+
+    @application.post(
+        "/api/v1/knowledge/documents/{document_id}/archive",
+        response_model=KnowledgeMutationResponse,
+    )
+    def archive_knowledge_document(
+        document_id: str,
+        request_body: KnowledgeDocumentStateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> KnowledgeMutationResponse:
+        try:
+            view = get_managed_knowledge_base().archive_document(
+                document_id,
+                archived=True,
+                expected_revision=request_body.expected_revision,
+                expected_document_version=request_body.expected_document_version,
+                actor=principal.username,
+            )
+        except (
+            KnowledgeConflictError,
+            KnowledgeNotFoundError,
+            KnowledgePersistenceError,
+        ) as exc:
+            raise translate_knowledge_error(exc) from exc
+        return KnowledgeMutationResponse.from_view(view)
+
+    @application.post(
+        "/api/v1/knowledge/documents/{document_id}/restore",
+        response_model=KnowledgeMutationResponse,
+    )
+    def restore_knowledge_document(
+        document_id: str,
+        request_body: KnowledgeDocumentStateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> KnowledgeMutationResponse:
+        try:
+            view = get_managed_knowledge_base().archive_document(
+                document_id,
+                archived=False,
+                expected_revision=request_body.expected_revision,
+                expected_document_version=request_body.expected_document_version,
+                actor=principal.username,
+            )
+        except (
+            KnowledgeConflictError,
+            KnowledgeNotFoundError,
+            KnowledgePersistenceError,
+        ) as exc:
+            raise translate_knowledge_error(exc) from exc
+        return KnowledgeMutationResponse.from_view(view)
+
+    @application.post(
+        "/api/v1/knowledge/documents/{document_id}/versions/{version}/restore",
+        response_model=KnowledgeMutationResponse,
+    )
+    def restore_knowledge_document_version(
+        document_id: str,
+        version: Annotated[int, Path(ge=1)],
+        request_body: KnowledgeDocumentStateRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+    ) -> KnowledgeMutationResponse:
+        try:
+            view = get_managed_knowledge_base().restore_version(
+                document_id,
+                version,
+                expected_revision=request_body.expected_revision,
+                expected_document_version=request_body.expected_document_version,
+                actor=principal.username,
+            )
+        except (
+            KnowledgeConflictError,
+            KnowledgeNotFoundError,
+            KnowledgePersistenceError,
+            KnowledgeValidationError,
+        ) as exc:
+            raise translate_knowledge_error(exc) from exc
+        return KnowledgeMutationResponse.from_view(view)
 
     @application.get(
         "/api/v1/dashboard",

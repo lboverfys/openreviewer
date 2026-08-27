@@ -40,6 +40,8 @@ const actionLabels: Record<ReviewAction, string> = {
 };
 
 type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
+type ReviewDetailTab = "overview" | "agents" | "findings" | "logs";
+type ReviewEventFilter = "all" | "model" | "workflow" | "errors";
 
 const retryTargetOptions: ReadonlyArray<[RetryTargetStage, string]> = [
   ["ci", "CI 检查"],
@@ -251,6 +253,13 @@ function eventDetail(event: ReviewEvent): string | null {
     return retryDetail(event);
   }
   return null;
+}
+
+function isErrorEvent(event: ReviewEvent): boolean {
+  return event.event_type.endsWith("failed")
+    || event.event_type === "review.task.failed"
+    || typeof event.payload.error_code === "string"
+    || typeof event.payload.error_message === "string";
 }
 
 function DetailIcon({ children }: { children: string }) {
@@ -649,6 +658,11 @@ function ReviewDetailPage({
   const [findingBusy, setFindingBusy] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [retryTargetStage, setRetryTargetStage] = useState<RetryTargetStage>("agent_batches");
+  const [activeTab, setActiveTab] = useState<ReviewDetailTab>("overview");
+  const [findingSeverity, setFindingSeverity] = useState("all");
+  const [findingStatus, setFindingStatus] = useState("all");
+  const [findingQuery, setFindingQuery] = useState("");
+  const [eventFilter, setEventFilter] = useState<ReviewEventFilter>("all");
 
   const loadDetails = useCallback(async () => {
     try {
@@ -816,6 +830,39 @@ function ReviewDetailPage({
   const failureDuration = payloadNumber(currentModelFailure, "duration_ms");
   const failureCode = payloadString(currentModelFailure, "error_code");
   const failureRequestId = payloadString(currentModelFailure, "provider_request_id");
+  const agentSummaries = agentDefinitions.map((definition) => ({
+    ...definition,
+    progress: agentProgress(details.events, definition.key),
+  }));
+  const completedAgentCount = agentSummaries.filter(
+    (item) => item.progress.status === "completed",
+  ).length;
+  const failedAgentCount = agentSummaries.filter(
+    (item) => item.progress.status === "failed",
+  ).length;
+  const normalizedFindingQuery = findingQuery.trim().toLocaleLowerCase();
+  const filteredFindings = details.findings.filter((finding) => (
+    (findingSeverity === "all" || finding.severity === findingSeverity)
+    && (findingStatus === "all" || finding.verification_status === findingStatus)
+    && (!normalizedFindingQuery || [
+      finding.title,
+      finding.category,
+      finding.location_file ?? "",
+      finding.evidence,
+    ].some((value) => value.toLocaleLowerCase().includes(normalizedFindingQuery)))
+  ));
+  const filteredEvents = details.events.filter((event) => {
+    if (eventFilter === "errors") return isErrorEvent(event);
+    if (eventFilter === "model") return event.event_type.startsWith("review.model.");
+    if (eventFilter === "workflow") return !event.event_type.startsWith("review.model.");
+    return true;
+  }).reverse();
+  const tabs: ReadonlyArray<[ReviewDetailTab, string, string]> = [
+    ["overview", "任务概览", details.current_stage],
+    ["agents", "Agent 进度", `${completedAgentCount}/4`],
+    ["findings", "审查问题", String(details.findings.length)],
+    ["logs", "运行日志", String(details.events.length)],
+  ];
   return (
     <div className="review-detail-shell">
       <header className="review-detail-navbar">
@@ -870,6 +917,8 @@ function ReviewDetailPage({
               <label className="review-retry-target">
                 <span>重审起点</span>
                 <select
+                  id="review-retry-stage"
+                  name="review-retry-stage"
                   value={retryTargetStage}
                   disabled={actionBusy !== null}
                   onChange={(event) => setRetryTargetStage(event.target.value as RetryTargetStage)}
@@ -892,16 +941,44 @@ function ReviewDetailPage({
           </div>
         </section>
 
-        <div className="review-detail-grid">
+        <section className="review-summary-strip" aria-label="任务关键指标">
+          <div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div>
+          <div><span>CI 检查</span><strong>{details.ci_state === "success" ? "通过" : details.ci_state ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div>
+          <div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div>
+          <div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/4</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div>
+          <div><span>候选问题</span><strong>{details.findings.length}</strong><small>{details.unverified_finding_count} 条待确认</small></div>
+          <div><span>模型用量</span><strong>{(details.model_input_tokens ?? 0).toLocaleString()}</strong><small>输入 Token</small></div>
+        </section>
+
+        <nav className="review-detail-tabs" aria-label="详情视图">
+          {tabs.map(([tab, label, count]) => (
+            <button key={tab} type="button" className={activeTab === tab ? "is-active" : ""} aria-current={activeTab === tab ? "page" : undefined} onClick={() => setActiveTab(tab)}>
+              <span>{label}</span><b>{tab === "overview" ? stageLabels[count] ?? count : count}</b>
+            </button>
+          ))}
+        </nav>
+
+        <div className={`review-detail-grid active-${activeTab}`}>
           <div className="review-detail-primary">
             <StageTimeline details={details} />
             <ModelBatchPanel details={details} />
+            {!agentSummaries.some((item) => item.progress.events.length > 0) && !details.model_review_completed_at && (
+              <section className="review-panel review-agent-tab-empty"><DetailIcon>◌</DetailIcon><div><strong>Agent 尚未开始执行</strong><p>完成 CI 和审查规划后，四路 Agent 的实时进度会显示在这里。</p></div></section>
+            )}
 
             <section className="review-panel review-result-panel">
               <div className="review-panel-heading">
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
                 <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.unverified_finding_count > 0 && <span className="result-count result-count-pending">{details.unverified_finding_count} 未标记</span>}</div>
               </div>
+              {details.findings.length > 0 && (
+                <div className="review-finding-toolbar">
+                  <label><span>严重程度</span><select id="review-finding-severity" name="review-finding-severity" value={findingSeverity} onChange={(event) => setFindingSeverity(event.target.value)}><option value="all">全部级别</option><option value="critical">严重</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></select></label>
+                  <label><span>确认状态</span><select id="review-finding-status" name="review-finding-status" value={findingStatus} onChange={(event) => setFindingStatus(event.target.value)}><option value="all">全部状态</option><option value="unverified">待确认</option><option value="verified">已确认</option><option value="rejected">已忽略</option></select></label>
+                  <label className="review-finding-search"><span>搜索</span><input id="review-finding-query" name="review-finding-query" value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder="标题、文件或证据" /></label>
+                  <strong>{filteredFindings.length} 条结果</strong>
+                </div>
+              )}
               {!details.model_review_completed_at && (currentModelFailure || retryPending) && (
                 <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small></div></div>
               )}
@@ -911,9 +988,12 @@ function ReviewDetailPage({
               {details.model_review_completed_at && details.findings.length === 0 && (
                 <div className="review-result-empty result-empty-positive"><DetailIcon>✓</DetailIcon><div><strong>AI 没有返回候选问题</strong><p>这表示模型在当前审查范围内没有发现可报告的问题。</p></div></div>
               )}
-              {details.findings.length > 0 && (
+              {details.findings.length > 0 && filteredFindings.length === 0 && (
+                <div className="review-result-empty"><DetailIcon>⌕</DetailIcon><div><strong>没有符合筛选条件的问题</strong><p>调整严重程度、状态或搜索关键词后再查看。</p></div></div>
+              )}
+              {filteredFindings.length > 0 && (
                 <div className="review-findings-list">
-                  {details.findings.map((finding) => <FindingCard key={finding.id} finding={finding} busy={findingBusy === finding.id} onDecision={decideFinding} />)}
+                  {filteredFindings.map((finding) => <FindingCard key={finding.id} finding={finding} busy={findingBusy === finding.id} onDecision={decideFinding} />)}
                 </div>
               )}
             </section>
@@ -921,12 +1001,15 @@ function ReviewDetailPage({
             <section className="review-panel review-log-panel">
               <div className="review-panel-heading">
                 <div><span className="review-eyebrow">EVENT LOG</span><h2>运行日志</h2></div>
-                <span className="review-log-count">{details.events.length} 条事件</span>
+                <div className="review-log-filters" role="group" aria-label="日志筛选">
+                  {(["all", "model", "workflow", "errors"] as ReviewEventFilter[]).map((filter) => <button key={filter} type="button" className={eventFilter === filter ? "is-active" : ""} onClick={() => setEventFilter(filter)}>{filter === "all" ? "全部" : filter === "model" ? "模型" : filter === "workflow" ? "流程" : "异常"}</button>)}
+                  <span className="review-log-count">{filteredEvents.length} 条</span>
+                </div>
               </div>
-              {details.events.length === 0 ? <div className="review-empty-small">暂时没有结构化事件记录</div> : (
+              {filteredEvents.length === 0 ? <div className="review-empty-small">当前筛选下没有结构化事件记录</div> : (
                 <div className="review-event-list">
-                  {details.events.map((event) => (
-                    <div className={`review-event-row ${event.event_type === "review.model.batch_failed" || event.event_type === "review.task.failed" ? "is-error" : ""}`} key={event.id}>
+                  {filteredEvents.map((event) => (
+                    <div className={`review-event-row ${isErrorEvent(event) ? "is-error" : ""}`} key={event.id}>
                       <span className="review-event-time">{formatDate(event.occurred_at)}</span>
                       <span className="review-event-line" />
                       <div className="review-event-copy"><strong>{eventLabels[event.event_type] ?? event.event_type}</strong><code>{event.event_type}</code>{eventDetail(event) && <small>{eventDetail(event)}</small>}{typeof event.payload.error_message === "string" && <p>{event.payload.error_message}</p>}{event.event_type !== "review.model.batch_failed" && typeof event.payload.error_code === "string" && <small>错误码：{event.payload.error_code}{event.payload.error_retryable === true ? " · 可重试" : event.payload.error_retryable === false ? " · 不可重试" : ""}</small>}</div>

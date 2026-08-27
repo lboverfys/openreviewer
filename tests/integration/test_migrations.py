@@ -44,6 +44,9 @@ def test_initial_migration_creates_durable_review_task_schema(
             "external_actions",
             "github_installations",
             "github_webhook_deliveries",
+            "knowledge_document_versions",
+            "knowledge_documents",
+            "knowledge_library",
             "model_calls",
             "model_review_batches",
             "outbox_events",
@@ -271,7 +274,20 @@ def test_initial_migration_creates_durable_review_task_schema(
             "ck_review_file_plans_decision_value",
             "ck_review_file_plans_ordinal_nonnegative",
         }
-        assert revision == "20260827_0016"
+        assert {
+            "ix_knowledge_documents_active_source",
+            "ix_knowledge_documents_updated_at",
+        } <= {
+            index["name"]
+            for index in inspector.get_indexes("knowledge_documents")
+        }
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints(
+                "knowledge_document_versions"
+            )
+        } == {"uq_knowledge_document_versions_document_id"}
+        assert revision == "20260827_0017"
     finally:
         engine.dispose()
 

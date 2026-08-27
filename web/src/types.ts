@@ -338,3 +338,57 @@ export interface ConfigurationAudit {
 export interface ConfigurationAuditList {
   items: ConfigurationAudit[];
 }
+
+export interface KnowledgeVersion {
+  version: number;
+  content_sha256: string;
+  byte_size: number;
+  created_by: string;
+  created_at: string;
+}
+
+export interface KnowledgeDocumentSummary {
+  id: string;
+  source: string;
+  title: string;
+  enabled: boolean;
+  archived: boolean;
+  current_version: number;
+  content_sha256: string;
+  byte_size: number;
+  created_by: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeDocument extends KnowledgeDocumentSummary {
+  content: string;
+  versions: KnowledgeVersion[];
+}
+
+export interface KnowledgeLibrary {
+  revision: number;
+  total: number;
+  enabled_count: number;
+  total_enabled_bytes: number;
+  items: KnowledgeDocumentSummary[];
+}
+
+export interface KnowledgeMutation {
+  revision: number;
+  document: KnowledgeDocument;
+}
+
+export interface KnowledgeCitation {
+  source: string;
+  heading: string;
+  score: number;
+  excerpt: string;
+  version: string;
+}
+
+export interface KnowledgeSearchResult {
+  query: string;
+  items: KnowledgeCitation[];
+}

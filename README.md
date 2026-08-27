@@ -56,7 +56,8 @@ deployment/         niuma-2 Compose 部署配置
 - 安全、规范、逻辑三路并发和汇总 Agent 固定 DAG；四路独立密钥、模型、协议、超时、推理档位
   与连接测试，任一路缺失都不会静默降级成单模型。
 - Chat Completions 对明确的 400/422 可选参数不兼容执行受限降级，本地仍用 Pydantic 严格校验。
-- 内置有界 Markdown 知识库，按 Agent 职责确定性召回并在详情页展示来源、标题和内容版本。
+- 内置有界、可版本化 Markdown 知识库，支持登录后在知识库页面编辑、预览、启停、归档和恢复历史版本；
+  Agent 按职责从固定任务快照中确定性召回，并在详情页展示来源、标题和内容版本。
 - `awaiting_approval -> awaiting_publish -> publishing -> completed` 人工门，以及发布前 PR SHA
   复核、稳定隐藏标记查重、评论大小限制和失败可重试。
 - 管理界面动态保存 OpenAI/Anthropic 草稿、官方或中转站 API 地址、真实连接测试和单供应商
@@ -92,7 +93,8 @@ API 和 Worker 还需要同一份 32 字节 AI 配置加密主密钥。Worker �
 配置见 [`docs/contracts/github-context.md`](docs/contracts/github-context.md) 和
 [`docs/contracts/ai-settings.md`](docs/contracts/ai-settings.md)。固定 DAG 与发布语义分别见
 [`docs/contracts/agent-workflow.md`](docs/contracts/agent-workflow.md) 和
-[`docs/contracts/github-publishing.md`](docs/contracts/github-publishing.md)。
+[`docs/contracts/github-publishing.md`](docs/contracts/github-publishing.md)。知识库管理接口和
+版本语义见 [`docs/contracts/knowledge-management.md`](docs/contracts/knowledge-management.md)。
 可以使用交互式输入生成哈希，明文不会写入命令历史：
 
 ```shell

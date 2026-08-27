@@ -404,6 +404,12 @@ export default function SettingsPage({
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!message || messageKind !== "success") return undefined;
+    const timer = window.setTimeout(() => setMessage(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [message, messageKind]);
+
   function refreshAllSettings() {
     setAgentRefreshRequest((current) => current + 1);
     return refresh();
@@ -608,7 +614,7 @@ export default function SettingsPage({
           </div>
         </div>
 
-        {message && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
+        {message && (loading || !settings || !selectedSettings || !draft) && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
 
         {loading || !settings || !selectedSettings || !draft ? (
           <div className="settings-loading">正在读取设置...</div>
@@ -787,6 +793,7 @@ export default function SettingsPage({
                     <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || (!providerDirty && selectedSettings.configured)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>{busyAction === `save-${selectedProvider}` ? "保存中..." : "保存配置"}</button>
                     <button className="settings-secondary-btn" type="button" onClick={() => void testProvider()} disabled={!selectedSettings.configured || !selectedSettings.api_key_configured || providerDirty || Boolean(busyAction)} title={providerDirty ? "请先保存当前修改" : "测试当前已保存配置"}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>{busyAction === `test-${selectedProvider}` ? "测试中..." : "测试连接"}</button>
                     <button className="settings-secondary-btn is-activate" type="button" onClick={() => void activateProvider()} disabled={selectedSettings.test_status !== "succeeded" || selectedSettings.active || providerDirty || Boolean(busyAction)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m5 12 4 4L19 6"/></svg>{selectedSettings.active ? "已启用" : "启用这套配置"}</button>
+                    {message && <div className={`settings-inline-feedback is-${messageKind}`} role="status">{message}</div>}
                   </div>
                 </form>
               </div>
@@ -923,6 +930,7 @@ function AgentSettingsPanel({
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
+  const [messageAgent, setMessageAgent] = useState<ReviewAgent | null>(null);
 
   const apply = useCallback((next: AiAgentSettingsResponse) => {
     setSettings(next);
@@ -942,6 +950,7 @@ function AgentSettingsPanel({
         return;
       }
       setMessageKind("error");
+      setMessageAgent(null);
       setMessage(errorMessage(error));
     }
   }, [apply, onSignedOut]);
@@ -949,6 +958,12 @@ function AgentSettingsPanel({
   useEffect(() => {
     void refresh();
   }, [refresh, refreshRequest]);
+
+  useEffect(() => {
+    if (!message || messageKind !== "success") return undefined;
+    const timer = window.setTimeout(() => setMessage(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [message, messageKind]);
 
   function updateDraft(agent: ReviewAgent, field: keyof AgentDraft, value: string | boolean) {
     setDrafts((current) => ({
@@ -964,6 +979,7 @@ function AgentSettingsPanel({
     const revision = settings.revision;
     setBusy("save-" + agent);
     setMessage("");
+    setMessageAgent(agent);
     try {
       const response = await api.updateAgent(agent, {
         expected_revision: revision,
@@ -1002,6 +1018,7 @@ function AgentSettingsPanel({
     if (!settings) return;
     setBusy("test-" + agent);
     setMessage("");
+    setMessageAgent(agent);
     try {
       apply(await api.testAgent(agent, settings.revision));
       setMessageKind("success");
@@ -1023,6 +1040,7 @@ function AgentSettingsPanel({
     if (!settings) return;
     setBusy("enabled-" + agent);
     setMessage("");
+    setMessageAgent(agent);
     try {
       apply(await api.setAgentEnabled(agent, enabled, settings.revision));
       setMessageKind("success");
@@ -1055,7 +1073,7 @@ function AgentSettingsPanel({
         <div><span className="settings-eyebrow">固定审查 DAG</span><h2>独立 Agent 配置</h2><p>三路审查并行执行，汇总 Agent 单独使用自己的模型和密钥。</p></div>
         <span className="settings-summary-value">配置版本 r{settings.revision}</span>
       </div>
-      {message && <div className={"settings-message is-" + messageKind}>{message}</div>}
+      {message && messageAgent === null && <div className={"settings-message is-" + messageKind}>{message}</div>}
       <div className="agent-settings-grid">
         {agentOrder.map((agent) => {
           const item = settings.agents.find((candidate) => candidate.agent === agent);
@@ -1108,6 +1126,7 @@ function AgentSettingsPanel({
                 <button className="settings-primary-btn" type="button" onClick={() => void save(agent)} disabled={Boolean(busy) || !dirty}>{busy === "save-" + agent ? "保存中..." : "保存配置"}</button>
                 <button className="settings-secondary-btn" type="button" onClick={() => void test(agent)} disabled={Boolean(busy) || dirty || !item.configured || !item.api_key_configured} title={dirty ? "请先保存当前修改" : "测试已保存配置"}>{busy === "test-" + agent ? "测试中..." : "测试连接"}</button>
                 <button className={"settings-secondary-btn " + (item.enabled ? "" : "is-activate")} type="button" onClick={() => void setEnabled(agent, !item.enabled)} disabled={Boolean(busy) || (!item.enabled && (dirty || !item.configured || item.test_status !== "succeeded"))} title={!item.enabled && dirty ? "请先保存并重新测试当前修改" : undefined}>{busy === "enabled-" + agent ? "处理中..." : item.enabled ? "停用 Agent" : "启用 Agent"}</button>
+                {message && messageAgent === agent && <div className={`settings-inline-feedback is-${messageKind}`} role="status">{message}</div>}
               </div>
             </article>
           );
