@@ -18,10 +18,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """保存独立人工标签，并恢复被旧人工操作覆盖的机器定位状态。"""
+    """保存独立人工标签，并恢复被旧人工操作覆盖的机器定位状态。
 
-    postgresql = op.get_bind().dialect.name == "postgresql"
-    constraint_options = {"postgresql_not_valid": True} if postgresql else {}
+    新增约束在迁移时完整校验，避免 PostgreSQL 长期保留 ``NOT VALID``
+    状态，也让 Alembic 的 schema drift 检查能稳定反射这些约束。
+    """
+
     with op.batch_alter_table("review_findings") as batch:
         batch.add_column(
             sa.Column(
@@ -36,7 +38,6 @@ def upgrade() -> None:
             "adjudication_status IN ("
             "'unreviewed', 'valid', 'false_positive', 'duplicate', "
             "'out_of_scope', 'known_issue')",
-            **constraint_options,
         )
 
     with op.batch_alter_table("review_findings") as batch:
@@ -46,6 +47,7 @@ def upgrade() -> None:
             server_default=None,
         )
 
+    postgresql = op.get_bind().dialect.name == "postgresql"
     if postgresql:
         with op.get_context().autocommit_block():
             op.create_index(

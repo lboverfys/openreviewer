@@ -609,18 +609,17 @@ def test_postgres_migration_keeps_execution_constraint_names_fixed(
     )
     assert (
         "ck_review_findings_lifecycle_status_value "
-        "CHECK (lifecycle_status IN ('new', 'still_present', 'reintroduced')) "
-        "NOT VALID"
+        "CHECK (lifecycle_status IN ('new', 'still_present', 'reintroduced'))"
     ) in output
     assert (
         "ck_review_findings_occurrence_count_positive "
-        "CHECK (occurrence_count > 0) NOT VALID"
+        "CHECK (occurrence_count > 0)"
     ) in output
     assert (
         "ck_review_findings_adjudication_status_value "
         "CHECK (adjudication_status IN ("
     ) in output
-    assert output.count("NOT VALID") >= 3
+    assert "NOT VALID" not in output
 
 
 def test_workflow_downgrade_restores_legacy_execution_constraints(

@@ -18,10 +18,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """建立 PR 级稳定指纹状态，并为每轮 Finding 记录出现方式。"""
+    """建立 PR 级稳定指纹状态，并为每轮 Finding 记录出现方式。
 
-    postgresql = op.get_bind().dialect.name == "postgresql"
-    constraint_options = {"postgresql_not_valid": True} if postgresql else {}
+    新增约束在迁移时完整校验，避免 PostgreSQL 长期保留 ``NOT VALID``
+    状态，也让 Alembic 的 schema drift 检查能稳定反射这些约束。
+    """
+
     op.create_table(
         "finding_lifecycles",
         sa.Column("repository_id", sa.BigInteger(), nullable=False),
@@ -92,16 +94,14 @@ def upgrade() -> None:
         batch.create_check_constraint(
             "lifecycle_status_value",
             "lifecycle_status IN ('new', 'still_present', 'reintroduced')",
-            **constraint_options,
         )
         batch.create_check_constraint(
             "occurrence_count_positive",
             "occurrence_count > 0",
-            **constraint_options,
         )
 
-    # 历史数据由显式维护命令按稳定指纹分批回填。生产迁移只做快速结构变更，
-    # 不在 Alembic 事务中对 review_findings 执行无界窗口查询。
+    # 历史数据由显式维护命令按稳定指纹分批回填；迁移不在 Alembic 事务中
+    # 对 review_findings 执行无界窗口查询。
 
     with op.batch_alter_table("review_findings") as batch:
         batch.alter_column(
