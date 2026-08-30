@@ -1,10 +1,16 @@
-FROM python:3.12.10-slim-bookworm
+FROM python:3.12.14-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_CONSTRAINT=/app/requirements.lock
+
+# 基础镜像发布后 Debian 安全仓库仍可能追加补丁；在构建时同步已安装的
+# 运行时包，避免把已修复的系统漏洞带进最终镜像。
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 10001 openreviewer \
     && useradd --system --uid 10001 --gid openreviewer \
@@ -21,8 +27,10 @@ COPY --chown=openreviewer:openreviewer knowledge ./knowledge
 COPY --chown=openreviewer:openreviewer alembic.ini ./alembic.ini
 COPY --chown=openreviewer:openreviewer migrations ./migrations
 
+# pip/setuptools 只用于构建；运行时移除它们及其 vendored 组件，缩小镜像攻击面。
 RUN python -m pip install --no-cache-dir "pip==26.2.1" \
-    && python -m pip install --no-cache-dir .
+    && python -m pip install --no-cache-dir . \
+    && python -m pip uninstall --yes pip setuptools
 
 USER openreviewer
 

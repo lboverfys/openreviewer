@@ -307,3 +307,11 @@ def test_web_process_can_read_a_root_group_only_tls_key() -> None:
     dockerfile = project_text("web/Dockerfile")
 
     assert "USER nginx:root" in dockerfile
+
+
+def test_python_runtime_image_applies_os_patches_and_removes_build_tools() -> None:
+    dockerfile = project_text("Dockerfile")
+
+    assert "FROM python:3.12.14-slim-bookworm" in dockerfile
+    assert "apt-get upgrade -y --no-install-recommends" in dockerfile
+    assert "python -m pip uninstall --yes pip setuptools" in dockerfile
