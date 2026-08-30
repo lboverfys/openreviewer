@@ -206,7 +206,26 @@ jobs:
         run: |
           set -euo pipefail
           compose=(docker compose -f deployment/compose.yml)
+          set +e
           "${compose[@]}" up -d --wait --wait-timeout 240
+          compose_status=$?
+          set -e
+          if [ "$compose_status" -ne 0 ]; then
+            echo 'Compose 启动或健康检查失败，输出容器现场信息' >&2
+            "${compose[@]}" ps --all || true
+            worker_ids=()
+            mapfile -t worker_ids < <("${compose[@]}" ps --all --quiet worker)
+            for worker_id in "${worker_ids[@]}"; do
+              [ -n "$worker_id" ] || continue
+              echo "--- worker inspect: $worker_id ---" >&2
+              docker inspect --format '{{json .State}}' "$worker_id" || true
+              echo "--- worker logs: $worker_id ---" >&2
+              docker logs --timestamps --tail=200 "$worker_id" || true
+            done
+            echo '--- compose service logs ---' >&2
+            "${compose[@]}" logs --no-color --tail=200 worker api migrate || true
+            exit "$compose_status"
+          fi
           test "$(docker inspect --format '{{.State.Health.Status}}' openreviewer-postgres)" = healthy
           test "$(docker inspect --format '{{.State.ExitCode}}' openreviewer-migrate)" = 0
           test "$(docker inspect --format '{{.State.Health.Status}}' openreviewer-api)" = healthy
