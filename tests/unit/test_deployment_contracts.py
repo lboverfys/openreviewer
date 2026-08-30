@@ -309,6 +309,7 @@ def test_web_process_can_read_a_root_group_only_tls_key() -> None:
     assert "FROM node:22.23.2-alpine3.24 AS build" in dockerfile
     assert "FROM nginx:1.30.4-alpine3.24-slim" in dockerfile
     assert "apk upgrade --no-cache" in dockerfile
+    assert "mkdir -p /usr/share/nginx/html" in dockerfile
     assert "USER nginx:root" in dockerfile
 
 

@@ -25,6 +25,7 @@ RUN apk upgrade --no-cache \
     && rm -f /etc/nginx/conf.d/default.conf \
     && mkdir -p /tmp/nginx/client_temp /tmp/nginx/proxy_temp \
     && mkdir -p /etc/nginx/tls \
+    && mkdir -p /usr/share/nginx/html \
     && chmod 0755 /etc/nginx/tls \
     && chown -R nginx:nginx /tmp/nginx /usr/share/nginx/html
 
