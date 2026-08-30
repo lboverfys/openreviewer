@@ -402,7 +402,7 @@ def test_postgres_review_plan_is_claimed_and_saved_atomically(
 def _prepare_postgres_budget_lease(database: Database):
     now = datetime.now(UTC)
     head_sha = "9" * 40
-    ReviewService(
+    submission = ReviewService(
         SqlAlchemyReviewRepository(database.sessions)
     ).submit(
         ReviewRequest(
@@ -414,9 +414,17 @@ def _prepare_postgres_budget_lease(database: Database):
         ),
         "postgres-budget-concurrency",
     )
+    # 该模块的 PostgreSQL 夹具在测试之间复用数据库；前序测试可能留下排队任务。
+    # 提高本场景任务的优先级，确保无目标的 claim_next() 领取到刚创建的任务。
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        assert task is not None
+        task.priority = 30_000
+        session.commit()
     queue = SqlAlchemyReviewTaskQueue(database.sessions)
     context_lease = queue.claim_next("worker-budget-pg", timedelta(seconds=30))
     assert context_lease is not None
+    assert context_lease.task_id == submission.review_task_id
     changed_file = PullRequestFile(
         path="src/budget.py",
         status=ChangedFileStatus.MODIFIED,
