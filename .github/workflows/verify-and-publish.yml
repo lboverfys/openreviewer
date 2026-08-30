@@ -137,6 +137,10 @@ jobs:
             -out "$secret_dir/openreviewer.crt" >/dev/null 2>&1
           openssl rand -base64 32 > "$secret_dir/ai-config-key"
           chmod 600 "$secret_dir"/*
+          # Web 镜像以 nginx:root 运行；Runner 创建的 bind mount 文件 UID/GID
+          # 与镜像内 nginx 不同。这里只放宽临时、随机生成的 CI TLS 文件，
+          # 使 Nginx 能读取它们；生产证书权限由服务器部署脚本单独管理。
+          chmod 644 "$secret_dir/openreviewer.crt" "$secret_dir/openreviewer.key"
           {
             printf 'OPENREVIEWER_CI_SECRET_DIR=%s\n' "$secret_dir"
             printf 'OPENREVIEWER_IMAGE=openreviewer-api:ci\n'

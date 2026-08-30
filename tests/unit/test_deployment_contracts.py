@@ -265,6 +265,10 @@ def test_ci_starts_and_verifies_the_complete_compose_stack() -> None:
     assert "load: true" in workflow
     assert "docker compose -f deployment/compose.yml" in workflow
     assert 'up -d --wait --wait-timeout 240' in workflow
+    assert (
+        'chmod 644 "$secret_dir/openreviewer.crt" "$secret_dir/openreviewer.key"'
+        in workflow
+    )
     for endpoint in (
         "/healthz",
         "/readyz",
