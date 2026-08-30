@@ -160,6 +160,7 @@ jobs:
             printf 'OPENREVIEWER_GITHUB_APP_ID=1\n'
             printf 'OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE=%s/github-app-private-key.pem\n' "$secret_dir"
             printf 'OPENREVIEWER_GITHUB_ALLOWED_INSTALLATION_IDS=1\n'
+            printf 'OPENREVIEWER_GITHUB_ALLOWED_REPOSITORIES=lboverfys/openreviewer\n'
             printf 'OPENREVIEWER_AI_CONFIG_KEY_FILE=%s/ai-config-key\n' "$secret_dir"
             printf 'OPENREVIEWER_TLS_CERT_FILE=%s/openreviewer.crt\n' "$secret_dir"
             printf 'OPENREVIEWER_TLS_KEY_FILE=%s/openreviewer.key\n' "$secret_dir"

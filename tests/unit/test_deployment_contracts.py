@@ -272,6 +272,7 @@ def test_ci_starts_and_verifies_the_complete_compose_stack() -> None:
     assert 'chmod 644 "$secret_dir/auth-users.json" \\' in workflow
     assert '"$secret_dir/github-app-private-key.pem" \\' in workflow
     assert '"$secret_dir/ai-config-key"' in workflow
+    assert "OPENREVIEWER_GITHUB_ALLOWED_REPOSITORIES=lboverfys/openreviewer" in workflow
     for endpoint in (
         "/healthz",
         "/readyz",
