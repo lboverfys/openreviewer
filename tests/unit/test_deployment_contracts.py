@@ -306,6 +306,9 @@ def test_metrics_alerts_cover_completely_missing_targets() -> None:
 def test_web_process_can_read_a_root_group_only_tls_key() -> None:
     dockerfile = project_text("web/Dockerfile")
 
+    assert "FROM node:22.23.2-alpine3.24 AS build" in dockerfile
+    assert "FROM nginx:1.30.4-alpine3.24-slim" in dockerfile
+    assert "apk upgrade --no-cache" in dockerfile
     assert "USER nginx:root" in dockerfile
 
 

@@ -1,4 +1,4 @@
-FROM node:22.19.0-alpine AS build
+FROM node:22.23.2-alpine3.24 AS build
 
 ENV NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FUND=false \
@@ -19,9 +19,10 @@ RUN npm run typecheck \
     && npm run build
 
 
-FROM nginx:1.28.0-alpine
+FROM nginx:1.30.4-alpine3.24-slim
 
-RUN rm -f /etc/nginx/conf.d/default.conf \
+RUN apk upgrade --no-cache \
+    && rm -f /etc/nginx/conf.d/default.conf \
     && mkdir -p /tmp/nginx/client_temp /tmp/nginx/proxy_temp \
     && mkdir -p /etc/nginx/tls \
     && chmod 0755 /etc/nginx/tls \
