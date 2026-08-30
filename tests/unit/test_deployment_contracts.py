@@ -269,6 +269,9 @@ def test_ci_starts_and_verifies_the_complete_compose_stack() -> None:
         'chmod 644 "$secret_dir/openreviewer.crt" "$secret_dir/openreviewer.key"'
         in workflow
     )
+    assert 'chmod 644 "$secret_dir/auth-users.json" \\' in workflow
+    assert '"$secret_dir/github-app-private-key.pem" \\' in workflow
+    assert '"$secret_dir/ai-config-key"' in workflow
     for endpoint in (
         "/healthz",
         "/readyz",

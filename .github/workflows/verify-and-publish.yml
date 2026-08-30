@@ -141,6 +141,12 @@ jobs:
           # 与镜像内 nginx 不同。这里只放宽临时、随机生成的 CI TLS 文件，
           # 使 Nginx 能读取它们；生产证书权限由服务器部署脚本单独管理。
           chmod 644 "$secret_dir/openreviewer.crt" "$secret_dir/openreviewer.key"
+          # API/Worker 也以 UID 10001、非 root 身份运行，且 Docker bind mount
+          # 不会把 Runner 文件的属主映射到容器用户；这些临时配置需对容器可读。
+          # 文件只存在于本次隔离 CI 作业，生产密钥权限不受影响。
+          chmod 644 "$secret_dir/auth-users.json" \
+            "$secret_dir/github-app-private-key.pem" \
+            "$secret_dir/ai-config-key"
           {
             printf 'OPENREVIEWER_CI_SECRET_DIR=%s\n' "$secret_dir"
             printf 'OPENREVIEWER_IMAGE=openreviewer-api:ci\n'
