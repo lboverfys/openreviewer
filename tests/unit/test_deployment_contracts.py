@@ -1,5 +1,10 @@
 from pathlib import Path
 
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
+
+from persistence.models import ReviewQuotaBucketRecord
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_ROOT = PROJECT_ROOT / "deployment"
 
@@ -10,6 +15,16 @@ def deployment_text(relative_path: str) -> str:
 
 def project_text(relative_path: str) -> str:
     return (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def test_review_quota_postgresql_ddl_quotes_window_keyword() -> None:
+    ddl = str(
+        CreateTable(ReviewQuotaBucketRecord.__table__).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+
+    assert 'CHECK ("window" IN (\'hour\', \'day\'))' in ddl
 
 
 def test_alertmanager_uses_a_read_only_webhook_secret() -> None:

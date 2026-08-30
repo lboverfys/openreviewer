@@ -34,7 +34,10 @@ def upgrade() -> None:
             "scope IN ('user', 'repository', 'global')",
             name="scope_value",
         ),
-        sa.CheckConstraint("window IN ('hour', 'day')", name="window_value"),
+        sa.CheckConstraint(
+            '"window" IN (\'hour\', \'day\')',
+            name="window_value",
+        ),
         sa.CheckConstraint(
             "request_count >= 0",
             name="request_count_nonnegative",

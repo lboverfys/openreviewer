@@ -300,7 +300,7 @@ class ReviewQuotaBucketRecord(Base):
             name="scope_value",
         ),
         CheckConstraint(
-            "window IN ('hour', 'day')",
+            '"window" IN (\'hour\', \'day\')',
             name="window_value",
         ),
         CheckConstraint("request_count >= 0", name="request_count_nonnegative"),
