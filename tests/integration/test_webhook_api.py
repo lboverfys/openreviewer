@@ -1,7 +1,7 @@
 import asyncio
-from hashlib import sha256
 import hmac
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import httpx
@@ -21,7 +21,7 @@ from persistence.models import (
 )
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.webhooks import GitHubWebhookService, GitHubWebhookSettings
-
+from tests.support import TEST_GITHUB_ACCESS_POLICY
 
 WEBHOOK_SECRET = b"test-webhook-secret-is-at-least-32-bytes"
 FAKE_PAYLOAD_TOKEN = "github_pat_FAKE_PAYLOAD_TOKEN_123456789"
@@ -61,8 +61,8 @@ def encode(payload: dict[str, object]) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
-def signature(body: bytes) -> str:
-    digest = hmac.new(WEBHOOK_SECRET, body, sha256).hexdigest()
+def signature(body: bytes, secret: bytes = WEBHOOK_SECRET) -> str:
+    digest = hmac.new(secret, body, sha256).hexdigest()
     return f"sha256={digest}"
 
 
@@ -74,6 +74,7 @@ def application_for(database: Database, *, max_body_bytes: int = 256 * 1024):
             secret=WEBHOOK_SECRET,
             max_body_bytes=max_body_bytes,
         ),
+        TEST_GITHUB_ACCESS_POLICY,
     )
     return create_app(webhook_service=service)
 
@@ -209,6 +210,64 @@ def test_invalid_signature_and_unsupported_events_never_enter_queue(
     assert unsupported.json()["reason"] == "unsupported_event"
     assert unsupported_action.status_code == 202
     assert unsupported_action.json()["reason"] == "unsupported_action"
+    assert table_count(database, GitHubWebhookDeliveryRecord) == 0
+    assert table_count(database, ReviewTaskRecord) == 0
+
+
+def test_webhook_secret_rotation_accepts_previous_secret(
+    database: Database,
+) -> None:
+    """Webhook 密钥轮换期间，旧密钥签名仍可完成一次可信投递。"""
+
+    previous_secret = b"previous-webhook-secret-is-at-least-32-bytes"
+    repository = SqlAlchemyGitHubWebhookRepository(database.sessions)
+    service = GitHubWebhookService(
+        repository,
+        GitHubWebhookSettings(
+            secret=WEBHOOK_SECRET,
+            previous_secrets=(previous_secret,),
+        ),
+        TEST_GITHUB_ACCESS_POLICY,
+    )
+    body = encode(webhook_payload())
+
+    response = asyncio.run(
+        post_webhook(
+            create_app(webhook_service=service),
+            body,
+            supplied_signature=signature(body, previous_secret),
+        )
+    )
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] is True
+    assert table_count(database, GitHubWebhookDeliveryRecord) == 1
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"installation": {"id": 11}}, "installation_not_allowed"),
+        (
+            {"repository": {"id": 42, "full_name": "outside/other"}},
+            "repository_not_allowed",
+        ),
+    ],
+)
+def test_signed_but_unapproved_source_is_ignored_before_persistence(
+    database: Database,
+    overrides: dict[str, object],
+    reason: str,
+) -> None:
+    body = encode(webhook_payload(**overrides))
+
+    response = asyncio.run(
+        post_webhook(application_for(database), body, delivery_id=f"denied-{reason}")
+    )
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] is False
+    assert response.json()["reason"] == reason
     assert table_count(database, GitHubWebhookDeliveryRecord) == 0
     assert table_count(database, ReviewTaskRecord) == 0
 

@@ -84,7 +84,10 @@ complete | partial | unknown | stale
 | `suggestion` | 可执行的修复方向 |
 | `required_test` | 可选的回归测试建议 |
 | `confidence` | 0 到 1 的模型特征，不等同于真实正确概率 |
-| `verification_status` | `unverified`、`verified` 或 `rejected` |
+| `location_verification_status` | 平台对位置是否落在当前 Diff 的机器校验；`unverified`、`verified` 或 `rejected` |
+| `evidence_verification_status` | 平台回读 Git Blob 后的自动源码证据核验；`unverified`、`verified`、`rejected` 或 `not_applicable` |
+| `adjudication_status` | 原始人工处置：待裁决、有效、误报、重复、越界或已知问题 |
+| `verification_status` | 兼容旧客户端的定位校验别名，已弃用，不表示证据事实已验证 |
 | `rule_reference` | 可选的规则或文档依据 |
 
 文件路径的契约要求是仓库相对路径，禁止 Linux 绝对路径、Windows 盘符/UNC 路径、控制字符、
@@ -92,9 +95,17 @@ complete | partial | unknown | stale
 
 ## 5. 行内评论准入
 
+定位校验、源码证据核验和人工裁决是三条独立轴：平台可以分别证明“第 20 行属于当前 Diff”、
+“回读的指定 Blob/行范围包含模型给出的证据片段”，但这些机器结果都不能替代人工判断 Finding
+是否成立。`evidence_verification_status = verified` 只表示源码证据得到确定性支持，不表示业务
+结论已经正确；无法回读、Blob 不一致、行范围不适用或文本不匹配时保持 `unverified`。人工
+`adjudication_status` 的 `valid`、`false_positive`、`duplicate`、`out_of_scope` 和
+`known_issue` 只记录人的处置，不会改写自动核验状态。
+
 只有同时满足以下条件，Finding 才具备行内评论资格：
 
-- `verification_status` 为 `verified`；
+- `location_verification_status` 为 `verified`；
+- `evidence_verification_status` 为 `verified`，且原始人工裁决为 `valid`；
 - 存在 `location`；
 - 位置落在当前提交的 diff 中；
 - 位置位于新增代码一侧（`right`）。
@@ -102,9 +113,9 @@ complete | partial | unknown | stale
 - 置信度达到仓库策略门槛，M0 默认值为 `0.90`；
 - 不是普通测试缺口。
 
-不满足条件的 Finding 只能进入当前 PR 汇总评论或人工确认区域。当前版本尚不发布 Check 或
-行内评论；这里得到的仍只是未来行内评论候选。风险域历史评测准入、位置复核和自动降级由后续
-策略层实现。
+不满足条件的 Finding 只能进入当前 PR 的 Check、汇总评论或人工确认区域。当前发布器只对
+人工裁决为 `valid` 且所属风险域通过历史评测准入的候选发布行内评论；GitHub 返回位置无效时，
+整批行内评论自动降级为 Check 与汇总展示。
 
 ## 6. 当前不在契约内的内容
 

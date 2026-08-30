@@ -30,7 +30,7 @@ RUN rm -f /etc/nginx/conf.d/default.conf \
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY --from=build --chown=nginx:nginx /app/dist /usr/share/nginx/html
 
-USER nginx
+USER nginx:root
 
 EXPOSE 8443
 

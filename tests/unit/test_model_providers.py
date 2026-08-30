@@ -1,5 +1,5 @@
-from decimal import Decimal
 import json
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -11,9 +11,60 @@ from domain.enums import (
     ModelReasoningEffort,
 )
 from domain.security import ErrorCode, SafeApplicationError
+from services.model_budget import (
+    ModelBudgetRequest,
+    ModelBudgetReservation,
+    model_budget_scope,
+)
 from services.model_providers import create_model_reviewer
 from services.model_review import ModelPricing, ModelServiceSettings
+from services.telemetry import TelemetryRegistry
 from tests.unit.test_model_review import make_model_input, make_output
+
+
+class RecordingBudgetAccountant:
+    def __init__(self) -> None:
+        self.requests: list[ModelBudgetRequest] = []
+        self.settlements: list[dict[str, object]] = []
+        self._settled_ids: set[str] = set()
+
+    def reserve(self, request: ModelBudgetRequest) -> ModelBudgetReservation:
+        self.requests.append(request)
+        sequence = len(self.requests)
+        return ModelBudgetReservation(
+            id=f"reservation-{sequence}",
+            review_plan_id="plan-1",
+            sequence=sequence,
+            reserved_input_tokens=request.input_token_upper_bound,
+            reserved_output_tokens=request.output_token_upper_bound,
+            reserved_cost_microusd=request.cost_upper_bound_microusd or 0,
+            remaining_duration_ms=30_000,
+        )
+
+    def settle(
+        self,
+        reservation: ModelBudgetReservation,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        estimated_cost_microusd: int | None,
+        response_status: int | None,
+        duration_ms: int,
+        uncertain: bool = False,
+    ) -> None:
+        assert reservation.id not in self._settled_ids
+        self._settled_ids.add(reservation.id)
+        self.settlements.append(
+            {
+                "reservation_id": reservation.id,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "estimated_cost_microusd": estimated_cost_microusd,
+                "response_status": response_status,
+                "duration_ms": duration_ms,
+                "uncertain": uncertain,
+            }
+        )
 
 
 def _settings(
@@ -37,6 +88,7 @@ def _settings(
 
 def test_openai_responses_request_and_usage_are_normalized() -> None:
     requests: list[httpx.Request] = []
+    telemetry = TelemetryRegistry()
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -97,6 +149,7 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
         ),
         client=client,
         monotonic=lambda: next(ticks),
+        telemetry=telemetry,
     )
 
     result = reviewer.review(make_model_input())
@@ -112,6 +165,11 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
     assert result.usage.reasoning_output_tokens == 10
     assert result.estimated_cost_microusd == 610
     assert len(result.output.findings) == 1
+    assert (
+        'openreviewer_external_http_request_duration_seconds_count{'
+        'service="model_openai",outcome="success"} 1'
+        in telemetry.render()
+    )
     client.close()
 
 
@@ -166,6 +224,7 @@ def test_live_provider_rejects_legacy_findings_only_output() -> None:
 
 def test_invalid_contract_is_repaired_once_and_usage_is_accumulated() -> None:
     requests: list[dict[str, object]] = []
+    accountant = RecordingBudgetAccountant()
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -214,7 +273,8 @@ def test_invalid_contract_is_repaired_once_and_usage_is_accumulated() -> None:
         monotonic=lambda: next(ticks),
     )
 
-    result = reviewer.review(make_model_input())
+    with model_budget_scope(accountant):
+        result = reviewer.review(make_model_input())
 
     assert len(requests) == 2
     assert result.status is ModelCallStatus.SUCCEEDED
@@ -224,6 +284,27 @@ def test_invalid_contract_is_repaired_once_and_usage_is_accumulated() -> None:
     assert result.usage.input_tokens == 22
     assert result.usage.output_tokens == 5
     assert result.output == make_output()
+    assert len(accountant.requests) == 2
+    assert accountant.settlements == [
+        {
+            "reservation_id": "reservation-1",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "estimated_cost_microusd": None,
+            "response_status": 200,
+            "duration_ms": 1000,
+            "uncertain": False,
+        },
+        {
+            "reservation_id": "reservation-2",
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "estimated_cost_microusd": None,
+            "response_status": 200,
+            "duration_ms": 2000,
+            "uncertain": False,
+        },
+    ]
     client.close()
 
 
@@ -402,6 +483,7 @@ def test_optional_reasoning_parameter_is_omitted_for_relay_compatibility() -> No
 
 def test_chat_retries_once_when_relay_rejects_reasoning_effort() -> None:
     requests: list[dict[str, object]] = []
+    accountant = RecordingBudgetAccountant()
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -449,10 +531,15 @@ def test_chat_retries_once_when_relay_rejects_reasoning_effort() -> None:
         client=client,
     )
 
-    result = reviewer.review(make_model_input())
+    with model_budget_scope(accountant):
+        result = reviewer.review(make_model_input())
 
     assert result.status is ModelCallStatus.SUCCEEDED
     assert len(requests) == 2
+    assert len(accountant.requests) == 2
+    assert [item["input_tokens"] for item in accountant.settlements] == [0, 2]
+    assert [item["output_tokens"] for item in accountant.settlements] == [0, 1]
+    assert all(item["uncertain"] is False for item in accountant.settlements)
     client.close()
 
 
@@ -601,6 +688,29 @@ def test_generic_bad_request_is_not_retried_or_exposed() -> None:
     client.close()
 
 
+@pytest.mark.parametrize("status_code", [408, 429, 500, 529])
+def test_retryable_provider_errors_keep_budget_reservation_uncertain(
+    status_code: int,
+) -> None:
+    accountant = RecordingBudgetAccountant()
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(status_code, json={"error": {}})
+        ),
+    )
+    reviewer = create_model_reviewer(_settings(ModelProvider.OPENAI), client=client)
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError):
+        reviewer.review(make_model_input())
+
+    assert len(accountant.settlements) == 1
+    assert accountant.settlements[0]["input_tokens"] is None
+    assert accountant.settlements[0]["output_tokens"] is None
+    assert accountant.settlements[0]["uncertain"] is True
+    client.close()
+
+
 @pytest.mark.parametrize(
     ("provider", "status_code", "expected_code", "retryable"),
     [
@@ -738,4 +848,108 @@ def test_empty_plan_skips_http_but_records_zero_usage() -> None:
     assert result.status is ModelCallStatus.SKIPPED
     assert result.estimated_cost_microusd == 0
     assert result.output.findings == ()
+    client.close()
+
+
+def test_timeout_keeps_the_full_budget_reservation_once() -> None:
+    accountant = RecordingBudgetAccountant()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("test timeout", request=request)
+
+    ticks = iter((10.0, 12.0))
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+        monotonic=lambda: next(ticks),
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert captured.value.error.code is ErrorCode.MODEL_TIMEOUT
+    assert len(accountant.requests) == 1
+    assert accountant.requests[0].cost_upper_bound_microusd is None
+    assert accountant.settlements == [
+        {
+            "reservation_id": "reservation-1",
+            "input_tokens": None,
+            "output_tokens": None,
+            "estimated_cost_microusd": None,
+            "response_status": None,
+            "duration_ms": 2000,
+            "uncertain": True,
+        }
+    ]
+    client.close()
+
+
+def test_invalid_json_keeps_the_full_budget_reservation_once() -> None:
+    accountant = RecordingBudgetAccountant()
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=b"not-json")
+        ),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert captured.value.error.code is ErrorCode.MODEL_INVALID_RESPONSE
+    assert len(accountant.requests) == 1
+    assert len(accountant.settlements) == 1
+    assert accountant.settlements[0]["uncertain"] is True
+    assert accountant.settlements[0]["input_tokens"] is None
+    client.close()
+
+
+def test_unknown_cache_price_keeps_cost_reservation_conservatively() -> None:
+    accountant = RecordingBudgetAccountant()
+    client = httpx.Client(
+        base_url="https://api.anthropic.test",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={
+                    "id": "msg_unknown_cache_price",
+                    "stop_reason": "end_turn",
+                    "content": [
+                        {"type": "text", "text": make_output().model_dump_json()}
+                    ],
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "cache_read_input_tokens": 30,
+                    },
+                },
+            )
+        ),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.ANTHROPIC,
+            ModelPricing(
+                input_usd_per_million=Decimal("3"),
+                output_usd_per_million=Decimal("15"),
+            ),
+        ),
+        client=client,
+    )
+
+    with model_budget_scope(accountant):
+        result = reviewer.review(make_model_input())
+
+    assert result.estimated_cost_microusd is None
+    assert len(accountant.settlements) == 1
+    assert accountant.settlements[0]["uncertain"] is True
+    assert accountant.settlements[0]["estimated_cost_microusd"] is None
     client.close()

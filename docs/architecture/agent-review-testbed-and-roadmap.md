@@ -8,8 +8,9 @@
 
 OpenReviewer 已具备从 GitHub PR 到人工发布的可恢复 AI 审查闭环。可靠任务、Worker、管理界面、
 部署链路、GitHub 安全入口、PR/CI 读取、全量规则规划、固定四 Agent DAG、上下文自动分批、
-版本化 RAG 和模型调用已经具备；当前发布载体是人工批准后的 PR 汇总评论。GitHub Check、行内
-评论、自动证据复核与跨提交结果消解尚未实现。
+版本化 RAG 和模型调用已经具备；人工批准后会幂等更新 GitHub Check、按评测准入发布高置信
+行内评论，并保留 PR 汇总评论。Blob fallback、机器 Diff 定位校验、自动源码证据核验、人工
+Finding 裁决和跨提交 Finding 生命周期已经实现；真实模型评测仍待完成。
 
 当前 Worker 会读取与任务 `head_sha` 匹配的 PR、diff 和 CI；CI 未结束时进入
 `waiting_for_ci`，终止后依次执行规划、三路审查 Agent 和汇总 Agent。模型结果保存后真实工作流
@@ -26,7 +27,7 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - Python 3.12 项目、FastAPI API、SQLAlchemy/Alembic 和 PostgreSQL。
 - 幂等任务创建，同时持久化 `ReviewRun`、`ReviewTask` 和 Outbox。
 - `FOR UPDATE SKIP LOCKED` 任务领取、租约续期、超时恢复、退避和最大尝试次数。
-- 单并发 Worker 心跳和健康检查。
+- 每个进程单并发的 Worker 心跳和健康检查，支持按配置扩展副本。
 - 管理员登录、会话保护、Dashboard、任务列表和 SSE 实时更新。
 - React 管理前端和 Nginx HTTPS 测试入口。
 - 后端/前端 CI、SHA 镜像发布和 `niuma-2` 自动部署配置。
@@ -34,8 +35,8 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - GitHub Webhook 原始请求体验签、大小/事件限制、delivery 去重和原子任务入库。
 - installation、PR 版本、Webhook delivery、外部动作审计模型和 GitHub API 客户端骨架。
 - GitHub App JWT、短期 installation token 内存缓存和只读密钥挂载。
-- GitHub App 使用 Pull requests 读写权限发布人工批准的 PR 汇总评论；Metadata、Contents、
-  Checks 和 Commit statuses 保持只读。
+- GitHub App 使用 Pull requests 和 Checks 写权限发布人工批准的评论/Check；Metadata、Contents
+  和 Commit statuses 保持只读，Worker 读取阶段仍只申请读权限。
 - PR 元数据、changed files、完整 diff、Check Runs 和 Commit Statuses 分页读取。
 - 文件/CI 有界快照、CI 轮询与超时，以及旧 `head_sha` 批量失效保护。
 - 当前 SHA 的 `AGENTS.md` 单请求批量加载、确定性 Review Plan、四表原子持久化、幂等复用和
@@ -43,7 +44,12 @@ NiuMa 继续作为首个真实被审查仓库和评测来源；OpenReviewer 独�
 - OpenAI Responses/Chat Completions 与 Anthropic Messages 统一结构化适配、按上下文自动分批、
   独立模型重试、逐批进度，以及调用耗时/Token/可配置成本和 Finding 原子持久化。
 - 安全、规范、逻辑三路并行审查与汇总 Agent 的固定 DAG、独立配置、可恢复批次和版本化 RAG。
-- Finding 人工裁决、整份审查批准、独立发布动作、发布前 PR/SHA 复核和 60 KiB 幂等汇总评论。
+- Finding 人工裁决、整份审查批准、独立发布动作、发布前 PR/SHA 复核、60 KiB 幂等 Check 与
+  汇总评论、批量行内评论及 GitHub 位置失效降级。
+- 大补丁缺失时通过有界 GraphQL Blob 批量读取重建 diff；超限、二进制或响应不完整时明确降低
+  覆盖状态，不逐文件发起 N+1 请求。
+- 稳定 Finding 指纹、跨提交 `new/still_present/reintroduced/fixed` 生命周期和按风险域的真实
+  人工裁决准入门槛。
 
 稳定语义已经拆分到以下契约中：
 
@@ -72,16 +78,11 @@ OpenReviewer 不登录 NiuMa 服务器读取运行目录，也不执行 NiuMa PR
 
 ## 3. 尚未实现
 
-### GitHub 接入
-
-- 超过单文件补丁上限的 Blob API 补充读取尚未实现，当前会明确降低 diff 完整度；
-- 当前 PR 评论发布已经在外部写入前再次校验 PR 状态、Draft 状态和 `head_sha`；未来的 Check
-  Run 与行内评论仍需各自复用相同版本保护。
-
 ### 审查执行
 
-- Finding 原始证据回读、diff 位置复核和失败降级；
-- GitHub Check、行内评论和跨提交消解；
+- 跨仓库、跨 PR 的同类 Finding 聚类与趋势分析；当前已完成同一 PR 的跨提交生命周期。
+- 真实模型离线评测和人工反馈闭环；源码证据核验已能自动标记核验结果，但仍需要足量真实
+  样本校准模型准确率和风险域准入门槛；
 
 ### 反馈与平台能力
 
@@ -145,26 +146,26 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ### 阶段 D：最小审查闭环
 
-状态：人工发布闭环已可用。已实现精确 SHA 的 `AGENTS.md` 单请求批量加载、目录作用域、文件分类、
+状态：发布增强闭环已可用。已实现精确 SHA 的 `AGENTS.md` 单请求批量加载、目录作用域、文件分类、
 全量 Review Unit、上下文自动分批、OpenAI/Anthropic 统一适配、固定四 Agent DAG、版本化 RAG、
-严格结构化输出、稳定 Finding 指纹、Worker 接入、原子持久化、人工批准和 PR 汇总评论；尚未
-自动复核证据、发布 Check Run 或发布行内评论。
+严格结构化输出、稳定 Finding 指纹、Worker 接入、原子持久化、自动源码证据核验、人工批准、
+Check Run、评测准入后的行内评论和 PR 汇总评论；真实模型评测仍在补充。
 
 ```text
 选择文件 -> 构建 Review Unit -> 加载相关规则与 RAG
          -> 三路 Agent 并行审查 -> 汇总 Agent
          -> 校验并保存 Finding -> 人工裁决与批准
-         -> 复核 PR/SHA -> 发布幂等 PR 汇总评论
-         -> 后续：回读原始证据 -> Check Run / 行内评论
+         -> 复核 PR/SHA -> 自动回读原始源文件并标记证据核验状态
+         -> 发布幂等 Check / 行内评论 / PR 汇总
 ```
 
 首版要求：
 
 - 模型供应商可替换，设置调用次数、Token、耗时和单 PR 总预算；
 - 所有变更文件都有明确处理去向，无法审查时降低覆盖状态；
-- 模型输出必须通过结构校验；证据复核仍是 Check/行内发布前的后续门槛；
-- 当前所有非驳回 Finding 只进入人工触发的 PR 汇总评论，不伪装成行内定位；
-- PR 评论使用稳定标记去重；未来 Check 也必须使用稳定动作键更新；
+- 模型输出必须通过结构校验；机器定位和人工事实复核使用独立状态，不能互相替代；
+- 只有人工裁决有效、位置/提交/置信度合格且风险域达到真实历史门槛的 Finding 才进入行内评论；
+- Check、行内评论和 PR 汇总都使用稳定身份对账，重试不会重复创建；
 - Agent 不执行 PR 代码，也不连接 NiuMa 服务器运行测试。
 
 验收条件：固定 PR 样本可以本地重放；真实 PR 能得到带 SHA、文件、证据、影响和建议的报告；
@@ -226,11 +227,13 @@ Nginx 只新增专用 Webhook 代理路径；管理接口继续要求登录，Po
 
 ## 7. 下一批具体产物
 
-按当前状态，双供应商、固定四 Agent DAG 与人工 PR 评论发布已经完成，下一批应继续阶段 D：
+按当前状态，双供应商、固定四 Agent DAG、Check、行内评论、汇总发布和同 PR 生命周期已经完成，
+下一批应以真实数据质量为主：
 
-1. 回读原始证据，校验 Finding 行号、diff side 和 `in_diff`；
-2. 为复核后的 Finding 增加状态转换、跨提交消解和行内定位准入；
-3. 在评测证明有收益后，发布使用稳定动作键的 GitHub Check，并复用现有发布前版本校验。
+1. 采集脱敏真实模型运行和双人裁决，建立足量的仓库/风险域评测样本；
+2. 扩充源码证据核验的边界样本（重命名、二进制、跨文件证据），提供独立的自动辅助状态和
+   原因，不覆盖人工裁决；
+3. 根据真实定位准确率、重复率和成本继续调优检索、Prompt 与风险域门槛。
 
 `ready_for_review` 只表示等待 AI 领取，不能显示为审查成功；模型结果保存后进入
 `awaiting_approval`，只有人工批准并成功发布后才进入 `completed`。

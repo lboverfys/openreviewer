@@ -133,3 +133,67 @@ def test_authenticated_knowledge_management_api(tmp_path: Path) -> None:
         asyncio.run(exercise())
     finally:
         database.dispose()
+
+
+def test_knowledge_mutations_reject_cross_origin_requests(tmp_path: Path) -> None:
+    seed_root = tmp_path / "knowledge-origin"
+    seed_root.mkdir()
+    (seed_root / "security.md").write_text(
+        "# 安全规则\n\n检查鉴权。\n",
+        encoding="utf-8",
+    )
+    database = Database.connect(
+        f"sqlite:///{(tmp_path / 'knowledge-origin.sqlite3').as_posix()}"
+    )
+    Base.metadata.create_all(database.engine)
+    application = create_app(
+        auth_service=make_auth_service(),
+        knowledge_base=ManagedMarkdownKnowledgeBase(database.sessions, seed_root),
+    )
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+            )
+            assert login.status_code == 200
+
+            rejected = await client.post(
+                "/api/v1/knowledge/documents",
+                headers={"Origin": "https://attacker.example"},
+                json={
+                    "expected_revision": 1,
+                    "source": "database.md",
+                    "content": "# 数据库规则\n\n禁止 N+1 查询。",
+                    "enabled": True,
+                },
+            )
+            assert rejected.status_code == 403
+            assert rejected.json() == {"detail": "cross-origin request rejected"}
+
+            listed = await client.get("/api/v1/knowledge/documents")
+            assert listed.status_code == 200
+            assert listed.json()["revision"] == 1
+            assert listed.json()["total"] == 1
+
+            accepted = await client.post(
+                "/api/v1/knowledge/documents",
+                headers={"Origin": "http://testserver"},
+                json={
+                    "expected_revision": 1,
+                    "source": "database.md",
+                    "content": "# 数据库规则\n\n禁止 N+1 查询。",
+                    "enabled": True,
+                },
+            )
+            assert accepted.status_code == 201
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        database.dispose()

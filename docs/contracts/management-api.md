@@ -1,7 +1,7 @@
 # 管理与实时接口 v1
 
-当前管理界面只提供单管理员登录。除 `/healthz` 外，下列接口都通过同源 HTTPS Web 入口
-访问，API 不直接暴露公网端口。
+当前管理界面支持一个管理员和可选的受限账号。除 `/healthz` 外，下列接口都通过同源
+HTTPS Web 入口访问，API 不直接暴露公网端口。
 
 ## 1. 认证
 
@@ -25,6 +25,28 @@
 API 进程按客户端和账号记录 15 分钟滑动失败窗口；Nginx 还对登录路径执行 IP 级限速。
 错误账号和错误密码统一返回 `401`，不能通过响应判断账号是否存在。
 
+额外账号配置在 `OPENREVIEWER_AUTH_USERS_FILE` 指向的 JSON 数组中。每项包含
+`username`、Argon2id `password_hash`、`role`，以及非管理员必须提供的 `scope`：
+
+```json
+{
+  "username": "reviewer",
+  "password_hash": "$argon2id$...",
+  "role": "viewer",
+  "scope": {
+    "installation_ids": [123456],
+    "organizations": ["lboverfys"],
+    "repositories": ["lboverfys/NiuMa"]
+  }
+}
+```
+
+scope 的三个数组按交集约束 installation 和仓库；组织或精确仓库命中其一即可。三个数组
+都为空表示拒绝全部。非管理员缺少 scope 也拒绝全部，管理员缺少 scope 则为全量访问。
+Dashboard 的总数/状态计数、最近列表、详情、变化令牌、Finding 裁决、人工动作和 SSE
+均在数据库查询条件中应用同一 scope；越权运行 ID 统一返回 `404`，不通过总数或错误文本
+泄露资源是否存在。
+
 ## 2. Dashboard 和列表
 
 | 方法和路径 | 用途 |
@@ -33,6 +55,7 @@ API 进程按客户端和账号记录 15 分钟滑动失败窗口；Nginx 还对
 | `GET /api/v1/reviews?limit=50` | 最近审查任务列表，`limit` 范围为 1 到 100 |
 | `POST /api/v1/reviews` | 创建幂等审查任务，详细规则见任务接口契约 |
 | `GET /api/v1/reviews/{review_run_id}` | 详情、双状态、四 Agent 进度、Finding、CI 和事件 |
+| `GET /api/v1/reviews/{review_run_id}/change-token` | 一条有界查询返回详情变化令牌，供前端轻量轮询 |
 | `POST /api/v1/reviews/{review_run_id}/identity/sync` | 从 GitHub 补全历史任务的 PR 作者、链接和来源/目标分支 |
 | `POST /api/v1/reviews/{review_run_id}/actions` | 暂停、恢复、重试、批准、驳回或人工发布 |
 | `POST /api/v1/reviews/{review_run_id}/findings/{finding_id}` | 确认或忽略单条 Finding |
@@ -40,6 +63,12 @@ API 进程按客户端和账号记录 15 分钟滑动失败窗口；Nginx 还对
 响应模型不会直接暴露数据库密码、会话密钥、密码哈希或任务幂等键。任务列表和 Dashboard
 返回 `last_error`、`last_error_code`、`last_error_retryable` 和安全详情；错误在 Worker 入库前
 统一脱敏，读取时再次执行防御性脱敏。原始异常、Token、密码和带凭据 URL 不属于响应契约。
+
+Finding 响应把 `location_verification_status`（机器 Diff 定位）和
+`evidence_verification_status`（平台回读源码后的自动证据核验）分开返回，并另外返回
+`adjudication_status`（人工处置）。自动核验的 `verified` 只说明指定源码支持证据片段，不能
+代替人工确认 Finding 是否成立。旧字段 `verification_status` 仅为兼容保留并标记弃用，含义
+始终是定位校验；客户端不得把它显示成“事实已确认”。
 
 身份同步、动作和 Finding 写接口都要求 `Idempotency-Key` 与同源校验。身份同步只回填作者、
 GitHub 链接、来源仓库/分支和目标仓库/分支，不使用 GitHub 当前标题、SHA 或文件数覆盖历史
@@ -75,11 +104,10 @@ GitHub 链接、来源仓库/分支和目标仓库/分支，不使用 GitHub 当
 读取 Dashboard 暂时失败时，当前 API 会发送 `unavailable` 事件而不是伪造正常快照；连接
 仍会继续，前端收到该事件后显示重连状态，等待后续 `dashboard` 事件恢复页面数据。
 
-Nginx 必须关闭该路径的代理缓冲和缓存，API 返回 `X-Accel-Buffering: no`。当前 API 只在
-建立 SSE 连接时验证一次会话；已经建立的连接不会在会话到期时由服务端主动断开。连接断开
-后，浏览器重新连接时会再次校验会话，没有有效会话就不能建立新的数据流。后续如果要求会话
-到期时立即停止推送，需要在事件循环中重新校验会话，或者为 SSE 设置不超过会话剩余时间的
-最大连接时长。
+Nginx 必须关闭该路径的代理缓冲和缓存，API 返回 `X-Accel-Buffering: no`。连接建立时先
+验证会话；流运行期间每 30 秒再次查询服务端会话记录，并单独检查签名载荷中的绝对到期时间。
+会话被注销、吊销或到期后，API 先发送一次 `auth-expired` 事件，再结束连接；浏览器重新连接
+时仍会再次验证会话。前端收到该事件后清空页面状态并回到登录页，不会继续重连受保护的数据流。
 
 ## 5. 公网边界
 

@@ -1,14 +1,14 @@
 """只入库、不执行外部副作用的 GitHub Webhook 验签接入。"""
 
+import hmac
+import json
+import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
-import hmac
-import json
-import os
 from pathlib import Path
-import re
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from domain.enums import ExecutionStatus, PullRequestAction
 from domain.models import PullRequestWebhook
 from domain.security import ErrorCode, SafeApplicationError, SafeError
+from services.github_access import GitHubAccessPolicy
 
 
 class WebhookConfigurationError(RuntimeError):
@@ -37,6 +38,7 @@ class WebhookRequestError(SafeApplicationError):
 @dataclass(frozen=True, slots=True)
 class GitHubWebhookSettings:
     secret: bytes = field(repr=False)
+    previous_secrets: tuple[bytes, ...] = field(default=(), repr=False)
     max_body_bytes: int = 256 * 1024
 
     def __post_init__(self) -> None:
@@ -44,6 +46,17 @@ class GitHubWebhookSettings:
             raise WebhookConfigurationError(
                 "the GitHub webhook secret must contain at least 32 bytes"
             )
+        secrets = (self.secret, *self.previous_secrets)
+        if len(self.previous_secrets) > 4:
+            raise WebhookConfigurationError(
+                "at most four previous GitHub webhook secrets are supported"
+            )
+        if any(len(secret) < 32 for secret in secrets):
+            raise WebhookConfigurationError(
+                "GitHub webhook secrets must contain at least 32 bytes"
+            )
+        if len(secrets) != len(set(secrets)):
+            raise WebhookConfigurationError("GitHub webhook secrets must be unique")
         if not 1024 <= self.max_body_bytes <= 256 * 1024:
             raise WebhookConfigurationError(
                 "the GitHub webhook body limit must be between 1 KiB and 256 KiB"
@@ -72,6 +85,7 @@ class GitHubWebhookSettings:
                 ) from exc
         else:
             secret = direct_secret.encode("utf-8")
+        previous_secrets = _read_previous_secrets(values)
         try:
             body_limit = int(
                 values.get("OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES", "262144")
@@ -80,7 +94,15 @@ class GitHubWebhookSettings:
             raise WebhookConfigurationError(
                 "the GitHub webhook body limit must be an integer"
             ) from exc
-        return cls(secret=secret, max_body_bytes=body_limit)
+        return cls(
+            secret=secret,
+            previous_secrets=previous_secrets,
+            max_body_bytes=body_limit,
+        )
+
+    @property
+    def verification_secrets(self) -> tuple[bytes, ...]:
+        return (self.secret, *self.previous_secrets)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,9 +181,11 @@ class GitHubWebhookService:
         self,
         repository: GitHubWebhookRepository,
         settings: GitHubWebhookSettings,
+        access_policy: GitHubAccessPolicy,
     ) -> None:
         self._repository = repository
         self.settings = settings
+        self.access_policy = access_policy
 
     def receive(
         self,
@@ -193,6 +217,16 @@ class GitHubWebhookService:
             )
         try:
             accepted = _AcceptedPullRequestPayload.model_validate(payload)
+            denial_reason = self.access_policy.denial_reason(
+                accepted.installation.id,
+                accepted.repository.full_name,
+            )
+            if denial_reason is not None:
+                return WebhookReceipt(
+                    accepted=False,
+                    delivery_id=delivery_id,
+                    reason=denial_reason,
+                )
             event = PullRequestWebhook(
                 action=accepted.action,
                 delivery_id=delivery_id,
@@ -215,8 +249,12 @@ class GitHubWebhookService:
 
     def _verify_signature(self, body: bytes, signature: str) -> None:
         match = _SIGNATURE_RE.fullmatch(signature)
-        expected = hmac.new(self.settings.secret, body, sha256).hexdigest()
-        if match is None or not hmac.compare_digest(match.group(1).lower(), expected):
+        supplied = match.group(1).lower() if match is not None else "0" * 64
+        signature_valid = False
+        for secret in self.settings.verification_secrets:
+            expected = hmac.new(secret, body, sha256).hexdigest()
+            signature_valid = hmac.compare_digest(supplied, expected) or signature_valid
+        if match is None or not signature_valid:
             raise WebhookRequestError(
                 SafeError(
                     code=ErrorCode.WEBHOOK_INVALID_SIGNATURE,
@@ -248,3 +286,56 @@ class GitHubWebhookService:
                 retryable=False,
             )
         )
+
+
+def _read_previous_secrets(values: Mapping[str, str]) -> tuple[bytes, ...]:
+    direct = values.get("OPENREVIEWER_GITHUB_WEBHOOK_PREVIOUS_SECRETS_JSON", "")
+    file_name = values.get(
+        "OPENREVIEWER_GITHUB_WEBHOOK_PREVIOUS_SECRETS_FILE", ""
+    ).strip()
+    if direct and file_name:
+        raise WebhookConfigurationError(
+            "configure only one previous GitHub webhook secret source"
+        )
+    if file_name:
+        try:
+            raw = Path(file_name).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise WebhookConfigurationError(
+                "the previous GitHub webhook secret file could not be read"
+            ) from exc
+    else:
+        raw = direct.strip()
+    if not raw:
+        return ()
+    if len(raw.encode("utf-8")) > 16 * 1024:
+        raise WebhookConfigurationError(
+            "the previous GitHub webhook secret list is too large"
+        )
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise WebhookConfigurationError(
+            "previous GitHub webhook secrets must be a JSON array"
+        ) from exc
+    if not isinstance(payload, list) or len(payload) > 4:
+        raise WebhookConfigurationError(
+            "previous GitHub webhook secrets must contain at most four entries"
+        )
+    secrets: list[bytes] = []
+    for value in payload:
+        if not isinstance(value, str):
+            raise WebhookConfigurationError(
+                "previous GitHub webhook secret entries must be strings"
+            )
+        encoded = value.strip().encode("utf-8")
+        if len(encoded) < 32:
+            raise WebhookConfigurationError(
+                "previous GitHub webhook secrets must contain at least 32 bytes"
+            )
+        secrets.append(encoded)
+    if len(secrets) != len(set(secrets)):
+        raise WebhookConfigurationError(
+            "previous GitHub webhook secrets must be unique"
+        )
+    return tuple(secrets)

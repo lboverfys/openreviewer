@@ -1,13 +1,15 @@
 """供应商无关的模型审查输入、输出和计量契约。"""
 
+import json
+import re
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from domain.enums import (
+    EvidenceVerificationStatus,
     FindingCategory,
     LocationSide,
     ModelApiProtocol,
@@ -23,13 +25,13 @@ from domain.models import FindingLocation, ReviewFinding
 from domain.paths import normalize_repository_path
 from domain.review_planning import RepositoryRule, ReviewUnit
 
-
-PROMPT_VERSION = "structured-review-v3"
+PROMPT_VERSION = "structured-review-v4"
 MAX_MODEL_FINDINGS = 200
 MAX_MODEL_CHECKED_AREAS = 12
 MAX_MODEL_SUMMARY_LENGTH = 4_000
 POSTGRES_INTEGER_MAX = 2_147_483_647
 POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 class ModelContract(BaseModel):
@@ -73,11 +75,23 @@ class ModelFindingCandidate(ModelContract):
     required_test: str | None = Field(max_length=10_000)
     confidence: float = Field(ge=0, le=1)
     rule_reference: str | None = Field(max_length=1024)
+    # 可选的机器稳定身份提示；它不展示给用户，也不允许包含控制字符。
+    identity_hint: str | None = Field(default=None, max_length=256)
 
     @field_validator("rule_reference")
     @classmethod
     def validate_rule_reference(cls, value: str | None) -> str | None:
         return normalize_repository_path(value) if value is not None else None
+
+    @field_validator("identity_hint")
+    @classmethod
+    def validate_identity_hint(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized or any(ord(character) < 32 for character in normalized):
+            raise ValueError("model finding identity_hint is invalid")
+        return normalized
 
 
 class ModelReviewOutput(ModelContract):
@@ -229,7 +243,19 @@ class ModelReviewInput(ModelContract):
             set(unit_files)
         ):
             raise ValueError("model review units must have unique keys and files")
-        if unit_files != sorted(unit_files):
+        if self.planner_version == "review-planner-v3":
+            group_first_file: dict[str | None, str] = {}
+            for unit in self.units:
+                current = group_first_file.get(unit.group_key)
+                if current is None or unit.file < current:
+                    group_first_file[unit.group_key] = unit.file
+            expected_units = sorted(
+                self.units,
+                key=lambda unit: (group_first_file[unit.group_key], unit.file),
+            )
+            if list(self.units) != expected_units:
+                raise ValueError("model review units must keep related files adjacent")
+        elif unit_files != sorted(unit_files):
             raise ValueError("model review units must be ordered by file")
         known_rules = set(rule_paths)
         for unit in self.units:
@@ -243,7 +269,7 @@ class ModelReviewInput(ModelContract):
         expected_input_bytes = sum(
             unit.estimated_input_bytes for unit in self.units
         )
-        if self.planner_version == "review-planner-v2":
+        if self.planner_version in {"review-planner-v2", "review-planner-v3"}:
             expected_input_bytes += sum(rule.byte_size for rule in self.rules)
         if expected_input_bytes != self.total_estimated_input_bytes:
             raise ValueError("model review input byte total does not match its units")
@@ -298,6 +324,22 @@ class MaterializedFinding:
     finding: ReviewFinding
 
 
+@dataclass(frozen=True, slots=True)
+class _DiffLocationIndex:
+    left_lines: frozenset[int]
+    right_lines: frozenset[int]
+
+    def contains(self, start_line: int, end_line: int, side: LocationSide) -> bool:
+        lines = self.left_lines if side is LocationSide.LEFT else self.right_lines
+        line_count = end_line - start_line + 1
+        return (
+            line_count <= len(lines)
+            and start_line in lines
+            and end_line in lines
+            and all(line in lines for line in range(start_line, end_line + 1))
+        )
+
+
 def model_review_output_schema() -> dict[str, object]:
     """返回 OpenAI 与 Anthropic 都支持的严格 JSON Schema 子集。"""
 
@@ -332,6 +374,7 @@ def model_review_output_schema() -> dict[str, object]:
             "required_test": nullable_string,
             "confidence": {"type": "number"},
             "rule_reference": nullable_string,
+            "identity_hint": nullable_string,
         },
         "required": [
             "unit_key",
@@ -345,6 +388,7 @@ def model_review_output_schema() -> dict[str, object]:
             "required_test",
             "confidence",
             "rule_reference",
+            "identity_hint",
         ],
     }
     return {
@@ -373,10 +417,18 @@ def materialize_findings(
     review_input: ModelReviewInput,
     output: ModelReviewOutput,
 ) -> tuple[MaterializedFinding, ...]:
-    """校验模型引用，并补齐 SHA、blob、指纹和未复核状态。"""
+    """校验模型引用，并用可信 diff 补齐身份和定位复核状态。"""
 
     units_by_key = {unit.unit_key: unit for unit in review_input.units}
+    diff_locations_by_key = {
+        unit.unit_key: _index_diff_locations(unit.patch) for unit in review_input.units
+    }
     known_rule_paths = {rule.path for rule in review_input.rules}
+    verification_rank = {
+        VerificationStatus.REJECTED: 0,
+        VerificationStatus.UNVERIFIED: 1,
+        VerificationStatus.VERIFIED: 2,
+    }
     findings_by_fingerprint: dict[str, MaterializedFinding] = {}
     for candidate in output.findings:
         unit = units_by_key.get(candidate.unit_key)
@@ -385,19 +437,33 @@ def materialize_findings(
         if candidate.rule_reference not in known_rule_paths | {None}:
             raise ValueError("model finding references an unknown repository rule")
         location = None
+        verification_status = VerificationStatus.UNVERIFIED
+        evidence_status = EvidenceVerificationStatus.UNVERIFIED
+        evidence_reason = "finding_has_no_location"
         if candidate.location is not None:
             if candidate.location.file != unit.file:
                 raise ValueError("model finding location does not match its review unit")
+            in_diff = diff_locations_by_key[unit.unit_key].contains(
+                candidate.location.start_line,
+                candidate.location.end_line,
+                candidate.location.side,
+            )
             location = FindingLocation(
                 file=unit.file,
                 blob_sha=unit.blob_sha,
                 start_line=candidate.location.start_line,
                 end_line=candidate.location.end_line,
                 side=candidate.location.side,
-                in_diff=False,
+                in_diff=in_diff,
                 symbol=candidate.location.symbol,
             )
-        fingerprint = _finding_fingerprint(candidate, unit.file)
+            verification_status = (
+                VerificationStatus.VERIFIED
+                if in_diff
+                else VerificationStatus.REJECTED
+            )
+            evidence_reason = "not_checked" if in_diff else "location_not_in_diff"
+        fingerprint = finding_identity_fingerprint(candidate, unit.file)
         materialized = MaterializedFinding(
             source_unit_key=unit.unit_key,
             finding=ReviewFinding(
@@ -412,26 +478,54 @@ def materialize_findings(
                 suggestion=candidate.suggestion,
                 required_test=candidate.required_test,
                 confidence=candidate.confidence,
-                verification_status=VerificationStatus.UNVERIFIED,
+                verification_status=verification_status,
+                evidence_verification_status=evidence_status,
+                evidence_verification_reason=evidence_reason,
                 rule_reference=candidate.rule_reference,
             ),
         )
         existing = findings_by_fingerprint.get(fingerprint)
-        if existing is None or materialized.finding.confidence > existing.finding.confidence:
+        if existing is None or (
+            verification_rank[materialized.finding.verification_status],
+            materialized.finding.confidence,
+        ) > (
+            verification_rank[existing.finding.verification_status],
+            existing.finding.confidence,
+        ):
             findings_by_fingerprint[fingerprint] = materialized
     return tuple(findings_by_fingerprint[key] for key in sorted(findings_by_fingerprint))
 
 
-def _finding_fingerprint(candidate: ModelFindingCandidate, unit_file: str) -> str:
+def finding_identity_fingerprint(
+    candidate: ModelFindingCandidate,
+    unit_file: str,
+) -> str:
+    """生成跨提交稳定身份；不把模型原始长文本作为主键。"""
+
     location_symbol = candidate.location.symbol if candidate.location else None
+    identity_hint = _normalize_identity_text(candidate.identity_hint)
+    rule_reference = _normalize_identity_text(candidate.rule_reference)
+    symbol = _normalize_identity_text(location_symbol)
+    # 只有模型明确提供 identity_hint 时才认为身份足够稳定，可以跨文件和
+    # 自然语言措辞复用；其余情况保留标题、证据签名和文件名，避免同一规则
+    # 或函数下的多个不同问题被错误合并。
+    evidence_signature = _stable_evidence_signature(candidate.evidence)
+    has_stable_identity = bool(identity_hint)
     identity = {
-        "version": 1,
+        "version": 3,
         "category": candidate.category.value,
-        "file": unit_file,
-        "symbol": _normalize_identity_text(location_symbol),
-        "title": _normalize_identity_text(candidate.title),
-        "rule_reference": candidate.rule_reference,
+        "rule_reference": rule_reference,
+        "symbol": symbol,
+        "identity_hint": identity_hint,
     }
+    if has_stable_identity:
+        # 稳定提示已经足够区分问题；不再把模型自然语言绑定进主键，
+        # 避免同一问题因措辞变化产生新的生命周期记录。
+        identity["identity_basis"] = "stable"
+    else:
+        identity["identity_basis"] = "evidence"
+        identity["evidence_signature"] = evidence_signature
+        identity["file"] = normalize_repository_path(unit_file)
     encoded = json.dumps(
         identity,
         ensure_ascii=False,
@@ -440,6 +534,96 @@ def _finding_fingerprint(candidate: ModelFindingCandidate, unit_file: str) -> st
         separators=(",", ":"),
     ).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+_EVIDENCE_STOP_WORDS = frozenset(
+    {
+        "the",
+        "this",
+        "that",
+        "with",
+        "from",
+        "into",
+        "当前",
+        "代码",
+        "问题",
+        "导致",
+        "可能",
+        "存在",
+        "使用",
+    }
+)
+
+
+def _stable_evidence_signature(value: str) -> str:
+    """把证据压缩成顺序无关的短签名，降低模型措辞漂移的影响。"""
+
+    tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", value.casefold())
+    normalized = sorted(
+        {
+            token
+            for token in tokens
+            if token not in _EVIDENCE_STOP_WORDS and len(token) >= 2
+        }
+    )
+    return " ".join(normalized[:48])
+
+
+def _index_diff_locations(patch: str) -> _DiffLocationIndex:
+    left_lines: set[int] = set()
+    right_lines: set[int] = set()
+    left_line: int | None = None
+    right_line: int | None = None
+    left_remaining = 0
+    right_remaining = 0
+    valid = True
+    for line in patch.splitlines():
+        match = _HUNK_HEADER.match(line)
+        if match is not None:
+            if left_remaining or right_remaining:
+                valid = False
+                break
+            left_line = int(match.group(1))
+            right_line = int(match.group(3))
+            left_remaining = int(match.group(2) or "1")
+            right_remaining = int(match.group(4) or "1")
+            continue
+        if left_line is None or right_line is None:
+            continue
+        if line.startswith("\\ No newline at end of file"):
+            continue
+        if line.startswith("+"):
+            if right_remaining <= 0:
+                valid = False
+                break
+            right_lines.add(right_line)
+            right_line += 1
+            right_remaining -= 1
+        elif line.startswith("-"):
+            if left_remaining <= 0:
+                valid = False
+                break
+            left_lines.add(left_line)
+            left_line += 1
+            left_remaining -= 1
+        elif line.startswith(" "):
+            if left_remaining <= 0 or right_remaining <= 0:
+                valid = False
+                break
+            left_lines.add(left_line)
+            right_lines.add(right_line)
+            left_line += 1
+            right_line += 1
+            left_remaining -= 1
+            right_remaining -= 1
+        else:
+            valid = False
+            break
+    if left_remaining or right_remaining:
+        valid = False
+    if not valid:
+        return _DiffLocationIndex(frozenset(), frozenset())
+    return _DiffLocationIndex(frozenset(left_lines), frozenset(right_lines))
 
 
 def _normalize_identity_text(value: str | None) -> str | None:

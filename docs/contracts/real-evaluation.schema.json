@@ -1,0 +1,308 @@
+{
+  "$defs": {
+    "FindingCategory": {
+      "enum": [
+        "architecture",
+        "authorization",
+        "security",
+        "database",
+        "business_contract",
+        "test_gap",
+        "reliability"
+      ],
+      "title": "FindingCategory",
+      "type": "string"
+    },
+    "FindingEvaluationVerdict": {
+      "description": "\u4eba\u5de5\u88c1\u51b3\u8f6c\u6362\u6210\u7684\u771f\u5b9e\u8bc4\u6d4b\u6807\u7b7e\u3002",
+      "enum": [
+        "valid",
+        "false_positive",
+        "duplicate",
+        "out_of_scope",
+        "known_issue"
+      ],
+      "title": "FindingEvaluationVerdict",
+      "type": "string"
+    },
+    "HumanAdjudication": {
+      "additionalProperties": false,
+      "properties": {
+        "adjudicated_at": {
+          "format": "date-time",
+          "title": "Adjudicated At",
+          "type": "string"
+        },
+        "location_correct": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location Correct"
+        },
+        "reviewer": {
+          "maxLength": 100,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9_.:@-]+$",
+          "title": "Reviewer",
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/FindingEvaluationVerdict"
+        }
+      },
+      "required": [
+        "reviewer",
+        "verdict",
+        "adjudicated_at"
+      ],
+      "title": "HumanAdjudication",
+      "type": "object"
+    },
+    "ModelProvider": {
+      "description": "\u6a21\u578b\u8c03\u7528\u9002\u914d\u5668\u652f\u6301\u7684\u4f9b\u5e94\u5546\u3002",
+      "enum": [
+        "openai",
+        "anthropic"
+      ],
+      "title": "ModelProvider",
+      "type": "string"
+    },
+    "ObservedFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "adjudications": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/HumanAdjudication"
+          },
+          "maxItems": 2,
+          "title": "Adjudications",
+          "type": "array"
+        },
+        "category": {
+          "$ref": "#/$defs/FindingCategory"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "finding_key": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Finding Key",
+          "type": "string"
+        },
+        "fingerprint": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        }
+      },
+      "required": [
+        "finding_key",
+        "fingerprint",
+        "severity",
+        "category",
+        "confidence"
+      ],
+      "title": "ObservedFinding",
+      "type": "object"
+    },
+    "RealModelSample": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "maximum": 100000,
+          "minimum": 0,
+          "title": "Cost Usd",
+          "type": "number"
+        },
+        "expected_finding_keys": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 500,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Finding Keys"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ObservedFinding"
+          },
+          "maxItems": 500,
+          "title": "Findings",
+          "type": "array"
+        },
+        "head_sha": {
+          "maxLength": 64,
+          "minLength": 40,
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "input_tokens": {
+          "maximum": 2147483647,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "latency_ms": {
+          "maximum": 86400000,
+          "minimum": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "model": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "openreviewer_commit_sha": {
+          "maxLength": 64,
+          "minLength": 40,
+          "title": "Openreviewer Commit Sha",
+          "type": "string"
+        },
+        "output_tokens": {
+          "maximum": 2147483647,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "prompt_version": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Prompt Version",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ModelProvider"
+        },
+        "pull_request_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pull Request Number",
+          "type": "integer"
+        },
+        "raw_output_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Raw Output Sha256",
+          "type": "string"
+        },
+        "redacted_raw_output": {
+          "maxLength": 262144,
+          "minLength": 1,
+          "title": "Redacted Raw Output",
+          "type": "string"
+        },
+        "reference_reviewers": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "title": "Reference Reviewers",
+          "type": "array"
+        },
+        "repository": {
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository",
+          "type": "string"
+        },
+        "sample_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Sample Id",
+          "type": "string"
+        },
+        "sampled_at": {
+          "format": "date-time",
+          "title": "Sampled At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sample_id",
+        "repository",
+        "pull_request_number",
+        "head_sha",
+        "openreviewer_commit_sha",
+        "provider",
+        "model",
+        "prompt_version",
+        "sampled_at",
+        "redacted_raw_output",
+        "raw_output_sha256",
+        "input_tokens",
+        "output_tokens",
+        "latency_ms",
+        "cost_usd"
+      ],
+      "title": "RealModelSample",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "dataset_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Dataset Id",
+      "type": "string"
+    },
+    "samples": {
+      "items": {
+        "$ref": "#/$defs/RealModelSample"
+      },
+      "maxItems": 1000,
+      "minItems": 1,
+      "title": "Samples",
+      "type": "array"
+    },
+    "schema_version": {
+      "default": 1,
+      "maximum": 1,
+      "minimum": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "samples"
+  ],
+  "title": "RealEvaluationDataset",
+  "type": "object"
+}

@@ -1,9 +1,10 @@
 """批量读取并规范化 GitHub PR、完整 diff 与 CI 上下文。"""
 
+import difflib
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import time
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -18,10 +19,10 @@ from domain.enums import (
     PullRequestState,
 )
 from domain.github import (
+    MAX_PATCH_BYTES,
     CiCheckSnapshot,
     CiSnapshot,
     GitHubReviewContext,
-    MAX_PATCH_BYTES,
     PullRequestFile,
     PullRequestSnapshot,
 )
@@ -44,6 +45,24 @@ class ReviewContextLoader(Protocol):
     ) -> GitHubReviewContext: ...
 
 
+def _required_str(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    return value
+
+
+def _optional_str(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _required_str(value, field_name)
+
+
+def _required_int(value: object, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{field_name} must be an integer")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class GitHubContextSettings:
     """限制一次 PR 上下文读取的页数、条数与单文件补丁大小。"""
@@ -52,6 +71,9 @@ class GitHubContextSettings:
     max_files: int = 3000
     max_checks: int = 1000
     max_patch_bytes: int = MAX_PATCH_BYTES
+    max_blob_fallback_files: int = 128
+    max_blob_bytes: int = 4 * 1024 * 1024
+    max_blob_fallback_total_bytes: int = 6 * 1024 * 1024
     max_load_seconds: float = 8 * 60
 
     def __post_init__(self) -> None:
@@ -65,6 +87,18 @@ class GitHubContextSettings:
             raise ValueError(
                 "GitHub per-file patch limit must be between 1 KiB and 8 MiB"
             )
+        if not 1 <= self.max_blob_fallback_files <= 128:
+            raise ValueError("GitHub Blob fallback file limit must be between 1 and 128")
+        if not 1024 <= self.max_blob_bytes <= MAX_PATCH_BYTES:
+            raise ValueError("GitHub Blob limit must be between 1 KiB and 8 MiB")
+        if not (
+            self.max_blob_bytes
+            <= self.max_blob_fallback_total_bytes
+            <= MAX_PATCH_BYTES
+        ):
+            raise ValueError(
+                "GitHub Blob fallback total limit must include one Blob and stay below 8 MiB"
+            )
         if not 30 <= self.max_load_seconds <= 30 * 60:
             raise ValueError("GitHub context time budget must be between 30 and 1800 seconds")
 
@@ -73,6 +107,30 @@ class GitHubContextSettings:
 class _DiffEntry:
     text: str | None
     binary: bool
+    too_large: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _BlobSpec:
+    alias: str
+    expression: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BlobMetadata:
+    oid: str
+    byte_size: int
+    is_binary: bool
+    text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _BlobDiffCandidate:
+    path: str
+    base_path: str
+    status: ChangedFileStatus
+    base_alias: str | None
+    head_alias: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,13 +204,22 @@ class GitHubReviewContextLoader:
                 token,
                 budget,
             )
-            diff_entries, raw_diff_complete = self._fetch_diff(
+            diff_entries, _raw_diff_complete = self._fetch_diff(
                 target,
                 token,
                 budget,
             )
+            fallback_entries = self._fetch_blob_fallbacks(
+                target,
+                pull_request,
+                raw_files,
+                diff_entries,
+                token,
+                budget,
+            )
+            diff_entries.update(fallback_entries)
             files, patches_complete = self._merge_files(raw_files, diff_entries)
-            diff_complete = raw_diff_complete and patches_complete
+            diff_complete = files_complete and patches_complete
 
         ci = self._fetch_ci(target, token, budget)
         return GitHubReviewContext(
@@ -299,6 +366,329 @@ class GitHubReviewContextLoader:
             return {}, False
         return entries, True
 
+    def _fetch_blob_fallbacks(
+        self,
+        target: ReviewTarget,
+        pull_request: PullRequestSnapshot,
+        raw_files: list[dict[str, object]],
+        diff_entries: dict[str, _DiffEntry],
+        token: str,
+        budget: _RequestBudget,
+    ) -> dict[str, _DiffEntry]:
+        """用固定最多两次 GraphQL 请求重建 REST 未提供的文本补丁。"""
+
+        candidates, specs = self._build_blob_candidates(
+            pull_request,
+            raw_files,
+            diff_entries,
+        )
+        if not specs:
+            return {}
+        try:
+            metadata_payload = self._fetch_blob_objects(
+                target,
+                specs,
+                token,
+                budget,
+                include_text=False,
+            )
+        except GitHubResponseTooLargeError:
+            return {}
+
+        metadata = {
+            spec.alias: self._parse_blob(metadata_payload[spec.alias], require_text=False)
+            for spec in specs
+        }
+        spec_by_alias = {spec.alias: spec for spec in specs}
+        entries: dict[str, _DiffEntry] = {}
+        content_candidates: list[_BlobDiffCandidate] = []
+        content_aliases: set[str] = set()
+        reserved_bytes = 0
+        for candidate in candidates:
+            aliases = tuple(
+                alias
+                for alias in (candidate.base_alias, candidate.head_alias)
+                if alias is not None
+            )
+            blobs = tuple(metadata[alias] for alias in aliases)
+            if any(blob is None for blob in blobs):
+                continue
+            available_blobs = tuple(blob for blob in blobs if blob is not None)
+            if any(blob.is_binary for blob in available_blobs):
+                entries[candidate.path] = _DiffEntry(text=None, binary=True)
+                continue
+            candidate_bytes = sum(blob.byte_size for blob in available_blobs)
+            if (
+                any(
+                    blob.byte_size > self._settings.max_blob_bytes
+                    for blob in available_blobs
+                )
+                or reserved_bytes + candidate_bytes
+                > self._settings.max_blob_fallback_total_bytes
+            ):
+                entries[candidate.path] = _DiffEntry(
+                    text=None,
+                    binary=False,
+                    too_large=True,
+                )
+                continue
+            reserved_bytes += candidate_bytes
+            content_candidates.append(candidate)
+            content_aliases.update(aliases)
+
+        if not content_aliases:
+            return entries
+        content_specs = tuple(
+            spec_by_alias[alias]
+            for alias in spec_by_alias
+            if alias in content_aliases
+        )
+        try:
+            content_payload = self._fetch_blob_objects(
+                target,
+                content_specs,
+                token,
+                budget,
+                include_text=True,
+            )
+        except GitHubResponseTooLargeError:
+            return entries
+        contents = {
+            spec.alias: self._parse_blob(content_payload[spec.alias], require_text=True)
+            for spec in content_specs
+        }
+        for candidate in content_candidates:
+            base_blob = (
+                contents.get(candidate.base_alias)
+                if candidate.base_alias is not None
+                else None
+            )
+            head_blob = (
+                contents.get(candidate.head_alias)
+                if candidate.head_alias is not None
+                else None
+            )
+            if (
+                candidate.base_alias is not None
+                and not self._same_blob(base_blob, metadata[candidate.base_alias])
+            ) or (
+                candidate.head_alias is not None
+                and not self._same_blob(head_blob, metadata[candidate.head_alias])
+            ):
+                continue
+            base_text = "" if base_blob is None else base_blob.text
+            head_text = "" if head_blob is None else head_blob.text
+            if base_text is None or head_text is None:
+                continue
+            entries[candidate.path] = _DiffEntry(
+                text=self._build_unified_diff(candidate, base_text, head_text),
+                binary=False,
+            )
+        return entries
+
+    def _build_blob_candidates(
+        self,
+        pull_request: PullRequestSnapshot,
+        raw_files: list[dict[str, object]],
+        diff_entries: dict[str, _DiffEntry],
+    ) -> tuple[tuple[_BlobDiffCandidate, ...], tuple[_BlobSpec, ...]]:
+        candidates: list[_BlobDiffCandidate] = []
+        specs: list[_BlobSpec] = []
+        for raw in raw_files:
+            if len(candidates) >= self._settings.max_blob_fallback_files:
+                break
+            path = raw.get("filename")
+            if not isinstance(path, str) or not self._needs_blob_fallback(
+                path,
+                raw.get("patch"),
+                diff_entries,
+            ):
+                continue
+            try:
+                status_value = raw.get("status")
+                if not isinstance(status_value, str):
+                    continue
+                status = ChangedFileStatus(status_value)
+            except (TypeError, ValueError):
+                continue
+            previous_path = raw.get("previous_filename")
+            if status is ChangedFileStatus.RENAMED:
+                if not isinstance(previous_path, str):
+                    continue
+                base_path = previous_path
+            else:
+                base_path = path
+            index = len(candidates)
+            base_alias = None
+            head_alias = None
+            if status is not ChangedFileStatus.ADDED:
+                base_alias = f"base{index}"
+                specs.append(
+                    _BlobSpec(
+                        alias=base_alias,
+                        expression=f"{pull_request.base_sha}:{base_path}",
+                    )
+                )
+            if status is not ChangedFileStatus.REMOVED:
+                head_alias = f"head{index}"
+                specs.append(
+                    _BlobSpec(
+                        alias=head_alias,
+                        expression=f"{pull_request.head_sha}:{path}",
+                    )
+                )
+            candidates.append(
+                _BlobDiffCandidate(
+                    path=path,
+                    base_path=base_path,
+                    status=status,
+                    base_alias=base_alias,
+                    head_alias=head_alias,
+                )
+            )
+        return tuple(candidates), tuple(specs)
+
+    def _needs_blob_fallback(
+        self,
+        path: str,
+        rest_patch: object,
+        diff_entries: dict[str, _DiffEntry],
+    ) -> bool:
+        entry = diff_entries.get(path)
+        if entry is not None and entry.binary:
+            return False
+        candidates = (
+            entry.text if entry is not None else None,
+            rest_patch,
+        )
+        return not any(
+            isinstance(candidate, str)
+            and bool(candidate)
+            and len(candidate.encode("utf-8")) <= self._settings.max_patch_bytes
+            for candidate in candidates
+        )
+
+    def _fetch_blob_objects(
+        self,
+        target: ReviewTarget,
+        specs: tuple[_BlobSpec, ...],
+        token: str,
+        budget: _RequestBudget,
+        *,
+        include_text: bool,
+    ) -> dict[str, object]:
+        owner, name = target.repository.split("/", 1)
+        variables: dict[str, str] = {"owner": owner, "name": name}
+        declarations = ["$owner: String!", "$name: String!"]
+        selections: list[str] = []
+        fields = "oid byteSize isBinary text" if include_text else "oid byteSize isBinary"
+        for index, spec in enumerate(specs):
+            variable = f"expression{index}"
+            declarations.append(f"${variable}: String!")
+            variables[variable] = spec.expression
+            selections.append(
+                f"{spec.alias}: object(expression: ${variable}) {{ "
+                f"__typename ... on Blob {{ {fields} }} }}"
+            )
+        query = (
+            f"query PullRequestBlobs({', '.join(declarations)}) {{ "
+            "repository(owner: $owner, name: $name) { "
+            "databaseId nameWithOwner "
+            f"{' '.join(selections)}"
+            " } }"
+        )
+        budget.ensure_available()
+        payload = self._api.request_json(
+            "POST",
+            "/graphql",
+            bearer_token=token,
+            json_body={"query": query, "variables": variables},
+        ).payload
+        if not isinstance(payload, dict) or payload.get("errors"):
+            raise self._invalid_response("GitHub GraphQL Blob 查询未完整成功")
+        data = payload.get("data")
+        repository = data.get("repository") if isinstance(data, dict) else None
+        if not isinstance(repository, dict):
+            raise self._invalid_response("GitHub GraphQL Blob 仓库响应格式无效")
+        if (
+            repository.get("databaseId") != target.repository_id
+            or repository.get("nameWithOwner") != target.repository
+        ):
+            raise self._invalid_response("GitHub GraphQL Blob 仓库身份与审查任务不一致")
+        if any(spec.alias not in repository for spec in specs):
+            raise self._invalid_response("GitHub GraphQL Blob 查询缺少请求字段")
+        return repository
+
+    @staticmethod
+    def _parse_blob(raw: object, *, require_text: bool) -> _BlobMetadata | None:
+        if not isinstance(raw, dict) or raw.get("__typename") != "Blob":
+            return None
+        oid = raw.get("oid")
+        byte_size = raw.get("byteSize")
+        is_binary = raw.get("isBinary")
+        text = raw.get("text") if require_text else None
+        if (
+            not isinstance(oid, str)
+            or len(oid) not in range(40, 65)
+            or any(character not in "0123456789abcdefABCDEF" for character in oid)
+            or not isinstance(byte_size, int)
+            or isinstance(byte_size, bool)
+            or byte_size < 0
+            or not isinstance(is_binary, bool)
+        ):
+            return None
+        if require_text:
+            if not isinstance(text, str) or len(text.encode("utf-8")) != byte_size:
+                return None
+        return _BlobMetadata(
+            oid=oid.lower(),
+            byte_size=byte_size,
+            is_binary=is_binary,
+            text=text,
+        )
+
+    @staticmethod
+    def _same_blob(
+        content: _BlobMetadata | None,
+        metadata: _BlobMetadata | None,
+    ) -> bool:
+        return (
+            content is not None
+            and metadata is not None
+            and content.oid == metadata.oid
+            and content.byte_size == metadata.byte_size
+            and content.is_binary == metadata.is_binary
+            and not content.is_binary
+        )
+
+    @staticmethod
+    def _build_unified_diff(
+        candidate: _BlobDiffCandidate,
+        base_text: str,
+        head_text: str,
+    ) -> str:
+        from_path = (
+            "/dev/null"
+            if candidate.status is ChangedFileStatus.ADDED
+            else f"a/{candidate.base_path}"
+        )
+        to_path = (
+            "/dev/null"
+            if candidate.status is ChangedFileStatus.REMOVED
+            else f"b/{candidate.path}"
+        )
+        prefix = f"diff --git a/{candidate.base_path} b/{candidate.path}\n"
+        if candidate.status is ChangedFileStatus.RENAMED:
+            prefix += f"rename from {candidate.base_path}\nrename to {candidate.path}\n"
+        body = difflib.unified_diff(
+            [f"{line}\n" for line in base_text.splitlines()],
+            [f"{line}\n" for line in head_text.splitlines()],
+            fromfile=from_path,
+            tofile=to_path,
+            lineterm="\n",
+        )
+        return prefix + "".join(body)
+
     def _merge_files(
         self,
         raw_files: list[dict[str, object]],
@@ -320,6 +710,10 @@ class GitHubReviewContextLoader:
                 if diff_entry is not None and diff_entry.binary:
                     patch_text = None
                     patch_state = PatchState.BINARY
+                elif diff_entry is not None and diff_entry.too_large:
+                    patch_text = None
+                    patch_state = PatchState.TOO_LARGE
+                    patches_complete = False
                 else:
                     candidate = (
                         diff_entry.text
@@ -340,12 +734,17 @@ class GitHubReviewContextLoader:
                 files.append(
                     PullRequestFile(
                         path=path,
-                        previous_path=raw.get("previous_filename"),
-                        status=ChangedFileStatus(raw["status"]),
-                        blob_sha=raw["sha"],
-                        additions=raw["additions"],
-                        deletions=raw["deletions"],
-                        changes=raw["changes"],
+                        previous_path=_optional_str(
+                            raw.get("previous_filename"),
+                            "previous_filename",
+                        ),
+                        status=ChangedFileStatus(
+                            _required_str(raw["status"], "status")
+                        ),
+                        blob_sha=_required_str(raw["sha"], "sha"),
+                        additions=_required_int(raw["additions"], "additions"),
+                        deletions=_required_int(raw["deletions"], "deletions"),
+                        changes=_required_int(raw["changes"], "changes"),
                         patch_state=patch_state,
                         patch=patch_text,
                     )
@@ -465,6 +864,7 @@ class GitHubReviewContextLoader:
         raw_count = 0
         page = 1
         complete = True
+        last_page_size = 0
         while raw_count < limit:
             payload = self._request_json(
                 f"/repos/{target.repository}/commits/{target.head_sha}/statuses",
@@ -474,6 +874,7 @@ class GitHubReviewContextLoader:
             )
             if not isinstance(payload, list):
                 raise self._invalid_response("GitHub Commit Status 响应格式无效")
+            last_page_size = len(payload)
             for raw in payload:
                 raw_count += 1
                 if raw_count > limit:
@@ -496,12 +897,12 @@ class GitHubReviewContextLoader:
                         )
                 except (KeyError, TypeError, ValueError, ValidationError) as exc:
                     raise self._invalid_response("GitHub Commit Status 格式无效") from exc
-            if len(payload) < self._settings.page_size or not complete:
+            if last_page_size < self._settings.page_size or not complete:
                 break
             page += 1
         if (
             raw_count >= limit
-            and len(payload) == self._settings.page_size
+            and last_page_size == self._settings.page_size
         ):
             complete = False
         return list(latest_by_context.values()), complete
@@ -562,7 +963,9 @@ class GitHubReviewContextLoader:
         if not complete:
             return CiState.UNKNOWN
         if not checks:
-            return CiState.UNKNOWN
+            # 空集合与“无法证明完整”是两种不同状态：前者表示仓库没有
+            # 配置 CI 门禁，后者仍需等待分页读取完成，避免无检查仓库白等一小时。
+            return CiState.NOT_CONFIGURED
         failing = {
             "action_required",
             "cancelled",

@@ -1,8 +1,15 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 
-from apps.worker.main import _agent_conclusion_payload, _workflow_result
+from apps.worker.main import (
+    _agent_conclusion_payload,
+    _LeaseCursor,
+    _model_budget_context,
+    _PersistentBatchedReviewer,
+    _workflow_result,
+)
 from domain.enums import (
     ExecutionStatus,
     ModelApiProtocol,
@@ -18,8 +25,13 @@ from domain.workflow import (
     next_automatic_stage,
     transition,
 )
-from services.agent_workflow import AgentExecution, FixedAgentWorkflow, WorkflowExecution
-from services.task_queue import TaskQueueError
+from services.agent_workflow import (
+    AgentExecution,
+    FixedAgentWorkflow,
+    WorkflowExecution,
+)
+from services.model_review import ModelServiceSettings
+from services.task_queue import ReviewTaskQueue, TaskQueueError
 from tests.unit.test_model_review import make_model_input
 
 
@@ -42,6 +54,22 @@ class StaticReviewer:
         if self.inputs is not None:
             self.inputs.append(review_input)
         return self.result
+
+    def close(self) -> None:
+        return None
+
+
+class MissingModelBudgetQueue:
+    """故意缺少模型预算接口，用来验证 Worker 的 fail-closed 契约。"""
+
+
+class RecordingReviewer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def review(self, _review_input):
+        self.calls += 1
+        raise AssertionError("预算接口缺失时不应调用模型")
 
     def close(self) -> None:
         return None
@@ -83,6 +111,39 @@ def model_result(
             else ModelReviewOutput(findings=())
         ),
     )
+
+
+def test_model_budget_context_rejects_queue_without_budget_methods() -> None:
+    with pytest.raises(TaskQueueError, match="未实现模型预算接口"):
+        _model_budget_context(
+            cast(ReviewTaskQueue, MissingModelBudgetQueue()),
+            cast(_LeaseCursor, object()),
+            "default",
+        )
+
+
+def test_empty_batch_path_does_not_bypass_model_budget_contract() -> None:
+    reviewer = RecordingReviewer()
+    wrapped = _PersistentBatchedReviewer(
+        cast(ReviewTaskQueue, MissingModelBudgetQueue()),
+        cast(_LeaseCursor, object()),
+        ReviewAgent.SECURITY,
+        reviewer,
+        ModelServiceSettings(
+            provider=ModelProvider.OPENAI,
+            model="test-model",
+            api_key="test-key",
+        ),
+        timedelta(minutes=10),
+    )
+    empty_input = make_model_input().model_copy(
+        update={"units": (), "total_estimated_input_bytes": 0}
+    )
+
+    with pytest.raises(TaskQueueError, match="未实现模型预算接口"):
+        wrapped.review(empty_input)
+
+    assert reviewer.calls == 0
 
 
 def test_fixed_dag_automatic_edges() -> None:

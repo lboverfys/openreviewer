@@ -1,13 +1,12 @@
 """错误、日志和持久化详情共用的安全基础组件。"""
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from enum import Enum
 import logging
 import re
 import traceback
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
-
 
 REDACTED = "<redacted>"
 TRUNCATED = "<truncated>"
@@ -18,7 +17,7 @@ _MAX_REDACTED_TEXT_LENGTH = 4000
 _MAX_REDACTED_KEY_LENGTH = 200
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """向运维人员和 API 暴露的稳定机器可读错误码。"""
 
     WORKER_UNEXPECTED_ERROR = "worker_unexpected_error"
@@ -56,6 +55,7 @@ class ErrorCode(str, Enum):
     MODEL_REVIEW_INPUT_INVALID = "model_review_input_invalid"
     MODEL_REVIEW_CONFLICT = "model_review_conflict"
     MODEL_BATCH_BUSY = "model_batch_busy"
+    MODEL_BUDGET_EXCEEDED = "model_budget_exceeded"
 
 
 _SENSITIVE_KEYS = {

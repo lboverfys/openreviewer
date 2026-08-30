@@ -1,9 +1,9 @@
 """审查契约共享的稳定枚举值。"""
 
-from enum import Enum
+from enum import StrEnum
 
 
-class PullRequestAction(str, Enum):
+class PullRequestAction(StrEnum):
     """可以启动或刷新审查的 GitHub Pull Request 动作。"""
 
     OPENED = "opened"
@@ -12,14 +12,14 @@ class PullRequestAction(str, Enum):
     READY_FOR_REVIEW = "ready_for_review"
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
 
 
-class FindingCategory(str, Enum):
+class FindingCategory(StrEnum):
     ARCHITECTURE = "architecture"
     AUTHORIZATION = "authorization"
     SECURITY = "security"
@@ -29,20 +29,22 @@ class FindingCategory(str, Enum):
     RELIABILITY = "reliability"
 
 
-class VerificationStatus(str, Enum):
+class VerificationStatus(StrEnum):
+    """平台对 Finding 定位是否可由当前 Diff 证明的机器校验结果。"""
+
     UNVERIFIED = "unverified"
     VERIFIED = "verified"
     REJECTED = "rejected"
 
 
-class ModelProvider(str, Enum):
+class ModelProvider(StrEnum):
     """模型调用适配器支持的供应商。"""
 
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
 
 
-class ModelApiProtocol(str, Enum):
+class ModelApiProtocol(StrEnum):
     """供应商调用使用的稳定 HTTP API 协议。"""
 
     RESPONSES = "responses"
@@ -50,14 +52,14 @@ class ModelApiProtocol(str, Enum):
     MESSAGES = "messages"
 
 
-class ModelCallStatus(str, Enum):
+class ModelCallStatus(StrEnum):
     """一次模型阶段完成记录的状态。"""
 
     SUCCEEDED = "succeeded"
     SKIPPED = "skipped"
 
 
-class ModelBatchStatus(str, Enum):
+class ModelBatchStatus(StrEnum):
     """持久化模型批次的恢复状态。"""
 
     PENDING = "pending"
@@ -66,7 +68,7 @@ class ModelBatchStatus(str, Enum):
     FAILED = "failed"
 
 
-class ReviewAgent(str, Enum):
+class ReviewAgent(StrEnum):
     """固定 DAG 中的四个模型节点。"""
 
     SECURITY = "security"
@@ -75,7 +77,7 @@ class ReviewAgent(str, Enum):
     SUMMARY = "summary"
 
 
-class ModelReviewVerdict(str, Enum):
+class ModelReviewVerdict(StrEnum):
     """模型对当前可见审查范围给出的有界结论。"""
 
     ISSUES_FOUND = "issues_found"
@@ -83,7 +85,7 @@ class ModelReviewVerdict(str, Enum):
     INSUFFICIENT_CONTEXT = "insufficient_context"
 
 
-class ModelReasoningEffort(str, Enum):
+class ModelReasoningEffort(StrEnum):
     """模型推理强度；``none`` 表示不发送可选推理参数。"""
 
     NONE = "none"
@@ -93,7 +95,7 @@ class ModelReasoningEffort(str, Enum):
     MAX = "max"
 
 
-class ExecutionStatus(str, Enum):
+class ExecutionStatus(StrEnum):
     QUEUED = "queued"
     CI = "ci"
     PLANNING = "planning"
@@ -115,7 +117,7 @@ class ExecutionStatus(str, Enum):
     SUPERSEDED = "superseded"
 
 
-class WorkerStatus(str, Enum):
+class WorkerStatus(StrEnum):
     """队列 Worker 进程使用的精简可观察生命周期。"""
 
     STARTING = "starting"
@@ -124,7 +126,7 @@ class WorkerStatus(str, Enum):
     STOPPING = "stopping"
 
 
-class ExternalActionState(str, Enum):
+class ExternalActionState(StrEnum):
     """一次幂等外部副作用使用的持久化生命周期。"""
 
     PENDING = "pending"
@@ -133,7 +135,67 @@ class ExternalActionState(str, Enum):
     FAILED = "failed"
 
 
-class ReviewConclusion(str, Enum):
+class FindingLifecycleState(StrEnum):
+    """同一 PR 中稳定 Finding 指纹的跨提交状态。"""
+
+    PRESENT = "present"
+    FIXED = "fixed"
+
+
+class FindingOccurrenceStatus(StrEnum):
+    """某一轮审查中 Finding 相对历史提交的出现方式。"""
+
+    NEW = "new"
+    STILL_PRESENT = "still_present"
+    REINTRODUCED = "reintroduced"
+
+
+class FindingEvaluationVerdict(StrEnum):
+    """人工裁决转换成的真实评测标签。"""
+
+    VALID = "valid"
+    FALSE_POSITIVE = "false_positive"
+    DUPLICATE = "duplicate"
+    OUT_OF_SCOPE = "out_of_scope"
+    KNOWN_ISSUE = "known_issue"
+
+
+class FindingAdjudicationStatus(StrEnum):
+    """人工对 Finding 的独立裁决，不与机器定位校验混用。"""
+
+    UNREVIEWED = "unreviewed"
+    VALID = FindingEvaluationVerdict.VALID.value
+    FALSE_POSITIVE = FindingEvaluationVerdict.FALSE_POSITIVE.value
+    DUPLICATE = FindingEvaluationVerdict.DUPLICATE.value
+    OUT_OF_SCOPE = FindingEvaluationVerdict.OUT_OF_SCOPE.value
+    KNOWN_ISSUE = FindingEvaluationVerdict.KNOWN_ISSUE.value
+
+
+class EvidenceVerificationStatus(StrEnum):
+    """平台回读源码后得到的自动证据核验状态，不代表人工事实裁决。"""
+
+    UNVERIFIED = "unverified"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+    NOT_APPLICABLE = "not_applicable"
+
+
+def evidence_verification_status_for(
+    adjudication_status: FindingAdjudicationStatus | str,
+) -> EvidenceVerificationStatus:
+    """兼容旧评测标签映射；生产流程不会用它覆盖自动源码核验结果。"""
+
+    adjudication = FindingAdjudicationStatus(adjudication_status)
+    if adjudication is FindingAdjudicationStatus.VALID:
+        return EvidenceVerificationStatus.VERIFIED
+    if adjudication is FindingAdjudicationStatus.FALSE_POSITIVE:
+        return EvidenceVerificationStatus.REJECTED
+    if adjudication is FindingAdjudicationStatus.UNREVIEWED:
+        return EvidenceVerificationStatus.UNVERIFIED
+    return EvidenceVerificationStatus.NOT_APPLICABLE
+
+
+class ReviewConclusion(StrEnum):
     NO_CONFIRMED_FINDINGS = "no_confirmed_findings"
     FINDINGS_PRESENT = "findings_present"
     NEEDS_HUMAN = "needs_human"
@@ -141,14 +203,14 @@ class ReviewConclusion(str, Enum):
     NOT_APPLICABLE = "not_applicable"
 
 
-class CoverageStatus(str, Enum):
+class CoverageStatus(StrEnum):
     COMPLETE = "complete"
     PARTIAL = "partial"
     UNKNOWN = "unknown"
     STALE = "stale"
 
 
-class FileDisposition(str, Enum):
+class FileDisposition(StrEnum):
     MODEL_REVIEWED = "model_reviewed"
     DETERMINISTIC_ONLY = "deterministic_only"
     GENERATED = "generated"
@@ -157,7 +219,7 @@ class FileDisposition(str, Enum):
     OMITTED_BY_LIMIT = "omitted_by_limit"
 
 
-class ReviewFileDecision(str, Enum):
+class ReviewFileDecision(StrEnum):
     """模型调用前，规划器为每个 changed file 给出的明确去向。"""
 
     PLANNED = "planned"
@@ -170,7 +232,7 @@ class ReviewFileDecision(str, Enum):
     OMITTED_BY_BUDGET = "omitted_by_budget"
 
 
-class RepositoryRuleIssueKind(str, Enum):
+class RepositoryRuleIssueKind(StrEnum):
     """AGENTS.md 批量读取不能完整用于某些文件的确定性原因。"""
 
     CANDIDATE_LIMIT = "candidate_limit"
@@ -182,19 +244,19 @@ class RepositoryRuleIssueKind(str, Enum):
     TOTAL_LIMIT = "total_limit"
 
 
-class LocationSide(str, Enum):
+class LocationSide(StrEnum):
     LEFT = "left"
     RIGHT = "right"
 
 
-class PullRequestState(str, Enum):
+class PullRequestState(StrEnum):
     """GitHub Pull Request 当前是否仍可继续审查。"""
 
     OPEN = "open"
     CLOSED = "closed"
 
 
-class ChangedFileStatus(str, Enum):
+class ChangedFileStatus(StrEnum):
     """GitHub changed files 接口返回的稳定文件状态。"""
 
     ADDED = "added"
@@ -206,7 +268,7 @@ class ChangedFileStatus(str, Enum):
     UNCHANGED = "unchanged"
 
 
-class PatchState(str, Enum):
+class PatchState(StrEnum):
     """一个变更文件的补丁是否可供后续审查。"""
 
     AVAILABLE = "available"
@@ -215,16 +277,17 @@ class PatchState(str, Enum):
     TOO_LARGE = "too_large"
 
 
-class CiState(str, Enum):
+class CiState(StrEnum):
     """与某个精确 head SHA 绑定的 CI 汇总状态。"""
 
+    NOT_CONFIGURED = "not_configured"
     UNKNOWN = "unknown"
     PENDING = "pending"
     SUCCESS = "success"
     FAILURE = "failure"
 
 
-class CiCheckKind(str, Enum):
+class CiCheckKind(StrEnum):
     """组成 CI 汇总结果的 GitHub 状态来源。"""
 
     CHECK_RUN = "check_run"

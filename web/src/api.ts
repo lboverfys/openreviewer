@@ -7,9 +7,11 @@ import type {
   AiSettings,
   ConfigurationAuditList,
   DashboardSnapshot,
+  ReviewListPage,
   FindingDecision,
   ReviewAccepted,
   ReviewAction,
+  ReviewChangeToken,
   ReviewDetails,
   ReviewRequest,
   ReviewPolicyUpdate,
@@ -36,7 +38,21 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export class ApiTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`请求超过 ${Math.ceil(timeoutMs / 1000)} 秒仍未完成`);
+    this.name = "ApiTimeoutError";
+  }
+}
+
+const DEFAULT_API_TIMEOUT_MS = 30_000;
+const CONNECTION_TEST_TIMEOUT_MS = 210_000;
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = DEFAULT_API_TIMEOUT_MS,
+): Promise<T> {
   /**
    * 统一发送同源 API 请求并把后端错误转换成 ApiError。
    *
@@ -60,15 +76,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
    * API 层不会把 Token 读取到 JavaScript 或 `localStorage`。登录页的“记住账号密码”
    * 由独立的凭据适配层交给浏览器密码库处理，不改变这里的会话传输边界。
    */
-  const response = await fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-  });
+  const controller = new AbortController();
+  const callerSignal = init?.signal;
+  let timedOut = false;
+  const relayAbort = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) relayAbort();
+  else callerSignal?.addEventListener("abort", relayAbort, { once: true });
+  const timeout = globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      signal: controller.signal,
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
+    });
+  } catch (error) {
+    if (timedOut) throw new ApiTimeoutError(timeoutMs);
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", relayAbort);
+  }
 
   if (!response.ok) {
     let message = `请求失败（HTTP ${response.status}）`;
@@ -96,7 +133,8 @@ export const api = {
    * 返回用户名和会话到期时间；未登录、过期或签名无效时抛出状态码为 401 的
    * `ApiError`，由根组件切换到登录页。请求没有副作用，也不会刷新会话期限。
    */
-  me: () => request<AuthUser>("/api/v1/auth/me"),
+  me: (signal?: AbortSignal) =>
+    request<AuthUser>("/api/v1/auth/me", { signal }),
   /**
    * 提交管理员凭据并接收服务端设置的 HttpOnly 会话 Cookie。
    *
@@ -129,7 +167,22 @@ export const api = {
    * 首屏加载和用户点击“立即刷新”都会调用它；返回状态计数、Worker 心跳和最近
    * 任务。数据库暂时不可用时抛出 `ApiError(503)`，不会伪造空快照覆盖旧数据。
    */
-  dashboard: () => request<DashboardSnapshot>("/api/v1/dashboard"),
+  dashboard: (cursor?: string, limit = 50, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set("cursor", cursor);
+    return request<DashboardSnapshot>(`/api/v1/dashboard?${query.toString()}`, {
+      signal,
+    });
+  },
+  reviews: (cursor: string, limit = 50, signal?: AbortSignal) => {
+    const query = new URLSearchParams({
+      cursor,
+      limit: String(limit),
+    });
+    return request<ReviewListPage>(`/api/v1/reviews?${query.toString()}`, {
+      signal,
+    });
+  },
   /**
    * 创建一个幂等的审查任务。
    *
@@ -146,8 +199,24 @@ export const api = {
       headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(payload),
     }),
-  reviewDetails: (reviewRunId: string) =>
-    request<ReviewDetails>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}`),
+  reviewDetails: (
+    reviewRunId: string,
+    findingCursor?: string,
+    findingLimit = 50,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({ finding_limit: String(findingLimit) });
+    if (findingCursor) query.set("finding_cursor", findingCursor);
+    return request<ReviewDetails>(
+      `/api/v1/reviews/${encodeURIComponent(reviewRunId)}?${query.toString()}`,
+      { signal },
+    );
+  },
+  reviewChangeToken: (reviewRunId: string, signal?: AbortSignal) =>
+    request<ReviewChangeToken>(
+      `/api/v1/reviews/${encodeURIComponent(reviewRunId)}/change-token`,
+      { signal },
+    ),
   syncReviewIdentity: (reviewRunId: string, idempotencyKey: string) =>
     request<ReviewDetails>(
       `/api/v1/reviews/${encodeURIComponent(reviewRunId)}/identity/sync`,
@@ -187,17 +256,22 @@ export const api = {
         body: JSON.stringify({ decision }),
       },
     ),
-  aiSettings: () => request<AiSettings>("/api/v1/settings/ai"),
+  aiSettings: (signal?: AbortSignal) =>
+    request<AiSettings>("/api/v1/settings/ai", { signal }),
   updateAiProvider: (provider: AiProvider, payload: AiProviderUpdate) =>
     request<AiSettings>(`/api/v1/settings/ai/providers/${provider}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
   testAiProvider: (provider: AiProvider, expectedRevision: number) =>
-    request<AiSettings>(`/api/v1/settings/ai/providers/${provider}/test`, {
-      method: "POST",
-      body: JSON.stringify({ expected_revision: expectedRevision }),
-    }),
+    request<AiSettings>(
+      `/api/v1/settings/ai/providers/${provider}/test`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+      CONNECTION_TEST_TIMEOUT_MS,
+    ),
   activateAiProvider: (provider: AiProvider, expectedRevision: number) =>
     request<AiSettings>(
       `/api/v1/settings/ai/providers/${provider}/activate`,
@@ -211,19 +285,26 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
-  configurationAudits: () =>
-    request<ConfigurationAuditList>("/api/v1/settings/audits?limit=20"),
-  agentSettings: () => request<AiAgentSettingsResponse>("/api/v1/settings/ai/agents"),
+  configurationAudits: (signal?: AbortSignal) =>
+    request<ConfigurationAuditList>("/api/v1/settings/audits?limit=20", {
+      signal,
+    }),
+  agentSettings: (signal?: AbortSignal) =>
+    request<AiAgentSettingsResponse>("/api/v1/settings/ai/agents", { signal }),
   updateAgent: (agent: ReviewAgent, payload: Record<string, unknown>) =>
     request<AiAgentSettingsResponse>(`/api/v1/settings/ai/agents/${agent}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
   testAgent: (agent: ReviewAgent, expectedRevision: number) =>
-    request<AiAgentSettingsResponse>(`/api/v1/settings/ai/agents/${agent}/test`, {
-      method: "POST",
-      body: JSON.stringify({ expected_revision: expectedRevision }),
-    }),
+    request<AiAgentSettingsResponse>(
+      `/api/v1/settings/ai/agents/${agent}/test`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+      CONNECTION_TEST_TIMEOUT_MS,
+    ),
   setAgentEnabled: (agent: ReviewAgent, enabled: boolean, expectedRevision: number) =>
     request<AiAgentSettingsResponse>(`/api/v1/settings/ai/agents/${agent}/enabled`, {
       method: "POST",
@@ -233,13 +314,15 @@ export const api = {
     request<KnowledgeSearchResult>(
       `/api/v1/knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}`,
     ),
-  knowledgeDocuments: (includeArchived = false) =>
+  knowledgeDocuments: (includeArchived = false, signal?: AbortSignal) =>
     request<KnowledgeLibrary>(
       `/api/v1/knowledge/documents?include_archived=${includeArchived ? "true" : "false"}&limit=128`,
+      { signal },
     ),
-  knowledgeDocument: (documentId: string) =>
+  knowledgeDocument: (documentId: string, signal?: AbortSignal) =>
     request<KnowledgeDocument>(
       `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}`,
+      { signal },
     ),
   createKnowledgeDocument: (payload: {
     expected_revision: number;

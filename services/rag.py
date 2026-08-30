@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import math
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
-import re
 from threading import RLock
-from typing import Callable, Iterable
 from uuid import uuid4
 
 from sqlalchemy import and_, func, select
@@ -20,7 +21,6 @@ from persistence.models import (
     KnowledgeDocumentVersionRecord,
     KnowledgeLibraryRecord,
 )
-
 
 _TOKEN = re.compile(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}")
 _CJK_RUN = re.compile(r"^[\u4e00-\u9fff]+$")
@@ -42,6 +42,28 @@ class RagCitation:
     score: float
     excerpt: str
     version: str
+
+
+@dataclass(frozen=True, slots=True)
+class RagEvaluationCase:
+    """一条离线检索评测样本。
+
+    ``relevant_sources`` 使用知识文档的规范相对路径；同一文档的多个分片
+    只计作一次命中，避免长文档因为分片数量较多而人为抬高分数。
+    """
+
+    query: str
+    relevant_sources: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class RagEvaluationReport:
+    """固定评测集的 Recall@K、MRR 和样本数。"""
+
+    sample_count: int
+    recall_at_k: float
+    mean_reciprocal_rank: float
+    k: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +156,12 @@ class MarkdownKnowledgeBase:
         self.max_file_bytes = max_file_bytes
         self.max_total_bytes = max_total_bytes
         self._chunks_cache: tuple[KnowledgeChunk, ...] | None = None
+        self._indexed_chunks: tuple[KnowledgeChunk, ...] | None = None
+        self._chunk_tokens: tuple[frozenset[str], ...] = ()
+        self._chunk_token_counts: tuple[dict[str, int], ...] = ()
+        self._token_index: dict[str, frozenset[int]] = {}
+        self._token_document_frequency: dict[str, int] = {}
+        self._search_index_lock = RLock()
         if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes < max_file_bytes:
             raise ValueError("知识库边界无效")
 
@@ -141,8 +169,9 @@ class MarkdownKnowledgeBase:
         if self._chunks_cache is not None:
             return self._chunks_cache
         if not self.root.exists():
-            self._chunks_cache = ()
-            return self._chunks_cache
+            empty_chunks: tuple[KnowledgeChunk, ...] = ()
+            self._replace_chunks_cache(empty_chunks)
+            return empty_chunks
         paths = sorted(
             path
             for path in self.root.rglob("*.md")
@@ -162,8 +191,49 @@ class MarkdownKnowledgeBase:
             relative = path.relative_to(self.root).as_posix()
             version = sha256(text.encode("utf-8")).hexdigest()[:16]
             chunks.extend(_split_markdown(relative, text, version))
-        self._chunks_cache = tuple(chunks)
-        return self._chunks_cache
+        loaded_chunks = tuple(chunks)
+        self._replace_chunks_cache(loaded_chunks)
+        return loaded_chunks
+
+    def _replace_chunks_cache(self, chunks: tuple[KnowledgeChunk, ...]) -> None:
+        """替换不可变 chunk 快照，并使对应的倒排索引失效。"""
+
+        self._chunks_cache = chunks
+        with self._search_index_lock:
+            self._indexed_chunks = None
+            self._chunk_tokens = ()
+            self._chunk_token_counts = ()
+            self._token_index = {}
+            self._token_document_frequency = {}
+
+    def _search_index_for(
+        self,
+        chunks: tuple[KnowledgeChunk, ...],
+    ) -> tuple[tuple[frozenset[str], ...], dict[str, frozenset[int]]]:
+        """为一个 immutable chunk 快照建立可复用的 token 集合和倒排索引。"""
+
+        with self._search_index_lock:
+            if self._indexed_chunks is chunks:
+                return self._chunk_tokens, self._token_index
+            token_counts = tuple(
+                _token_counts(f"{chunk.source} {chunk.heading} {chunk.content}")
+                for chunk in chunks
+            )
+            chunk_tokens = tuple(frozenset(counts) for counts in token_counts)
+            inverted: dict[str, set[int]] = {}
+            for index, tokens in enumerate(chunk_tokens):
+                for token in tokens:
+                    inverted.setdefault(token, set()).add(index)
+            self._indexed_chunks = chunks
+            self._chunk_tokens = chunk_tokens
+            self._chunk_token_counts = token_counts
+            self._token_index = {
+                token: frozenset(indices) for token, indices in inverted.items()
+            }
+            self._token_document_frequency = {
+                token: len(indices) for token, indices in self._token_index.items()
+            }
+            return self._chunk_tokens, self._token_index
 
     def search(
         self,
@@ -180,17 +250,50 @@ class MarkdownKnowledgeBase:
         query_tokens = set(_tokens(normalized))
         if not query_tokens:
             return ()
+        selected_chunks = self.chunks() if chunks is None else chunks
+        chunk_tokens, token_index = self._search_index_for(selected_chunks)
+        token_counts = self._chunk_token_counts
+        document_frequency = self._token_document_frequency
+        document_count = max(1, len(selected_chunks))
+        candidate_indices: set[int] = set()
+        for token in query_tokens:
+            candidate_indices.update(token_index.get(token, ()))
         scored: list[tuple[float, KnowledgeChunk]] = []
-        for chunk in self.chunks() if chunks is None else chunks:
-            tokens = set(
-                _tokens(f"{chunk.source} {chunk.heading} {chunk.content}")
-            )
-            overlap = len(query_tokens & tokens)
-            if overlap == 0:
+        for index in sorted(candidate_indices):
+            chunk = selected_chunks[index]
+            tokens = chunk_tokens[index]
+            matched_tokens = query_tokens & tokens
+            if not matched_tokens:
                 continue
-            score = overlap / max(1, len(query_tokens))
+            counts = token_counts[index] if index < len(token_counts) else {}
+            document_length = max(1, sum(counts.values()))
+            # BM25 的有界词法得分：相比简单 overlap，能降低高频通用词的影响，
+            # 同时让同一术语在正文中多次出现的分片更靠前。
+            average_length = max(
+                1.0,
+                sum(sum(item.values()) for item in token_counts)
+                / max(1, len(token_counts)),
+            )
+            score = 0.0
+            for token in matched_tokens:
+                frequency = counts.get(token, 0)
+                if frequency <= 0:
+                    continue
+                term_document_frequency = document_frequency.get(token, 0)
+                inverse_frequency = math.log(
+                    1.0
+                    + (document_count - term_document_frequency + 0.5)
+                    / (term_document_frequency + 0.5)
+                )
+                denominator = frequency + 1.5 * (
+                    0.25 + 0.75 * document_length / average_length
+                )
+                score += inverse_frequency * frequency * 2.5 / denominator
+            score /= max(1, len(query_tokens))
             if normalized.casefold() in chunk.content.casefold():
-                score += 0.25
+                score += 0.35
+            if normalized.casefold() in chunk.heading.casefold():
+                score += 0.15
             scored.append((score, chunk))
         scored.sort(key=lambda item: (-item[0], item[1].source, item[1].heading))
         return tuple(
@@ -202,6 +305,46 @@ class MarkdownKnowledgeBase:
                 version=chunk.version,
             )
             for score, chunk in scored[:limit]
+        )
+
+    def evaluate(
+        self,
+        cases: Iterable[RagEvaluationCase],
+        *,
+        k: int = 5,
+    ) -> RagEvaluationReport:
+        """在固定查询集上计算 Recall@K 与 MRR，不产生网络或数据库副作用。"""
+
+        if not 1 <= k <= 20:
+            raise ValueError("RAG evaluation k must be between 1 and 20")
+        materialized = tuple(cases)
+        if not materialized:
+            return RagEvaluationReport(0, 0.0, 0.0, k)
+        recalled = 0
+        reciprocal_rank_total = 0.0
+        for case in materialized:
+            relevant = {source.casefold() for source in case.relevant_sources}
+            if not relevant:
+                continue
+            citations = self.search(case.query, limit=k)
+            ranked_sources = [citation.source.casefold() for citation in citations]
+            first_rank = next(
+                (
+                    rank
+                    for rank, source in enumerate(ranked_sources, start=1)
+                    if source in relevant
+                ),
+                None,
+            )
+            if first_rank is not None:
+                recalled += 1
+                reciprocal_rank_total += 1.0 / first_rank
+        count = len(materialized)
+        return RagEvaluationReport(
+            sample_count=count,
+            recall_at_k=round(recalled / count, 8),
+            mean_reciprocal_rank=round(reciprocal_rank_total / count, 8),
+            k=k,
         )
 
 
@@ -286,9 +429,10 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                         row.content_sha256[:16],
                     )
                 )
-            self._chunks_cache = tuple(chunks)
+            loaded_chunks = tuple(chunks)
+            self._replace_chunks_cache(loaded_chunks)
             self._cache_revision = revision
-            return self._chunks_cache
+            return loaded_chunks
 
     def list_documents(
         self,
@@ -634,10 +778,10 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         )
 
     def _ensure_seeded(self) -> None:
-        if self._seed_checked:
+        if self._seed_is_checked():
             return
         with self._cache_lock:
-            if self._seed_checked:
+            if self._seed_is_checked():
                 return
             now = self._clock()
             try:
@@ -682,6 +826,11 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                 raise KnowledgeConflictError("知识库初始化发生并发冲突") from exc
             except SQLAlchemyError as exc:
                 raise KnowledgePersistenceError("知识库暂时无法初始化") from exc
+
+    def _seed_is_checked(self) -> bool:
+        """在线程锁两侧读取标记，保留双重检查的并发语义。"""
+
+        return self._seed_checked
 
     def _lock_state(
         self,
@@ -921,29 +1070,111 @@ def _document_view(
 
 
 def _split_markdown(source: str, text: str, version: str) -> Iterable[KnowledgeChunk]:
+    """按标题、段落和代码围栏切分 Markdown，确保长章节不会被截断。"""
+
     heading = source
-    buffer: list[str] = []
+    section_lines: list[str] = []
+    in_fence = False
     for line in text.splitlines():
-        if line.startswith("#"):
-            if buffer:
-                content = "\n".join(buffer).strip()
-                if content:
-                    yield _chunk(source, heading, content, version)
-                buffer = []
+        is_heading = bool(re.match(r"^#{1,6}(?:\s|$)", line)) and not in_fence
+        if is_heading:
+            yield from _section_chunks(source, heading, section_lines, version)
+            section_lines = []
             heading = line.lstrip("#").strip() or source
-        else:
-            buffer.append(line)
-    if buffer:
-        content = "\n".join(buffer).strip()
-        if content:
-            yield _chunk(source, heading, content, version)
+            continue
+        section_lines.append(line)
+        if line.lstrip().startswith("```") or line.lstrip().startswith("~~~"):
+            in_fence = not in_fence
+    yield from _section_chunks(source, heading, section_lines, version)
+
+
+_MAX_CHUNK_CHARACTERS = 20_000
+_CHUNK_OVERLAP_CHARACTERS = 240
+
+
+def _section_chunks(
+    source: str,
+    heading: str,
+    lines: list[str],
+    version: str,
+) -> Iterable[KnowledgeChunk]:
+    content = "\n".join(lines).strip()
+    if not content:
+        return
+    blocks = _markdown_blocks(content)
+    current: list[str] = []
+    current_length = 0
+    for block in blocks:
+        block_length = len(block)
+        if current and current_length + 2 + block_length > _MAX_CHUNK_CHARACTERS:
+            chunk_content = "\n\n".join(current).strip()
+            if chunk_content:
+                yield _chunk(source, heading, chunk_content, version)
+            overlap = chunk_content[-_CHUNK_OVERLAP_CHARACTERS:]
+            if overlap and len(overlap) + 2 + block_length <= _MAX_CHUNK_CHARACTERS:
+                current = [overlap, block]
+            else:
+                current = [block]
+            current_length = sum(len(item) for item in current) + max(0, len(current) - 1) * 2
+            continue
+        if block_length > _MAX_CHUNK_CHARACTERS:
+            if current:
+                yield _chunk(source, heading, "\n\n".join(current), version)
+                current = []
+                current_length = 0
+            for fragment in _hard_split_text(block, _MAX_CHUNK_CHARACTERS):
+                yield _chunk(source, heading, fragment, version)
+            continue
+        current.append(block)
+        current_length += block_length + (2 if len(current) > 1 else 0)
+    if current:
+        yield _chunk(source, heading, "\n\n".join(current), version)
+
+
+def _markdown_blocks(content: str) -> tuple[str, ...]:
+    """按空行切块，但不拆开 fenced code block。"""
+
+    lines = content.splitlines()
+    blocks: list[str] = []
+    current: list[str] = []
+    in_fence = False
+    for line in lines:
+        stripped = line.lstrip()
+        fence = stripped.startswith("```") or stripped.startswith("~~~")
+        if not in_fence and not line.strip() and current:
+            blocks.append("\n".join(current).strip())
+            current = []
+            continue
+        current.append(line)
+        if fence:
+            in_fence = not in_fence
+    if current:
+        blocks.append("\n".join(current).strip())
+    return tuple(block for block in blocks if block)
+
+
+def _hard_split_text(value: str, limit: int) -> tuple[str, ...]:
+    if limit <= 0:
+        raise ValueError("text split limit must be positive")
+    fragments: list[str] = []
+    remaining = value
+    while remaining:
+        if len(remaining) <= limit:
+            fragments.append(remaining)
+            break
+        cut = remaining.rfind("\n", 0, limit + 1)
+        if cut < max(1, limit // 2):
+            cut = limit
+        fragments.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    return tuple(fragment for fragment in fragments if fragment)
 
 
 def _chunk(source: str, heading: str, content: str, version: str) -> KnowledgeChunk:
     return KnowledgeChunk(
         source=source,
         heading=heading,
-        content=content[:20_000],
+        content=content,
         content_sha256=sha256(content.encode("utf-8")).hexdigest(),
         version=version,
     )
@@ -962,6 +1193,13 @@ def _tokens(value: str) -> tuple[str, ...]:
                 for index in range(len(item) - 1)
             )
     return tuple(tokens)
+
+
+def _token_counts(value: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for token in _tokens(value):
+        counts[token] = counts.get(token, 0) + 1
+    return counts
 
 
 def _excerpt(value: str, limit: int = 360) -> str:

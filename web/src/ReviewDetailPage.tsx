@@ -1,12 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError } from "./api";
+import { allowedReviewActions, hasPermission, roleLabels } from "./rbac";
+import FindingCard from "./ReviewFindingCard";
+import {
+  DetailIcon,
+  ModelBatchPanel,
+  StageTimeline,
+} from "./ReviewProgressPanels";
+import {
+  actionKey,
+  agentDefinitions,
+  agentProgress,
+  appendFindingPage,
+  applyRefreshedFindingPage,
+  branchLabel,
+  eventDetail,
+  formatBytes,
+  formatDuration,
+  isErrorEvent,
+  latestBatchPlanEvent,
+  latestEvent,
+  payloadNumber,
+  payloadString,
+  reasoningEffortLabels,
+  retryDetail,
+  verdictLabels,
+  workflowReadout,
+} from "./review-details";
 import type {
   AuthUser,
   FindingDecision,
   ReviewAction,
   ReviewDetails,
-  ReviewEvent,
   ReviewFinding,
 } from "./types";
 import {
@@ -16,6 +42,7 @@ import {
   shortSha,
   stageLabels,
 } from "./utils";
+import { useReviewAutoRefresh } from "./useReviewAutoRefresh";
 
 interface ReviewDetailPageProps {
   user: AuthUser;
@@ -42,7 +69,6 @@ const actionLabels: Record<ReviewAction, string> = {
 type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
 type ReviewDetailTab = "overview" | "agents" | "findings" | "logs";
 type ReviewEventFilter = "all" | "model" | "workflow" | "errors";
-type ReviewVerdict = "issues_found" | "no_actionable_issue" | "insufficient_context";
 
 const retryTargetOptions: ReadonlyArray<[RetryTargetStage, string]> = [
   ["ci", "CI 检查"],
@@ -65,17 +91,29 @@ const actionIcons: Record<ReviewAction, string> = {
   rerun: "⟳",
 };
 
-const severityLabels: Record<string, string> = {
-  critical: "严重",
-  high: "高风险",
-  medium: "中风险",
-  low: "低风险",
+const findingCategoryLabels: Record<string, string> = {
+  architecture: "架构",
+  authorization: "权限",
+  security: "安全",
+  database: "数据库",
+  business_contract: "业务契约",
+  test_gap: "测试缺口",
+  reliability: "可靠性",
 };
 
-const findingStatusLabels: Record<string, string> = {
-  unverified: "未标记",
-  verified: "已确认",
-  rejected: "已忽略",
+const evaluationGateReasonLabels: Record<string, string> = {
+  admitted: "已准入",
+  insufficient_samples: "样本不足",
+  precision_below_threshold: "精确率不足",
+  high_severity_false_positive_rate_above_threshold: "高风险否决偏高",
+};
+
+const ciStateLabels: Record<string, string> = {
+  not_configured: "未配置",
+  unknown: "未知",
+  pending: "进行中",
+  success: "通过",
+  failure: "失败",
 };
 
 const eventLabels: Record<string, string> = {
@@ -94,6 +132,7 @@ const eventLabels: Record<string, string> = {
   "review.model.agent_failed": "审查 Agent 失败",
   "review.model.aggregating_started": "开始汇总审查结果",
   "review.model.summary_completed": "汇总 Agent 已完成",
+  "review.model.budget_exhausted": "模型硬预算已耗尽",
   "review.model.completed": "AI 分析完成",
   "review.model.batches_persisted": "批次已保存",
   "review.workflow.approve": "审查已批准，等待发布",
@@ -128,569 +167,6 @@ const fileDecisionLabels: Record<string, string> = {
   omitted_by_budget: "旧版范围省略",
 };
 
-const reasoningEffortLabels: Record<string, string> = {
-  none: "跟随服务商",
-  low: "轻量",
-  medium: "标准",
-  high: "深入",
-  max: "极致",
-};
-
-const verdictLabels: Record<ReviewVerdict, string> = {
-  issues_found: "发现需处理问题",
-  no_actionable_issue: "当前范围未发现可报告问题",
-  insufficient_context: "审查上下文不足",
-};
-
-function actionKey(action?: ReviewAction, reviewRunId?: string): string {
-  if (action === "publish" && reviewRunId) {
-    // 一次审查最多人工发布一次；稳定幂等键让网络超时或页面刷新后的
-    // 再次点击能够恢复同一发布，而不是创建第二条 GitHub 评论。
-    return `ui:publish:${reviewRunId}`;
-  }
-  return `ui:${Date.now()}:${crypto.randomUUID()}`;
-}
-
-function formatBytes(value: number | null): string {
-  if (value === null || value === undefined) return "—";
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
-}
-
-function formatDuration(value: number | null): string {
-  if (value === null || value === undefined) return "—";
-  if (value < 1000) return `${value} ms`;
-  if (value >= 60_000) {
-    const seconds = Math.round(value / 1000);
-    return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
-  }
-  return `${(value / 1000).toFixed(1)} s`;
-}
-
-function payloadNumber(event: ReviewEvent | undefined, key: string): number | null {
-  const value = event?.payload[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function payloadString(event: ReviewEvent | undefined, key: string): string | null {
-  const value = event?.payload[key];
-  return typeof value === "string" ? value : null;
-}
-
-function payloadVerdict(event: ReviewEvent | undefined): ReviewVerdict | null {
-  const value = payloadString(event, "verdict");
-  return value === "issues_found"
-    || value === "no_actionable_issue"
-    || value === "insufficient_context"
-    ? value
-    : null;
-}
-
-function branchLabel(repository: string | null, ref: string | null): string {
-  return `${repository ?? "未知仓库"}:${ref ?? "未知分支"}`;
-}
-
-function latestBatchPlanEvent(events: ReviewEvent[]): ReviewEvent | undefined {
-  return events
-    .filter((event) => event.event_type === "review.model.batches_planned")
-    .reduce<ReviewEvent | undefined>((latest, event) => {
-      if (!latest) return event;
-      return (payloadNumber(event, "model_attempt_count") ?? -1)
-        > (payloadNumber(latest, "model_attempt_count") ?? -1)
-        ? event
-        : latest;
-    }, undefined);
-}
-
-function latestEvent(
-  events: ReviewEvent[],
-  eventType: string,
-  modelAttempt?: number,
-): ReviewEvent | undefined {
-  return [...events].reverse().find((event) => (
-    event.event_type === eventType
-    && (modelAttempt === undefined
-      || payloadNumber(event, "model_attempt_count") === modelAttempt)
-  ));
-}
-
-function retryDetail(event: ReviewEvent | undefined): string | null {
-  const retryAt = payloadString(event, "retry_at");
-  if (!retryAt) return null;
-  const remainingSeconds = Math.max(
-    0,
-    Math.ceil((new Date(retryAt).getTime() - Date.now()) / 1000),
-  );
-  if (!Number.isFinite(remainingSeconds)) return `计划重试时间 ${formatDate(retryAt)}`;
-  if (remainingSeconds === 0) return `已到重试时间，等待 Worker 领取`;
-  if (remainingSeconds < 60) return `${remainingSeconds} 秒后自动重试`;
-  return `约 ${Math.ceil(remainingSeconds / 60)} 分钟后自动重试（${formatDate(retryAt)}）`;
-}
-
-function eventDetail(event: ReviewEvent): string | null {
-  if (event.event_type === "review.model.batches_planned") {
-    const batches = payloadNumber(event, "batch_count");
-    const files = payloadNumber(event, "file_count");
-    const context = payloadNumber(event, "context_window_tokens");
-    const batchBudget = payloadNumber(event, "input_budget_tokens");
-    const reasoning = payloadString(event, "reasoning_effort");
-    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 模型总容量 ${context?.toLocaleString() ?? "—"} · 单批约 ${batchBudget?.toLocaleString() ?? "—"} Token · 推理 ${reasoningEffortLabels[reasoning ?? ""] ?? reasoning ?? "—"}`;
-  }
-  if (event.event_type === "review.model.batch_started") {
-    const number = payloadNumber(event, "batch_number");
-    const total = payloadNumber(event, "batch_count");
-    const files = payloadNumber(event, "file_count");
-    return `第 ${number ?? "—"}/${total ?? "—"} 批 · ${files ?? "—"} 个文件 · 约 ${payloadNumber(event, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token`;
-  }
-  if (event.event_type === "review.model.batch_completed") {
-    const number = payloadNumber(event, "batch_number");
-    const total = payloadNumber(event, "batch_count");
-    return `第 ${number ?? "—"}/${total ?? "—"} 批 · 输入 ${payloadNumber(event, "input_tokens")?.toLocaleString() ?? "—"} · 输出 ${payloadNumber(event, "output_tokens")?.toLocaleString() ?? "—"} · 推理 ${payloadNumber(event, "reasoning_tokens")?.toLocaleString() ?? "—"} Token · ${formatDuration(payloadNumber(event, "duration_ms"))}`;
-  }
-  if (event.event_type === "review.model.request_started") {
-    const number = payloadNumber(event, "batch_number");
-    const total = payloadNumber(event, "batch_count");
-    const model = payloadString(event, "model");
-    const protocol = payloadString(event, "api_protocol");
-    return `第 ${number ?? "—"}/${total ?? "—"} 批已发送 · ${model ?? "—"} · ${protocol ?? "—"}`;
-  }
-  if (event.event_type === "review.model.request_completed") {
-    const number = payloadNumber(event, "batch_number");
-    const total = payloadNumber(event, "batch_count");
-    const status = payloadNumber(event, "response_status");
-    const requestId = payloadString(event, "provider_request_id");
-    return `第 ${number ?? "—"}/${total ?? "—"} 批已返回 · HTTP ${status ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))}${requestId ? ` · 请求 ID ${requestId}` : ""}`;
-  }
-  if (event.event_type === "review.model.batch_failed") {
-    const number = payloadNumber(event, "batch_number");
-    const total = payloadNumber(event, "batch_count");
-    const status = payloadNumber(event, "status_code");
-    const code = payloadString(event, "error_code");
-    return `第 ${number ?? "—"}/${total ?? "—"} 批失败 · HTTP ${status ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))} · 错误码 ${code ?? "—"}${event.payload.error_retryable === true ? " · 可自动重试" : event.payload.error_retryable === false ? " · 不可自动重试" : ""}`;
-  }
-  if (event.event_type === "review.task.retry_scheduled") {
-    return retryDetail(event);
-  }
-  return null;
-}
-
-function isErrorEvent(event: ReviewEvent): boolean {
-  return event.event_type.endsWith("failed")
-    || event.event_type === "review.task.failed"
-    || typeof event.payload.error_code === "string"
-    || typeof event.payload.error_message === "string";
-}
-
-function DetailIcon({ children }: { children: string }) {
-  return <span className="review-detail-icon" aria-hidden="true">{children}</span>;
-}
-
-function StageTimeline({ details }: { details: ReviewDetails }) {
-  return (
-    <section className="review-panel review-stage-panel">
-      <div className="review-panel-heading">
-        <div>
-          <span className="review-eyebrow">PIPELINE</span>
-          <h2>审查流程</h2>
-        </div>
-        <span className="review-stage-readout">
-          当前：{stageLabels[details.current_stage] ?? details.current_stage}
-        </span>
-      </div>
-      <div className="review-stage-timeline">
-        {details.stages.map((stage, index) => (
-          <div className={`review-stage-row stage-${stage.status}`} key={stage.key}>
-            <div className="review-stage-marker">
-              {stage.status === "completed" ? "✓" : stage.status === "failed" ? "!" : index + 1}
-            </div>
-            {index < details.stages.length - 1 && <span className="review-stage-connector" />}
-            <div className="review-stage-copy">
-              <div className="review-stage-title-line">
-                <strong>{stageLabels[stage.key] ?? stage.key}</strong>
-                <span>
-                  {stage.status === "completed"
-                    ? "已完成"
-                    : stage.status === "current"
-                      ? "进行中"
-                      : stage.status === "failed"
-                        ? "失败"
-                        : stage.status === "blocked"
-                          ? "等待前置操作"
-                          : "等待中"}
-                </span>
-              </div>
-              {stage.detail_code && stage.key === details.current_stage && (
-                <small>{phaseLabels[stage.detail_code] ?? stage.detail_code}</small>
-              )}
-              {stage.completed_at && <time>{formatDate(stage.completed_at)}</time>}
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-const agentDefinitions = [
-  { key: "security", label: "安全审查", description: "检查漏洞、权限和敏感数据风险" },
-  { key: "convention", label: "规范审查", description: "检查编码规范、可维护性和工程约定" },
-  { key: "logic", label: "逻辑审查", description: "检查业务逻辑、边界条件和回归风险" },
-  { key: "summary", label: "汇总 Agent", description: "去重、排序并生成最终审查结论" },
-] as const;
-
-type ReviewAgentKey = (typeof agentDefinitions)[number]["key"];
-
-function eventAgent(event: ReviewEvent): string | null {
-  const value = event.payload.agent;
-  return typeof value === "string" ? value : null;
-}
-
-function latestAgentEvents(events: ReviewEvent[], agent: ReviewAgentKey): ReviewEvent[] {
-  const matching = events.filter((event) => (
-    event.event_type.startsWith("review.model.") && eventAgent(event) === agent
-  ));
-  if (matching.length === 0) return [];
-  const attempts = matching
-    .map((event) => payloadNumber(event, "model_attempt_count"))
-    .filter((value): value is number => value !== null);
-  const latestAttempt = attempts.length > 0 ? Math.max(...attempts) : null;
-  return matching.filter((event) => (
-    latestAttempt === null
-      || payloadNumber(event, "model_attempt_count") === null
-      || payloadNumber(event, "model_attempt_count") === latestAttempt
-  ));
-}
-
-function latestAgentEvent(events: ReviewEvent[], eventType: string): ReviewEvent | undefined {
-  return [...events].reverse().find((event) => event.event_type === eventType);
-}
-
-function latestBatchEvents(events: ReviewEvent[]): Map<number, ReviewEvent> {
-  const lifecycle = new Set([
-    "review.model.batch_started",
-    "review.model.request_started",
-    "review.model.request_completed",
-    "review.model.batch_completed",
-    "review.model.batch_failed",
-  ]);
-  const lifecycleRank: Record<string, number> = {
-    "review.model.batch_started": 1,
-    "review.model.request_started": 2,
-    "review.model.request_completed": 3,
-    "review.model.batch_completed": 4,
-    "review.model.batch_failed": 4,
-  };
-  const result = new Map<number, ReviewEvent>();
-  for (const event of events) {
-    if (!lifecycle.has(event.event_type)) continue;
-    const number = payloadNumber(event, "batch_number");
-    if (number === null) continue;
-    const current = result.get(number);
-    if (!current || lifecycleRank[event.event_type] > lifecycleRank[current.event_type]) {
-      result.set(number, event);
-    }
-  }
-  return result;
-}
-
-function workflowReadout(details: ReviewDetails, retryPending: boolean): string {
-  if (retryPending) return "等待自动重试";
-  if (details.phase === "rejected") return "已驳回";
-  if (details.phase === "paused") return "已暂停";
-  if (details.phase === "awaiting_approval" || details.phase === "awaiting_publish") return "等待人工操作";
-  if (details.phase === "publishing") return "发布中";
-  if (details.phase === "completed") return "已完成";
-  if (details.phase.endsWith("failed") || details.phase === "ci_timed_out") return "需要处理";
-  if (details.phase === "cancelled" || details.phase === "superseded") return "已结束";
-  return "运行中";
-}
-
-function numericPayloadSum(events: ReviewEvent[], key: string): number | null {
-  const values = events
-    .map((event) => payloadNumber(event, key))
-    .filter((value): value is number => value !== null);
-  return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : null;
-}
-
-function stringArrayPayload(event: ReviewEvent | undefined, key: string): string[] {
-  const value = event?.payload[key];
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
-  const scoped = latestAgentEvents(events, agent);
-  const planned = latestAgentEvent(scoped, "review.model.batches_planned");
-  const completedEvent = latestAgentEvent(scoped, "review.model.agent_completed");
-  const failedEvent = latestAgentEvent(scoped, "review.model.agent_failed");
-  const summaryEvent = latestAgentEvent(scoped, "review.model.summary_completed");
-  const batches = latestBatchEvents(scoped);
-  const batchCount = payloadNumber(planned, "batch_count")
-    ?? Math.max(0, ...batches.keys());
-  const completedBatches = [...batches.values()].filter(
-    (event) => event.event_type === "review.model.batch_completed",
-  );
-  const failedBatches = [...batches.values()].filter(
-    (event) => event.event_type === "review.model.batch_failed",
-  );
-  const lastTerminal = [...scoped].reverse().find((event) => (
-    event.event_type === "review.model.agent_completed"
-      || event.event_type === "review.model.agent_failed"
-      || event.event_type === "review.model.summary_completed"
-  ));
-  const terminalIsSuccess = lastTerminal?.event_type === "review.model.agent_completed"
-    || (lastTerminal?.event_type === "review.model.summary_completed"
-      && lastTerminal.payload.agent_status === "completed");
-  const terminalIsFailure = lastTerminal?.event_type === "review.model.agent_failed"
-    || (lastTerminal?.event_type === "review.model.summary_completed"
-      && lastTerminal.payload.agent_status !== "completed");
-  const status = terminalIsSuccess
-    ? "completed"
-    : terminalIsFailure
-      ? "failed"
-      : failedBatches.length > 0
-        ? "failed"
-        : scoped.some((event) => event.event_type === "review.model.request_started")
-          ? "running"
-          : planned
-            ? "planned"
-            : "waiting";
-  const terminal = terminalIsSuccess || terminalIsFailure ? lastTerminal : undefined;
-  const findingCount = payloadNumber(terminal, "finding_count")
-    ?? (agent === "summary" ? payloadNumber(summaryEvent, "finding_count") : null)
-    ?? numericPayloadSum(completedBatches, "finding_count")
-    ?? 0;
-  const duration = payloadNumber(terminal, "duration_ms")
-    ?? numericPayloadSum(completedBatches, "duration_ms");
-  const inputTokens = numericPayloadSum(completedBatches, "input_tokens");
-  const outputTokens = numericPayloadSum(completedBatches, "output_tokens");
-  const reasoningTokens = numericPayloadSum(completedBatches, "reasoning_tokens");
-  const requestIds = [...new Set(
-    scoped
-      .map((event) => payloadString(event, "provider_request_id"))
-      .filter((value): value is string => Boolean(value)),
-  )];
-  const errorEvent = [...scoped].reverse().find((event) => (
-    event.event_type === "review.model.batch_failed"
-      || event.event_type === "review.model.agent_failed"
-      || (event.event_type === "review.model.summary_completed" && terminalIsFailure)
-  ));
-  const errorCode = payloadString(errorEvent, "error_code")
-    ?? payloadString(errorEvent, "code");
-  const errorMessage = payloadString(errorEvent, "error_message")
-    ?? payloadString(errorEvent, "error")
-    ?? (terminalIsFailure ? "该 Agent 未返回可用结果" : null);
-  const references = [...new Set([
-    ...stringArrayPayload(completedEvent, "references"),
-    ...stringArrayPayload(failedEvent, "references"),
-    ...stringArrayPayload(summaryEvent, "references"),
-  ])];
-  const verdict = payloadVerdict(terminal);
-  const conclusionSummary = payloadString(terminal, "summary");
-  const checkedAreas = stringArrayPayload(terminal, "checked_areas");
-  return {
-    events: scoped,
-    planned,
-    batches,
-    batchCount,
-    completedBatches,
-    failedBatches,
-    status,
-    findingCount,
-    duration,
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    requestIds,
-    errorCode,
-    errorMessage,
-    references,
-    verdict,
-    conclusionSummary,
-    checkedAreas,
-    hasStructuredConclusion: verdict !== null && conclusionSummary !== null,
-  };
-}
-
-function ModelBatchPanel({ details }: { details: ReviewDetails }) {
-  const activeAgents = agentDefinitions.map((definition) => ({
-    ...definition,
-    progress: agentProgress(details.events, definition.key),
-  }));
-  const hasModelEvents = activeAgents.some((item) => item.progress.events.length > 0);
-  if (!hasModelEvents && !details.model_review_completed_at) return null;
-
-  return (
-    <section className="review-panel review-batch-panel">
-      <div className="review-panel-heading">
-        <div><span className="review-eyebrow">LIVE MODEL PROGRESS</span><h2>四路 Agent 进度</h2></div>
-        <span className="review-batch-readout">安全 · 规范 · 逻辑 · 汇总</span>
-      </div>
-      <div className="review-agent-grid">
-        {activeAgents.map(({ key, label, description, progress }) => {
-          const completeCount = progress.completedBatches.length;
-          const failedCount = progress.failedBatches.length;
-          const progressPercent = progress.batchCount > 0
-            ? Math.min(100, (completeCount / progress.batchCount) * 100)
-            : progress.status === "completed" ? 100 : 0;
-          const statusLabel = progress.status === "completed"
-            ? "已完成"
-            : progress.status === "failed"
-              ? "失败"
-              : progress.status === "running"
-                ? "进行中"
-                : progress.status === "planned"
-                  ? "已规划"
-                  : "等待开始";
-          return (
-            <article className={`review-agent-card is-${progress.status}`} key={key}>
-              <header className="review-agent-card-header">
-                <div><strong>{label}</strong><span>{description}</span></div>
-                <b>{statusLabel}</b>
-              </header>
-              <div className="review-agent-progress-meta">
-                <span>{completeCount}/{progress.batchCount || "—"} 批</span>
-                {failedCount > 0 && <span className="is-error">{failedCount} 批失败</span>}
-                <span>{progress.findingCount} 条 Finding</span>
-              </div>
-              <div className="review-batch-progress" aria-hidden="true"><span style={{ width: `${progressPercent}%` }} /></div>
-              <dl className="review-agent-metrics">
-                <div><dt>耗时</dt><dd>{formatDuration(progress.duration)}</dd></div>
-                <div><dt>输入 Token</dt><dd>{progress.inputTokens?.toLocaleString() ?? "—"}</dd></div>
-                <div><dt>输出 Token</dt><dd>{progress.outputTokens?.toLocaleString() ?? "—"}</dd></div>
-                <div><dt>推理 Token</dt><dd>{progress.reasoningTokens?.toLocaleString() ?? "—"}</dd></div>
-              </dl>
-              {progress.requestIds.length > 0 && (
-                <div className="review-agent-detail"><span>请求 ID</span><code>{progress.requestIds.join(" · ")}</code></div>
-              )}
-              {progress.status === "completed" && progress.hasStructuredConclusion && progress.verdict && (
-                <div className={`review-agent-conclusion verdict-${progress.verdict}`}>
-                  <div className="review-agent-conclusion-title">
-                    <span>Agent 结论</span>
-                    <strong>{verdictLabels[progress.verdict]}</strong>
-                  </div>
-                  <p>{progress.conclusionSummary}</p>
-                  {progress.checkedAreas.length > 0 && (
-                    <div className="review-checked-areas" aria-label="实际检查范围">
-                      {progress.checkedAreas.map((area) => <span key={area}>{area}</span>)}
-                    </div>
-                  )}
-                </div>
-              )}
-              {progress.status === "completed" && !progress.hasStructuredConclusion && (
-                <div className="review-agent-conclusion is-legacy">
-                  <div className="review-agent-conclusion-title">
-                    <span>Agent 结论</span>
-                    <strong>历史任务未保存结论</strong>
-                  </div>
-                  <p>这条记录只保存了执行状态和问题数量，不能据此判断 Agent 的实际分析结论；重新审查后会生成完整摘要。</p>
-                </div>
-              )}
-              {progress.errorMessage && progress.status === "failed" && (
-                <div className="review-agent-error">
-                  <strong>{progress.errorCode ? `错误码 ${progress.errorCode}` : "Agent 执行失败"}</strong>
-                  <p>{progress.errorMessage}</p>
-                </div>
-              )}
-              {progress.references.length > 0 && (
-                <details className="review-agent-references">
-                  <summary>RAG 引用（{progress.references.length}）</summary>
-                  <ul>{progress.references.map((reference, index) => <li key={`${reference}-${index}`}>{reference}</li>)}</ul>
-                </details>
-              )}
-              {progress.batchCount > 0 && (
-                <div className="review-agent-batches">
-                  {Array.from({ length: progress.batchCount }, (_, offset) => offset + 1).map((number) => {
-                    const event = progress.batches.get(number);
-                    const completed = event?.event_type === "review.model.batch_completed";
-                    const failed = event?.event_type === "review.model.batch_failed";
-                    const requestStarted = event?.event_type === "review.model.request_started";
-                    const started = event?.event_type === "review.model.batch_started";
-                    const batchStatus = completed ? "已完成" : failed ? "失败" : requestStarted ? "请求中" : started ? "准备发送" : "等待发送";
-                    return (
-                      <div className={`review-agent-batch-row ${completed ? "is-completed" : failed ? "is-failed" : requestStarted ? "is-running" : ""}`} key={number}>
-                        <span>第 {number}/{progress.batchCount} 批</span><b>{batchStatus}</b>
-                        {event && <small>{completed ? `输入 ${payloadNumber(event, "input_tokens")?.toLocaleString() ?? "—"} · 输出 ${payloadNumber(event, "output_tokens")?.toLocaleString() ?? "—"} · 推理 ${payloadNumber(event, "reasoning_tokens")?.toLocaleString() ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))}` : failed ? `${payloadString(event, "error_code") ?? "错误"} · ${payloadString(event, "error_message") ?? "模型请求失败"}` : `预计输入 ${payloadNumber(event, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token`}</small>}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function FindingCard({
-  finding,
-  busy,
-  onDecision,
-}: {
-  finding: ReviewFinding;
-  busy: boolean;
-  onDecision: (finding: ReviewFinding, decision: FindingDecision) => void;
-}) {
-  const reviewed = finding.verification_status !== "unverified";
-  return (
-    <article className={`review-finding-card finding-${finding.severity}`}>
-      <div className="finding-card-topline">
-        <div className="finding-severity">
-          <span className="finding-severity-dot" />
-          {severityLabels[finding.severity] ?? finding.severity}
-        </div>
-        <span className={`finding-status status-${finding.verification_status}`}>
-          {findingStatusLabels[finding.verification_status] ?? finding.verification_status}
-        </span>
-      </div>
-      <h3>{finding.title}</h3>
-      <div className="finding-location">
-        <code>{finding.location_file ?? "未定位到具体文件"}</code>
-        {finding.location_start_line && (
-          <span>
-            第 {finding.location_start_line}
-            {finding.location_end_line && finding.location_end_line !== finding.location_start_line
-              ? `-${finding.location_end_line}`
-              : ""} 行
-          </span>
-        )}
-        <span>置信度 {Math.round(finding.confidence * 100)}%</span>
-      </div>
-      <div className="finding-copy-grid">
-        <div><span>证据</span><p>{finding.evidence}</p></div>
-        <div><span>影响</span><p>{finding.impact}</p></div>
-        <div><span>建议</span><p>{finding.suggestion}</p></div>
-        {finding.required_test && <div><span>建议补测</span><p>{finding.required_test}</p></div>}
-      </div>
-      {!reviewed && (
-        <div className="finding-actions">
-          <button
-            type="button"
-            className="review-action-btn finding-confirm-btn"
-            disabled={busy}
-            onClick={() => onDecision(finding, "verified")}
-          >
-            <DetailIcon>✓</DetailIcon>确认问题
-          </button>
-          <button
-            type="button"
-            className="review-action-btn finding-reject-btn"
-            disabled={busy}
-            onClick={() => onDecision(finding, "rejected")}
-          >
-            <DetailIcon>×</DetailIcon>忽略
-          </button>
-        </div>
-      )}
-      {reviewed && finding.reviewed_at && (
-        <small className="finding-reviewed-note">由 {finding.reviewed_by ?? "管理员"} 于 {formatDate(finding.reviewed_at)} 更新</small>
-      )}
-    </article>
-  );
-}
-
 function ReviewDetailPage({
   user,
   reviewRunId,
@@ -703,6 +179,7 @@ function ReviewDetailPage({
   const [error, setError] = useState("");
   const [actionBusy, setActionBusy] = useState<ReviewAction | null>(null);
   const [findingBusy, setFindingBusy] = useState<string | null>(null);
+  const [findingPageBusy, setFindingPageBusy] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [retryTargetStage, setRetryTargetStage] = useState<RetryTargetStage>("agent_batches");
   const [activeTab, setActiveTab] = useState<ReviewDetailTab>("overview");
@@ -713,31 +190,44 @@ function ReviewDetailPage({
   const [identitySyncBusy, setIdentitySyncBusy] = useState(false);
   const [identitySyncError, setIdentitySyncError] = useState("");
   const identitySyncAttempted = useRef<string | null>(null);
+  const canAdjudicate = hasPermission(user, "findings:adjudicate");
+  const canManageReviews = hasPermission(user, "reviews:manage");
 
-  const loadDetails = useCallback(async () => {
+  const loadDetails = useCallback(async (signal?: AbortSignal) => {
     try {
-      const next = await api.reviewDetails(reviewRunId);
-      setDetails(next);
+      const next = await api.reviewDetails(reviewRunId, undefined, 50, signal);
+      setDetails((current) => applyRefreshedFindingPage(current, next));
       setError("");
+      return true;
     } catch (reason) {
+      if (signal?.aborted) return false;
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
-        return;
+        return false;
       }
       setError(errorMessage(reason));
+      return false;
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [onSignedOut, reviewRunId]);
 
   useEffect(() => {
+    const controller = new AbortController();
     setDetails(null);
     setLoading(true);
-    void loadDetails();
-    if (!autoRefresh) return undefined;
-    const timer = window.setInterval(() => void loadDetails(), 2500);
-    return () => window.clearInterval(timer);
-  }, [autoRefresh, loadDetails]);
+    void loadDetails(controller.signal);
+    return () => controller.abort();
+  }, [loadDetails]);
+
+  useReviewAutoRefresh({
+    enabled: autoRefresh,
+    reviewRunId,
+    changeToken: details?.change_token ?? null,
+    onChanged: loadDetails,
+    onSignedOut,
+    onError: (reason) => setError(errorMessage(reason)),
+  });
 
   const identityNeedsSync = Boolean(
     details
@@ -753,14 +243,15 @@ function ReviewDetailPage({
   );
 
   const syncIdentity = useCallback(async () => {
-    if (!details || identitySyncBusy) return;
+    if (!details || identitySyncBusy || !canManageReviews) return;
     setIdentitySyncBusy(true);
     setIdentitySyncError("");
     try {
-      setDetails(await api.syncReviewIdentity(
+      const next = await api.syncReviewIdentity(
         details.review_run_id,
         `ui:identity:${details.review_run_id}`,
-      ));
+      );
+      setDetails((current) => applyRefreshedFindingPage(current, next));
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
@@ -770,15 +261,20 @@ function ReviewDetailPage({
     } finally {
       setIdentitySyncBusy(false);
     }
-  }, [details, identitySyncBusy, onSignedOut]);
+  }, [canManageReviews, details, identitySyncBusy, onSignedOut]);
 
   useEffect(() => {
-    if (!details || !identityNeedsSync || identitySyncAttempted.current === details.review_run_id) {
+    if (
+      !canManageReviews
+      || !details
+      || !identityNeedsSync
+      || identitySyncAttempted.current === details.review_run_id
+    ) {
       return;
     }
     identitySyncAttempted.current = details.review_run_id;
     void syncIdentity();
-  }, [details, identityNeedsSync, syncIdentity]);
+  }, [canManageReviews, details, identityNeedsSync, syncIdentity]);
 
   const currentMessage = useMemo(
     () => (details ? phaseLabels[details.phase] ?? details.phase : "正在读取任务详情"),
@@ -786,12 +282,17 @@ function ReviewDetailPage({
   );
 
   async function runAction(action: ReviewAction) {
-    if (!details) return;
+    if (!details || !allowedReviewActions(user, [action]).length) return;
     if (action === "cancel" && !window.confirm("确定取消这个任务吗？")) return;
     if (action === "approve" && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
     if (action === "retry_stage" && !window.confirm("将清除所选阶段及之后的结果，并从该阶段重新审查。继续吗？")) return;
     if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
+    if (
+      action === "resume"
+      && details.last_error_code === "model_budget_exceeded"
+      && !window.confirm("本任务已耗尽模型预算。继续会追加一个同等预算窗口，并记录到审计日志；确定继续吗？")
+    ) return;
     setActionBusy(action);
     try {
       const result = await api.reviewAction(
@@ -817,17 +318,32 @@ function ReviewDetailPage({
   }
 
   async function decideFinding(finding: ReviewFinding, decision: FindingDecision) {
-    if (!details) return;
+    if (!details || !canAdjudicate) return;
     setFindingBusy(finding.id);
     try {
-      setDetails(
-        await api.decideFinding(
-          details.review_run_id,
-          finding.id,
-          decision,
-          actionKey(),
-        ),
+      const next = await api.decideFinding(
+        details.review_run_id,
+        finding.id,
+        decision,
+        actionKey(),
       );
+      const reviewedAt = new Date().toISOString();
+      setDetails((current) => {
+        const merged = applyRefreshedFindingPage(current, next);
+        return {
+          ...merged,
+          findings: merged.findings.map((item) => (
+            item.id === finding.id
+              ? {
+                  ...item,
+                  adjudication_status: decision,
+                  reviewed_at: reviewedAt,
+                  reviewed_by: user.username,
+                }
+              : item
+          )),
+        };
+      });
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
@@ -836,6 +352,29 @@ function ReviewDetailPage({
       }
     } finally {
       setFindingBusy(null);
+    }
+  }
+
+  async function loadMoreFindings() {
+    if (!details?.finding_next_cursor || findingPageBusy) return;
+    setFindingPageBusy(true);
+    try {
+      const next = await api.reviewDetails(
+        details.review_run_id,
+        details.finding_next_cursor,
+      );
+      setDetails((current) => (
+        current ? appendFindingPage(current, next) : next
+      ));
+      setError("");
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) {
+        onSignedOut("登录状态已失效，请重新登录");
+      } else {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      setFindingPageBusy(false);
     }
   }
 
@@ -859,7 +398,9 @@ function ReviewDetailPage({
     );
   }
 
-  const hasActions = details.available_actions.length > 0;
+  const availableActions = allowedReviewActions(user, details.available_actions);
+  const hasActions = availableActions.length > 0;
+  const budgetPaused = details.last_error_code === "model_budget_exceeded";
   const latestBatchPlan = latestBatchPlanEvent(details.events);
   const currentModelFailure = latestEvent(
     details.events,
@@ -946,7 +487,7 @@ function ReviewDetailPage({
   const normalizedFindingQuery = findingQuery.trim().toLocaleLowerCase();
   const filteredFindings = details.findings.filter((finding) => (
     (findingSeverity === "all" || finding.severity === findingSeverity)
-    && (findingStatus === "all" || finding.verification_status === findingStatus)
+    && (findingStatus === "all" || finding.adjudication_status === findingStatus)
     && (!normalizedFindingQuery || [
       finding.title,
       finding.category,
@@ -954,6 +495,12 @@ function ReviewDetailPage({
       finding.evidence,
     ].some((value) => value.toLocaleLowerCase().includes(normalizedFindingQuery)))
   ));
+  const evaluatedGates = details.evaluation_gates.filter(
+    (gate) => gate.sample_count > 0,
+  );
+  const admittedGateCount = details.evaluation_gates.filter(
+    (gate) => gate.admitted,
+  ).length;
   const filteredEvents = details.events.filter((event) => {
     if (eventFilter === "errors") return isErrorEvent(event);
     if (eventFilter === "model") return event.event_type.startsWith("review.model.");
@@ -986,7 +533,7 @@ function ReviewDetailPage({
             <span className="review-live-dot" />自动刷新
           </label>
           <button type="button" className="review-refresh-btn" onClick={() => void loadDetails()} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
-          <span className="review-user-chip">{user.username}</span>
+          <span className="review-user-chip">{user.username} · {roleLabels[user.role]}</span>
         </div>
       </header>
 
@@ -1017,7 +564,7 @@ function ReviewDetailPage({
                   ? "GitHub 未返回完整的来源与目标分支"
                   : "历史任务未记录来源与目标分支"}</span>
               )}
-              {identityNeedsSync && (
+              {identityNeedsSync && canManageReviews && (
                 <div className="review-pr-identity-missing">
                   <span className="review-pr-branch-legacy">PR 身份信息不完整</span>
                   <button
@@ -1056,7 +603,7 @@ function ReviewDetailPage({
             <span className={`review-control-hint ${retryPending ? "is-retry" : ""}`}>{retryPending ? retryStatus : `尝试 ${details.attempt_count}/${details.max_attempts} · AI 阶段 ${details.model_attempt_count}/${details.max_attempts}`}</span>
           </div>
           <div className="review-control-actions">
-            {details.available_actions.includes("retry_stage") && (
+            {availableActions.includes("retry_stage") && (
               <label className="review-retry-target">
                 <span>重审起点</span>
                 <select
@@ -1070,7 +617,7 @@ function ReviewDetailPage({
                 </select>
               </label>
             )}
-            {hasActions ? details.available_actions.map((action) => (
+            {hasActions ? availableActions.map((action) => (
               <button
                 key={action}
                 type="button"
@@ -1078,7 +625,7 @@ function ReviewDetailPage({
                 disabled={actionBusy !== null}
                 onClick={() => void runAction(action)}
               >
-                <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
+                <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "resume" && budgetPaused ? "追加预算并继续" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
               </button>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
           </div>
@@ -1086,10 +633,10 @@ function ReviewDetailPage({
 
         <section className="review-summary-strip" aria-label="任务关键指标">
           <div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div>
-          <div><span>CI 检查</span><strong>{details.ci_state === "success" ? "通过" : details.ci_state ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div>
+          <div><span>CI 检查</span><strong>{ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div>
           <div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div>
           <div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/4</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div>
-          <div><span>候选问题</span><strong>{details.findings.length}</strong><small>{details.unverified_finding_count} 条待确认</small></div>
+          <div><span>候选问题</span><strong>{details.findings.length}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div>
           <div><span>模型用量</span><strong>{(details.model_input_tokens ?? 0).toLocaleString()}</strong><small>输入 Token</small></div>
         </section>
 
@@ -1112,7 +659,7 @@ function ReviewDetailPage({
             <section className="review-panel review-result-panel">
               <div className="review-panel-heading">
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
-                <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.unverified_finding_count > 0 && <span className="result-count result-count-pending">{details.unverified_finding_count} 未标记</span>}</div>
+                <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.new_finding_count > 0 && <span className="result-count result-count-new">{details.new_finding_count} 条新增</span>}{details.fixed_finding_count > 0 && <span className="result-count result-count-fixed">{details.fixed_finding_count} 条已修复</span>}{details.unreviewed_finding_count > 0 && <span className="result-count result-count-pending">{details.unreviewed_finding_count} 待裁决</span>}</div>
               </div>
               {(finalAgentProgress.status === "completed" || details.model_review_completed_at) && (
                 finalAgentProgress.hasStructuredConclusion && finalAgentProgress.verdict ? (
@@ -1140,12 +687,33 @@ function ReviewDetailPage({
                   </div>
                 )
               )}
-              {details.findings.length > 0 && (
+              <div className="review-evaluation-gates">
+                <div className="review-evaluation-heading">
+                  <div><strong>行内评论评测准入</strong><span>最近人工裁决</span></div>
+                  <b>{admittedGateCount}/{details.evaluation_gates.length} 个风险域</b>
+                </div>
+                {evaluatedGates.length === 0 ? (
+                  <p className="review-evaluation-empty">暂无已裁决样本，本轮仅发布 Check 与汇总评论。</p>
+                ) : (
+                  <div className="review-evaluation-list">
+                    {evaluatedGates.map((gate) => (
+                      <div className={`review-evaluation-row ${gate.admitted ? "is-admitted" : "is-blocked"}`} key={gate.category}>
+                        <strong>{findingCategoryLabels[gate.category] ?? gate.category}</strong>
+                        <span>{gate.sample_count} 个样本</span>
+                        <span>精确率 {Math.round(gate.precision * 100)}%</span>
+                        <span>高风险否决 {Math.round(gate.high_severity_false_positive_rate * 100)}%</span>
+                        <b>{evaluationGateReasonLabels[gate.reason] ?? gate.reason}</b>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {details.finding_total_count > 0 && (
                 <div className="review-finding-toolbar">
                   <label><span>严重程度</span><select id="review-finding-severity" name="review-finding-severity" value={findingSeverity} onChange={(event) => setFindingSeverity(event.target.value)}><option value="all">全部级别</option><option value="critical">严重</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></select></label>
-                  <label><span>确认状态</span><select id="review-finding-status" name="review-finding-status" value={findingStatus} onChange={(event) => setFindingStatus(event.target.value)}><option value="all">全部状态</option><option value="unverified">待确认</option><option value="verified">已确认</option><option value="rejected">已忽略</option></select></label>
+                  <label><span>人工裁决</span><select id="review-finding-status" name="review-finding-status" value={findingStatus} onChange={(event) => setFindingStatus(event.target.value)}><option value="all">全部状态</option><option value="unreviewed">待裁决</option><option value="valid">有效问题</option><option value="false_positive">误报</option><option value="duplicate">重复问题</option><option value="out_of_scope">超出范围</option><option value="known_issue">已知问题</option></select></label>
                   <label className="review-finding-search"><span>搜索</span><input id="review-finding-query" name="review-finding-query" value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder="标题、文件或证据" /></label>
-                  <strong>{filteredFindings.length} 条结果</strong>
+                  <strong>{filteredFindings.length}/{details.finding_total_count} 条结果</strong>
                 </div>
               )}
               {!details.model_review_completed_at && (currentModelFailure || retryPending) && (
@@ -1154,7 +722,7 @@ function ReviewDetailPage({
               {!details.model_review_completed_at && !currentModelFailure && !retryPending && (
                 <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>AI 结果尚未生成</strong><p>模型完成后，候选问题会显示在这里。</p></div></div>
               )}
-              {details.model_review_completed_at && details.findings.length === 0 && (
+              {details.model_review_completed_at && details.finding_total_count === 0 && (
                 <div className={`review-result-empty ${finalAgentProgress.verdict === "no_actionable_issue" ? "result-empty-positive" : finalAgentProgress.verdict === "insufficient_context" ? "result-empty-limited" : ""}`}><DetailIcon>{finalAgentProgress.verdict === "insufficient_context" ? "!" : "✓"}</DetailIcon><div><strong>本次没有候选问题</strong><p>{finalAgentProgress.hasStructuredConclusion ? "具体判断、依据范围和限制见上方汇总 Agent 结论。" : "这条历史记录没有保存结论摘要，不能仅凭候选问题数量推断分析结果。"}</p></div></div>
               )}
               {details.findings.length > 0 && filteredFindings.length === 0 && (
@@ -1162,7 +730,27 @@ function ReviewDetailPage({
               )}
               {filteredFindings.length > 0 && (
                 <div className="review-findings-list">
-                  {filteredFindings.map((finding) => <FindingCard key={finding.id} finding={finding} busy={findingBusy === finding.id} onDecision={decideFinding} />)}
+                  {filteredFindings.map((finding) => (
+                    <FindingCard
+                      key={finding.id}
+                      finding={finding}
+                      busy={findingBusy === finding.id}
+                      editable={canAdjudicate}
+                      onDecision={decideFinding}
+                    />
+                  ))}
+                </div>
+              )}
+              {details.finding_next_cursor && (
+                <div className="review-finding-pagination">
+                  <button
+                    type="button"
+                    className="review-quiet-btn"
+                    disabled={findingPageBusy}
+                    onClick={() => void loadMoreFindings()}
+                  >
+                    {findingPageBusy ? "正在加载" : "加载更多"}
+                  </button>
                 </div>
               )}
             </section>
@@ -1223,7 +811,7 @@ function ReviewDetailPage({
             </section>
 
             <section className="review-panel review-context-panel">
-              <div className="review-panel-heading"><div><span className="review-eyebrow">GITHUB CONTEXT</span><h2>代码与 CI</h2></div><span className={`review-ci-state ci-${details.ci_state ?? "unknown"}`}>{details.ci_state ?? "未知"}</span></div>
+              <div className="review-panel-heading"><div><span className="review-eyebrow">GITHUB CONTEXT</span><h2>代码与 CI</h2></div><span className={`review-ci-state ci-${details.ci_state ?? "unknown"}`}>{ciStateLabels[details.ci_state ?? ""] ?? "未知"}</span></div>
               <dl className="review-context-list">
                 <div><dt>PR 状态</dt><dd>{details.pr_state ?? "—"}{details.pr_is_draft ? " · Draft" : ""}</dd></div>
                 <div><dt>提起人</dt><dd>{details.pr_author_login ? `@${details.pr_author_login}` : "历史任务未记录"}</dd></div>

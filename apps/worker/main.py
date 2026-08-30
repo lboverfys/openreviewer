@@ -1,16 +1,16 @@
 """单并发数据库 Worker 的进程入口。"""
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import timedelta
 import logging
 import os
 import signal
-import socket
 import time
-from threading import Event, RLock, Thread
+from datetime import timedelta
 from hashlib import sha256
+from inspect import Parameter, signature
+from threading import Event, RLock, Thread
+from uuid import uuid4
 
+from apps.worker.settings import WorkerSettings
 from domain.enums import (
     ExecutionStatus,
     ModelCallStatus,
@@ -19,6 +19,7 @@ from domain.enums import (
     WorkerStatus,
 )
 from domain.model_review import (
+    MaterializedFinding,
     ModelReviewInput,
     ModelReviewOutput,
     ModelReviewResult,
@@ -32,7 +33,10 @@ from domain.security import (
     install_redacting_log_filters,
 )
 from persistence.database import Database
+from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
+from services.agent_settings import AgentSettingsService
+from services.agent_workflow import WorkflowExecution
 from services.ai_settings import (
     ActiveAiRuntime,
     AiRuntimeProvider,
@@ -40,14 +44,26 @@ from services.ai_settings import (
     AiSettingsService,
     SqlAlchemyAiRuntimeProvider,
 )
-from services.agent_settings import AgentSettingsService
-from services.task_queue import ReviewTaskLease, ReviewTaskQueue, TaskQueueError
+from services.evidence_verification import (
+    EvidenceVerifier,
+    GitHubEvidenceVerifier,
+    apply_evidence_verification,
+)
 from services.github import GitHubApiClient
-from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
+from services.github_access import GitHubAccessPolicy
+from services.github_auth import (
+    GITHUB_READ_TOKEN_SCOPE,
+    GitHubAppSettings,
+    GitHubAppTokenProvider,
+)
 from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
 from services.github_rules import GitHubRepositoryRuleLoader, RepositoryRuleLoader
-from services.review_planning import ReviewPlanner
-from services.rag import ManagedMarkdownKnowledgeBase, MarkdownKnowledgeBase
+from services.model_budget import (
+    ModelBudgetAccountant,
+    ModelBudgetRequest,
+    ModelBudgetReservation,
+    model_budget_scope,
+)
 from services.model_review import (
     ModelReviewer,
     ModelServiceSettings,
@@ -55,130 +71,69 @@ from services.model_review import (
     plan_model_review_batches,
     remap_model_review_result,
 )
-
+from services.operations import (
+    OperationsError,
+    OperationsService,
+    OperationsSettings,
+    WorkerMaintenance,
+)
+from services.rag import ManagedMarkdownKnowledgeBase, MarkdownKnowledgeBase
+from services.review_planning import ReviewPlanner
+from services.task_queue import ReviewTaskLease, ReviewTaskQueue, TaskQueueError
+from services.telemetry import TelemetryHttpServer
 
 LOGGER = logging.getLogger("openreviewer.worker")
 
 
-def _positive_float(value: str, name: str) -> float:
-    """解析一个必须大于零的浮点配置值。
+def _record_worker_heartbeat(
+    queue: ReviewTaskQueue,
+    worker_id: str,
+    status: WorkerStatus,
+    current_task_id: str | None,
+    instance_id: str,
+) -> None:
+    """向新旧队列实现写入心跳，优先使用进程 token 的 CAS 版本。"""
 
-    Worker 的轮询间隔和租约时长都来自环境变量；集中校验可以把空值、非数字
-    或零值在进程启动时暴露，而不是运行到队列逻辑后才出现难以定位的行为。
-
-    参数：
-        value: 待解析的环境变量文本。
-        name: 配置项名称，只用于生成可定位的错误信息。
-
-    返回：
-        大于零的浮点秒数；保留小数以支持短轮询或测试中的精细时间间隔。
-
-    异常：
-        ValueError: 文本不是合法数字，或解析结果小于等于零。
-    """
+    recorder = queue.record_heartbeat
     try:
-        parsed = float(value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number") from exc
-    if parsed <= 0:
-        raise ValueError(f"{name} must be positive")
-    return parsed
-
-
-@dataclass(frozen=True, slots=True)
-class WorkerSettings:
-    worker_id: str
-    poll_interval: timedelta
-    lease_duration: timedelta
-    ci_poll_interval: timedelta = timedelta(seconds=30)
-    ci_wait_timeout: timedelta = timedelta(hours=1)
-    github_context_lease_duration: timedelta = timedelta(minutes=10)
-    model_review_lease_duration: timedelta = timedelta(minutes=10)
-
-    def __post_init__(self) -> None:
-        if not self.worker_id or len(self.worker_id) > 200:
-            raise ValueError("worker ID must contain 1 to 200 characters")
-        if self.poll_interval.total_seconds() <= 0:
-            raise ValueError("worker poll interval must be positive")
-        if self.lease_duration <= self.poll_interval * 2:
-            raise ValueError("worker lease duration must exceed twice the poll interval")
-        if self.ci_poll_interval.total_seconds() <= 0:
-            raise ValueError("CI poll interval must be positive")
-        if self.ci_wait_timeout <= self.ci_poll_interval:
-            raise ValueError("CI wait timeout must exceed the poll interval")
-        if self.github_context_lease_duration <= self.lease_duration:
-            raise ValueError("GitHub context lease must exceed the normal lease")
-        if self.model_review_lease_duration <= self.lease_duration:
-            raise ValueError("model review lease must exceed the normal lease")
-
-    @classmethod
-    def from_environment(cls) -> "WorkerSettings":
-        """读取并校验 Worker ID、轮询间隔和租约时长。
-
-        租约必须长于两倍轮询间隔，给 Worker 留出至少一次恢复/续租机会；如果
-        配置不满足这个关系，启动直接失败，避免任务频繁误判为过期。
-
-        返回：
-            包含稳定 Worker ID、轮询间隔和租约时长的不可变配置对象。
-
-        异常：
-            ValueError: Worker ID 为空/超过 200 字符，数值配置不是正数，或租约
-            不大于两倍轮询间隔。
-
-        配置来源：
-            ``OPENREVIEWER_WORKER_ID`` 未设置时使用“主机名:进程号”作为临时 ID；
-            Compose 会显式设置固定 ID，以便数据库中的心跳在容器重启后继续更新
-            同一行。轮询默认 2 秒，租约默认 30 秒。
-        """
-        worker_id = os.environ.get(
-            "OPENREVIEWER_WORKER_ID",
-            f"{socket.gethostname()}:{os.getpid()}",
-        ).strip()
-        if not worker_id or len(worker_id) > 200:
-            raise ValueError("OPENREVIEWER_WORKER_ID must contain 1 to 200 characters")
-        poll_seconds = _positive_float(
-            os.environ.get("OPENREVIEWER_WORKER_POLL_SECONDS", "2"),
-            "OPENREVIEWER_WORKER_POLL_SECONDS",
+        parameters = signature(recorder).parameters.values()
+        supports_instance = any(
+            parameter.name == "instance_id"
+            or parameter.kind is Parameter.VAR_KEYWORD
+            for parameter in parameters
         )
-        lease_seconds = _positive_float(
-            os.environ.get("OPENREVIEWER_WORKER_LEASE_SECONDS", "30"),
-            "OPENREVIEWER_WORKER_LEASE_SECONDS",
+    except (TypeError, ValueError):
+        # C 扩展或代理对象无法反射时，优先尝试新协议；真实队列实现支持该参数。
+        supports_instance = True
+    if supports_instance:
+        recorder(
+            worker_id,
+            status,
+            current_task_id,
+            instance_id=instance_id,
         )
-        if lease_seconds <= poll_seconds * 2:
-            raise ValueError("worker lease duration must exceed twice the poll interval")
-        ci_poll_seconds = _positive_float(
-            os.environ.get("OPENREVIEWER_CI_POLL_SECONDS", "30"),
-            "OPENREVIEWER_CI_POLL_SECONDS",
-        )
-        ci_wait_seconds = _positive_float(
-            os.environ.get("OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS", "3600"),
-            "OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS",
-        )
-        if ci_wait_seconds <= ci_poll_seconds:
-            raise ValueError("CI wait timeout must exceed the poll interval")
-        context_lease_seconds = _positive_float(
-            os.environ.get("OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS", "600"),
-            "OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS",
-        )
-        if context_lease_seconds <= lease_seconds:
-            raise ValueError("GitHub context lease must exceed the normal lease")
-        model_lease_seconds = _positive_float(
-            os.environ.get("OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS", "600"),
-            "OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS",
-        )
-        if model_lease_seconds <= lease_seconds:
-            raise ValueError("model review lease must exceed the normal lease")
-        return cls(
-            worker_id=worker_id,
-            poll_interval=timedelta(seconds=poll_seconds),
-            lease_duration=timedelta(seconds=lease_seconds),
-            ci_poll_interval=timedelta(seconds=ci_poll_seconds),
-            ci_wait_timeout=timedelta(seconds=ci_wait_seconds),
-            github_context_lease_duration=timedelta(
-                seconds=context_lease_seconds
-            ),
-            model_review_lease_duration=timedelta(seconds=model_lease_seconds),
-        )
+    else:
+        recorder(worker_id, status, current_task_id)
+
+
+def _start_worker_heartbeat(
+    queue: ReviewTaskQueue,
+    worker_id: str,
+    instance_id: str,
+) -> None:
+    """启动时原子接管心跳；旧队列实现回退到普通起始心跳。"""
+
+    starter = getattr(queue, "start_heartbeat", None)
+    if callable(starter):
+        starter(worker_id, instance_id)
+        return
+    _record_worker_heartbeat(
+        queue,
+        worker_id,
+        WorkerStatus.STARTING,
+        None,
+        instance_id,
+    )
 
 
 class _LeaseCursor:
@@ -211,12 +166,14 @@ class _BusyHeartbeat:
         queue: ReviewTaskQueue,
         worker_id: str,
         task_id: str,
+        instance_id: str,
         interval: timedelta,
         lease_cursor: _LeaseCursor | None = None,
     ) -> None:
         self._queue = queue
         self._worker_id = worker_id
         self._task_id = task_id
+        self._instance_id = instance_id
         self._lease_cursor = lease_cursor
         # 健康检查默认允许 15 秒，最长 5 秒一次可以覆盖慢速外部请求。
         self._interval_seconds = min(
@@ -244,15 +201,75 @@ class _BusyHeartbeat:
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval_seconds):
             try:
-                self._queue.record_heartbeat(
+                _record_worker_heartbeat(
+                    self._queue,
                     self._worker_id,
                     WorkerStatus.BUSY,
                     self._task_id,
+                    self._instance_id,
                 )
                 if self._lease_cursor is not None:
                     self._lease_cursor.renew()
             except TaskQueueError:
                 LOGGER.exception("Worker 忙碌心跳刷新失败")
+
+
+class _QueueModelBudgetAccountant(ModelBudgetAccountant):
+    """把模型适配器的每次真实 HTTP 请求绑定到当前计划预算。"""
+
+    def __init__(
+        self,
+        queue: ReviewTaskQueue,
+        lease_cursor: _LeaseCursor,
+        agent: str,
+    ) -> None:
+        self._queue = queue
+        self._lease_cursor = lease_cursor
+        self._agent = agent
+
+    def reserve(self, request: ModelBudgetRequest) -> ModelBudgetReservation:
+        return self._queue.reserve_model_budget(
+            self._lease_cursor.lease,
+            request,
+            agent=self._agent,
+        )
+
+    def settle(
+        self,
+        reservation: ModelBudgetReservation,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        estimated_cost_microusd: int | None,
+        response_status: int | None,
+        duration_ms: int,
+        uncertain: bool = False,
+    ) -> None:
+        self._queue.settle_model_budget(
+            reservation,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost_microusd=estimated_cost_microusd,
+            response_status=response_status,
+            duration_ms=duration_ms,
+            uncertain=uncertain,
+        )
+
+
+def _model_budget_context(
+    queue: ReviewTaskQueue,
+    lease_cursor: _LeaseCursor,
+    agent: str,
+):
+    reserve = getattr(queue, "reserve_model_budget", None)
+    settle = getattr(queue, "settle_model_budget", None)
+    if not callable(reserve) or not callable(settle):
+        raise TaskQueueError(
+            "Worker 队列未实现模型预算接口，已拒绝发起模型请求"
+        )
+    return model_budget_scope(
+        _QueueModelBudgetAccountant(queue, lease_cursor, agent)
+    )
 
 
 class _PersistentBatchedReviewer:
@@ -277,7 +294,12 @@ class _PersistentBatchedReviewer:
     def review(self, review_input: ModelReviewInput) -> ModelReviewResult:
         batches = plan_model_review_batches(review_input, self._settings)
         if not batches:
-            return self._reviewer.review(review_input)
+            with _model_budget_context(
+                self._queue,
+                self._lease_cursor,
+                self._agent.value,
+            ):
+                return self._reviewer.review(review_input)
         self._queue.record_model_progress(
             self._lease_cursor.lease,
             "batches_planned",
@@ -413,10 +435,15 @@ class _PersistentBatchedReviewer:
                 agent=self._agent.value,
             )
             try:
-                result = remap_model_review_result(
-                    self._reviewer.review(batch.review_input),
-                    batch,
-                )
+                with _model_budget_context(
+                    self._queue,
+                    self._lease_cursor,
+                    self._agent.value,
+                ):
+                    result = remap_model_review_result(
+                        self._reviewer.review(batch.review_input),
+                        batch,
+                    )
                 self._queue.complete_model_batch(
                     self._lease_cursor.lease,
                     batch.number,
@@ -541,29 +568,20 @@ def _model_batch_retry_delay(error: SafeError, attempt_count: int) -> timedelta:
 
 def _workflow_result(
     review_input: ModelReviewInput,
-    execution: "object",
+    execution: WorkflowExecution,
 ) -> ModelReviewResult:
     """把多 Agent 结果折叠为一条兼容记录，汇总 Agent 作为配置代表。"""
 
-    agents = getattr(execution, "agents")
-    agent_results = tuple(
-        item.result
-        for item in agents
-        if getattr(item, "result", None) is not None
-    )
-    summary_execution = getattr(execution, "summary_execution", None)
-    summary_result = (
-        summary_execution.result
-        if (
-            summary_execution is not None
-            and getattr(summary_execution, "result", None) is not None
-        )
-        else None
-    )
-    results = (
-        (*agent_results, summary_result)
-        if summary_result is not None
-        else agent_results
+    agent_results_list: list[ModelReviewResult] = []
+    for agent_execution in execution.agents:
+        if agent_execution.result is not None:
+            agent_results_list.append(agent_execution.result)
+    agent_results = tuple(agent_results_list)
+    summary_result: ModelReviewResult | None = None
+    if execution.summary_execution is not None:
+        summary_result = execution.summary_execution.result
+    results: tuple[ModelReviewResult, ...] = agent_results + (
+        (summary_result,) if summary_result is not None else ()
     )
     if not results:
         raise TaskQueueError("固定 Agent 没有可持久化的模型结果")
@@ -574,7 +592,7 @@ def _workflow_result(
         not review_input.units
         and all(item.status is ModelCallStatus.SKIPPED for item in results)
     )
-    if getattr(execution, "status", None) != "completed" or not (
+    if execution.status != "completed" or not (
         all_succeeded or all_skipped
     ):
         raise TaskQueueError("固定 Agent 仅能聚合全部成功的模型结果")
@@ -600,7 +618,7 @@ def _workflow_result(
     fingerprint = sha256(
         "|".join(item.request_fingerprint for item in results).encode("ascii")
     ).hexdigest()
-    final_findings = tuple(getattr(execution, "findings"))
+    final_findings = tuple(execution.findings)
     conclusion_source = (
         summary_result.output
         if summary_result is not None
@@ -637,6 +655,12 @@ def _workflow_result(
             checked_areas=conclusion_source.checked_areas,
             findings=final_findings,
         )
+    estimated_costs = tuple(item.estimated_cost_microusd for item in results)
+    estimated_cost_microusd = (
+        sum(cost for cost in estimated_costs if cost is not None)
+        if all(cost is not None for cost in estimated_costs)
+        else None
+    )
     return ModelReviewResult(
         provider=representative.provider,
         api_protocol=representative.api_protocol,
@@ -653,11 +677,7 @@ def _workflow_result(
         response_status=(representative.response_status if all_succeeded else None),
         duration_ms=sum(item.duration_ms for item in results),
         usage=usage,
-        estimated_cost_microusd=(
-            sum(item.estimated_cost_microusd for item in results)
-            if all(item.estimated_cost_microusd is not None for item in results)
-            else None
-        ),
+        estimated_cost_microusd=estimated_cost_microusd,
         output=output,
     )
 
@@ -687,7 +707,10 @@ class WorkerRuntime:
         model_reviewer: ModelReviewer | None = None,
         ai_runtime_provider: AiRuntimeProvider | None = None,
         knowledge_base: MarkdownKnowledgeBase | None = None,
+        maintenance: WorkerMaintenance | None = None,
+        evidence_verifier: EvidenceVerifier | None = None,
         stop_event: Event | None = None,
+        instance_id: str | None = None,
     ) -> None:
         """保存队列适配器、运行参数和可选的停止事件。
 
@@ -710,7 +733,50 @@ class WorkerRuntime:
         self._model_reviewer = model_reviewer
         self._ai_runtime_provider = ai_runtime_provider
         self._knowledge_base = knowledge_base
+        self._maintenance = maintenance
+        self._evidence_verifier = evidence_verifier
         self._stop_event = stop_event or Event()
+        self._instance_id = instance_id or uuid4().hex
+        if not 1 <= len(self._instance_id) <= 64:
+            raise ValueError("worker instance ID must contain 1 to 64 characters")
+        self._heartbeat_started = False
+
+    def _ensure_heartbeat_started(self) -> None:
+        """确保本进程先接管心跳，再执行任何任务或状态写入。"""
+
+        if self._heartbeat_started:
+            return
+        _start_worker_heartbeat(
+            self._queue,
+            self._settings.worker_id,
+            self._instance_id,
+        )
+        self._heartbeat_started = True
+
+    def _verify_findings(
+        self,
+        cursor: _LeaseCursor,
+        review_input: ModelReviewInput,
+        findings: tuple[MaterializedFinding, ...],
+    ) -> tuple[MaterializedFinding, ...]:
+        """在持久化前批量核验源码证据；任何异常都安全降级。"""
+
+        if self._evidence_verifier is None or not findings:
+            return findings
+        try:
+            target = self._queue.load_target(cursor.lease)
+            results = self._evidence_verifier.verify(
+                review_input,
+                findings,
+                installation_id=target.installation_id,
+            )
+            return apply_evidence_verification(findings, results)
+        except Exception:
+            LOGGER.exception(
+                "任务 %s 的源码证据核验失败，将保守标记为未核验",
+                cursor.lease.task_id,
+            )
+            return apply_evidence_verification(findings, {})
 
     @property
     def stop_event(self) -> Event:
@@ -743,7 +809,7 @@ class WorkerRuntime:
             交给进程管理器处理。
         """
         worker_id = self._settings.worker_id
-        self._queue.record_heartbeat(worker_id, WorkerStatus.STARTING)
+        self._ensure_heartbeat_started()
         LOGGER.info("Worker 已启动，等待数据库任务")
         try:
             while not self._stop_event.is_set():
@@ -756,7 +822,13 @@ class WorkerRuntime:
                 self._stop_event.wait(self._settings.poll_interval.total_seconds())
         finally:
             try:
-                self._queue.record_heartbeat(worker_id, WorkerStatus.STOPPING)
+                _record_worker_heartbeat(
+                    self._queue,
+                    worker_id,
+                    WorkerStatus.STOPPING,
+                    None,
+                    self._instance_id,
+                )
             except TaskQueueError:
                 LOGGER.exception("Worker 停止状态写入失败")
             LOGGER.info("Worker 已停止")
@@ -782,11 +854,27 @@ class WorkerRuntime:
             重试/失败状态，若失败上报本身也失败则只记录日志并结束本轮。
         """
         worker_id = self._settings.worker_id
+        self._ensure_heartbeat_started()
         recovered = self._queue.recover_expired_leases()
         if recovered:
             LOGGER.warning("已恢复 %s 个租约超时任务", recovered)
 
-        self._queue.record_heartbeat(worker_id, WorkerStatus.IDLE)
+        _record_worker_heartbeat(
+            self._queue,
+            worker_id,
+            WorkerStatus.IDLE,
+            None,
+            self._instance_id,
+        )
+        if self._maintenance is not None:
+            try:
+                self._maintenance.run_once(worker_id)
+            except OperationsError:
+                LOGGER.exception("Worker 本轮运维维护失败，将在下一轮重试")
+        # SIGTERM 可能在恢复/维护期间到达；在真正领取前再次检查，避免关停窗口
+        # 又启动一条新任务。当前已领取的任务仍由本轮安全边界负责完成或续租。
+        if self._stop_event.is_set():
+            return False
         ai_runtime = (
             self._ai_runtime_provider.current()
             if self._ai_runtime_provider is not None
@@ -804,13 +892,20 @@ class WorkerRuntime:
         if lease is None:
             return False
 
-        self._queue.record_heartbeat(worker_id, WorkerStatus.BUSY, lease.task_id)
+        _record_worker_heartbeat(
+            self._queue,
+            worker_id,
+            WorkerStatus.BUSY,
+            lease.task_id,
+            self._instance_id,
+        )
         cursor = _LeaseCursor(self._queue, lease, self._settings.lease_duration)
         busy_heartbeat = (
             _BusyHeartbeat(
                 self._queue,
                 worker_id,
                 lease.task_id,
+                self._instance_id,
                 self._settings.poll_interval,
                 cursor,
             )
@@ -840,7 +935,10 @@ class WorkerRuntime:
                 safe_error.safe_message,
             )
             try:
-                self._queue.retry_or_fail(cursor.lease, safe_error)
+                if safe_error.code is ErrorCode.MODEL_BUDGET_EXCEEDED:
+                    self._queue.pause_for_model_budget(cursor.lease, safe_error)
+                else:
+                    self._queue.retry_or_fail(cursor.lease, safe_error)
             except TaskQueueError as persistence_error:
                 persisted_error = SafeError.from_exception(persistence_error)
                 LOGGER.error(
@@ -851,7 +949,13 @@ class WorkerRuntime:
         finally:
             if busy_heartbeat is not None:
                 busy_heartbeat.stop()
-            self._queue.record_heartbeat(worker_id, WorkerStatus.IDLE)
+            _record_worker_heartbeat(
+                self._queue,
+                worker_id,
+                WorkerStatus.IDLE,
+                None,
+                self._instance_id,
+            )
         return True
 
     def _advance_to_supported_boundary(
@@ -1032,10 +1136,15 @@ class WorkerRuntime:
                             },
                         )
                         try:
-                            batch_result = remap_model_review_result(
-                                model_reviewer.review(batch.review_input),
-                                batch,
-                            )
+                            with _model_budget_context(
+                                self._queue,
+                                cursor,
+                                "default",
+                            ):
+                                batch_result = remap_model_review_result(
+                                    model_reviewer.review(batch.review_input),
+                                    batch,
+                                )
                             complete_batch = getattr(
                                 self._queue,
                                 "complete_model_batch",
@@ -1123,8 +1232,10 @@ class WorkerRuntime:
                         tuple(batch_results),
                     )
                 else:
-                    model_result = model_reviewer.review(model_input)
+                    with _model_budget_context(self._queue, cursor, "default"):
+                        model_result = model_reviewer.review(model_input)
                 findings = materialize_findings(model_input, model_result.output)
+                findings = self._verify_findings(cursor, model_input, findings)
                 stored_model = self._queue.store_model_review(
                     cursor.lease,
                     model_input,
@@ -1194,8 +1305,9 @@ class WorkerRuntime:
         }
         summary_reviewer = base_workflow.summary_reviewer
         summary_settings = settings_by_agent.get(ReviewAgent.SUMMARY)
+        wrapped_summary: ModelReviewer | None
         if summary_reviewer is not None and summary_settings is not None:
-            wrapped_summary: ModelReviewer = _PersistentBatchedReviewer(
+            wrapped_summary = _PersistentBatchedReviewer(
                 self._queue,
                 cursor,
                 ReviewAgent.SUMMARY,
@@ -1318,12 +1430,15 @@ class WorkerRuntime:
                 if item is not None and item.safe_error is not None
             )
             if failed_executions:
-                raise SafeApplicationError(failed_executions[0].safe_error)
+                safe_error = failed_executions[0].safe_error
+                if safe_error is not None:
+                    raise SafeApplicationError(safe_error)
             raise TaskQueueError(execution.summary)
         # FixedAgentWorkflow 的候选已做稳定去重；统一持久化接口仍负责 SHA、
         # blob 和 verification 状态补齐。
         combined = _workflow_result(model_input, execution)
         findings = materialize_findings(model_input, combined.output)
+        findings = self._verify_findings(cursor, model_input, findings)
         stored = self._queue.store_model_review(
             cursor.lease,
             model_input,
@@ -1359,6 +1474,8 @@ def main() -> None:
         github_tokens = GitHubAppTokenProvider(
             github_api,
             GitHubAppSettings.from_environment(),
+            GITHUB_READ_TOKEN_SCOPE,
+            access_policy=GitHubAccessPolicy.from_environment(),
         )
         database = Database.from_environment()
         cipher = AiSecretCipher.from_environment()
@@ -1377,6 +1494,13 @@ def main() -> None:
                 os.environ.get("OPENREVIEWER_AGENT_MAX_CONCURRENCY", "3")
             ),
         )
+        operations_settings = OperationsSettings.from_environment()
+        maintenance = WorkerMaintenance(
+            OperationsService(
+                SqlAlchemyOperationsRepository(database.sessions),
+                operations_settings,
+            )
+        )
     except Exception:
         if ai_runtime_provider is not None:
             ai_runtime_provider.close()
@@ -1392,6 +1516,8 @@ def main() -> None:
             database.sessions,
             os.environ.get("OPENREVIEWER_KNOWLEDGE_ROOT", "knowledge"),
         ),
+        maintenance=maintenance,
+        evidence_verifier=GitHubEvidenceVerifier(github_api, github_tokens),
     )
 
     def stop_worker(_signum: int, _frame: object) -> None:
@@ -1407,11 +1533,19 @@ def main() -> None:
         """
         runtime.stop_event.set()
 
-    signal.signal(signal.SIGTERM, stop_worker)
-    signal.signal(signal.SIGINT, stop_worker)
+    telemetry_server: TelemetryHttpServer | None = None
     try:
+        telemetry_server = TelemetryHttpServer(
+            settings.telemetry_host,
+            settings.telemetry_port,
+        )
+        signal.signal(signal.SIGTERM, stop_worker)
+        signal.signal(signal.SIGINT, stop_worker)
+        telemetry_server.start()
         runtime.run()
     finally:
+        if telemetry_server is not None:
+            telemetry_server.close()
         ai_runtime_provider.close()
         github_api.close()
         database.dispose()

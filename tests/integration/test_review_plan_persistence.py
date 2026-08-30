@@ -26,7 +26,7 @@ from domain.github import (
     PullRequestFile,
     PullRequestSnapshot,
 )
-from domain.models import ReviewRequest
+from domain.model_budget import ModelBudgetPolicy
 from domain.model_review import (
     ModelFindingCandidate,
     ModelFindingLocation,
@@ -36,12 +36,15 @@ from domain.model_review import (
     ModelTokenUsage,
     materialize_findings,
 )
+from domain.models import ReviewRequest
 from domain.review_planning import RepositoryRule, RepositoryRulesSnapshot
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from persistence.database import Database
 from persistence.models import (
     Base,
+    FindingLifecycleRecord,
     ModelCallRecord,
+    ModelHttpCallRecord,
     OutboxEventRecord,
     PullRequestVersionRecord,
     ReviewFilePlanRecord,
@@ -53,12 +56,20 @@ from persistence.models import (
     ReviewUnitRecord,
 )
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.ai_settings import ActiveAiRuntime
+from services.model_budget import ModelBudgetRequest
 from services.model_review import ModelServiceSettings
-from services.review_planning import DeterministicReviewPlanner
+from services.review_management import ReviewAction
+from services.review_planning import DeterministicReviewPlanner, ReviewPlanningSettings
 from services.reviews import ReviewService
-from services.task_queue import ReviewPlanConflictError, ReviewPlanInputError, ReviewTarget
+from services.task_queue import (
+    ModelBudgetExceededError,
+    ReviewPlanConflictError,
+    ReviewPlanInputError,
+    ReviewTarget,
+)
 
 
 class MutableClock:
@@ -272,6 +283,42 @@ def _context(head_sha: str, now: datetime) -> GitHubReviewContext:
     )
 
 
+def _complete_context(head_sha: str, now: datetime) -> GitHubReviewContext:
+    """只包含一个可审查文本文件，用于验证完整覆盖下的结果消解。"""
+
+    file = _files()[0]
+    return GitHubReviewContext(
+        pull_request=PullRequestSnapshot(
+            repository_id=42,
+            repository="lboverfys/NiuMa",
+            pull_request_number=48,
+            author_login="contributor",
+            html_url="https://github.com/lboverfys/NiuMa/pull/48",
+            head_repository="contributor/NiuMa",
+            head_ref="feature/review-plan",
+            base_repository="lboverfys/NiuMa",
+            base_ref="main",
+            base_sha="b" * 40,
+            head_sha=head_sha,
+            state=PullRequestState.OPEN,
+            draft=False,
+            title="Track findings across commits",
+            changed_files=1,
+            updated_at=now,
+        ),
+        files=(file,),
+        files_complete=True,
+        diff_complete=True,
+        ci=CiSnapshot(
+            head_sha=head_sha,
+            state=CiState.SUCCESS,
+            checks=(),
+            complete=True,
+            checked_at=now,
+        ),
+    )
+
+
 def _rules(target: ReviewTarget) -> RepositoryRulesSnapshot:
     content = "# Review rules\nCheck authorization boundaries.\n"
     encoded = content.encode("utf-8")
@@ -322,6 +369,7 @@ def _prepare_planning_lease(
     clock: MutableClock,
     key: str = "review-plan",
     head_sha: str = "a" * 40,
+    complete_context: bool = False,
 ):
     task_id, run_id = _submit(database, clock, key, head_sha)
     queue = SqlAlchemyReviewTaskQueue(database.sessions, clock=clock)
@@ -329,7 +377,11 @@ def _prepare_planning_lease(
     assert context_lease is not None
     assert queue.store_github_context(
         context_lease,
-        _context(head_sha, clock.value),
+        (
+            _complete_context(head_sha, clock.value)
+            if complete_context
+            else _context(head_sha, clock.value)
+        ),
         ci_poll_interval=timedelta(seconds=30),
         ci_wait_timeout=timedelta(hours=1),
     ) is ExecutionStatus.READY_FOR_REVIEW
@@ -337,6 +389,71 @@ def _prepare_planning_lease(
     assert planning_lease is not None
     assert planning_lease.claimed_from_status is ExecutionStatus.READY_FOR_REVIEW
     return queue, planning_lease, task_id, run_id
+
+
+def _store_complete_review(
+    database: Database,
+    clock: MutableClock,
+    *,
+    key: str,
+    head_sha: str,
+    include_finding: bool,
+) -> str:
+    queue, plan_lease, _task_id, run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key=key,
+        head_sha=head_sha,
+        complete_context=True,
+    )
+    planning_input = queue.load_planning_input(plan_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(plan_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    model_input = queue.load_model_review_input(model_lease)
+    result = StaticModelReviewer().review(model_input)
+    if not include_finding:
+        result = result.model_copy(
+            update={"output": ModelReviewOutput(findings=())}
+        )
+    queue.store_model_review(
+        model_lease,
+        model_input,
+        result,
+        materialize_findings(model_input, result.output),
+    )
+    return run_id
+
+
+def _prepare_budget_lease(
+    database: Database,
+    clock: MutableClock,
+    *,
+    key: str,
+    policy: ModelBudgetPolicy,
+):
+    queue, planning_lease, task_id, run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key=key,
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner(
+        ReviewPlanningSettings(model_budget=policy)
+    ).plan(planning_input.target, planning_input.files, rules)
+    stored = queue.store_review_plan(planning_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    assert model_lease.review_plan_id == stored.plan_id
+    assert stored.plan_id is not None
+    return queue, model_lease, task_id, run_id, stored.plan_id
 
 
 def test_sqlite_plan_is_loaded_once_and_saved_atomically(
@@ -498,13 +615,136 @@ def test_model_review_is_loaded_and_saved_atomically(database: Database) -> None
         assert call.estimated_cost_microusd == 375
         assert call.finding_count == 1
         assert finding.head_sha == "a" * 40
-        assert finding.verification_status == "unverified"
-        assert finding.location_in_diff is False
+        assert finding.verification_status == "verified"
+        assert finding.location_in_diff is True
         assert session.scalar(
             select(func.count())
             .select_from(OutboxEventRecord)
             .where(OutboxEventRecord.event_type == "review.model.completed")
         ) == 1
+
+
+def test_complete_reviews_track_present_fixed_and_reintroduced_findings(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 8, 28, 9, 0, tzinfo=UTC))
+    first_run_id = _store_complete_review(
+        database,
+        clock,
+        key="lifecycle-first",
+        head_sha="1" * 40,
+        include_finding=True,
+    )
+    clock.value += timedelta(minutes=1)
+    second_run_id = _store_complete_review(
+        database,
+        clock,
+        key="lifecycle-second",
+        head_sha="2" * 40,
+        include_finding=True,
+    )
+    clock.value += timedelta(minutes=1)
+    fixed_run_id = _store_complete_review(
+        database,
+        clock,
+        key="lifecycle-fixed",
+        head_sha="3" * 40,
+        include_finding=False,
+    )
+
+    management = SqlAlchemyReviewManagementRepository(
+        database.sessions,
+        clock=clock,
+    )
+    fixed_details = management.get(fixed_run_id)
+    assert fixed_details.fixed_finding_count == 1
+    assert fixed_details.findings == ()
+
+    clock.value += timedelta(minutes=1)
+    reintroduced_run_id = _store_complete_review(
+        database,
+        clock,
+        key="lifecycle-reintroduced",
+        head_sha="4" * 40,
+        include_finding=True,
+    )
+
+    with database.sessions() as session:
+        findings = list(
+            session.scalars(
+                select(ReviewFindingRecord).order_by(
+                    ReviewFindingRecord.created_at.asc()
+                )
+            )
+        )
+        assert [item.lifecycle_status for item in findings] == [
+            "new",
+            "still_present",
+            "reintroduced",
+        ]
+        assert [item.occurrence_count for item in findings] == [1, 2, 3]
+        assert findings[0].previous_review_run_id is None
+        assert findings[1].previous_review_run_id == first_run_id
+        assert findings[2].previous_review_run_id == second_run_id
+        lifecycle = session.scalar(select(FindingLifecycleRecord))
+        assert lifecycle is not None
+        assert lifecycle.state == "present"
+        assert lifecycle.last_seen_review_run_id == reintroduced_run_id
+        assert lifecycle.previous_seen_review_run_id == second_run_id
+        assert lifecycle.fixed_by_review_run_id is None
+        assert lifecycle.occurrence_count == 3
+
+    details = management.get(reintroduced_run_id)
+    assert details.fixed_finding_count == 0
+    assert details.findings[0].lifecycle_status == "reintroduced"
+    assert details.findings[0].occurrence_count == 3
+
+
+def test_partial_review_does_not_mark_absent_finding_as_fixed(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 8, 28, 10, 0, tzinfo=UTC))
+    _store_complete_review(
+        database,
+        clock,
+        key="lifecycle-complete-before-partial",
+        head_sha="5" * 40,
+        include_finding=True,
+    )
+    clock.value += timedelta(minutes=1)
+    queue, plan_lease, _task_id, partial_run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="lifecycle-partial",
+        head_sha="6" * 40,
+    )
+    planning_input = queue.load_planning_input(plan_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(plan_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    model_input = queue.load_model_review_input(model_lease)
+    result = StaticModelReviewer().review(model_input).model_copy(
+        update={"output": ModelReviewOutput(findings=())}
+    )
+    queue.store_model_review(model_lease, model_input, result, ())
+
+    with database.sessions() as session:
+        lifecycle = session.scalar(select(FindingLifecycleRecord))
+        assert lifecycle is not None
+        assert lifecycle.state == "present"
+        assert lifecycle.fixed_by_review_run_id is None
+    assert (
+        SqlAlchemyReviewManagementRepository(database.sessions)
+        .get(partial_run_id)
+        .fixed_finding_count
+        == 0
+    )
 
 
 def test_model_aggregating_state_is_atomic_and_idempotent(database: Database) -> None:
@@ -638,6 +878,299 @@ def test_model_stage_uses_an_independent_retry_counter(database: Database) -> No
     assert second_model_lease.review_plan_id is not None
 
 
+def test_model_budget_settlement_releases_unused_reservation(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 8, 28, 8, 0, tzinfo=UTC))
+    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
+        database,
+        clock,
+        key="budget-settlement",
+        policy=ModelBudgetPolicy(
+            max_http_calls=2,
+            max_input_tokens=1_000,
+            max_output_tokens=256,
+            max_estimated_cost_microusd=1_000,
+            max_duration_seconds=30,
+        ),
+    )
+    reservation = queue.reserve_model_budget(
+        lease,
+        ModelBudgetRequest(
+            provider="openai",
+            api_protocol="responses",
+            model="test-model",
+            request_bytes=200,
+            input_token_upper_bound=400,
+            output_token_upper_bound=100,
+            cost_upper_bound_microusd=500,
+        ),
+    )
+
+    queue.settle_model_budget(
+        reservation,
+        input_tokens=150,
+        output_tokens=30,
+        estimated_cost_microusd=125,
+        response_status=200,
+        duration_ms=250,
+    )
+
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        call = session.get(ModelHttpCallRecord, reservation.id)
+        assert plan is not None
+        assert call is not None
+        assert plan.model_http_calls == 1
+        assert plan.model_input_tokens == 150
+        assert plan.model_output_tokens == 30
+        assert plan.model_estimated_cost_microusd == 125
+        assert call.status == "settled"
+        assert call.actual_input_tokens == 150
+        assert call.actual_output_tokens == 30
+        assert call.actual_cost_microusd == 125
+
+
+def test_model_budget_settlement_rejects_a_response_after_the_hard_deadline(
+    database: Database,
+) -> None:
+    """最后一个慢响应越过计划截止线时，结果不能继续进入成功流程。"""
+
+    clock = MutableClock(datetime(2026, 8, 28, 8, 5, tzinfo=UTC))
+    queue, lease, _task_id, run_id, plan_id = _prepare_budget_lease(
+        database,
+        clock,
+        key="budget-deadline",
+        policy=ModelBudgetPolicy(
+            max_http_calls=2,
+            max_input_tokens=1_000,
+            max_output_tokens=256,
+            max_estimated_cost_microusd=1_000,
+            max_duration_seconds=30,
+        ),
+    )
+    reservation = queue.reserve_model_budget(
+        lease,
+        ModelBudgetRequest(
+            provider="openai",
+            api_protocol="responses",
+            model="test-model",
+            request_bytes=200,
+            input_token_upper_bound=400,
+            output_token_upper_bound=100,
+            cost_upper_bound_microusd=500,
+        ),
+    )
+    clock.value += timedelta(seconds=31)
+
+    with pytest.raises(ModelBudgetExceededError) as captured:
+        queue.settle_model_budget(
+            reservation,
+            input_tokens=150,
+            output_tokens=30,
+            estimated_cost_microusd=125,
+            response_status=200,
+            duration_ms=31_000,
+        )
+
+    assert captured.value.error.details["budget_reason"] == "duration"
+    assert captured.value.error.details["settled_after_deadline"] is True
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        call = session.get(ModelHttpCallRecord, reservation.id)
+        assert plan is not None
+        assert call is not None
+        assert plan.model_budget_exhausted_reason == "duration"
+        assert call.status == "settled"
+        assert session.scalar(
+            select(func.count())
+            .select_from(OutboxEventRecord)
+            .where(
+                OutboxEventRecord.aggregate_id == run_id,
+                OutboxEventRecord.event_type == "review.model.budget_exhausted",
+            )
+        ) == 1
+
+
+def test_uncertain_model_budget_settlement_is_conservative_and_idempotent(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 8, 28, 8, 10, tzinfo=UTC))
+    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
+        database,
+        clock,
+        key="budget-uncertain",
+        policy=ModelBudgetPolicy(
+            max_http_calls=2,
+            max_input_tokens=1_000,
+            max_output_tokens=256,
+            max_estimated_cost_microusd=1_000,
+            max_duration_seconds=30,
+        ),
+    )
+    reservation = queue.reserve_model_budget(
+        lease,
+        ModelBudgetRequest(
+            provider="anthropic",
+            api_protocol="messages",
+            model="test-model",
+            request_bytes=200,
+            input_token_upper_bound=400,
+            output_token_upper_bound=100,
+            cost_upper_bound_microusd=500,
+        ),
+    )
+
+    queue.settle_model_budget(
+        reservation,
+        input_tokens=None,
+        output_tokens=None,
+        estimated_cost_microusd=None,
+        response_status=None,
+        duration_ms=1_000,
+        uncertain=True,
+    )
+    queue.settle_model_budget(
+        reservation,
+        input_tokens=1,
+        output_tokens=1,
+        estimated_cost_microusd=1,
+        response_status=200,
+        duration_ms=2_000,
+    )
+
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        call = session.get(ModelHttpCallRecord, reservation.id)
+        assert plan is not None
+        assert call is not None
+        assert plan.model_input_tokens == 400
+        assert plan.model_output_tokens == 100
+        assert plan.model_estimated_cost_microusd == 500
+        assert call.status == "uncertain"
+        assert call.actual_input_tokens is None
+        assert call.actual_output_tokens is None
+        assert call.actual_cost_microusd is None
+
+
+def test_cost_cap_rejects_request_when_model_pricing_is_unknown(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 8, 28, 8, 20, tzinfo=UTC))
+    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
+        database,
+        clock,
+        key="budget-pricing-unknown",
+        policy=ModelBudgetPolicy(
+            max_http_calls=2,
+            max_input_tokens=1_000,
+            max_output_tokens=256,
+            max_estimated_cost_microusd=1_000,
+            max_duration_seconds=30,
+        ),
+    )
+
+    with pytest.raises(ModelBudgetExceededError) as captured:
+        queue.reserve_model_budget(
+            lease,
+            ModelBudgetRequest(
+                provider="openai",
+                api_protocol="responses",
+                model="unpriced-model",
+                request_bytes=200,
+                input_token_upper_bound=400,
+                output_token_upper_bound=100,
+                cost_upper_bound_microusd=None,
+            ),
+        )
+
+    assert captured.value.error.details["budget_reason"] == "pricing_unknown"
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        assert plan is not None
+        assert plan.model_budget_exhausted_reason == "pricing_unknown"
+        assert plan.model_http_calls == 0
+        assert session.scalar(
+            select(func.count()).select_from(ModelHttpCallRecord)
+        ) == 0
+
+
+def test_budget_pause_resume_grants_an_audited_additional_window(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 8, 28, 8, 30, tzinfo=UTC))
+    queue, first_lease, task_id, run_id, plan_id = _prepare_budget_lease(
+        database,
+        clock,
+        key="budget-resume-grant",
+        policy=ModelBudgetPolicy(
+            max_http_calls=1,
+            max_input_tokens=1_000,
+            max_output_tokens=256,
+            max_estimated_cost_microusd=1_000,
+            max_duration_seconds=30,
+        ),
+    )
+    request = ModelBudgetRequest(
+        provider="openai",
+        api_protocol="responses",
+        model="test-model",
+        request_bytes=200,
+        input_token_upper_bound=400,
+        output_token_upper_bound=100,
+        cost_upper_bound_microusd=250,
+    )
+    first = queue.reserve_model_budget(first_lease, request)
+    queue.settle_model_budget(
+        first,
+        input_tokens=200,
+        output_tokens=50,
+        estimated_cost_microusd=100,
+        response_status=200,
+        duration_ms=200,
+    )
+    with pytest.raises(ModelBudgetExceededError) as captured:
+        queue.reserve_model_budget(first_lease, request)
+    queue.pause_for_model_budget(first_lease, captured.value.error)
+
+    repository = SqlAlchemyReviewManagementRepository(
+        database.sessions,
+        clock=clock,
+    )
+    resumed_run_id, resumed_task_id, status = repository.apply_action(
+        run_id,
+        ReviewAction.RESUME,
+        actor="test-administrator",
+        request_id="budget-resume-001",
+    )
+    assert resumed_run_id == run_id
+    assert resumed_task_id == task_id
+    assert status is ExecutionStatus.READY_FOR_REVIEW
+
+    second_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert second_lease is not None
+    second = queue.reserve_model_budget(second_lease, request)
+    assert second.sequence == 2
+
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        task = session.get(ReviewTaskRecord, task_id)
+        resume_event = session.scalar(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.event_type == "review.workflow.resume"
+            )
+        )
+        assert plan is not None
+        assert task is not None
+        assert resume_event is not None
+        assert plan.model_budget_resume_count == 1
+        assert plan.model_budget_exhausted_reason is None
+        assert task.last_error_code is None
+        assert resume_event.payload["model_budget_granted"] is True
+        assert resume_event.payload["previous_budget_reason"] == "http_calls"
+        assert resume_event.payload["max_model_http_calls"] == 2
+
+
 def test_incomplete_file_snapshot_cannot_be_planned(database: Database) -> None:
     clock = MutableClock(datetime(2026, 8, 25, 11, 0, tzinfo=UTC))
     queue, lease, _task_id, run_id = _prepare_planning_lease(
@@ -696,7 +1229,9 @@ def test_new_sha_supersedes_old_lease_before_plan_insert(database: Database) -> 
         assert old_run is not None
         assert new_task is not None
         assert old_task.execution_status == ExecutionStatus.SUPERSEDED.value
+        assert old_task.workflow_status == ExecutionStatus.SUPERSEDED.value
         assert old_run.execution_status == ExecutionStatus.SUPERSEDED.value
+        assert old_run.workflow_status == ExecutionStatus.SUPERSEDED.value
         assert new_task.execution_status == ExecutionStatus.QUEUED.value
         assert session.scalar(
             select(func.count()).select_from(ReviewPlanRecord)

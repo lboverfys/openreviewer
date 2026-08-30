@@ -2,14 +2,16 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from apps.api.main import create_app
 from domain.enums import (
+    ExecutionStatus,
     FindingCategory,
     LocationSide,
     ModelApiProtocol,
@@ -20,12 +22,13 @@ from domain.enums import (
     VerificationStatus,
 )
 from domain.github import PullRequestSnapshot
-from domain.model_review import ModelTokenUsage
-from domain.models import FindingLocation, ReviewFinding, ReviewRequest
+from domain.models import ReviewRequest
 from domain.security import ErrorCode, SafeApplicationError, SafeError
+from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database
 from persistence.models import (
     Base,
+    FindingEvaluationRecord,
     GitHubInstallationRecord,
     ModelCallRecord,
     ModelReviewBatchRecord,
@@ -37,13 +40,21 @@ from persistence.models import (
     ReviewTaskRecord,
 )
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.dashboard import DashboardService
-from persistence.dashboard import SqlAlchemyDashboardRepository
+from services.review_management import (
+    FindingDecision,
+    ReviewAction,
+    ReviewManagementService,
+)
 from services.reviews import ReviewService
-from services.review_management import ReviewManagementService
-from persistence.review_management import SqlAlchemyReviewManagementRepository
-from tests.support import TEST_PASSWORD, TEST_USERNAME, make_auth_service
+from tests.support import (
+    TEST_GITHUB_ACCESS_POLICY,
+    TEST_PASSWORD,
+    TEST_USERNAME,
+    make_auth_service,
+)
 
 
 @pytest.fixture
@@ -66,7 +77,64 @@ def application_for(database: Database):
         review_management_service=ReviewManagementService(
             SqlAlchemyReviewManagementRepository(database.sessions)
         ),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
     )
+
+
+def test_evaluation_gate_reads_only_recent_rows_in_one_statement(
+    database: Database,
+) -> None:
+    """评测门禁按类别有界读取，避免历史表增长后扫描全仓库。"""
+
+    now = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    with database.sessions() as session:
+        session.add_all(
+            [
+                FindingEvaluationRecord(
+                    finding_id=f"evaluation-{index:03d}",
+                    repository_id=42,
+                    category=FindingCategory.SECURITY.value,
+                    severity=Severity.HIGH.value,
+                    verdict=("valid" if index < 100 else "false_positive"),
+                    adjudicated_at=now - timedelta(minutes=index),
+                    adjudicated_by=TEST_USERNAME,
+                    updated_at=now - timedelta(minutes=index),
+                )
+                for index in range(120)
+            ]
+        )
+        session.commit()
+
+        select_statements: list[str] = []
+
+        def count_selects(
+            _conn,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            if statement.lstrip().upper().startswith("SELECT"):
+                select_statements.append(statement)
+
+        event.listen(database.engine, "before_cursor_execute", count_selects)
+        try:
+            gates = SqlAlchemyReviewManagementRepository._load_evaluation_gates(
+                session,
+                42,
+            )
+        finally:
+            event.remove(database.engine, "before_cursor_execute", count_selects)
+
+    security = next(
+        gate for gate in gates if gate.category == FindingCategory.SECURITY.value
+    )
+    assert security.sample_count == 100
+    assert security.valid_count == 100
+    assert security.false_positive_count == 0
+    assert len(select_statements) == 1
+    assert "UNION ALL" in select_statements[0].upper()
 
 
 async def login(client: httpx.AsyncClient) -> None:
@@ -109,6 +177,13 @@ def test_detail_is_readable_and_cancel_is_audited(database: Database) -> None:
             assert body["findings"] == []
             assert body["events"][0]["event_type"] == "review.requested"
             assert "cancel" in body["available_actions"]
+            initial_token = body["change_token"]
+            assert len(initial_token) == 24
+            unchanged = await client.get(
+                f"/api/v1/reviews/{run_id}/change-token"
+            )
+            assert unchanged.status_code == 200
+            assert unchanged.json() == {"change_token": initial_token}
 
             cancelled = await client.post(
                 f"/api/v1/reviews/{run_id}/actions",
@@ -118,12 +193,100 @@ def test_detail_is_readable_and_cancel_is_audited(database: Database) -> None:
             assert cancelled.status_code == 200
             assert cancelled.json()["execution_status"] == "cancelled"
 
+            changed = await client.get(
+                f"/api/v1/reviews/{run_id}/change-token"
+            )
+            assert changed.status_code == 200
+            assert changed.json()["change_token"] != initial_token
+
             after = await client.get(f"/api/v1/reviews/{run_id}")
             assert after.status_code == 200
             assert after.json()["phase"] == "cancelled"
             assert after.json()["events"][-1]["event_type"] == "review.manual.cancel"
+            assert (
+                after.json()["change_token"]
+                == changed.json()["change_token"]
+            )
 
     asyncio.run(exercise())
+
+
+def test_action_idempotency_is_rechecked_after_target_lock(database: Database) -> None:
+    """并发请求在锁等待后发现事件时，不应撞唯一键并返回 503。"""
+
+    submission = ReviewService(
+        SqlAlchemyReviewRepository(database.sessions)
+    ).submit(
+        ReviewRequest(
+            installation_id=10,
+            repository_id=42,
+            repository="lboverfys/NiuMa",
+            pull_request_number=127,
+            head_sha="a" * 40,
+        ),
+        "action-lock-race-source",
+    )
+    request_id = "action-lock-race-001"
+    action = ReviewAction.EXPEDITE
+    action_digest = sha256(
+        f"{submission.review_run_id}:{action.value}:{request_id}".encode()
+    ).hexdigest()
+    event_key = (
+        f"review.action:{submission.review_run_id}:{action.value}:{action_digest}"
+    )
+    injected = False
+
+    def inject_after_first_lookup(
+        connection,
+        _cursor,
+        statement,
+        parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        nonlocal injected
+        normalized_statement = statement.lstrip().lower()
+        if (
+            injected
+            or not normalized_statement.startswith("select")
+            or "outbox_events" not in normalized_statement
+            or "event_key" not in normalized_statement
+            or event_key not in str(parameters)
+        ):
+            return
+        connection.execute(
+            OutboxEventRecord.__table__.insert().values(
+                id="event-action-lock-race",
+                event_key=event_key,
+                aggregate_type="review_run",
+                aggregate_id=submission.review_run_id,
+                event_type="review.manual.expedite",
+                payload={"action": action.value, "target_stage": None},
+                occurred_at=datetime.now(UTC),
+                publish_attempts=0,
+            )
+        )
+        injected = True
+
+    event.listen(database.engine, "after_cursor_execute", inject_after_first_lookup)
+    try:
+        result = SqlAlchemyReviewManagementRepository(
+            database.sessions
+        ).apply_action(
+            submission.review_run_id,
+            action,
+            actor="race-test",
+            request_id=request_id,
+        )
+    finally:
+        event.remove(database.engine, "after_cursor_execute", inject_after_first_lookup)
+
+    assert injected is True
+    assert result == (
+        submission.review_run_id,
+        submission.review_task_id,
+        ExecutionStatus.QUEUED,
+    )
 
 
 def test_historical_pull_request_identity_is_synced_once_without_rewriting_version(
@@ -166,6 +329,7 @@ def test_historical_pull_request_identity_is_synced_once_without_rewriting_versi
             SqlAlchemyReviewManagementRepository(database.sessions)
         ),
         identity_loader=IdentityLoader(),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
     )
 
     async def exercise() -> str:
@@ -299,6 +463,7 @@ def test_historical_identity_sync_exposes_only_safe_github_error(
             SqlAlchemyReviewManagementRepository(database.sessions)
         ),
         identity_loader=FailingIdentityLoader(),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
     )
 
     async def exercise() -> None:
@@ -798,6 +963,7 @@ def test_manual_publish_can_retry_after_external_failure_and_is_idempotent(
                 publisher=publisher,
             )
         ),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
     )
 
     async def exercise() -> None:
@@ -865,6 +1031,94 @@ def test_manual_publish_can_retry_after_external_failure_and_is_idempotent(
     assert len(set(publish_calls)) == 1
 
 
+def test_manual_publish_does_not_overwrite_a_replaced_attempt(
+    database: Database,
+) -> None:
+    """外部发布返回后若令牌已被替换，旧尝试只能报告冲突。"""
+
+    def publisher(details) -> None:
+        with database.sessions() as session:
+            run = session.get(ReviewRunRecord, details.review_run_id)
+            task = session.scalar(
+                select(ReviewTaskRecord).where(
+                    ReviewTaskRecord.review_run_id == details.review_run_id
+                )
+            )
+            assert run is not None
+            assert task is not None
+            # 模拟发布恢复流程已经启动了下一次尝试；真实流程会在短事务
+            # 中写入新的令牌，旧回调随后必须被拒绝。
+            run.publish_attempt_token = "replacement-attempt"
+            session.commit()
+
+    application = create_app(
+        ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+        auth_service=make_auth_service(),
+        dashboard_service=DashboardService(
+            SqlAlchemyDashboardRepository(database.sessions)
+        ),
+        review_management_service=ReviewManagementService(
+            SqlAlchemyReviewManagementRepository(
+                database.sessions,
+                publisher=publisher,
+            )
+        ),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
+    )
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "publish-token-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 133,
+                    "head_sha": "3" * 40,
+                },
+            )
+            run_id = created.json()["review_run_id"]
+            with database.sessions() as session:
+                run = session.get(ReviewRunRecord, run_id)
+                task = session.scalar(
+                    select(ReviewTaskRecord).where(
+                        ReviewTaskRecord.review_run_id == run_id
+                    )
+                )
+                assert run is not None
+                assert task is not None
+                run.execution_status = "completed"
+                task.execution_status = "completed"
+                run.workflow_status = "awaiting_publish"
+                task.workflow_status = "awaiting_publish"
+                session.commit()
+
+            response = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": f"ui:publish-token:{run_id}"},
+                json={"action": "publish"},
+            )
+            assert response.status_code == 409
+            assert "冲突" in response.json()["detail"]
+
+            detail = await client.get(f"/api/v1/reviews/{run_id}")
+            assert detail.status_code == 200
+            assert detail.json()["workflow_status"] == "publishing"
+            assert not any(
+                event["event_type"] == "review.manual.publish_completed"
+                for event in detail.json()["events"]
+            )
+
+    asyncio.run(exercise())
+
+
 def test_rerun_creates_a_new_queued_run(database: Database) -> None:
     application = application_for(database)
 
@@ -903,6 +1157,28 @@ def test_rerun_creates_a_new_queued_run(database: Database) -> None:
             )
             assert repeated.status_code == 200
             assert repeated.json()["review_run_id"] == rerun.json()["review_run_id"]
+
+            # 幂等键允许 200 字符；只在尾部不同的长键也必须创建不同的重跑，
+            # 不能被旧实现截断成同一个数据库键。
+            long_prefix = "x" * 190
+            long_key_a = long_prefix + "a"
+            long_key_b = long_prefix + "b"
+            long_rerun_a = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": long_key_a},
+                json={"action": "rerun"},
+            )
+            long_rerun_b = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": long_key_b},
+                json={"action": "rerun"},
+            )
+            assert long_rerun_a.status_code == 200
+            assert long_rerun_b.status_code == 200
+            assert (
+                long_rerun_a.json()["review_run_id"]
+                != long_rerun_b.json()["review_run_id"]
+            )
 
     asyncio.run(exercise())
 
@@ -1049,7 +1325,8 @@ def test_finding_decision_is_visible_in_detail(database: Database) -> None:
                 repository="lboverfys/NiuMa",
                 pull_request_number=128,
                 head_sha="c" * 40,
-                execution_status="ready_for_review",
+                execution_status="completed",
+                workflow_status="awaiting_approval",
                 review_conclusion=None,
                 coverage_status="complete",
                 idempotency_key="finding-source",
@@ -1062,7 +1339,8 @@ def test_finding_decision_is_visible_in_detail(database: Database) -> None:
             ReviewTaskRecord(
                 id="task-finding-001",
                 review_run_id=run_id,
-                execution_status="ready_for_review",
+                execution_status="completed",
+                workflow_status="awaiting_approval",
                 priority=100,
                 attempt_count=1,
                 model_attempt_count=1,
@@ -1143,7 +1421,7 @@ def test_finding_decision_is_visible_in_detail(database: Database) -> None:
                 suggestion="建议",
                 required_test=None,
                 confidence=0.9,
-                verification_status=VerificationStatus.UNVERIFIED.value,
+                verification_status=VerificationStatus.VERIFIED.value,
                 rule_reference=None,
                 reviewed_at=None,
                 reviewed_by=None,
@@ -1152,6 +1430,50 @@ def test_finding_decision_is_visible_in_detail(database: Database) -> None:
         )
         session.commit()
 
+    race_request_id = "finding-lock-race-001"
+    race_decision = FindingDecision.VALID
+    race_digest = sha256(
+        f"{run_id}:{finding_id}:{race_decision.value}:{race_request_id}".encode()
+    ).hexdigest()
+    race_event_key = f"review.finding.decision:{finding_id}:{race_digest}"
+    race_injected = False
+
+    def inject_finding_event_after_first_lookup(
+        connection,
+        _cursor,
+        statement,
+        parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        nonlocal race_injected
+        normalized_statement = statement.lstrip().lower()
+        if (
+            race_injected
+            or not normalized_statement.startswith("select")
+            or "outbox_events" not in normalized_statement
+            or "event_key" not in normalized_statement
+            or race_event_key not in str(parameters)
+        ):
+            return
+        connection.execute(
+            OutboxEventRecord.__table__.insert().values(
+                id="event-finding-lock-race",
+                event_key=race_event_key,
+                aggregate_type="review_run",
+                aggregate_id=run_id,
+                event_type="review.finding.decided",
+                payload={
+                    "finding_id": finding_id,
+                    "decision": race_decision.value,
+                    "actor": "race-test",
+                },
+                occurred_at=datetime.now(UTC),
+                publish_attempts=0,
+            )
+        )
+        race_injected = True
+
     async def exercise() -> None:
         transport = httpx.ASGITransport(app=application)
         async with httpx.AsyncClient(
@@ -1159,16 +1481,135 @@ def test_finding_decision_is_visible_in_detail(database: Database) -> None:
             base_url="http://testserver",
         ) as client:
             await login(client)
+            blocked_approval = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "finding-approval-blocked-001"},
+                json={"action": "approve"},
+            )
+            assert blocked_approval.status_code == 409
+
+            raced = await client.post(
+                f"/api/v1/reviews/{run_id}/findings/{finding_id}",
+                headers={"Idempotency-Key": race_request_id},
+                json={"decision": race_decision.value},
+            )
+            assert raced.status_code == 200
+            assert raced.json()["findings"][0]["adjudication_status"] == "unreviewed"
+
             response = await client.post(
                 f"/api/v1/reviews/{run_id}/findings/{finding_id}",
                 headers={"Idempotency-Key": "finding-decision-001"},
-                json={"decision": "verified"},
+                json={"decision": "valid"},
             )
             assert response.status_code == 200
             body = response.json()
-            assert body["verified_finding_count"] == 1
-            assert body["unverified_finding_count"] == 0
+            assert body["location_verified_finding_count"] == 1
+            assert body["location_unverified_finding_count"] == 0
+            assert body["valid_finding_count"] == 1
+            assert body["unreviewed_finding_count"] == 0
             assert body["model_reasoning_tokens"] == 0
             assert body["findings"][0]["verification_status"] == "verified"
+            assert (
+                body["findings"][0]["location_verification_status"]
+                == "verified"
+            )
+            assert (
+                body["findings"][0]["evidence_verification_status"]
+                == "unverified"
+            )
+            assert body["findings"][0]["adjudication_status"] == "valid"
+            assert body["findings"][0]["head_sha"] == "c" * 40
+            assert len(body["evaluation_gates"]) == len(FindingCategory)
+            security_gate = next(
+                gate
+                for gate in body["evaluation_gates"]
+                if gate["category"] == "security"
+            )
+            assert security_gate == {
+                "category": "security",
+                "sample_count": 1,
+                "valid_count": 1,
+                "false_positive_count": 0,
+                "duplicate_count": 0,
+                "out_of_scope_count": 0,
+                "known_issue_count": 0,
+                "rejected_count": 0,
+                "high_severity_sample_count": 1,
+                "high_severity_false_positive_count": 0,
+                "high_severity_rejected_count": 0,
+                "precision": 1.0,
+                "high_severity_false_positive_rate": 0.0,
+                "admitted": False,
+                "reason": "insufficient_samples",
+            }
+            revised = await client.post(
+                f"/api/v1/reviews/{run_id}/findings/{finding_id}",
+                headers={"Idempotency-Key": "finding-decision-002"},
+                json={"decision": "false_positive"},
+            )
+            assert revised.status_code == 200
+            revised_body = revised.json()
+            assert revised_body["location_verified_finding_count"] == 1
+            assert revised_body["false_positive_finding_count"] == 1
+            assert (
+                revised_body["findings"][0]["adjudication_status"]
+                == "false_positive"
+            )
+            revised_security_gate = next(
+                gate
+                for gate in revised_body["evaluation_gates"]
+                if gate["category"] == "security"
+            )
+            assert revised_security_gate["sample_count"] == 1
+            assert revised_security_gate["valid_count"] == 0
+            assert revised_security_gate["false_positive_count"] == 1
 
-    asyncio.run(exercise())
+            duplicate = await client.post(
+                f"/api/v1/reviews/{run_id}/findings/{finding_id}",
+                headers={"Idempotency-Key": "finding-decision-003"},
+                json={"decision": "duplicate"},
+            )
+            assert duplicate.status_code == 200
+            duplicate_gate = next(
+                gate
+                for gate in duplicate.json()["evaluation_gates"]
+                if gate["category"] == "security"
+            )
+            assert duplicate_gate["sample_count"] == 1
+            assert duplicate_gate["valid_count"] == 0
+            assert duplicate_gate["false_positive_count"] == 0
+            assert duplicate_gate["duplicate_count"] == 1
+            assert duplicate_gate["rejected_count"] == 1
+            assert duplicate_gate["high_severity_rejected_count"] == 1
+
+            approved = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "finding-approval-allowed-001"},
+                json={"action": "approve"},
+            )
+            assert approved.status_code == 200
+            assert approved.json()["workflow_status"] == "awaiting_publish"
+
+    event.listen(
+        database.engine,
+        "after_cursor_execute",
+        inject_finding_event_after_first_lookup,
+    )
+    try:
+        asyncio.run(exercise())
+    finally:
+        event.remove(
+            database.engine,
+            "after_cursor_execute",
+            inject_finding_event_after_first_lookup,
+        )
+    assert race_injected is True
+
+    with database.sessions() as session:
+        evaluation = session.get(FindingEvaluationRecord, finding_id)
+        assert evaluation is not None
+        assert evaluation.repository_id == 42
+        assert evaluation.category == FindingCategory.SECURITY.value
+        assert evaluation.severity == Severity.HIGH.value
+        assert evaluation.verdict == "duplicate"
+        assert evaluation.adjudicated_by == TEST_USERNAME

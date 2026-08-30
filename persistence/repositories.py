@@ -2,15 +2,29 @@
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.enums import CoverageStatus, ExecutionStatus
 from domain.models import ReviewRequest
-from persistence.models import OutboxEventRecord, ReviewRunRecord, ReviewTaskRecord
+from persistence.models import (
+    OutboxEventRecord,
+    ReviewQuotaBucketRecord,
+    ReviewRunRecord,
+    ReviewTaskRecord,
+)
+from services.review_quota import (
+    ReviewQuotaExceededError,
+    ReviewQuotaPolicy,
+    quota_windows,
+    retry_after_for,
+)
 from services.reviews import (
     IdempotencyConflictError,
     ReviewPersistenceError,
@@ -25,6 +39,7 @@ class SqlAlchemyReviewRepository:
         *,
         clock: Callable[[], datetime] | None = None,
         uuid_factory: Callable[[], UUID] | None = None,
+        quota_policy: ReviewQuotaPolicy | None = None,
     ) -> None:
         """初始化审查任务仓储。
 
@@ -43,12 +58,14 @@ class SqlAlchemyReviewRepository:
         self._sessions = sessions
         self._clock = clock or (lambda: datetime.now(UTC))
         self._uuid_factory = uuid_factory or uuid4
+        self._quota_policy = quota_policy or ReviewQuotaPolicy.from_environment()
 
     def create_or_get(
         self,
         request: ReviewRequest,
         idempotency_key: str,
         request_fingerprint: str,
+        actor: str = "system",
     ) -> ReviewSubmissionResult:
         """幂等地创建审查运行、任务和 Outbox 事件。
 
@@ -85,6 +102,7 @@ class SqlAlchemyReviewRepository:
                     return self._existing_result(existing, request_fingerprint)
 
                 now = self._clock()
+                self._reserve_quota(session, actor, request.repository, now)
                 review_run_id = str(self._uuid_factory())
                 review_task_id = str(self._uuid_factory())
                 outbox_event_id = str(self._uuid_factory())
@@ -160,11 +178,115 @@ class SqlAlchemyReviewRepository:
                 return self._existing_result(existing, request_fingerprint)
             except IdempotencyConflictError:
                 raise
+            except ReviewQuotaExceededError:
+                session.rollback()
+                raise
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise ReviewPersistenceError(
                     "review request could not be persisted"
                 ) from exc
+
+    def _reserve_quota(
+        self,
+        session: Session,
+        actor: str,
+        repository: str,
+        now: datetime,
+    ) -> None:
+        """用一条批量 UPSERT 原子增加账号、仓库和全局窗口计数。"""
+
+        normalized_actor = actor.strip().casefold() or "system"
+        if len(normalized_actor) > 100:
+            normalized_actor = normalized_actor[:100]
+        normalized_repository = repository.strip().casefold()
+        windows = quota_windows(now)
+        scope_limits = {
+            "user": (
+                self._quota_policy.user_hourly,
+                self._quota_policy.user_daily,
+            ),
+            "repository": (
+                self._quota_policy.repository_hourly,
+                self._quota_policy.repository_daily,
+            ),
+            "global": (
+                self._quota_policy.global_hourly,
+                self._quota_policy.global_daily,
+            ),
+        }
+        scope_keys = (
+            ("user", normalized_actor),
+            ("repository", normalized_repository),
+            ("global", "all"),
+        )
+        values = [
+            {
+                "id": str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"openreviewer:quota:{scope}:{scope_key}:{window}:{window_start.isoformat()}",
+                    )
+                ),
+                "scope": scope,
+                "scope_key": scope_key,
+                "window": window,
+                "window_start": window_start,
+                "request_count": 1,
+                "updated_at": now,
+            }
+            for scope, scope_key in scope_keys
+            for window, window_start in windows
+        ]
+        dialect = session.get_bind().dialect.name
+        statement: Any
+        if dialect == "postgresql":
+            statement = postgresql_insert(ReviewQuotaBucketRecord)
+        elif dialect == "sqlite":
+            statement = sqlite_insert(ReviewQuotaBucketRecord)
+        else:
+            raise ReviewPersistenceError(
+                "review quota requires PostgreSQL or SQLite"
+            )
+        statement = statement.values(values).on_conflict_do_update(
+            index_elements=[
+                ReviewQuotaBucketRecord.scope,
+                ReviewQuotaBucketRecord.scope_key,
+                ReviewQuotaBucketRecord.window,
+                ReviewQuotaBucketRecord.window_start,
+            ],
+            set_={
+                "request_count": ReviewQuotaBucketRecord.request_count + 1,
+                "updated_at": now,
+            },
+        ).returning(
+            ReviewQuotaBucketRecord.scope,
+            ReviewQuotaBucketRecord.window,
+            ReviewQuotaBucketRecord.window_start,
+            ReviewQuotaBucketRecord.request_count,
+        )
+        bucket_rows = session.execute(statement).all()
+        limits = {
+            (scope, "hour"): hourly
+            for scope, (hourly, _daily) in scope_limits.items()
+        }
+        limits.update(
+            {
+                (scope, "day"): daily
+                for scope, (_hourly, daily) in scope_limits.items()
+            }
+        )
+        for row in bucket_rows:
+            scope = str(row.scope)
+            window = str(row.window)
+            count = int(row.request_count)
+            limit = limits[(scope, window)]
+            if count > limit:
+                raise ReviewQuotaExceededError(
+                    scope,
+                    limit,
+                    retry_after_for(window, row.window_start, now),
+                )
 
     @staticmethod
     def _find_existing(

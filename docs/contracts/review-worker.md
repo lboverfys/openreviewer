@@ -1,7 +1,7 @@
 # 审查任务 Worker 契约 v2
 
-本文档固定单并发 Worker 的可靠性语义。当前只部署一个执行槽，但数据库领取协议允许
-后续增加 Worker 时不重复领取同一条任务。
+本文档固定“每个进程单并发”的 Worker 可靠性语义。部署可运行一个或多个副本；数据库
+领取协议允许横向扩展时不重复领取同一条任务。
 
 ## 1. 领取
 
@@ -50,8 +50,9 @@ Worker 已能使用短期 GitHub App installation token 获取 PR 上下文和�
 下载文件。正常轮询使用单独的 `ci_poll_count`，不消耗最多三次的错误重试次数。GitHub
 读取期间由独立短生命周期线程刷新 `busy` 心跳，外部请求不持有数据库事务。
 
-`waiting_for_ci` 是明确的未完成状态，不等于“审查成功”。CI 进入任意终态后，任务进入
-`ready_for_review`。Worker 随后一次批量读取当前 SHA 的文件快照、一次 GraphQL 读取规则，
+`waiting_for_ci` 是明确的未完成状态，不等于“审查成功”。CI 汇总为 `not_configured`（已完整
+读取但没有可见检查）、`success` 或 `failure` 后，任务进入 `ready_for_review`；`unknown` 仍会
+继续轮询，直到恢复完整或超时。Worker 随后一次批量读取当前 SHA 的文件快照、一次 GraphQL 读取规则，
 生成确定性 Review Plan，并在短事务内原子保存规则、Unit、文件结果与
 `review.plan.prepared` Outbox；随后安全、规范和逻辑三个 Agent 按各自模型的上下文窗口、单批
 输入上限、输出预留和请求字节限制并行处理全部可审查 Unit，单文件仍超限时按行切片。三路成功
@@ -73,9 +74,10 @@ Token、耗时、成本、Finding 和 `review.model.completed`。旧 `execution_
 - 当前任务 ID；
 - 该 `worker_id` 第一次写入心跳表的时间和最近心跳时间。
 
-Compose 当前使用固定 Worker ID。相同 ID 的容器重启时会更新状态和最近心跳时间，但不会重置
-首次写入时间；因此 `started_at` 当前表示“数据库第一次见到该 Worker ID 的时间”，不是最近
-一次 Worker 进程的启动时间。
+Compose 不再注入固定 Worker ID；未显式配置时使用容器主机名，因此不同副本拥有不同心跳
+记录。相同副本重启时会更新状态和最近心跳时间，但不会重置首次写入时间；因此 `started_at`
+表示“数据库第一次见到该 Worker ID 的时间”，不是最近一次进程启动时间。生产发布脚本通过
+`OPENREVIEWER_WORKER_REPLICAS` 和 `docker compose --scale` 显式创建副本。
 
 Dashboard 默认把 15 秒内有心跳的 Worker 视为在线。容器健康检查也读取同一心跳，其新鲜度
 窗口是“15 秒”和“四个轮询周期”中的较大值；Compose 默认每 15 秒检查一次，连续 3 次失败

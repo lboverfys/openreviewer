@@ -1,15 +1,17 @@
 """把 changed files 和规则作用域编译成可自动分批的确定性 Review Plan。"""
 
+import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 from pathlib import PurePosixPath
 from typing import Protocol
 
 from domain.enums import PatchState, ReviewFileDecision
 from domain.github import PullRequestFile
 from domain.identifiers import build_review_version_key
+from domain.model_budget import ModelBudgetPolicy
 from domain.review_planning import (
     RepositoryRule,
     RepositoryRulesSnapshot,
@@ -20,8 +22,7 @@ from domain.review_planning import (
 )
 from services.task_queue import ReviewTarget
 
-
-PLANNER_VERSION = "review-planner-v2"
+PLANNER_VERSION = "review-planner-v3"
 
 _LANGUAGE_BY_SUFFIX = {
     ".bash": "shell",
@@ -101,6 +102,43 @@ _GENERATED_SUFFIXES = (
     ".designer.cs",
     "_pb2.py",
 )
+_RELATION_DIRECTORY_NAMES = {
+    "controller",
+    "controllers",
+    "dto",
+    "dtos",
+    "entity",
+    "entities",
+    "java",
+    "lib",
+    "main",
+    "model",
+    "models",
+    "repository",
+    "repositories",
+    "service",
+    "services",
+    "src",
+    "test",
+    "tests",
+}
+_RELATION_PREFIX_TOKENS = {"test", "tests"}
+_RELATION_SUFFIX_TOKENS = {
+    "controller",
+    "dto",
+    "entity",
+    "handler",
+    "mapper",
+    "model",
+    "repository",
+    "request",
+    "response",
+    "service",
+    "spec",
+    "test",
+    "tests",
+    "usecase",
+}
 
 
 class ReviewPlanner(Protocol):
@@ -120,6 +158,8 @@ class ReviewPlanningSettings:
     max_scope_depth: int = 32
     max_unit_input_bytes: int = 192 * 1024
     max_total_input_bytes: int = 2 * 1024 * 1024
+    max_related_files: int = 8
+    model_budget: ModelBudgetPolicy = ModelBudgetPolicy()
     planner_version: str = PLANNER_VERSION
 
     def __post_init__(self) -> None:
@@ -135,12 +175,14 @@ class ReviewPlanningSettings:
             <= 100 * 1024 * 1024
         ):
             raise ValueError("total input limit must include one unit and stay below 100 MiB")
+        if not 1 <= self.max_related_files <= 32:
+            raise ValueError("related review file limit must be between 1 and 32")
         if not self.planner_version or len(self.planner_version) > 50:
             raise ValueError("planner version must contain 1 to 50 characters")
 
 
 class DeterministicReviewPlanner:
-    """不访问网络或数据库，按稳定文件顺序构造一文件一 Unit 的计划。"""
+    """不访问网络或数据库，构造确定性文件输入和关联审查组。"""
 
     def __init__(self, settings: ReviewPlanningSettings | None = None) -> None:
         self._settings = settings or ReviewPlanningSettings()
@@ -158,21 +200,27 @@ class DeterministicReviewPlanner:
         file_plans: list[ReviewFilePlan] = []
         total_patch_bytes = 0
 
+        decisions: dict[str, ReviewFileDecision | None] = {}
+        reviewable_paths: list[str] = []
         for item in ordered_files:
             decision = self._non_reviewable_decision(item)
-            if decision is not None:
-                file_plans.append(ReviewFilePlan(file=item.path, decision=decision))
-                continue
-            if (
+            if decision is None and (
                 item.path.count("/") > self._settings.max_scope_depth
                 or item.path in incomplete_files
             ):
-                file_plans.append(
-                    ReviewFilePlan(
-                        file=item.path,
-                        decision=ReviewFileDecision.RULES_INCOMPLETE,
-                    )
-                )
+                decision = ReviewFileDecision.RULES_INCOMPLETE
+            decisions[item.path] = decision
+            if decision is None:
+                reviewable_paths.append(item.path)
+        group_keys = _related_group_keys(
+            reviewable_paths,
+            max_group_size=self._settings.max_related_files,
+        )
+
+        for item in ordered_files:
+            decision = decisions[item.path]
+            if decision is not None:
+                file_plans.append(ReviewFilePlan(file=item.path, decision=decision))
                 continue
 
             if item.patch is None:
@@ -186,7 +234,13 @@ class DeterministicReviewPlanner:
                 if path in rules_by_path
             )
             patch_bytes = len(item.patch.encode("utf-8"))
-            unit = self._build_unit(target, item, applicable_rules, patch_bytes)
+            unit = self._build_unit(
+                target,
+                item,
+                applicable_rules,
+                patch_bytes,
+                group_keys[item.path],
+            )
             units.append(unit)
             total_patch_bytes += patch_bytes
             file_plans.append(
@@ -197,6 +251,17 @@ class DeterministicReviewPlanner:
                 )
             )
 
+        group_first_file: dict[str, str] = {}
+        for path, group_key in group_keys.items():
+            current = group_first_file.get(group_key)
+            if current is None or path < current:
+                group_first_file[group_key] = path
+        units.sort(
+            key=lambda unit: (
+                group_first_file[unit.group_key or unit.unit_key],
+                unit.file,
+            )
+        )
         fingerprint = self._plan_fingerprint(
             target,
             rules.rules,
@@ -217,6 +282,7 @@ class DeterministicReviewPlanner:
             total_estimated_input_bytes=(
                 total_patch_bytes + sum(rule.byte_size for rule in rules.rules)
             ),
+            model_budget=self._settings.model_budget,
         )
 
     @staticmethod
@@ -267,6 +333,7 @@ class DeterministicReviewPlanner:
         item: PullRequestFile,
         rules: tuple[RepositoryRule, ...],
         estimated_input_bytes: int,
+        group_key: str,
     ) -> ReviewUnit:
         if item.patch is None:
             raise AssertionError("review units require patch text")
@@ -275,6 +342,7 @@ class DeterministicReviewPlanner:
             "planner_version": self._settings.planner_version,
             "review_version_key": target.review_version_key,
             "head_sha": target.head_sha,
+            "group_key": group_key,
             "file": item.path,
             "blob_sha": item.blob_sha,
             "patch_sha256": patch_sha256,
@@ -289,6 +357,7 @@ class DeterministicReviewPlanner:
             raise AssertionError("review units require a supported language")
         return ReviewUnit(
             unit_key=unit_key,
+            group_key=group_key,
             review_version_key=target.review_version_key,
             head_sha=target.head_sha,
             file=item.path,
@@ -324,6 +393,7 @@ class DeterministicReviewPlanner:
                 for item in files
             ],
             "units": [unit.unit_key for unit in units],
+            "model_budget": self._settings.model_budget.model_dump(mode="json"),
         }
         return sha256(_canonical_json(identity)).hexdigest()
 
@@ -357,3 +427,51 @@ def _language_for(path: str) -> str | None:
     if name.startswith("dockerfile."):
         return "dockerfile"
     return _LANGUAGE_BY_SUFFIX.get(PurePosixPath(name).suffix)
+
+
+def _related_group_keys(
+    paths: Sequence[str],
+    *,
+    max_group_size: int,
+) -> dict[str, str]:
+    grouped: dict[str, list[str]] = {}
+    for path in paths:
+        grouped.setdefault(_relationship_name(path), []).append(path)
+    result: dict[str, str] = {}
+    for relationship in sorted(grouped):
+        members = sorted(grouped[relationship])
+        for partition, offset in enumerate(range(0, len(members), max_group_size)):
+            group_key = sha256(
+                _canonical_json(
+                    {
+                        "version": 1,
+                        "relationship": relationship,
+                        "partition": partition,
+                    }
+                )
+            ).hexdigest()
+            for path in members[offset : offset + max_group_size]:
+                result[path] = group_key
+    return result
+
+
+def _relationship_name(path: str) -> str:
+    pure_path = PurePosixPath(path)
+    stem = pure_path.stem
+    stem = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", stem)
+    name_tokens = [
+        token
+        for token in re.split(r"[^A-Za-z0-9]+", stem.casefold())
+        if token
+    ]
+    while name_tokens and name_tokens[0] in _RELATION_PREFIX_TOKENS:
+        name_tokens.pop(0)
+    while name_tokens and name_tokens[-1] in _RELATION_SUFFIX_TOKENS:
+        name_tokens.pop()
+    directory_tokens = [
+        part.casefold()
+        for part in pure_path.parts[:-1]
+        if part.casefold() not in _RELATION_DIRECTORY_NAMES
+    ]
+    identity_tokens = directory_tokens + name_tokens
+    return "/".join(identity_tokens) if identity_tokens else path.casefold()

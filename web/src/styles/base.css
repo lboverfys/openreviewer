@@ -1,0 +1,236 @@
+:root {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+  color: #2b251f;
+  background: #fbf9f5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* 暖白与落日橙配色 */
+  --bg-main: #fbf9f5;
+  --bg-card: #ffffff;
+  --bg-card-subtle: #f8f5ee;
+  --bg-input: #ffffff;
+
+  /* 边框 */
+  --border-soft: rgba(0, 0, 0, 0.06);
+  --border-subtle: rgba(234, 88, 12, 0.1);
+  --border-orange: #fed7aa;
+  --border-orange-active: #ff6b00;
+
+  /* 文本颜色 */
+  --text-main: #181512;
+  --text-secondary: #595045;
+  --text-muted: #8e8376;
+  --text-light: #bcb2a4;
+
+  /* 橙色品牌色体系 */
+  --orange-primary: #ff6b00;
+  --orange-hover: #ff8533;
+  --orange-light: #fff7ed;
+  --orange-border: #fed7aa;
+  --orange-glow: rgba(255, 107, 0, 0.2);
+
+  /* 状态颜色 */
+  --color-queued: #d97706;
+  --color-queued-bg: #fffbeb;
+  --color-queued-border: #fde68a;
+
+  --color-running: #ea580c;
+  --color-running-bg: #fff7ed;
+  --color-running-border: #fed7aa;
+
+  --color-waiting: #c2410c;
+  --color-waiting-bg: #ffedd5;
+  --color-waiting-border: #fdba74;
+
+  --color-ready: #0f766e;
+  --color-ready-bg: #f0fdfa;
+  --color-ready-border: #99f6e4;
+
+  --color-completed: #16a34a;
+  --color-completed-bg: #f0fdf4;
+  --color-completed-border: #bbf7d0;
+
+  --color-failed: #e11d48;
+  --color-failed-bg: #fff1f2;
+  --color-failed-border: #fecdd3;
+
+  /* 阴影 */
+  --shadow-bento: 0 4px 20px -2px rgba(234, 88, 12, 0.04), 0 2px 6px rgba(0, 0, 0, 0.02);
+  --shadow-hover: 0 10px 28px -4px rgba(234, 88, 12, 0.1), 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  color-scheme: light;
+}
+
+body {
+  background-image:
+    radial-gradient(circle at 10% 5%, rgba(251, 146, 60, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at 90% 10%, rgba(254, 215, 170, 0.12) 0%, transparent 45%),
+    radial-gradient(circle at 50% 95%, rgba(253, 186, 116, 0.06) 0%, transparent 50%);
+  background-attachment: fixed;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-main);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(234, 88, 12, 0.18);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(234, 88, 12, 0.35);
+}
+
+button, input {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--orange-primary);
+  outline-offset: 2px;
+}
+code, .code-font {
+  font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, Menlo, monospace;
+}
+
+/* ==========================================================
+   Brand Component
+   ========================================================== */
+.brand-logo-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.brand-sunburst-badge {
+  display: flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ff6b00 0%, #ff8e3c 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(255, 107, 0, 0.3);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.brand-logo-unit:hover .brand-sunburst-badge {
+  transform: scale(1.08) rotate(-4deg);
+}
+
+.brand-name-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-header-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.brand-header-line strong {
+  color: var(--text-main);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.brand-v-pill {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--orange-light);
+  border: 1px solid var(--orange-border);
+  color: var(--orange-primary);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.brand-name-group small {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* ==========================================================
+   Loading Screen
+   ========================================================== */
+.loading-screen {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-main);
+}
+
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 40px 48px;
+  border-radius: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-bento);
+}
+
+.loading-track {
+  width: 200px;
+  height: 5px;
+  border-radius: 9999px;
+  background: #f4eee3;
+  overflow: hidden;
+  position: relative;
+}
+
+.loading-spark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, #ff6b00, #ffb066);
+  animation: spark-slide 1.4s infinite ease-in-out;
+}
+
+@keyframes spark-slide {
+  0% { left: -40%; width: 30%; }
+  50% { left: 35%; width: 55%; }
+  100% { left: 100%; width: 40%; }
+}
+
+.loading-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+}

@@ -2,19 +2,19 @@
 
 OpenReviewer 是独立的 AI 代码审查编排平台，首个接入项目是 NiuMa。
 
-当前仓库已完成从 GitHub 提交到人工发布审查结果的可恢复闭环：除 PostgreSQL 任务、单并发
-Worker、管理员登录、实时 Dashboard、React 管理前端和 Webhook 安全入口外，Worker 使用
+当前仓库已完成从 GitHub 提交到人工发布审查结果的可恢复闭环：除 PostgreSQL 任务、每个进程
+单并发且可多副本扩展的 Worker、管理员登录、实时 Dashboard、React 管理前端和 Webhook 安全入口外，Worker 使用
 GitHub App 短期身份读取 PR、完整 diff 和当前提交 CI，并安全处理轮询、超时和新提交淘汰。
 `AGENTS.md` 规则批量加载和全量 Review Unit 规划后，安全、规范、逻辑三个 Agent 并行审查，
 汇总 Agent 再生成最终候选；四路都有独立模型配置、可恢复批次、版本化 Markdown RAG 和严格
-结构化输出。模型结果停在人工批准门，批准后还需单独点击发布，API 才会把幂等汇总评论写入
-仍绑定同一 SHA 的 GitHub Pull Request。
+结构化输出。模型结果停在人工批准门，批准后还需单独点击发布，API 才会为仍绑定同一 SHA 的
+GitHub Pull Request 幂等更新 Check Run、发布通过准入的行内评论，并同步汇总评论。
 
 ## 目录
 
 ```text
 apps/api/           登录、任务和实时 Dashboard API
-apps/worker/        单并发数据库 Worker 与心跳健康检查
+apps/worker/        每进程单并发、可多副本扩展的数据库 Worker 与心跳健康检查
 domain/             审查领域模型和稳定枚举
 persistence/        SQLAlchemy 数据模型、队列与查询适配器
 services/           认证、任务和管理用例
@@ -39,6 +39,12 @@ deployment/         niuma-2 Compose 部署配置
 - PostgreSQL `FOR UPDATE SKIP LOCKED` 单任务领取、租约续期、超时恢复、最多三次尝试和
   指数退避。
 - Worker 启动、空闲、忙碌和停止心跳；Dashboard 可区分空闲与离线。
+- `/readyz` 同时检查数据库、最新迁移和 Worker 心跳；`/metrics` 提供固定低基数 Prometheus 指标。
+- Outbox 使用有界批量领取、发布租约、失败退避和结构化脱敏日志，并按保留期分批清理历史数据。
+- 人工 Finding 评测样本保存为独立历史快照，不会随旧 Finding/ReviewRun 清理而丢失；来源 ID
+  仅用于追溯，评测门禁可持续使用最近样本；样本默认保留 730 天并按批次清理，可通过
+  `OPENREVIEWER_FINDING_EVALUATION_RETENTION_DAYS` 调整。
+- 每次生产迁移前创建 PostgreSQL custom-format 备份并真实恢复验证，另提供失败自动换回的恢复入口。
 - Argon2id 管理员密码校验、HMAC 签名会话、HttpOnly/SameSite Cookie 和登录限流。
 - 登录页可选调用浏览器密码管理器记住账号密码；应用不把明文凭据写入 localStorage。
 - 受保护的 Dashboard、任务列表和 SSE 实时事件接口。
@@ -59,7 +65,8 @@ deployment/         niuma-2 Compose 部署配置
 - 内置有界、可版本化 Markdown 知识库，支持登录后在知识库页面编辑、预览、启停、归档和恢复历史版本；
   Agent 按职责从固定任务快照中确定性召回，并在详情页展示来源、标题和内容版本。
 - `awaiting_approval -> awaiting_publish -> publishing -> completed` 人工门，以及发布前 PR SHA
-  复核、稳定隐藏标记查重、评论大小限制和失败可重试。
+  复核、幂等 Check Run、最多 50 条高置信行内评论、汇总评论、大小限制和失败可重试；无效行号
+  会安全降级为 Check 与汇总展示。
 - 管理界面动态保存 OpenAI/Anthropic 草稿、官方或中转站 API 地址、真实连接测试和单供应商
   激活；API Key 使用 AES-256-GCM 加密，OpenAI 可动态选择接口协议，Worker 按配置 revision
   在下一条任务生效。
@@ -95,6 +102,8 @@ API 和 Worker 还需要同一份 32 字节 AI 配置加密主密钥。Worker �
 [`docs/contracts/agent-workflow.md`](docs/contracts/agent-workflow.md) 和
 [`docs/contracts/github-publishing.md`](docs/contracts/github-publishing.md)。知识库管理接口和
 版本语义见 [`docs/contracts/knowledge-management.md`](docs/contracts/knowledge-management.md)。
+录制输出回放与真实模型准确率的边界见
+[`docs/contracts/evaluation.md`](docs/contracts/evaluation.md)。
 可以使用交互式输入生成哈希，明文不会写入命令历史：
 
 ```shell
@@ -120,7 +129,8 @@ npm run dev
 
 ## 管理接口
 
-除 `/healthz` 和经过 GitHub 签名验证的 `/webhooks/github` 外，管理接口都要求先登录：
+除仅绑定宿主机回环端口的 `/healthz`、`/readyz`、`/metrics` 和经过 GitHub 签名验证的
+`/webhooks/github` 外，管理接口都要求先登录：
 
 - `POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`；
 - `GET /api/v1/dashboard`；
@@ -158,6 +168,8 @@ PostgreSQL、一次性迁移、API、Worker 和 Web；公网只开放 Web HTTPS 
 
 ```shell
 python -m pytest -q -W error
+python -m apps.maintenance.evaluate_golden_set
+python -m apps.maintenance.export_openapi --check docs/openapi.json
 python -m pip check
 cd web
 npm run typecheck

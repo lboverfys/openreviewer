@@ -32,21 +32,22 @@ Nginx 的专用 location 使用相同上限。超限请求返回 `413`，不会�
 
 ## 4. GitHub App 最小权限
 
-当前完整闭环需要接收 PR Webhook、读取 PR/CI 上下文，并在人工批准后发布 PR 汇总评论，
-因此应申请：
+当前完整闭环需要接收 PR Webhook、读取 PR/CI/Blob 上下文，并在人工批准后发布 Check Run、
+行内 Review 和 PR 汇总评论，因此应申请：
 
 | 权限 | 级别 | 用途 |
 | --- | --- | --- |
 | Metadata | Read-only | GitHub App 默认仓库身份信息 |
-| Pull requests | Read and write | 接收事件、读取 PR，并发布人工批准的汇总评论 |
+| Pull requests | Read and write | 接收事件、读取 PR，并发布人工批准的行内 Review 和汇总评论 |
 | Contents | Read-only | 读取私有仓库 PR 的完整 diff 表示 |
-| Checks | Read-only | 读取当前 `head_sha` 的 Check Runs |
+| Checks | Read and write | 读取 Check Runs，并在人工发布时创建或更新 OpenReviewer Check Run |
 | Commit statuses | Read-only | 读取当前 `head_sha` 的 Commit Statuses |
 
-后续使用 Blob API 补充大文件时复用现有 `Contents: Read-only`。当前发布载体是 PR 汇总评论，
-不是 Check Run，因此 Checks 仍保持只读；当前也不申请 Contents 写权限、Administration、
-Workflows 或 Secrets。修改 GitHub App 权限后，现有安装必须单独接受权限更新，API 与 Worker
-也必须重新签发 installation token 才能使用新权限。
+后续使用 Blob API 补充大文件时复用现有 `Contents: Read-only`。当前发布载体包含 PR 汇总评论、
+Check Run 和行内 Review。读取阶段仍只签发 `contents/pull_requests/checks/statuses: read`
+Token；人工发布阶段单独签发 `checks/pull_requests: write` Token。当前也不申请 Contents
+写权限、Administration、Workflows 或 Secrets。修改 GitHub App 权限后，现有安装必须单独接受
+权限更新，API 与 Worker 也必须重新签发 installation token 才能使用新权限。
 
 订阅事件仅启用 Pull request。GitHub App 私钥、Webhook secret 和 installation token
 不得写入仓库、日志、任务错误、Dashboard 或 API 响应。

@@ -1,0 +1,100 @@
+groups:
+  - name: openreviewer
+    rules:
+      - alert: OpenReviewerApiMetricsUnavailable
+        expr: absent(up{job="openreviewer-api"}) or min(up{job="openreviewer-api"}) < 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenReviewer API 指标端点不可用
+          description: API、数据库或迁移状态已连续两分钟无法提供指标。
+
+      - alert: OpenReviewerWorkerMetricsUnavailable
+        expr: absent(up{job="openreviewer-worker"}) or min(up{job="openreviewer-worker"}) < 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenReviewer Worker 指标端点不可用
+          description: 至少一个 Worker 的进程或指标端点已连续两分钟不可用。
+
+      - alert: OpenReviewerWorkerMissing
+        expr: absent(openreviewer_workers_fresh) or openreviewer_workers_fresh < 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OpenReviewer 没有新鲜 Worker 心跳
+          description: 当前没有可处理审查任务的 Worker，请检查容器和数据库连接。
+
+      - alert: OpenReviewerTaskQueueDelayed
+        expr: openreviewer_task_queue_oldest_age_seconds > 600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenReviewer 审查队列延迟
+          description: 最老可领取任务已等待超过十分钟，并持续十分钟未恢复。
+
+      - alert: OpenReviewerTaskQueueBacklog
+        expr: openreviewer_tasks_claimable > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenReviewer 审查任务堆积
+          description: 可立即领取的任务超过一百条，请检查 Worker 吞吐或扩容副本。
+
+      - alert: OpenReviewerOutboxDelayed
+        expr: openreviewer_outbox_oldest_age_seconds > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenReviewer Outbox 发布延迟
+          description: 最旧未发布事件已超过五分钟，并持续十分钟未恢复。
+
+      - alert: OpenReviewerOutboxBacklog
+        expr: openreviewer_outbox_pending > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenReviewer Outbox 堆积
+          description: 未发布事件超过一千条，请检查 Worker 吞吐和日志采集链路。
+
+      - alert: OpenReviewerOutboxRepeatedFailure
+        expr: openreviewer_outbox_max_publish_attempts >= 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenReviewer Outbox 连续发布失败
+          description: 至少一条事件已尝试发布五次，请检查 Worker 日志中的事件错误。
+
+      - alert: OpenReviewerExternalApiFailureRate
+        expr: |
+          sum(rate(openreviewer_external_http_request_duration_seconds_count{outcome!="success"}[10m]))
+          /
+          clamp_min(sum(rate(openreviewer_external_http_request_duration_seconds_count[10m])), 0.001)
+          > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenReviewer 外部 API 失败率偏高
+          description: GitHub 或模型 API 的非成功结果比例连续十分钟超过 20%。
+
+      - alert: OpenReviewerApiP95LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(openreviewer_http_server_request_duration_seconds_bucket[10m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: OpenReviewer API P95 延迟偏高
+          description: API 全局 P95 响应耗时连续十分钟超过两秒。

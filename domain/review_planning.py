@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from domain.enums import RepositoryRuleIssueKind, ReviewFileDecision
 from domain.github import MAX_PATCH_BYTES
 from domain.identifiers import build_review_version_key, normalize_sha
+from domain.model_budget import ModelBudgetPolicy
 from domain.paths import normalize_repository_path
 
 
@@ -153,9 +154,10 @@ class RepositoryRulesSnapshot(PlanningContractModel):
 
 
 class ReviewUnit(PlanningContractModel):
-    """一个文件对应的一份确定性模型输入引用。"""
+    """一个文件的确定性输入；group_key 把需要联合审查的文件关联起来。"""
 
     unit_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    group_key: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     review_version_key: str = Field(min_length=44, max_length=400)
     head_sha: str = Field(min_length=40, max_length=64)
     file: str = Field(min_length=1, max_length=1024)
@@ -205,6 +207,8 @@ class ReviewUnit(PlanningContractModel):
             raise ValueError("review unit fragment index must be below its count")
         if self.fragment_count == 1 and self.fragment_line_mode != "global":
             raise ValueError("unfragmented review units must use global line numbers")
+        if self.planner_version == "review-planner-v3" and self.group_key is None:
+            raise ValueError("review planner v3 units must include a related-file group")
         return self
 
 
@@ -247,6 +251,7 @@ class ReviewPlan(PlanningContractModel):
     units: tuple[ReviewUnit, ...] = Field(max_length=3000)
     files: tuple[ReviewFilePlan, ...] = Field(max_length=3000)
     total_estimated_input_bytes: int = Field(ge=0, le=100 * 1024 * 1024)
+    model_budget: ModelBudgetPolicy = Field(default_factory=ModelBudgetPolicy)
 
     @field_validator("head_sha")
     @classmethod
@@ -279,7 +284,19 @@ class ReviewPlan(PlanningContractModel):
         unit_keys = [unit.unit_key for unit in self.units]
         if len(unit_paths) != len(set(unit_paths)) or len(unit_keys) != len(set(unit_keys)):
             raise ValueError("review plan units must have unique files and keys")
-        if unit_paths != sorted(unit_paths):
+        if self.planner_version == "review-planner-v3":
+            group_first_file: dict[str | None, str] = {}
+            for unit in self.units:
+                current = group_first_file.get(unit.group_key)
+                if current is None or unit.file < current:
+                    group_first_file[unit.group_key] = unit.file
+            expected_units = sorted(
+                self.units,
+                key=lambda unit: (group_first_file[unit.group_key], unit.file),
+            )
+            if list(self.units) != expected_units:
+                raise ValueError("review plan units must keep related files adjacent")
+        elif unit_paths != sorted(unit_paths):
             raise ValueError("review plan units must be sorted by file")
 
         planned = {
@@ -303,7 +320,7 @@ class ReviewPlan(PlanningContractModel):
                 raise ValueError("review units may only reference rules in the plan")
 
         expected_total = sum(unit.estimated_input_bytes for unit in self.units)
-        if self.planner_version == "review-planner-v2":
+        if self.planner_version in {"review-planner-v2", "review-planner-v3"}:
             expected_total += sum(rule.byte_size for rule in self.rules)
         if self.total_estimated_input_bytes != expected_total:
             raise ValueError("plan input byte total must equal its review units")

@@ -14,6 +14,11 @@ from domain.model_review import (
 )
 from domain.review_planning import RepositoryRulesSnapshot, ReviewPlan
 from domain.security import ErrorCode, SafeApplicationError, SafeError
+from services.model_budget import (
+    ModelBudgetRequest,
+    ModelBudgetReservation,
+)
+from services.model_review import ModelReviewBatch
 
 
 class TaskQueueError(SafeApplicationError):
@@ -113,6 +118,26 @@ class ModelBatchBusyError(TaskQueueError):
         )
 
 
+class ModelBudgetExceededError(TaskQueueError):
+    """本 Review Plan 的模型硬预算不足，必须转人工处理。"""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.MODEL_BUDGET_EXCEEDED,
+                safe_message="模型审查已达到资源预算，已暂停等待人工处理",
+                retryable=False,
+                details={"budget_reason": reason, **dict(details or {})},
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewTaskLease:
     task_id: str
@@ -186,11 +211,18 @@ class StoredModelBatch:
 
 
 class ReviewTaskQueue(Protocol):
+    def start_heartbeat(self, worker_id: str, instance_id: str) -> None:
+        """用进程级 token 原子接管稳定 Worker ID 的心跳行。"""
+
+        ...
+
     def record_heartbeat(
         self,
         worker_id: str,
         worker_status: WorkerStatus,
         current_task_id: str | None = None,
+        *,
+        instance_id: str | None = None,
     ) -> None:
         """写入 Worker 当前生命周期状态和正在处理的任务。
 
@@ -198,6 +230,7 @@ class ReviewTaskQueue(Protocol):
             worker_id: Worker 实例的稳定标识。
             worker_status: ``starting``、``idle``、``busy`` 或 ``stopping``。
             current_task_id: 忙碌时关联的任务 ID；其他状态通常传 ``None``。
+            instance_id: 当前进程的心跳所有权 token；不匹配必须拒绝写入。
 
         异常：
             TaskQueueError: 心跳无法持久化。
@@ -315,7 +348,7 @@ class ReviewTaskQueue(Protocol):
     def ensure_model_batches(
         self,
         lease: ReviewTaskLease,
-        batches: tuple[object, ...],
+        batches: tuple[ModelReviewBatch, ...],
         *,
         agent: str = "default",
     ) -> tuple[StoredModelBatch, ...]:
@@ -363,6 +396,38 @@ class ReviewTaskQueue(Protocol):
         agent: str = "default",
     ) -> tuple[StoredModelBatch, ...]:
         """按批次号读取一个 Agent 的有界批次结果。"""
+        ...
+
+    def reserve_model_budget(
+        self,
+        lease: ReviewTaskLease,
+        request: ModelBudgetRequest,
+        *,
+        agent: str = "default",
+    ) -> ModelBudgetReservation:
+        """在真实 HTTP 请求前原子预留计划级预算。"""
+        ...
+
+    def settle_model_budget(
+        self,
+        reservation: ModelBudgetReservation,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        estimated_cost_microusd: int | None,
+        response_status: int | None,
+        duration_ms: int,
+        uncertain: bool = False,
+    ) -> None:
+        """按供应商真实用量结算；未知结果保留保守预留。"""
+        ...
+
+    def pause_for_model_budget(
+        self,
+        lease: ReviewTaskLease,
+        error: SafeError,
+    ) -> None:
+        """预算超限时撤销租约，并进入可人工重新审查的暂停状态。"""
         ...
 
     def store_model_review(

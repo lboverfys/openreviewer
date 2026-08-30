@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
-import json
-from threading import RLock
 from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from domain.enums import ModelApiProtocol, ModelProvider, ModelReasoningEffort, ReviewAgent
+from domain.enums import (
+    ModelApiProtocol,
+    ModelProvider,
+    ModelReasoningEffort,
+    ReviewAgent,
+)
 from domain.security import SafeApplicationError
 from persistence.models import (
     AiAgentConfigRecord,
@@ -38,13 +42,22 @@ from services.model_review import (
     normalize_api_base_url,
 )
 
-
 AGENT_KEYS: tuple[ReviewAgent, ...] = (
     ReviewAgent.SECURITY,
     ReviewAgent.CONVENTION,
     ReviewAgent.LOGIC,
     ReviewAgent.SUMMARY,
 )
+
+
+def _normalized_test_status(
+    value: str | None,
+) -> Literal["untested", "succeeded", "failed"]:
+    if value == "succeeded":
+        return "succeeded"
+    if value == "failed":
+        return "failed"
+    return "untested"
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,13 +201,18 @@ class AgentSettingsService:
                     session.add(row)
                     session.flush()
                 elif (
-                    row.provider != draft.provider.value
+                    (
+                        row.provider != draft.provider.value
+                        or normalize_api_base_url(row.api_base_url)
+                        != normalize_api_base_url(draft.api_base_url)
+                    )
                     and api_key is None
                     and secret is not None
                     and not clear_api_key
                 ):
-                    # 密文的附加认证数据绑定供应商；切换供应商时不能复用旧密钥。
-                    raise AiSettingsValidationError("切换供应商时必须同时提供新的 API Key")
+                    raise AiSettingsValidationError(
+                        "切换供应商或 API 地址时必须同时提供新的 API Key"
+                    )
                 self._apply(row, draft, actor, now)
                 if api_key is not None:
                     encrypted = self._cipher.encrypt(draft.provider, api_key)
@@ -235,7 +253,7 @@ class AgentSettingsService:
 
     def test(self, agent: ReviewAgent, *, expected_revision: int, actor: str) -> AgentSettingsView:
         with self._sessions() as session:
-            settings = self._lock_settings(session, expected_revision, self._clock())
+            self._lock_settings(session, expected_revision, self._clock())
             row = session.get(AiAgentConfigRecord, agent.value)
             secret = session.get(AiAgentSecretRecord, agent.value)
             if row is None or secret is None:
@@ -577,7 +595,7 @@ class AgentSettingsService:
             write_timeout_seconds=row.write_timeout_seconds,
             pool_timeout_seconds=row.pool_timeout_seconds,
             max_retries=row.max_retries,
-            test_status=row.test_status or "untested",
+            test_status=_normalized_test_status(row.test_status),
             tested_at=row.tested_at,
             updated_at=row.updated_at,
         )

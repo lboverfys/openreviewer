@@ -5,15 +5,15 @@ from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Float,
+    ForeignKey,
     Index,
     Integer,
-    JSON,
     LargeBinary,
     MetaData,
     Numeric,
@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -29,24 +30,27 @@ from domain.enums import (
     CiCheckKind,
     CiState,
     CoverageStatus,
+    EvidenceVerificationStatus,
     ExecutionStatus,
     ExternalActionState,
+    FindingAdjudicationStatus,
     FindingCategory,
+    FindingEvaluationVerdict,
+    FindingLifecycleState,
+    FindingOccurrenceStatus,
     LocationSide,
-    ModelApiProtocol,
-    ModelCallStatus,
     ModelBatchStatus,
+    ModelCallStatus,
     ModelProvider,
     ModelReasoningEffort,
     PatchState,
     PullRequestState,
-    ReviewFileDecision,
     ReviewConclusion,
+    ReviewFileDecision,
     Severity,
     VerificationStatus,
     WorkerStatus,
 )
-
 
 NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_name)s",
@@ -131,12 +135,25 @@ class ReviewRunRecord(Base):
             "created_at",
         ),
         Index("ix_review_runs_created_at", "created_at"),
+        Index("ix_review_runs_created_id", "created_at", "id"),
         Index("ix_review_runs_execution_status", "execution_status"),
+        Index(
+            "ix_review_runs_status_created",
+            "execution_status",
+            "created_at",
+        ),
         Index(
             "ix_review_runs_repository_pr_status",
             "repository_id",
             "pull_request_number",
             "execution_status",
+        ),
+        # 资源范围查询使用规范化键，避免对 repository 原字段套 lower() 破坏普通
+        # 索引；repository 仍保留 GitHub 返回的展示大小写。
+        Index(
+            "ix_review_runs_installation_repository_key",
+            "installation_id",
+            "repository_key",
         ),
     )
 
@@ -145,12 +162,15 @@ class ReviewRunRecord(Base):
     installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     repository: Mapped[str] = mapped_column(String(255), nullable=False)
+    repository_key: Mapped[str] = mapped_column(String(255), nullable=False)
     pull_request_number: Mapped[int] = mapped_column(Integer, nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
     workflow_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default=ExecutionStatus.QUEUED.value
     )
+    # 外部 GitHub 发布跨越事务边界；令牌用于阻止旧尝试覆盖后续状态。
+    publish_attempt_token: Mapped[str | None] = mapped_column(String(64))
     # ``paused`` 是独立的人工门；保存暂停前节点后，继续操作不必猜测应回到哪里。
     workflow_paused_from: Mapped[str | None] = mapped_column(String(32))
     review_conclusion: Mapped[str | None] = mapped_column(String(32))
@@ -168,6 +188,16 @@ class ReviewRunRecord(Base):
         default=utc_now,
         onupdate=utc_now,
     )
+
+
+@event.listens_for(ReviewRunRecord, "before_insert")
+@event.listens_for(ReviewRunRecord, "before_update")
+def _sync_review_run_repository_key(_mapper, _connection, target) -> None:
+    """在 ORM 写入边界保持资源过滤键与展示字段同步。"""
+
+    repository = getattr(target, "repository", None)
+    if isinstance(repository, str):
+        target.repository_key = repository.strip().casefold()
 
 
 class ReviewTaskRecord(Base):
@@ -260,6 +290,47 @@ class ReviewTaskRecord(Base):
     )
 
 
+class ReviewQuotaBucketRecord(Base):
+    """按作用域和时间窗口原子累计的任务创建次数。"""
+
+    __tablename__ = "review_quota_buckets"
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('user', 'repository', 'global')",
+            name="scope_value",
+        ),
+        CheckConstraint(
+            "window IN ('hour', 'day')",
+            name="window_value",
+        ),
+        CheckConstraint("request_count >= 0", name="request_count_nonnegative"),
+        UniqueConstraint(
+            "scope",
+            "scope_key",
+            "window",
+            "window_start",
+            name="uq_review_quota_bucket_identity",
+        ),
+        Index(
+            "ix_review_quota_buckets_cleanup",
+            "window_start",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    window: Mapped[str] = mapped_column(String(10), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
 class WorkerHeartbeatRecord(Base):
     """一个 Worker 进程最后一次被观察到的状态。
 
@@ -277,6 +348,9 @@ class WorkerHeartbeatRecord(Base):
     )
 
     worker_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    # 同一稳定 worker_id 的重启由新的 instance_id 接管；旧进程只能更新自己
+    # 的 token，避免其延迟心跳覆盖新进程状态。
+    instance_id: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     current_task_id: Mapped[str | None] = mapped_column(
         String(36),
@@ -301,14 +375,27 @@ class OutboxEventRecord(Base):
             "publish_attempts >= 0",
             name="publish_attempts_nonnegative",
         ),
+        CheckConstraint(
+            "(publish_lease_owner IS NULL AND publish_lease_expires_at IS NULL) "
+            "OR (publish_lease_owner IS NOT NULL "
+            "AND publish_lease_expires_at IS NOT NULL)",
+            name="publish_lease_shape",
+        ),
         UniqueConstraint("event_key"),
-        Index("ix_outbox_events_pending", "published_at", "occurred_at"),
+        Index(
+            "ix_outbox_events_pending",
+            "published_at",
+            "next_publish_attempt_at",
+            "publish_lease_expires_at",
+            "occurred_at",
+        ),
         Index(
             "ix_outbox_events_aggregate_occurred",
             "aggregate_type",
             "aggregate_id",
             "occurred_at",
         ),
+        Index("ix_outbox_events_occurred_id", "occurred_at", "id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -324,6 +411,16 @@ class OutboxEventRecord(Base):
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     publish_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    publish_lease_owner: Mapped[str | None] = mapped_column(String(200))
+    publish_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    next_publish_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+    )
+    last_publish_error: Mapped[str | None] = mapped_column(Text)
 
 
 class GitHubInstallationRecord(Base):
@@ -341,6 +438,44 @@ class GitHubInstallationRecord(Base):
     )
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class AdminSessionRecord(Base):
+    """可吊销的管理员会话；只保存随机会话 ID 的 SHA-256。"""
+
+    __tablename__ = "admin_sessions"
+    __table_args__ = (
+        Index("ix_admin_sessions_expires_at", "expires_at"),
+        Index("ix_admin_sessions_active", "revoked_at", "expires_at"),
+    )
+
+    session_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    username: Mapped[str] = mapped_column(String(100), nullable=False)
+    role: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="administrator"
+    )
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LoginRateLimitRecord(Base):
+    """跨 API 副本共享的固定窗口登录尝试计数。"""
+
+    __tablename__ = "login_rate_limits"
+    __table_args__ = (
+        CheckConstraint("attempt_count > 0", name="attempt_count_positive"),
+        Index("ix_login_rate_limits_updated_at", "updated_at"),
+    )
+
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 
@@ -371,6 +506,27 @@ class AiSettingsRecord(Base):
             "AND max_total_input_bytes <= 104857600",
             name="max_total_input_bytes_range",
         ),
+        CheckConstraint(
+            "max_model_http_calls BETWEEN 1 AND 10000",
+            name="max_model_http_calls_range",
+        ),
+        CheckConstraint(
+            "max_model_input_tokens BETWEEN 1000 AND 1000000000",
+            name="max_model_input_tokens_range",
+        ),
+        CheckConstraint(
+            "max_model_output_tokens BETWEEN 256 AND 100000000",
+            name="max_model_output_tokens_range",
+        ),
+        CheckConstraint(
+            "max_model_cost_microusd IS NULL OR "
+            "max_model_cost_microusd BETWEEN 1 AND 1000000000000",
+            name="max_model_cost_microusd_range",
+        ),
+        CheckConstraint(
+            "max_model_duration_seconds BETWEEN 30 AND 86400",
+            name="max_model_duration_seconds_range",
+        ),
     )
 
     id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
@@ -383,6 +539,19 @@ class AiSettingsRecord(Base):
     )
     max_total_input_bytes: Mapped[int] = mapped_column(
         Integer, nullable=False, default=2 * 1024 * 1024
+    )
+    max_model_http_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=64
+    )
+    max_model_input_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=2_000_000
+    )
+    max_model_output_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=250_000
+    )
+    max_model_cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    max_model_duration_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=900
     )
     updated_by: Mapped[str | None] = mapped_column(String(100))
     updated_at: Mapped[datetime] = mapped_column(
@@ -895,6 +1064,23 @@ class ReviewPlanRecord(Base):
             "total_estimated_input_bytes >= 0",
             name="total_estimated_input_bytes_nonnegative",
         ),
+        CheckConstraint("model_http_calls >= 0", name="model_http_calls_nonnegative"),
+        CheckConstraint(
+            "model_input_tokens >= 0",
+            name="model_input_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "model_output_tokens >= 0",
+            name="model_output_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "model_estimated_cost_microusd >= 0",
+            name="model_estimated_cost_microusd_nonnegative",
+        ),
+        CheckConstraint(
+            "model_budget_resume_count >= 0",
+            name="model_budget_resume_count_nonnegative",
+        ),
         UniqueConstraint("review_run_id"),
         Index(
             "ix_review_plans_version_fingerprint",
@@ -938,6 +1124,35 @@ class ReviewPlanRecord(Base):
         Integer,
         nullable=False,
     )
+    max_model_http_calls: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=64
+    )
+    max_model_input_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=2_000_000
+    )
+    max_model_output_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=250_000
+    )
+    max_model_cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    max_model_duration_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=900
+    )
+    model_http_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    model_output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    model_estimated_cost_microusd: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    model_budget_resume_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    model_budget_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    model_budget_exhausted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    model_budget_exhausted_reason: Mapped[str | None] = mapped_column(String(50))
     model_review_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
@@ -985,7 +1200,7 @@ class ReviewPlanRuleRecord(Base):
 
 
 class ReviewUnitRecord(Base):
-    """计划中一个确定性的单文件模型输入。"""
+    """计划中一个确定性的文件输入及其关联文件组。"""
 
     __tablename__ = "review_units"
     __table_args__ = (
@@ -1023,6 +1238,7 @@ class ReviewUnitRecord(Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    group_key: Mapped[str] = mapped_column(String(64), nullable=False)
     file: Mapped[str] = mapped_column(String(1024), nullable=False)
     blob_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     language: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -1259,6 +1475,144 @@ class ModelReviewBatchRecord(Base):
     )
 
 
+class ModelHttpCallRecord(Base):
+    """单次真实模型 HTTP 请求的预算预留与结算审计。"""
+
+    __tablename__ = "model_http_calls"
+    __table_args__ = (
+        CheckConstraint("sequence > 0", name="sequence_positive"),
+        CheckConstraint("request_bytes >= 0", name="request_bytes_nonnegative"),
+        CheckConstraint(
+            "reserved_input_tokens >= 0",
+            name="reserved_input_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "reserved_output_tokens >= 0",
+            name="reserved_output_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "reserved_cost_microusd >= 0",
+            name="reserved_cost_microusd_nonnegative",
+        ),
+        CheckConstraint(
+            "actual_input_tokens IS NULL OR actual_input_tokens >= 0",
+            name="actual_input_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "actual_output_tokens IS NULL OR actual_output_tokens >= 0",
+            name="actual_output_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "actual_cost_microusd IS NULL OR actual_cost_microusd >= 0",
+            name="actual_cost_microusd_nonnegative",
+        ),
+        CheckConstraint(
+            "status IN ('reserved', 'settled', 'uncertain')",
+            name="status_value",
+        ),
+        CheckConstraint(
+            "response_status IS NULL OR "
+            "(response_status >= 100 AND response_status <= 599)",
+            name="response_status_range",
+        ),
+        CheckConstraint(
+            "duration_ms IS NULL OR duration_ms >= 0",
+            name="duration_ms_nonnegative",
+        ),
+        UniqueConstraint(
+            "review_plan_id",
+            "sequence",
+            name="uq_model_http_calls_plan_sequence",
+        ),
+        Index(
+            "ix_model_http_calls_plan_started",
+            "review_plan_id",
+            "started_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    review_plan_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "review_plans.id",
+            name="fk_model_http_calls_review_plan",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent: Mapped[str] = mapped_column(String(32), nullable=False, default="default")
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reserved_output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reserved_cost_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    actual_output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    actual_cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    response_status: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class FindingLifecycleRecord(Base):
+    """同一仓库 PR 内按稳定指纹维护的跨提交 Finding 状态。"""
+
+    __tablename__ = "finding_lifecycles"
+    __table_args__ = (
+        CheckConstraint(
+            f"state IN ({enum_values(FindingLifecycleState)})",
+            name="state_value",
+        ),
+        CheckConstraint(
+            f"last_occurrence_status IN ({enum_values(FindingOccurrenceStatus)})",
+            name="last_occurrence_status_value",
+        ),
+        CheckConstraint("occurrence_count > 0", name="occurrence_count_positive"),
+        Index(
+            "ix_finding_lifecycles_pr_state",
+            "repository_id",
+            "pull_request_number",
+            "state",
+        ),
+        Index(
+            "ix_finding_lifecycles_fixed_run",
+            "fixed_by_review_run_id",
+        ),
+    )
+
+    repository_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    pull_request_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    first_seen_review_run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    last_seen_review_run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    previous_seen_review_run_id: Mapped[str | None] = mapped_column(String(36))
+    fixed_by_review_run_id: Mapped[str | None] = mapped_column(String(36))
+    first_seen_head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_seen_head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_occurrence_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    fixed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    historical_backfilled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
 class ReviewFindingRecord(Base):
     """模型候选经平台补齐身份后保存的、默认未复核 Finding。"""
 
@@ -1282,6 +1636,22 @@ class ReviewFindingRecord(Base):
             name="verification_status_value",
         ),
         CheckConstraint(
+            f"evidence_verification_status IN ({enum_values(EvidenceVerificationStatus)})",
+            name="evidence_verification_status_value",
+        ),
+        CheckConstraint(
+            f"adjudication_status IN ({enum_values(FindingAdjudicationStatus)})",
+            name="adjudication_status_value",
+        ),
+        CheckConstraint(
+            f"lifecycle_status IN ({enum_values(FindingOccurrenceStatus)})",
+            name="lifecycle_status_value",
+        ),
+        CheckConstraint(
+            "occurrence_count > 0",
+            name="occurrence_count_positive",
+        ),
+        CheckConstraint(
             "confidence >= 0 AND confidence <= 1",
             name="confidence_range",
         ),
@@ -1303,6 +1673,28 @@ class ReviewFindingRecord(Base):
             "ix_review_findings_run_verification",
             "review_run_id",
             "verification_status",
+        ),
+        Index(
+            "ix_review_findings_run_evidence_verification",
+            "review_run_id",
+            "evidence_verification_status",
+        ),
+        Index(
+            "ix_review_findings_run_adjudication",
+            "review_run_id",
+            "adjudication_status",
+        ),
+        Index(
+            "ix_review_findings_run_created_id",
+            "review_run_id",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_review_findings_lifecycle_backfill",
+            "lifecycle_backfilled_at",
+            "created_at",
+            "id",
         ),
         Index("ix_review_findings_head_fingerprint", "head_sha", "fingerprint"),
     )
@@ -1354,11 +1746,102 @@ class ReviewFindingRecord(Base):
     required_test: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     verification_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    evidence_verification_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=EvidenceVerificationStatus.UNVERIFIED.value,
+        server_default=EvidenceVerificationStatus.UNVERIFIED.value,
+    )
+    evidence_verification_reason: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+        default="not_checked",
+        server_default="not_checked",
+    )
+    evidence_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    adjudication_status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default=FindingAdjudicationStatus.UNREVIEWED.value,
+    )
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=FindingOccurrenceStatus.NEW.value,
+    )
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    previous_review_run_id: Mapped[str | None] = mapped_column(String(36))
+    lifecycle_backfilled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     rule_reference: Mapped[str | None] = mapped_column(String(1024))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed_by: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class FindingEvaluationRecord(Base):
+    """一条人工 Finding 裁决形成的可重复计算评测样本。
+
+    ``finding_id`` 只保留原始 Finding 的历史引用，不再建立外键约束。评测样本
+    的生命周期独立于按保留期清理的 Finding/ReviewRun；否则删除旧运行会通过
+    ``ON DELETE CASCADE`` 静默抹掉评测门禁所依赖的历史数据。
+    """
+
+    __tablename__ = "finding_evaluations"
+    __table_args__ = (
+        CheckConstraint(
+            f"category IN ({enum_values(FindingCategory)})",
+            name="category_value",
+        ),
+        CheckConstraint(
+            f"severity IN ({enum_values(Severity)})",
+            name="severity_value",
+        ),
+        CheckConstraint(
+            f"verdict IN ({enum_values(FindingEvaluationVerdict)})",
+            name="verdict_value",
+        ),
+        Index(
+            "ix_finding_evaluations_repository_category_time",
+            "repository_id",
+            "category",
+            "adjudicated_at",
+        ),
+        Index(
+            "ix_finding_evaluations_repository_time",
+            "repository_id",
+            "adjudicated_at",
+            "finding_id",
+        ),
+        Index(
+            "ix_finding_evaluations_repository_category_verdict",
+            "repository_id",
+            "category",
+            "verdict",
+        ),
+        Index(
+            "ix_finding_evaluations_adjudicated_cleanup",
+            "adjudicated_at",
+            "finding_id",
+        ),
+    )
+
+    finding_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    adjudicated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    adjudicated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )
 
 
@@ -1416,7 +1899,7 @@ class GitHubWebhookDeliveryRecord(Base):
 
 
 class ExternalActionRecord(Base):
-    """未来 GitHub 外部副作用使用的幂等与审计状态。"""
+    """GitHub 外部副作用使用的幂等与审计状态。"""
 
     __tablename__ = "external_actions"
     __table_args__ = (
@@ -1429,8 +1912,19 @@ class ExternalActionRecord(Base):
             "duration_ms IS NULL OR duration_ms >= 0",
             name="duration_ms_nonnegative",
         ),
+        CheckConstraint(
+            "(lease_owner IS NULL AND lease_expires_at IS NULL) OR "
+            "(lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="lease_shape",
+        ),
         UniqueConstraint("action_key"),
         Index("ix_external_actions_run_state", "review_run_id", "state"),
+        Index(
+            "ix_external_actions_claimable",
+            "state",
+            "lease_expires_at",
+            "updated_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -1454,6 +1948,10 @@ class ExternalActionRecord(Base):
     github_request_id: Mapped[str | None] = mapped_column(String(200))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     rate_limit_remaining: Mapped[int | None] = mapped_column(Integer)
+    lease_owner: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     last_error_code: Mapped[str | None] = mapped_column(String(64))
     last_error: Mapped[str | None] = mapped_column(Text)
     last_error_retryable: Mapped[bool | None] = mapped_column(Boolean)

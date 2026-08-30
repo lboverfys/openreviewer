@@ -1,9 +1,9 @@
 """接受异步审查请求的应用服务。"""
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
-import json
 from typing import Protocol
 
 from domain.enums import ExecutionStatus
@@ -36,6 +36,7 @@ class ReviewRepository(Protocol):
         request: ReviewRequest,
         idempotency_key: str,
         request_fingerprint: str,
+        actor: str = "system",
     ) -> ReviewSubmissionResult:
         """按幂等键创建任务，或返回已经存在的同一请求结果。
 
@@ -77,6 +78,8 @@ class ReviewService:
         self,
         request: ReviewRequest,
         idempotency_key: str,
+        *,
+        actor: str = "system",
     ) -> ReviewSubmissionResult:
         """校验幂等键并计算请求指纹，然后提交到持久化层。
 
@@ -117,4 +120,5 @@ class ReviewService:
             request,
             normalized_key,
             request_fingerprint,
+            actor,
         )

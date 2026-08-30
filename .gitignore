@@ -13,6 +13,7 @@ htmlcov/
 .venv/
 venv/
 env/
+/node_modules/
 
 # Local configuration and secrets
 .env
@@ -23,6 +24,7 @@ env/
 build/
 dist/
 web/node_modules/
+web/coverage/
 web/.vite-cache/
 web/dist/
 

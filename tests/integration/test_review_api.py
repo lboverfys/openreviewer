@@ -9,11 +9,21 @@ from sqlalchemy import func, select
 
 from apps.api.main import create_app
 from persistence.database import Database
-from persistence.models import Base, OutboxEventRecord, ReviewRunRecord, ReviewTaskRecord
+from persistence.models import (
+    Base,
+    OutboxEventRecord,
+    ReviewRunRecord,
+    ReviewTaskRecord,
+)
 from persistence.repositories import SqlAlchemyReviewRepository
+from services.review_quota import ReviewQuotaPolicy
 from services.reviews import ReviewService
-from tests.support import TEST_PASSWORD, TEST_USERNAME, make_auth_service
-
+from tests.support import (
+    TEST_GITHUB_ACCESS_POLICY,
+    TEST_PASSWORD,
+    TEST_USERNAME,
+    make_auth_service,
+)
 
 HEAD_SHA = "a" * 40
 
@@ -99,7 +109,11 @@ async def post_review(
         )
 
 
-def app_for(database: Database):
+def app_for(
+    database: Database,
+    *,
+    quota_policy: ReviewQuotaPolicy | None = None,
+):
     """构造任务 API 集成测试应用。
 
     参数：
@@ -109,10 +123,14 @@ def app_for(database: Database):
         使用真实 ``SqlAlchemyReviewRepository`` 和测试认证服务的 FastAPI 应用，
         从而覆盖 HTTP、Pydantic、服务指纹和数据库事务整条链路。
     """
-    repository = SqlAlchemyReviewRepository(database.sessions)
+    repository = SqlAlchemyReviewRepository(
+        database.sessions,
+        quota_policy=quota_policy,
+    )
     return create_app(
         ReviewService(repository),
         auth_service=make_auth_service(),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
     )
 
 
@@ -241,6 +259,41 @@ def test_new_idempotency_key_explicitly_creates_another_review_run(
         assert session.scalar(select(func.count()).select_from(OutboxEventRecord)) == 2
 
 
+def test_review_creation_quota_returns_retryable_429(
+    database: Database,
+) -> None:
+    """验证新幂等键超过账号配额时返回 429，且事务不会留下半成品。"""
+    policy = ReviewQuotaPolicy(
+        user_hourly=1,
+        repository_hourly=10,
+        global_hourly=10,
+        user_daily=10,
+        repository_daily=10,
+        global_daily=10,
+    )
+    application = app_for(database, quota_policy=policy)
+
+    first = asyncio.run(
+        post_review(application, review_payload(), "quota-first")
+    )
+    limited = asyncio.run(
+        post_review(
+            application,
+            review_payload(pull_request_number=129),
+            "quota-second",
+        )
+    )
+
+    assert first.status_code == 202
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": "review creation quota exceeded"}
+    assert int(limited.headers["Retry-After"]) > 0
+    with database.sessions() as session:
+        assert session.scalar(select(func.count()).select_from(ReviewRunRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(ReviewTaskRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(OutboxEventRecord)) == 1
+
+
 @pytest.mark.parametrize(
     ("payload", "idempotency_key"),
     [
@@ -294,7 +347,10 @@ def test_unconfigured_persistence_returns_service_unavailable(
 
     response = asyncio.run(
         post_review(
-            create_app(auth_service=make_auth_service()),
+            create_app(
+                auth_service=make_auth_service(),
+                github_access_policy=TEST_GITHUB_ACCESS_POLICY,
+            ),
             review_payload(),
             "no-database",
         )

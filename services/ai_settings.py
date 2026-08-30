@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import os
 from base64 import b64decode
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
-import json
-import os
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Literal, Protocol
@@ -28,6 +28,7 @@ from domain.enums import (
     ReviewAgent,
 )
 from domain.identifiers import build_review_version_key
+from domain.model_budget import ModelBudgetPolicy
 from domain.model_review import ModelReviewInput
 from domain.review_planning import ReviewUnit
 from domain.security import SafeApplicationError
@@ -61,6 +62,11 @@ DEFAULT_MAX_UNITS = 100
 DEFAULT_MAX_SCOPE_DEPTH = 32
 DEFAULT_MAX_UNIT_INPUT_BYTES = 192 * 1024
 DEFAULT_MAX_TOTAL_INPUT_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_MODEL_HTTP_CALLS = 64
+DEFAULT_MAX_MODEL_INPUT_TOKENS = 2_000_000
+DEFAULT_MAX_MODEL_OUTPUT_TOKENS = 250_000
+DEFAULT_MAX_MODEL_COST_MICROUSD: int | None = None
+DEFAULT_MAX_MODEL_DURATION_SECONDS = 900
 _MAX_KEY_FILE_BYTES = 4096
 
 
@@ -107,8 +113,9 @@ class EncryptedAiSecret:
 class AiSecretCipher:
     """使用 AES-256-GCM 和供应商绑定的附加认证数据保护 API Key。"""
 
-    key: bytes
+    key: bytes = field(repr=False)
     key_version: int = 1
+    previous_keys: tuple[tuple[int, bytes], ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         if len(self.key) != 32:
@@ -117,12 +124,25 @@ class AiSecretCipher:
             )
         if self.key_version <= 0:
             raise AiSettingsConfigurationError("AI 配置密钥版本必须为正整数")
+        if len(self.previous_keys) > 4:
+            raise AiSettingsConfigurationError("最多支持四个旧版 AI 配置密钥")
+        versions = [self.key_version]
+        for version, key in self.previous_keys:
+            if not isinstance(version, int) or version <= 0:
+                raise AiSettingsConfigurationError("旧版 AI 配置密钥版本必须为正整数")
+            if len(key) != 32:
+                raise AiSettingsConfigurationError(
+                    "旧版 AI 配置密钥解码后必须正好为 32 字节"
+                )
+            versions.append(version)
+        if len(versions) != len(set(versions)):
+            raise AiSettingsConfigurationError("AI 配置密钥版本不能重复")
 
     @classmethod
     def from_environment(
         cls,
         environment: Mapping[str, str] | None = None,
-    ) -> "AiSecretCipher":
+    ) -> AiSecretCipher:
         values = os.environ if environment is None else environment
         direct = values.get("OPENREVIEWER_AI_CONFIG_KEY", "").strip()
         key_file = values.get("OPENREVIEWER_AI_CONFIG_KEY_FILE", "").strip()
@@ -148,13 +168,7 @@ class AiSecretCipher:
             raise AiSettingsConfigurationError(
                 "必须配置 OPENREVIEWER_AI_CONFIG_KEY 或其文件路径"
             )
-        try:
-            padded = encoded + "=" * (-len(encoded) % 4)
-            key = b64decode(padded, altchars=b"-_", validate=True)
-        except (ValueError, UnicodeEncodeError) as exc:
-            raise AiSettingsConfigurationError(
-                "AI 配置加密主密钥必须是 URL-safe Base64"
-            ) from exc
+        key = _decode_ai_config_key(encoded, "AI 配置加密主密钥")
         raw_version = values.get("OPENREVIEWER_AI_CONFIG_KEY_VERSION", "1")
         try:
             key_version = int(raw_version)
@@ -162,7 +176,12 @@ class AiSecretCipher:
             raise AiSettingsConfigurationError(
                 "OPENREVIEWER_AI_CONFIG_KEY_VERSION 必须为正整数"
             ) from exc
-        return cls(key=key, key_version=key_version)
+        previous_keys = _read_previous_ai_config_keys(values)
+        return cls(
+            key=key,
+            key_version=key_version,
+            previous_keys=previous_keys,
+        )
 
     def encrypt(self, provider: ModelProvider, api_key: str) -> EncryptedAiSecret:
         normalized = api_key.strip()
@@ -187,12 +206,20 @@ class AiSecretCipher:
         nonce: bytes,
         key_version: int,
     ) -> str:
-        if key_version != self.key_version:
+        decryption_key = self.key if key_version == self.key_version else next(
+            (
+                key
+                for previous_version, key in self.previous_keys
+                if previous_version == key_version
+            ),
+            None,
+        )
+        if decryption_key is None:
             raise AiSettingsConfigurationError(
-                "数据库中的 AI 密钥版本与当前主密钥版本不一致"
+                "数据库中的 AI 密钥版本不在当前解密密钥环中"
             )
         try:
-            plaintext = AESGCM(self.key).decrypt(
+            plaintext = AESGCM(decryption_key).decrypt(
                 nonce,
                 ciphertext,
                 self._associated_data(provider, key_version),
@@ -208,6 +235,74 @@ class AiSecretCipher:
         return f"openreviewer:ai-provider:{provider.value}:v{key_version}".encode(
             "ascii"
         )
+
+
+def _decode_ai_config_key(encoded: str, label: str) -> bytes:
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        key = b64decode(padded, altchars=b"-_", validate=True)
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise AiSettingsConfigurationError(
+            f"{label}必须是 URL-safe Base64"
+        ) from exc
+    if len(key) != 32:
+        raise AiSettingsConfigurationError(f"{label}解码后必须正好为 32 字节")
+    return key
+
+
+def _read_previous_ai_config_keys(
+    values: Mapping[str, str],
+) -> tuple[tuple[int, bytes], ...]:
+    direct = values.get("OPENREVIEWER_AI_CONFIG_PREVIOUS_KEYS_JSON", "").strip()
+    file_name = values.get(
+        "OPENREVIEWER_AI_CONFIG_PREVIOUS_KEYS_FILE", ""
+    ).strip()
+    if direct and file_name:
+        raise AiSettingsConfigurationError(
+            "旧版 AI 配置密钥只能选择直接值或文件中的一种"
+        )
+    if file_name:
+        path = Path(file_name)
+        try:
+            if path.stat().st_size > 16 * 1024:
+                raise AiSettingsConfigurationError("旧版 AI 配置密钥文件过大")
+            raw = path.read_text(encoding="utf-8").strip()
+        except AiSettingsConfigurationError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise AiSettingsConfigurationError(
+                "旧版 AI 配置密钥文件无法读取"
+            ) from exc
+    else:
+        raw = direct
+    if not raw:
+        return ()
+    if len(raw.encode("utf-8")) > 16 * 1024:
+        raise AiSettingsConfigurationError("旧版 AI 配置密钥列表过大")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AiSettingsConfigurationError(
+            "旧版 AI 配置密钥必须是 JSON 数组"
+        ) from exc
+    if not isinstance(payload, list) or len(payload) > 4:
+        raise AiSettingsConfigurationError(
+            "旧版 AI 配置密钥必须是最多四项的 JSON 数组"
+        )
+    result: list[tuple[int, bytes]] = []
+    for item in payload:
+        if not isinstance(item, dict) or set(item) != {"version", "key"}:
+            raise AiSettingsConfigurationError(
+                "每个旧版 AI 配置密钥必须只包含 version 和 key"
+            )
+        version = item["version"]
+        encoded_key = item["key"]
+        if not isinstance(version, int) or not isinstance(encoded_key, str):
+            raise AiSettingsConfigurationError("旧版 AI 配置密钥字段类型无效")
+        result.append(
+            (version, _decode_ai_config_key(encoded_key.strip(), "旧版 AI 配置密钥"))
+        )
+    return tuple(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +332,11 @@ class ReviewPolicyDraft:
     max_scope_depth: int
     max_unit_input_bytes: int
     max_total_input_bytes: int
+    max_model_http_calls: int = DEFAULT_MAX_MODEL_HTTP_CALLS
+    max_model_input_tokens: int = DEFAULT_MAX_MODEL_INPUT_TOKENS
+    max_model_output_tokens: int = DEFAULT_MAX_MODEL_OUTPUT_TOKENS
+    max_model_cost_microusd: int | None = DEFAULT_MAX_MODEL_COST_MICROUSD
+    max_model_duration_seconds: int = DEFAULT_MAX_MODEL_DURATION_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +376,11 @@ class AiSettingsView:
     max_scope_depth: int
     max_unit_input_bytes: int
     max_total_input_bytes: int
+    max_model_http_calls: int
+    max_model_input_tokens: int
+    max_model_output_tokens: int
+    max_model_cost_microusd: int | None
+    max_model_duration_seconds: int
     updated_at: datetime | None
     updated_by: str | None
     providers: tuple[AiProviderView, ...]
@@ -303,7 +408,7 @@ class ActiveAiRuntime:
     reviewer: ModelReviewer | None
     planner: DeterministicReviewPlanner
     model_settings: ModelServiceSettings | None = None
-    agent_workflow: "FixedAgentWorkflow | None" = None
+    agent_workflow: FixedAgentWorkflow | None = None
 
 
 class AiRuntimeProvider(Protocol):
@@ -366,6 +471,17 @@ class AiSettingsService:
                 settings = self._lock_settings(session, expected_revision, now)
                 record = session.get(AiProviderConfigRecord, provider.value)
                 changed_fields = self._provider_changed_fields(record, draft)
+                secret = session.get(AiProviderSecretRecord, provider.value)
+                if (
+                    record is not None
+                    and "api_base_url" in changed_fields
+                    and secret is not None
+                    and api_key is None
+                    and not clear_api_key
+                ):
+                    raise AiSettingsValidationError(
+                        "切换 API 地址时必须同时提供新的 API Key"
+                    )
                 if record is None:
                     record = AiProviderConfigRecord(
                         provider=provider.value,
@@ -377,7 +493,6 @@ class AiSettingsService:
                     session.add(record)
                 self._apply_provider_draft(record, draft, actor, now)
 
-                secret = session.get(AiProviderSecretRecord, provider.value)
                 if api_key is not None:
                     encrypted = self._cipher.encrypt(provider, api_key)
                     if secret is None:
@@ -455,11 +570,19 @@ class AiSettingsService:
         actor: str,
     ) -> AiSettingsView:
         try:
+            model_budget = ModelBudgetPolicy(
+                max_http_calls=draft.max_model_http_calls,
+                max_input_tokens=draft.max_model_input_tokens,
+                max_output_tokens=draft.max_model_output_tokens,
+                max_estimated_cost_microusd=draft.max_model_cost_microusd,
+                max_duration_seconds=draft.max_model_duration_seconds,
+            )
             ReviewPlanningSettings(
                 max_units=draft.max_units,
                 max_scope_depth=draft.max_scope_depth,
                 max_unit_input_bytes=draft.max_unit_input_bytes,
                 max_total_input_bytes=draft.max_total_input_bytes,
+                model_budget=model_budget,
             )
         except ValueError as exc:
             raise AiSettingsValidationError(str(exc)) from exc
@@ -474,6 +597,11 @@ class AiSettingsService:
                         "max_scope_depth",
                         "max_unit_input_bytes",
                         "max_total_input_bytes",
+                        "max_model_http_calls",
+                        "max_model_input_tokens",
+                        "max_model_output_tokens",
+                        "max_model_cost_microusd",
+                        "max_model_duration_seconds",
                     )
                     if getattr(settings, name) != getattr(draft, name)
                 }
@@ -639,6 +767,7 @@ class AiSettingsService:
                 max_scope_depth=settings.max_scope_depth,
                 max_unit_input_bytes=settings.max_unit_input_bytes,
                 max_total_input_bytes=settings.max_total_input_bytes,
+                model_budget=self._model_budget(settings),
             )
         except ValueError as exc:
             raise AiSettingsConfigurationError(
@@ -801,6 +930,31 @@ class AiSettingsService:
                 if settings
                 else DEFAULT_MAX_TOTAL_INPUT_BYTES
             ),
+            max_model_http_calls=(
+                settings.max_model_http_calls
+                if settings
+                else DEFAULT_MAX_MODEL_HTTP_CALLS
+            ),
+            max_model_input_tokens=(
+                settings.max_model_input_tokens
+                if settings
+                else DEFAULT_MAX_MODEL_INPUT_TOKENS
+            ),
+            max_model_output_tokens=(
+                settings.max_model_output_tokens
+                if settings
+                else DEFAULT_MAX_MODEL_OUTPUT_TOKENS
+            ),
+            max_model_cost_microusd=(
+                settings.max_model_cost_microusd
+                if settings
+                else DEFAULT_MAX_MODEL_COST_MICROUSD
+            ),
+            max_model_duration_seconds=(
+                settings.max_model_duration_seconds
+                if settings
+                else DEFAULT_MAX_MODEL_DURATION_SECONDS
+            ),
             updated_at=settings.updated_at if settings else None,
             updated_by=settings.updated_by if settings else None,
             providers=tuple(providers),
@@ -865,6 +1019,11 @@ class AiSettingsService:
                 max_scope_depth=DEFAULT_MAX_SCOPE_DEPTH,
                 max_unit_input_bytes=DEFAULT_MAX_UNIT_INPUT_BYTES,
                 max_total_input_bytes=DEFAULT_MAX_TOTAL_INPUT_BYTES,
+                max_model_http_calls=DEFAULT_MAX_MODEL_HTTP_CALLS,
+                max_model_input_tokens=DEFAULT_MAX_MODEL_INPUT_TOKENS,
+                max_model_output_tokens=DEFAULT_MAX_MODEL_OUTPUT_TOKENS,
+                max_model_cost_microusd=DEFAULT_MAX_MODEL_COST_MICROUSD,
+                max_model_duration_seconds=DEFAULT_MAX_MODEL_DURATION_SECONDS,
                 updated_at=now,
             )
             session.add(settings)
@@ -872,6 +1031,16 @@ class AiSettingsService:
         else:
             self._check_revision(settings.revision, expected_revision)
         return settings
+
+    @staticmethod
+    def _model_budget(settings: AiSettingsRecord) -> ModelBudgetPolicy:
+        return ModelBudgetPolicy(
+            max_http_calls=settings.max_model_http_calls,
+            max_input_tokens=settings.max_model_input_tokens,
+            max_output_tokens=settings.max_model_output_tokens,
+            max_estimated_cost_microusd=settings.max_model_cost_microusd,
+            max_duration_seconds=settings.max_model_duration_seconds,
+        )
 
     @staticmethod
     def _check_revision(current: int, expected: int) -> None:
@@ -1083,6 +1252,8 @@ class AiSettingsService:
             "api_base_url": settings.resolved_api_base_url,
             "reasoning_effort": settings.reasoning_effort.value,
             "api_key_sha256": sha256(settings.api_key.encode("utf-8")).hexdigest(),
+            "context_window_tokens": settings.context_window_tokens,
+            "max_batch_input_tokens": settings.max_batch_input_tokens,
             "max_output_tokens": settings.max_output_tokens,
             "timeouts": [
                 settings.connect_timeout_seconds,
@@ -1091,6 +1262,28 @@ class AiSettingsService:
                 settings.pool_timeout_seconds,
             ],
             "limits": [settings.max_request_bytes, settings.max_response_bytes],
+            "pricing": (
+                {
+                    "input_usd_per_million": str(
+                        settings.pricing.input_usd_per_million
+                    ),
+                    "output_usd_per_million": str(
+                        settings.pricing.output_usd_per_million
+                    ),
+                    "cache_read_usd_per_million": (
+                        str(settings.pricing.cache_read_usd_per_million)
+                        if settings.pricing.cache_read_usd_per_million is not None
+                        else None
+                    ),
+                    "cache_write_usd_per_million": (
+                        str(settings.pricing.cache_write_usd_per_million)
+                        if settings.pricing.cache_write_usd_per_million is not None
+                        else None
+                    ),
+                }
+                if settings.pricing is not None
+                else None
+            ),
         }
         encoded = json.dumps(
             identity,
@@ -1106,7 +1299,7 @@ class SqlAlchemyAiRuntimeProvider:
     def __init__(
         self,
         service: AiSettingsService,
-        agent_settings_service: "AgentSettingsService | None" = None,
+        agent_settings_service: AgentSettingsService | None = None,
         *,
         max_agent_concurrency: int = 3,
     ) -> None:
@@ -1173,6 +1366,15 @@ class SqlAlchemyAiRuntimeProvider:
                     max_scope_depth=snapshot.max_scope_depth,
                     max_unit_input_bytes=snapshot.max_unit_input_bytes,
                     max_total_input_bytes=snapshot.max_total_input_bytes,
+                    model_budget=ModelBudgetPolicy(
+                        max_http_calls=snapshot.max_model_http_calls,
+                        max_input_tokens=snapshot.max_model_input_tokens,
+                        max_output_tokens=snapshot.max_model_output_tokens,
+                        max_estimated_cost_microusd=(
+                            snapshot.max_model_cost_microusd
+                        ),
+                        max_duration_seconds=snapshot.max_model_duration_seconds,
+                    ),
                 )
             agent_workflow = None
             if use_agent_workflow and self._agent_settings_service is not None:

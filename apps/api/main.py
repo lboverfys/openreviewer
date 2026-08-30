@@ -1,28 +1,37 @@
 """OpenReviewer 的 FastAPI 入口。"""
 
-import asyncio
-from contextlib import asynccontextmanager
-from dataclasses import asdict
-from datetime import datetime
-from decimal import Decimal
-from hashlib import sha256
+import ipaddress
 import os
+import time
+from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from threading import RLock
-from typing import Annotated, Literal
-from urllib.parse import urlsplit
+from typing import Annotated
+from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
-from domain.enums import (
-    ExecutionStatus,
-    ModelApiProtocol,
-    ModelProvider,
-    ModelReasoningEffort,
-    ReviewAgent,
-    WorkerStatus,
+from apps.api.routes.dashboard import register_dashboard_routes
+from apps.api.routes.knowledge import register_knowledge_routes
+from apps.api.routes.reviews import register_review_routes
+from apps.api.routes.settings import register_settings_routes
+from apps.api.schemas import (
+    AiSettingsResponse,
+    AuthResponse,
+    DashboardResponse,
+    HealthResponse,
+    LoginRequest,
+    ReadinessResponse,
+    WebhookReceiptResponse,
 )
 from domain.security import (
     ErrorCode,
@@ -30,24 +39,16 @@ from domain.security import (
     SafeError,
     install_redacting_log_filters,
 )
-from domain.models import ReviewRequest
+from persistence.auth import SqlAlchemyLoginAttemptLimiter, SqlAlchemySessionStore
 from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database, DatabaseConfigurationError
+from persistence.external_actions import SqlAlchemyExternalActionStore
+from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
-from services.auth import (
-    AuthConfigurationError,
-    AuthService,
-    AuthSettings,
-    InvalidSessionError,
-    LoginAttemptLimiter,
-    LoginRateLimitError,
-    SessionPrincipal,
-)
+from services.agent_settings import AgentSettingsService
 from services.ai_settings import (
-    AiConnectionTestError,
-    AiProviderDraft,
     AiProviderNotReadyError,
     AiSecretCipher,
     AiSettingsConfigurationError,
@@ -55,850 +56,141 @@ from services.ai_settings import (
     AiSettingsPersistenceError,
     AiSettingsService,
     AiSettingsValidationError,
-    AiSettingsView,
-    ConfigurationAuditView,
-    ReviewPolicyDraft,
 )
-from services.agent_settings import (
-    AgentConfigDraft,
-    AgentConfigView,
-    AgentSettingsService,
-    AgentSettingsView,
-)
-from services.rag import (
-    KnowledgeConflictError,
-    KnowledgeDocumentSummary,
-    KnowledgeDocumentView,
-    KnowledgeLibraryView,
-    KnowledgeMutationView,
-    KnowledgeNotFoundError,
-    KnowledgePersistenceError,
-    KnowledgeValidationError,
-    KnowledgeVersionView,
-    ManagedMarkdownKnowledgeBase,
-    MarkdownKnowledgeBase,
-    RagCitation,
+from services.auth import (
+    AuthConfigurationError,
+    AuthPersistenceError,
+    AuthService,
+    AuthSettings,
+    InvalidSessionError,
+    LoginAttemptLimiter,
+    LoginLimiter,
+    LoginRateLimitError,
+    SessionPrincipal,
 )
 from services.dashboard import (
     DashboardPersistenceError,
     DashboardService,
-    DashboardSnapshot,
-    ReviewListItem,
+)
+from services.dashboard_stream import (
+    DashboardStreamCoordinator,
+    DashboardStreamRegistry,
 )
 from services.github import GitHubApiClient
-from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
+from services.github_access import (
+    GitHubAccessConfigurationError,
+    GitHubAccessPolicy,
+)
+from services.github_auth import (
+    GITHUB_PUBLISH_TOKEN_SCOPE,
+    GITHUB_READ_TOKEN_SCOPE,
+    GitHubAppSettings,
+    GitHubAppTokenProvider,
+)
 from services.github_context import GitHubReviewContextLoader
 from services.github_publisher import GitHubReviewPublisher
+from services.operations import (
+    OperationsError,
+    OperationsService,
+    OperationsSettings,
+    ReadinessSnapshot,
+)
+from services.rag import (
+    KnowledgeConflictError,
+    KnowledgeNotFoundError,
+    KnowledgePersistenceError,
+    KnowledgeValidationError,
+    ManagedMarkdownKnowledgeBase,
+    MarkdownKnowledgeBase,
+)
+from services.rbac import Permission, ResourceScope, has_permission, permissions_for
+from services.review_management import (
+    PullRequestIdentityLoader,
+    ReviewManagementService,
+)
 from services.reviews import (
-    IdempotencyConflictError,
-    ReviewPersistenceError,
     ReviewService,
 )
-from services.review_management import (
-    FindingDecision,
-    PullRequestIdentityLoader,
-    ReviewAction,
-    ReviewActionConflictError,
-    ReviewIdentitySyncConflictError,
-    ReviewIdentitySyncUnavailableError,
-    ReviewManagementPersistenceError,
-    ReviewPublishUnavailableError,
-    ReviewManagementService,
-    ReviewNotFoundError,
-    FindingNotFoundError,
-    ReviewDetails,
-)
+from services.telemetry import GLOBAL_TELEMETRY, TelemetryRegistry
 from services.webhooks import (
     GitHubWebhookService,
     GitHubWebhookSettings,
     WebhookConfigurationError,
-    WebhookReceipt,
     WebhookRequestError,
 )
 
 
-class HealthResponse(BaseModel):
-    """不包含配置详情的公开存活探针响应。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    status: Literal["ok"] = "ok"
-    service: Literal["openreviewer"] = "openreviewer"
-
-
-class LoginRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    username: str = Field(min_length=1, max_length=100)
-    password: str = Field(min_length=1, max_length=512)
-
-
-class AuthResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    authenticated: Literal[True] = True
-    username: str
-    expires_at: datetime
-
-
-class ReviewAcceptedResponse(BaseModel):
-    """异步审查任务入队后的稳定确认响应。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    review_run_id: str
-    review_task_id: str
-    review_version_key: str
-    execution_status: ExecutionStatus
-    accepted_at: datetime
-    created: bool
-
-
-class WebhookReceiptResponse(BaseModel):
-    """GitHub 投递通过身份校验后的稳定确认响应。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    accepted: bool
-    delivery_id: str
-    created: bool
-    reason: str | None = None
-    review_run_id: str | None = None
-    review_task_id: str | None = None
-    review_version_key: str | None = None
-    execution_status: ExecutionStatus | None = None
-    accepted_at: datetime | None = None
-
-    @classmethod
-    def from_receipt(cls, receipt: WebhookReceipt) -> "WebhookReceiptResponse":
-        submission = receipt.submission
-        return cls(
-            accepted=receipt.accepted,
-            delivery_id=receipt.delivery_id,
-            created=receipt.created,
-            reason=receipt.reason,
-            review_run_id=(submission.review_run_id if submission else None),
-            review_task_id=(submission.review_task_id if submission else None),
-            review_version_key=(
-                submission.review_version_key if submission else None
-            ),
-            execution_status=(submission.execution_status if submission else None),
-            accepted_at=(submission.accepted_at if submission else None),
-        )
-
-
-class ReviewItemResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    review_run_id: str
-    review_task_id: str
-    repository: str
-    pull_request_number: int
-    head_sha: str
-    pr_title: str | None
-    pr_author_login: str | None
-    pr_html_url: str | None
-    head_repository: str | None
-    head_ref: str | None
-    base_repository: str | None
-    base_ref: str | None
-    execution_status: ExecutionStatus
-    workflow_status: ExecutionStatus = ExecutionStatus.QUEUED
-    attempt_count: int
-    max_attempts: int
-    last_error: str | None
-    last_error_code: str | None = Field(max_length=64)
-    last_error_retryable: bool | None
-    last_error_details: dict[str, object] | None
-    review_conclusion: str | None
-    coverage_status: str
-    model_review_completed_at: datetime | None
-    finding_count: int
-    unverified_finding_count: int
-    model_attempt_count: int
-    created_at: datetime
-    updated_at: datetime
-
-    @classmethod
-    def from_item(cls, item: ReviewListItem) -> "ReviewItemResponse":
-        """把服务层任务读模型转换为严格的 API 响应模型。
-
-        参数：
-            item: Dashboard 服务层返回的不可变 ``ReviewListItem``。字段名必须与
-                响应模型一致，避免在每个路由里重复手写映射。
-
-        返回：
-            只包含公开字段的 ``ReviewItemResponse``；Pydantic 会再次执行类型和
-            枚举序列化校验。
-
-        该方法不访问数据库、不改变 ``item``，也不会把 ORM 对象直接暴露给 FastAPI。
-        """
-        return cls(**{field: getattr(item, field) for field in cls.model_fields})
-
-
-class ReviewListResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    total: int
-    items: tuple[ReviewItemResponse, ...]
-
-
-class ReviewEventResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    event_type: str
-    payload: dict[str, object]
-    occurred_at: datetime
-
-
-class ReviewCiCheckResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    kind: str
-    status: str
-    conclusion: str | None
-    observed_at: datetime
-
-
-class ReviewFindingResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    severity: str
-    category: str
-    title: str
-    evidence: str
-    impact: str
-    suggestion: str
-    required_test: str | None
-    confidence: float
-    verification_status: str
-    location_file: str | None
-    location_start_line: int | None
-    location_end_line: int | None
-    location_side: str | None
-    location_in_diff: bool
-    location_symbol: str | None
-    rule_reference: str | None
-    reviewed_at: datetime | None
-    reviewed_by: str | None
-    created_at: datetime
-
-
-class ReviewStageResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    key: str
-    status: str
-    started_at: datetime | None
-    completed_at: datetime | None
-    detail_code: str | None
-
-
-class ReviewDetailsResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    review_run_id: str
-    review_task_id: str
-    review_version_key: str
-    installation_id: int
-    repository_id: int
-    repository: str
-    pull_request_number: int
-    head_sha: str
-    execution_status: ExecutionStatus
-    workflow_status: ExecutionStatus
-    review_conclusion: str | None
-    coverage_status: str
-    priority: int
-    attempt_count: int
-    model_attempt_count: int
-    max_attempts: int
-    ci_poll_count: int
-    available_at: datetime
-    claimed_from_status: str | None
-    lease_owner: str | None
-    lease_expires_at: datetime | None
-    last_error: str | None
-    last_error_code: str | None
-    last_error_retryable: bool | None
-    last_error_details: dict[str, object] | None
-    created_at: datetime
-    updated_at: datetime
-    pr_title: str | None
-    pr_author_login: str | None
-    pr_html_url: str | None
-    head_repository: str | None
-    head_ref: str | None
-    base_repository: str | None
-    base_ref: str | None
-    identity_fetched_at: datetime | None
-    pr_state: str | None
-    pr_is_draft: bool | None
-    changed_files_count: int | None
-    files_complete: bool | None
-    diff_complete: bool | None
-    context_fetched_at: datetime | None
-    ci_state: str | None
-    ci_checks_complete: bool | None
-    ci_checked_at: datetime | None
-    review_plan_id: str | None
-    plan_created_at: datetime | None
-    plan_file_count: int | None
-    plan_unit_count: int | None
-    plan_rule_count: int | None
-    plan_input_bytes: int | None
-    plan_rules_complete: bool | None
-    plan_file_decisions: dict[str, int]
-    model_review_completed_at: datetime | None
-    model_call_id: str | None
-    model_provider: str | None
-    model_protocol: str | None
-    model_name: str | None
-    model_status: str | None
-    model_response_status: int | None
-    model_duration_ms: int | None
-    model_input_tokens: int | None
-    model_output_tokens: int | None
-    model_cache_read_tokens: int | None
-    model_cache_write_tokens: int | None
-    model_reasoning_tokens: int | None
-    model_cost_microusd: int | None
-    model_finding_count: int | None
-    model_created_at: datetime | None
-    current_stage: str
-    phase: str
-    stages: tuple[ReviewStageResponse, ...]
-    available_actions: tuple[ReviewAction, ...]
-    verified_finding_count: int
-    rejected_finding_count: int
-    unverified_finding_count: int
-    findings: tuple[ReviewFindingResponse, ...]
-    ci_checks: tuple[ReviewCiCheckResponse, ...]
-    events: tuple[ReviewEventResponse, ...]
-
-    @classmethod
-    def from_details(cls, details: ReviewDetails) -> "ReviewDetailsResponse":
-        stored = details.stored
-        fields = {
-            field: getattr(stored, field)
-            for field in cls.model_fields
-            if hasattr(stored, field)
-        }
-        fields.update(
-            {
-                "current_stage": details.current_stage,
-                "phase": details.phase,
-                "stages": tuple(
-                    ReviewStageResponse(**asdict(stage)) for stage in details.stages
-                ),
-                "available_actions": details.available_actions,
-                "verified_finding_count": details.verified_finding_count,
-                "rejected_finding_count": details.rejected_finding_count,
-                "unverified_finding_count": details.unverified_finding_count,
-                "findings": tuple(
-                    ReviewFindingResponse(**asdict(finding))
-                    for finding in stored.findings
-                ),
-                "ci_checks": tuple(
-                    ReviewCiCheckResponse(**asdict(check))
-                    for check in stored.ci_checks
-                ),
-                "events": tuple(
-                    ReviewEventResponse(**asdict(event))
-                    for event in stored.events
-                ),
-            }
-        )
-        return cls(**fields)
-
-
-class ReviewActionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    action: ReviewAction
-    target_stage: ExecutionStatus | None = None
-
-
-class ReviewActionResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    action: ReviewAction
-    review_run_id: str
-    review_task_id: str
-    execution_status: ExecutionStatus
-    workflow_status: ExecutionStatus | None = None
-
-
-class ReviewFindingDecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    decision: FindingDecision
-
-
-class WorkerResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    configured: bool
-    online: bool
-    worker_id: str | None
-    status: WorkerStatus | None
-    current_task_id: str | None
-    started_at: datetime | None
-    last_seen_at: datetime | None
-
-
-class DashboardResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    generated_at: datetime
-    total_reviews: int
-    status_counts: dict[ExecutionStatus, int]
-    worker: WorkerResponse
-    recent_reviews: tuple[ReviewItemResponse, ...]
-
-    @classmethod
-    def from_snapshot(cls, snapshot: DashboardSnapshot) -> "DashboardResponse":
-        """把服务层 Dashboard 快照转换为稳定的 JSON 响应结构。
-
-        参数：
-            snapshot: ``DashboardService`` 组装的不可变快照，包含状态计数、Worker
-                状态和最近任务。
-
-        返回：
-            FastAPI 可以直接序列化的 ``DashboardResponse``。映射会把只读映射复制
-            成普通字典，并逐条转换最近任务，避免响应依赖服务层对象的可变行为。
-
-        该方法只做边界适配，不重新计算在线状态、不补查数据库，也不隐藏任务错误
-        文本；敏感错误的安全处理必须在持久化/服务边界完成。
-        """
-        return cls(
-            generated_at=snapshot.generated_at,
-            total_reviews=snapshot.total_reviews,
-            status_counts=dict(snapshot.status_counts),
-            worker=WorkerResponse(
-                **{
-                    field: getattr(snapshot.worker, field)
-                    for field in WorkerResponse.model_fields
-                }
-            ),
-            recent_reviews=tuple(
-                ReviewItemResponse.from_item(item)
-                for item in snapshot.recent_reviews
-            ),
-        )
-
-
-class AiProviderResponse(BaseModel):
-    """一个供应商可公开给管理页面的脱敏配置。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    provider: ModelProvider
-    configured: bool
-    active: bool
-    model: str
-    api_protocol: ModelApiProtocol
-    api_base_url: str | None
-    reasoning_effort: ModelReasoningEffort
-    api_key_configured: bool
-    api_key_mask: str | None
-    context_window_tokens: int
-    max_output_tokens: int
-    max_batch_input_tokens: int
-    connect_timeout_seconds: float
-    read_timeout_seconds: float
-    write_timeout_seconds: float
-    pool_timeout_seconds: float
-    max_request_bytes: int
-    max_response_bytes: int
-    input_usd_per_million: str | None
-    output_usd_per_million: str | None
-    cache_read_usd_per_million: str | None
-    cache_write_usd_per_million: str | None
-    test_status: Literal["untested", "succeeded", "failed"]
-    tested_at: datetime | None
-    updated_at: datetime | None
-
-
-class AiSettingsResponse(BaseModel):
-    """管理页面需要的完整 AI 配置，不包含密钥明文或密文。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    revision: int
-    active_provider: ModelProvider | None
-    max_units: int
-    max_scope_depth: int
-    max_unit_input_bytes: int
-    max_total_input_bytes: int
-    updated_at: datetime | None
-    updated_by: str | None
-    providers: tuple[AiProviderResponse, ...]
-
-    @classmethod
-    def from_view(cls, view: AiSettingsView) -> "AiSettingsResponse":
-        price_names = (
-            "input_usd_per_million",
-            "output_usd_per_million",
-            "cache_read_usd_per_million",
-            "cache_write_usd_per_million",
-        )
-        providers = []
-        for item in view.providers:
-            payload = {
-                field: getattr(item, field)
-                for field in AiProviderResponse.model_fields
-                if field not in price_names
-            }
-            payload.update(
-                {
-                    name: (
-                        format(getattr(item, name), "f")
-                        if getattr(item, name) is not None
-                        else None
-                    )
-                    for name in price_names
-                }
-            )
-            providers.append(AiProviderResponse(**payload))
-        return cls(
-            revision=view.revision,
-            active_provider=view.active_provider,
-            max_units=view.max_units,
-            max_scope_depth=view.max_scope_depth,
-            max_unit_input_bytes=view.max_unit_input_bytes,
-            max_total_input_bytes=view.max_total_input_bytes,
-            updated_at=view.updated_at,
-            updated_by=view.updated_by,
-            providers=tuple(providers),
-        )
-
-
-class AiAgentResponse(BaseModel):
-    """一个固定 DAG Agent 的脱敏独立配置。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    agent: ReviewAgent
-    configured: bool
-    enabled: bool
-    provider: ModelProvider
-    model: str
-    api_protocol: ModelApiProtocol
-    api_base_url: str | None
-    reasoning_effort: ModelReasoningEffort
-    api_key_configured: bool
-    api_key_mask: str | None
-    context_window_tokens: int
-    max_output_tokens: int
-    max_batch_input_tokens: int
-    connect_timeout_seconds: float
-    read_timeout_seconds: float
-    write_timeout_seconds: float
-    pool_timeout_seconds: float
-    max_retries: int
-    test_status: Literal["untested", "succeeded", "failed"]
-    tested_at: datetime | None
-    updated_at: datetime | None
-
-
-class AiAgentSettingsResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    revision: int
-    agents: tuple[AiAgentResponse, ...]
-
-    @classmethod
-    def from_view(cls, view: AgentSettingsView) -> "AiAgentSettingsResponse":
-        return cls(
-            revision=view.revision,
-            agents=tuple(
-                AiAgentResponse(
-                    **{
-                        name: getattr(item, name)
-                        for name in AiAgentResponse.model_fields
-                    }
-                )
-                for item in view.agents
-            ),
-        )
-
-
-class AiAgentUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expected_revision: int = Field(ge=0)
-    provider: ModelProvider
-    model: str = Field(min_length=1, max_length=200)
-    api_protocol: ModelApiProtocol = ModelApiProtocol.CHAT_COMPLETIONS
-    api_base_url: str | None = Field(default=None, max_length=500)
-    api_key: str | None = Field(default=None, min_length=1, max_length=65_536)
-    clear_api_key: bool = False
-    reasoning_effort: ModelReasoningEffort = ModelReasoningEffort.NONE
-    context_window_tokens: int = Field(default=128_000, ge=8192, le=4_000_000)
-    max_output_tokens: int = Field(default=8192, ge=256, le=131_072)
-    max_batch_input_tokens: int = Field(default=64_000, ge=4096, le=4_000_000)
-    connect_timeout_seconds: float = Field(default=5.0, gt=0, le=3600)
-    read_timeout_seconds: float = Field(default=180.0, gt=0, le=3600)
-    write_timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
-    pool_timeout_seconds: float = Field(default=5.0, gt=0, le=3600)
-    max_retries: int = Field(default=2, ge=0, le=10)
-
-    def to_draft(self) -> AgentConfigDraft:
-        return AgentConfigDraft(
-            **{
-                name: getattr(self, name)
-                for name in AgentConfigDraft.__dataclass_fields__
-            }
-        )
-
-
-class AiAgentEnabledRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    expected_revision: int = Field(ge=0)
-    enabled: bool
-
-
-class KnowledgeCitationResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    source: str
-    heading: str
-    score: float
-    excerpt: str
-    version: str
-
-
-class KnowledgeSearchResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    query: str
-    items: tuple[KnowledgeCitationResponse, ...]
-
-
-class KnowledgeVersionResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    version: int
-    content_sha256: str
-    byte_size: int
-    created_by: str
-    created_at: datetime
-
-    @classmethod
-    def from_view(cls, view: KnowledgeVersionView) -> "KnowledgeVersionResponse":
-        return cls(**{name: getattr(view, name) for name in cls.model_fields})
-
-
-class KnowledgeDocumentSummaryResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    source: str
-    title: str
-    enabled: bool
-    archived: bool
-    current_version: int
-    content_sha256: str
-    byte_size: int
-    created_by: str
-    updated_by: str
-    created_at: datetime
-    updated_at: datetime
-
-    @classmethod
-    def from_view(
-        cls,
-        view: KnowledgeDocumentSummary,
-    ) -> "KnowledgeDocumentSummaryResponse":
-        return cls(**{name: getattr(view, name) for name in cls.model_fields})
-
-
-class KnowledgeDocumentResponse(KnowledgeDocumentSummaryResponse):
-    content: str
-    versions: tuple[KnowledgeVersionResponse, ...]
-
-    @classmethod
-    def from_view(
-        cls,
-        view: KnowledgeDocumentView,
-    ) -> "KnowledgeDocumentResponse":
-        return cls(
-            **{
-                name: getattr(view, name)
-                for name in KnowledgeDocumentSummaryResponse.model_fields
-            },
-            content=view.content,
-            versions=tuple(
-                KnowledgeVersionResponse.from_view(item) for item in view.versions
-            ),
-        )
-
-
-class KnowledgeDocumentListResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    revision: int
-    total: int
-    enabled_count: int
-    total_enabled_bytes: int
-    items: tuple[KnowledgeDocumentSummaryResponse, ...]
-
-    @classmethod
-    def from_view(
-        cls,
-        view: KnowledgeLibraryView,
-    ) -> "KnowledgeDocumentListResponse":
-        return cls(
-            revision=view.revision,
-            total=view.total,
-            enabled_count=view.enabled_count,
-            total_enabled_bytes=view.total_enabled_bytes,
-            items=tuple(
-                KnowledgeDocumentSummaryResponse.from_view(item)
-                for item in view.items
-            ),
-        )
-
-
-class KnowledgeMutationResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    revision: int
-    document: KnowledgeDocumentResponse
-
-    @classmethod
-    def from_view(
-        cls,
-        view: KnowledgeMutationView,
-    ) -> "KnowledgeMutationResponse":
-        return cls(
-            revision=view.revision,
-            document=KnowledgeDocumentResponse.from_view(view.document),
-        )
-
-
-class KnowledgeDocumentCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expected_revision: int = Field(ge=0)
-    source: str = Field(min_length=1, max_length=200)
-    content: str = Field(min_length=1, max_length=524_288)
-    enabled: bool = True
-
-
-class KnowledgeDocumentUpdateRequest(KnowledgeDocumentCreateRequest):
-    expected_document_version: int = Field(ge=1)
-
-
-class KnowledgeDocumentStateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    expected_revision: int = Field(ge=0)
-    expected_document_version: int = Field(ge=1)
-
-
-class AiProviderUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expected_revision: int = Field(ge=0)
-    model: str = Field(min_length=1, max_length=200)
-    api_protocol: ModelApiProtocol
-    api_base_url: str | None = Field(default=None, max_length=500)
-    api_key: str | None = Field(default=None, min_length=1, max_length=65_536)
-    clear_api_key: bool = False
-    reasoning_effort: ModelReasoningEffort = ModelReasoningEffort.NONE
-    context_window_tokens: int = Field(ge=8_192, le=4_000_000)
-    max_output_tokens: int = Field(ge=256, le=131_072)
-    max_batch_input_tokens: int = Field(
-        default=64_000,
-        ge=4_096,
-        le=4_000_000,
+def _trusted_proxy_networks(
+    values: Mapping[str, str] | None = None,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """读取可信反向代理网段；无法解析时失败关闭。"""
+
+    source = values if values is not None else os.environ
+    raw = source.get(
+        "OPENREVIEWER_TRUSTED_PROXY_CIDRS",
+        "127.0.0.1/32,::1/128,172.23.0.0/16",
     )
-    connect_timeout_seconds: float = Field(gt=0, le=3600)
-    read_timeout_seconds: float = Field(gt=0, le=3600)
-    write_timeout_seconds: float = Field(gt=0, le=3600)
-    pool_timeout_seconds: float = Field(gt=0, le=3600)
-    max_request_bytes: int = Field(ge=65_536, le=10 * 1024 * 1024)
-    max_response_bytes: int = Field(ge=65_536, le=10 * 1024 * 1024)
-    input_usd_per_million: Decimal | None = Field(
-        default=None, ge=0, le=1_000_000, decimal_places=6
-    )
-    output_usd_per_million: Decimal | None = Field(
-        default=None, ge=0, le=1_000_000, decimal_places=6
-    )
-    cache_read_usd_per_million: Decimal | None = Field(
-        default=None, ge=0, le=1_000_000, decimal_places=6
-    )
-    cache_write_usd_per_million: Decimal | None = Field(
-        default=None, ge=0, le=1_000_000, decimal_places=6
-    )
-
-    def to_draft(self) -> AiProviderDraft:
-        return AiProviderDraft(
-            **{
-                field: getattr(self, field)
-                for field in AiProviderDraft.__dataclass_fields__
-            }
-        )
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError as exc:
+            raise ValueError("OPENREVIEWER_TRUSTED_PROXY_CIDRS contains invalid CIDR") from exc
+    return tuple(networks)
 
 
-class AiRevisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+def _require_origin_header(values: Mapping[str, str] | None = None) -> bool:
+    """读取是否拒绝缺少 Origin/Referer 的副作用请求。"""
 
-    expected_revision: int = Field(ge=0)
-
-
-class ReviewPolicyUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    expected_revision: int = Field(ge=0)
-    max_units: int = Field(ge=1, le=3000)
-    max_scope_depth: int = Field(ge=1, le=64)
-    max_unit_input_bytes: int = Field(ge=4096, le=10 * 1024 * 1024)
-    max_total_input_bytes: int = Field(ge=4096, le=100 * 1024 * 1024)
+    source = values if values is not None else os.environ
+    return source.get("OPENREVIEWER_REQUIRE_ORIGIN", "false").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
-class ConfigurationAuditResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    revision: int
-    actor: str
-    action: str
-    changed_fields: tuple[str, ...]
-    created_at: datetime
-
-    @classmethod
-    def from_view(
-        cls,
-        view: ConfigurationAuditView,
-    ) -> "ConfigurationAuditResponse":
-        return cls(
-            **{field: getattr(view, field) for field in cls.model_fields}
-        )
+def _request_client_is_trusted_proxy(
+    request: Request,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    raw_address = request.client.host if request.client is not None else None
+    if not raw_address:
+        return False
+    try:
+        address = ipaddress.ip_address(raw_address)
+    except ValueError:
+        return False
+    return any(address in network for network in networks)
 
 
-class ConfigurationAuditListResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    items: tuple[ConfigurationAuditResponse, ...]
+def _normalized_authority(scheme: str, hostname: str, port: int | None) -> str:
+    normalized_scheme = scheme.casefold()
+    normalized_host = hostname.casefold().rstrip(".")
+    default_port = 443 if normalized_scheme == "https" else 80
+    suffix = "" if port in (None, default_port) else f":{port}"
+    return f"{normalized_scheme}://{normalized_host}{suffix}"
 
 
 def create_app(
     review_service: ReviewService | None = None,
     auth_service: AuthService | None = None,
     dashboard_service: DashboardService | None = None,
-    login_limiter: LoginAttemptLimiter | None = None,
+    login_limiter: LoginLimiter | None = None,
     webhook_service: GitHubWebhookService | None = None,
     ai_settings_service: AiSettingsService | None = None,
     agent_settings_service: AgentSettingsService | None = None,
     knowledge_base: MarkdownKnowledgeBase | None = None,
     review_management_service: ReviewManagementService | None = None,
     identity_loader: PullRequestIdentityLoader | None = None,
+    operations_service: OperationsService | None = None,
+    dashboard_stream: DashboardStreamCoordinator[DashboardResponse] | None = None,
+    github_access_policy: GitHubAccessPolicy | None = None,
+    telemetry_registry: TelemetryRegistry | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -916,6 +208,10 @@ def create_app(
     应用关闭时只释放本函数自己创建的数据库，不会销毁调用方注入的测试资源。
     各路由内部把配置/持久化异常转换成稳定 HTTP 状态，避免泄露底层凭据。
     """
+
+    telemetry = telemetry_registry or GLOBAL_TELEMETRY
+    trusted_proxy_networks = _trusted_proxy_networks()
+    require_origin_header = _require_origin_header()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -958,9 +254,38 @@ def create_app(
     application.state.knowledge_base = knowledge_base
     application.state.review_management_service = review_management_service
     application.state.identity_loader = identity_loader
-    application.state.login_limiter = login_limiter or LoginAttemptLimiter()
+    application.state.operations_service = operations_service
+    application.state.dashboard_stream = dashboard_stream
+    # 受限账号必须各自拥有独立的 SSE 快照缓存；注册表有界，避免登录范围
+    # 持续变化时把协调器和最近快照永久留在 API 进程内存中。
+    application.state.dashboard_streams = DashboardStreamRegistry[DashboardResponse]()
+    application.state.github_access_policy = github_access_policy
+    application.state.login_limiter = login_limiter or (
+        LoginAttemptLimiter() if auth_service is not None else None
+    )
     application.state.owned_database = None
     application.state.owned_github_api = None
+
+    @application.middleware("http")
+    async def record_request_duration(request: Request, call_next):
+        """按路由模板记录请求耗时，避免主键和查询串进入指标标签。"""
+
+        started = time.monotonic()
+        response_status = status.HTTP_500_INTERNAL_SERVER_ERROR
+        try:
+            response = await call_next(request)
+            response_status = response.status_code
+            return response
+        finally:
+            route = request.scope.get("route")
+            route_template = getattr(route, "path", "unmatched")
+            telemetry.observe_http(
+                request.method,
+                route_template,
+                response_status,
+                time.monotonic() - started,
+            )
+
     initialization_lock = RLock()
 
     def get_database() -> Database:
@@ -994,6 +319,24 @@ def create_app(
                 ) from exc
             application.state.owned_database = configured_database
             return configured_database
+
+    def get_operations_service() -> OperationsService:
+        """返回共享数据库上的就绪、指标和维护服务。"""
+
+        configured_service: OperationsService | None = (
+            application.state.operations_service
+        )
+        if configured_service is not None:
+            return configured_service
+        with initialization_lock:
+            configured_service = application.state.operations_service
+            if configured_service is None:
+                configured_service = OperationsService(
+                    SqlAlchemyOperationsRepository(get_database().sessions),
+                    OperationsSettings.from_environment(),
+                )
+                application.state.operations_service = configured_service
+            return configured_service
 
     def get_review_service() -> ReviewService:
         """返回注入的或按需构造的审查提交服务。
@@ -1037,14 +380,32 @@ def create_app(
             configured_service = application.state.auth_service
             if configured_service is None:
                 try:
-                    configured_service = AuthService(AuthSettings.from_environment())
-                except AuthConfigurationError as exc:
+                    configured_service = AuthService(
+                        AuthSettings.from_environment(),
+                        session_store=SqlAlchemySessionStore(get_database().sessions),
+                    )
+                except (AuthConfigurationError, HTTPException) as exc:
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail="administrator authentication is not configured",
                     ) from exc
                 application.state.auth_service = configured_service
             return configured_service
+
+    def get_login_limiter() -> LoginLimiter:
+        """返回注入的限流器，或懒加载数据库共享实现。"""
+
+        configured_limiter: LoginLimiter | None = application.state.login_limiter
+        if configured_limiter is not None:
+            return configured_limiter
+        with initialization_lock:
+            configured_limiter = application.state.login_limiter
+            if configured_limiter is None:
+                configured_limiter = SqlAlchemyLoginAttemptLimiter(
+                    get_database().sessions
+                )
+                application.state.login_limiter = configured_limiter
+            return configured_limiter
 
     def get_dashboard_service() -> DashboardService:
         """返回注入的或按需构造的 Dashboard 查询服务。
@@ -1083,8 +444,13 @@ def create_app(
             if configured_service is None:
                 try:
                     settings = GitHubWebhookSettings.from_environment()
+                    access_policy = get_github_access_policy()
                     database = get_database()
-                except (WebhookConfigurationError, HTTPException) as exc:
+                except (
+                    WebhookConfigurationError,
+                    GitHubAccessConfigurationError,
+                    HTTPException,
+                ) as exc:
                     raise SafeApplicationError(
                         SafeError(
                             code=ErrorCode.WEBHOOK_NOT_CONFIGURED,
@@ -1095,9 +461,31 @@ def create_app(
                 configured_service = GitHubWebhookService(
                     SqlAlchemyGitHubWebhookRepository(database.sessions),
                     settings,
+                    access_policy,
                 )
                 application.state.webhook_service = configured_service
             return configured_service
+
+    def get_github_access_policy() -> GitHubAccessPolicy:
+        """返回共享 GitHub 接入白名单，配置缺失时保持失败关闭。"""
+
+        configured_policy: GitHubAccessPolicy | None = (
+            application.state.github_access_policy
+        )
+        if configured_policy is not None:
+            return configured_policy
+        with initialization_lock:
+            configured_policy = application.state.github_access_policy
+            if configured_policy is None:
+                try:
+                    configured_policy = GitHubAccessPolicy.from_environment()
+                except GitHubAccessConfigurationError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="GitHub access policy is not configured",
+                    ) from exc
+                application.state.github_access_policy = configured_policy
+            return configured_policy
 
     def get_ai_settings_service() -> AiSettingsService:
         """返回注入的或按需创建的动态 AI 配置服务。"""
@@ -1193,17 +581,28 @@ def create_app(
                     github_api: GitHubApiClient | None = None
                     try:
                         github_api = GitHubApiClient()
-                        github_tokens = GitHubAppTokenProvider(
+                        github_read_tokens = GitHubAppTokenProvider(
                             github_api,
                             GitHubAppSettings.from_environment(),
+                            GITHUB_READ_TOKEN_SCOPE,
+                            access_policy=get_github_access_policy(),
+                        )
+                        github_publish_tokens = GitHubAppTokenProvider(
+                            github_api,
+                            GitHubAppSettings.from_environment(),
+                            GITHUB_PUBLISH_TOKEN_SCOPE,
+                            access_policy=get_github_access_policy(),
                         )
                         configured_identity_loader = GitHubReviewContextLoader(
                             github_api,
-                            github_tokens,
+                            github_read_tokens,
                         )
                         configured_publisher = GitHubReviewPublisher(
                             github_api,
-                            github_tokens,
+                            github_publish_tokens,
+                            action_store=SqlAlchemyExternalActionStore(
+                                get_database().sessions
+                            ),
                         )
                         identity_loader = configured_identity_loader
                         publisher = configured_publisher
@@ -1304,41 +703,171 @@ def create_app(
                     "Cache-Control": "no-store",
                 },
             ) from exc
+        except AuthPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="authentication state is temporarily unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from exc
+
+    def require_permission(permission: Permission):
+        """创建返回会话主体的权限依赖，认证成功但越权时统一返回 403。"""
+
+        def dependency(
+            principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        ) -> SessionPrincipal:
+            if not has_permission(principal.role, permission):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="permission denied",
+                )
+            return principal
+
+        return dependency
+
+    require_review_viewer = require_permission(Permission.VIEW_REVIEWS)
+    require_adjudicator = require_permission(Permission.ADJUDICATE_FINDINGS)
+    require_review_manager = require_permission(Permission.MANAGE_REVIEWS)
+    require_settings_manager = require_permission(Permission.MANAGE_SETTINGS)
+    require_knowledge_manager = require_permission(Permission.MANAGE_KNOWLEDGE)
+
+    def ensure_permission(
+        principal: SessionPrincipal,
+        permission: Permission,
+    ) -> None:
+        if not has_permission(principal.role, permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="permission denied",
+            )
 
     def require_same_origin(request: Request) -> None:
-        """校验带副作用请求的 Origin 与当前代理入口一致。
+        """校验带副作用请求的 Origin/Referer 与当前代理入口一致。
 
-        没有 Origin 的非浏览器调用保持兼容；有 Origin 时优先使用反向代理传入
-        的协议，并只比较 scheme 和 host，防止跨站页面借用管理员 Cookie 发起
-        登录、登出或创建任务请求。
+        生产配置要求请求至少携带 Origin 或同源 Referer；本地兼容模式允许无头
+        的非浏览器调用。有 Origin 时优先使用反向代理传入的协议，并只比较 scheme
+        和 host，防止跨站页面借用管理员 Cookie 发起登录、登出或创建任务请求。
 
         参数：
-            request: 要检查的请求。只读取 ``Origin``、``Host`` 和可选的
+            request: 要检查的请求。只读取 ``Origin``、``Referer``、``Host`` 和可选的
                 ``X-Forwarded-Proto`` 请求头。
 
         返回：
             校验通过时返回 ``None``。
 
         异常：
-            HTTPException(403): Origin 的 scheme/host 与当前代理入口不一致。
+            HTTPException(403): 同源头缺失或 scheme/host 与当前代理入口不一致。
 
         该依赖不验证登录身份，也不检查 CSRF Token；身份验证由
-        ``require_principal`` 单独负责。没有 Origin 的请求不会被此函数拦截。
+        ``require_principal`` 单独负责。是否拒绝缺少同源头由
+        ``OPENREVIEWER_REQUIRE_ORIGIN`` 控制。
         """
         origin = request.headers.get("origin")
         if not origin:
-            return
-        forwarded_scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        expected = f"{forwarded_scheme}://{request.headers.get('host', '')}"
-        parsed = urlsplit(origin)
-        normalized_origin = f"{parsed.scheme}://{parsed.netloc}"
+            if not require_origin_header:
+                return
+            referer = request.headers.get("referer")
+            if not referer:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="same-origin header required",
+                )
+            # Referer 允许携带路径；先只保留其 scheme/authority，再复用下面
+            # 对 Origin 的严格凭据、端口和字符校验。
+            try:
+                parsed_referer = urlsplit(referer)
+                origin = urlunsplit(
+                    (parsed_referer.scheme, parsed_referer.netloc, "", "", "")
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="cross-origin request rejected",
+                ) from exc
+        trusted_proxy = _request_client_is_trusted_proxy(
+            request,
+            trusted_proxy_networks,
+        )
+        parsed_authority = None
+        try:
+            if trusted_proxy:
+                forwarded_proto = request.headers.get("x-forwarded-proto")
+                forwarded_host = request.headers.get("x-forwarded-host")
+                scheme = (
+                    forwarded_proto.split(",", 1)[0].strip().casefold()
+                    if forwarded_proto
+                    else request.url.scheme
+                )
+                authority = forwarded_host or request.headers.get("host", "")
+                parsed_authority = urlsplit(f"//{authority}")
+                hostname = parsed_authority.hostname
+                port = parsed_authority.port
+            else:
+                scheme = request.url.scheme
+                hostname = request.url.hostname
+                port = request.url.port
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="cross-origin request rejected",
+            ) from exc
+        if (
+            scheme not in {"http", "https"}
+            or not hostname
+            or any(
+                value is not None
+                for value in (
+                    parsed_authority.username
+                    if trusted_proxy and parsed_authority is not None and hostname
+                    else None,
+                    parsed_authority.password
+                    if trusted_proxy and parsed_authority is not None and hostname
+                    else None,
+                )
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="cross-origin request rejected",
+            )
+        expected = _normalized_authority(scheme, hostname, port)
+        try:
+            parsed = urlsplit(origin)
+            origin_port = parsed.port
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="cross-origin request rejected",
+            ) from exc
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="cross-origin request rejected",
+            )
+        normalized_origin = _normalized_authority(
+            parsed.scheme,
+            parsed.hostname,
+            origin_port,
+        )
         if normalized_origin != expected:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="cross-origin request rejected",
             )
 
-    def dashboard_snapshot(limit: int) -> DashboardResponse:
+    def dashboard_snapshot(
+        limit: int,
+        cursor: str | None = None,
+        scope: ResourceScope | None = None,
+    ) -> DashboardResponse:
         """读取 Dashboard 快照并把持久化故障转换为统一的 503。
 
         参数：
@@ -1353,13 +882,52 @@ def create_app(
             错误。不会把数据库连接串、堆栈或凭据放入响应体。
         """
         try:
-            snapshot = get_dashboard_service().snapshot(limit)
+            snapshot = get_dashboard_service().snapshot(limit, cursor, scope)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="dashboard cursor is invalid",
+            ) from exc
         except DashboardPersistenceError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="dashboard data is temporarily unavailable",
             ) from exc
         return DashboardResponse.from_snapshot(snapshot)
+
+    def dashboard_change_token(scope: ResourceScope | None = None) -> str:
+        """读取 SSE 使用的轻量变化令牌，并统一转换持久化错误。"""
+
+        try:
+            return get_dashboard_service().change_token(scope=scope)
+        except DashboardPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="dashboard data is temporarily unavailable",
+            ) from exc
+
+    def get_dashboard_stream(
+        scope: ResourceScope | None = None,
+    ) -> DashboardStreamCoordinator[DashboardResponse]:
+        """懒加载同一 API 进程内共享的 Dashboard SSE 轮询器。"""
+
+        if scope is None or scope.unrestricted:
+            configured_stream = application.state.dashboard_stream
+            if configured_stream is not None:
+                return configured_stream
+            cache_key = "all"
+        else:
+            cache_key = scope.cache_key
+        registry: DashboardStreamRegistry[DashboardResponse] = (
+            application.state.dashboard_streams
+        )
+        return registry.get_or_create(
+            cache_key,
+            lambda: DashboardStreamCoordinator(
+                lambda: dashboard_change_token(scope),
+                lambda: dashboard_snapshot(50, scope=scope),
+            ),
+        )
 
     @application.middleware("http")
     async def add_security_headers(request: Request, call_next):
@@ -1447,6 +1015,47 @@ def create_app(
         API 进程和 ASGI 路由仍能响应。数据库/认证可用性由受保护业务接口另行体现。
         """
         return HealthResponse()
+
+    @application.get(
+        "/readyz",
+        response_model=ReadinessResponse,
+        include_in_schema=False,
+    )
+    async def readyz(response: Response) -> ReadinessResponse:
+        """检查数据库连通性、迁移版本和至少一个新鲜 Worker 心跳。"""
+
+        try:
+            snapshot = get_operations_service().readiness()
+        except (HTTPException, OperationsError, ValueError):
+            snapshot = ReadinessSnapshot(
+                database=False,
+                migration=False,
+                worker=False,
+            )
+        if not snapshot.ready:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return ReadinessResponse(
+            status="ready" if snapshot.ready else "not_ready",
+            checks=snapshot.public_checks(),
+        )
+
+    @application.get("/metrics", include_in_schema=False)
+    async def metrics() -> PlainTextResponse:
+        """返回固定低基数的 Prometheus 文本指标。"""
+
+        try:
+            content = get_operations_service().metrics() + telemetry.render()
+        except (HTTPException, OperationsError, ValueError):
+            return PlainTextResponse(
+                "# openreviewer database metrics temporarily unavailable\n"
+                + telemetry.render(),
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                media_type="text/plain; version=0.0.4",
+            )
+        return PlainTextResponse(
+            content,
+            media_type="text/plain; version=0.0.4",
+        )
 
     @application.post(
         "/webhooks/github",
@@ -1549,30 +1158,50 @@ def create_app(
             HTTPException(401): 用户名或密码不匹配，故意不区分具体原因。
             HTTPException(503): 认证配置无法加载。
         """
-        client_address = request.headers.get("x-real-ip") or (
-            request.client.host if request.client is not None else "unknown"
-        )
+        client_address = request.client.host if request.client is not None else "unknown"
+        if _request_client_is_trusted_proxy(request, trusted_proxy_networks):
+            forwarded_address = request.headers.get("x-real-ip", "").strip()
+            try:
+                client_address = str(ipaddress.ip_address(forwarded_address))
+            except ValueError:
+                pass
         limiter_key = f"{client_address}|{credentials.username.casefold()}"
-        limiter: LoginAttemptLimiter = application.state.login_limiter
+        service = get_auth_service()
+        limiter = get_login_limiter()
         try:
-            limiter.check(limiter_key)
+            limiter.consume(limiter_key)
         except LoginRateLimitError as exc:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="too many login attempts; try again later",
                 headers={"Retry-After": str(exc.retry_after_seconds)},
             ) from exc
+        except AuthPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="authentication state is temporarily unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from exc
 
-        service = get_auth_service()
-        if not service.verify_credentials(credentials.username, credentials.password):
-            limiter.record_failure(limiter_key)
+        authenticated_user = service.authenticate(
+            credentials.username,
+            credentials.password,
+        )
+        if authenticated_user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid username or password",
             )
 
-        limiter.reset(limiter_key)
-        token, principal = service.create_session()
+        try:
+            limiter.reset(limiter_key)
+            token, principal = service.create_session(authenticated_user)
+        except AuthPersistenceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="authentication state is temporarily unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from exc
         response.set_cookie(
             key=service.settings.cookie_name,
             value=token,
@@ -1585,6 +1214,8 @@ def create_app(
         )
         return AuthResponse(
             username=principal.username,
+            role=principal.role,
+            permissions=tuple(sorted(permissions_for(principal.role), key=str)),
             expires_at=principal.expires_at,
         )
 
@@ -1594,9 +1225,8 @@ def create_app(
     )
     def logout(
         request: Request,
-        response: Response,
         _: Annotated[None, Depends(require_same_origin)],
-    ) -> None:
+    ) -> Response:
         """要求浏览器删除当前会话 Cookie。
 
         参数：
@@ -1609,10 +1239,12 @@ def create_app(
         异常：
             HTTPException(403): 请求带有不匹配的 Origin。
 
-        当前服务不维护 Token 吊销表，因此注销的直接效果是浏览器不再发送该
-        Cookie；已经复制出的旧 Token 在自然到期前仍可被密码学验证。
+        服务端会在共享会话表中吊销当前 Token，同时要求浏览器删除 Cookie；
+        因此已经复制出的旧 Token 也不能继续访问管理接口。
         """
         service = get_auth_service()
+        token = request.cookies.get(service.settings.cookie_name)
+        response = Response(status_code=status.HTTP_204_NO_CONTENT)
         response.delete_cookie(
             key=service.settings.cookie_name,
             path="/",
@@ -1620,6 +1252,38 @@ def create_app(
             httponly=True,
             samesite="strict",
         )
+        try:
+            service.revoke_session(token)
+        except AuthPersistenceError:
+            # 本地 Cookie 仍必须清除，但明确告诉调用方服务端吊销未完成。
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return response
+
+    @application.post(
+        "/api/v1/auth/sessions/revoke-all",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def revoke_all_sessions(
+        request: Request,
+        principal: Annotated[SessionPrincipal, Depends(require_principal)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> Response:
+        """吊销当前账号全部会话，并清除浏览器中的当前 Cookie。"""
+
+        service = get_auth_service()
+        response = Response(status_code=status.HTTP_204_NO_CONTENT)
+        response.delete_cookie(
+            key=service.settings.cookie_name,
+            path="/",
+            secure=service.settings.cookie_secure,
+            httponly=True,
+            samesite="strict",
+        )
+        try:
+            service.revoke_all_sessions(principal.username)
+        except AuthPersistenceError:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return response
 
     @application.get(
         "/api/v1/auth/me",
@@ -1640,838 +1304,49 @@ def create_app(
         """
         return AuthResponse(
             username=principal.username,
+            role=principal.role,
+            permissions=tuple(sorted(permissions_for(principal.role), key=str)),
             expires_at=principal.expires_at,
         )
 
-    @application.get(
-        "/api/v1/settings/ai",
-        response_model=AiSettingsResponse,
+    register_settings_routes(
+        application,
+        get_ai_settings_service=get_ai_settings_service,
+        get_agent_settings_service=get_agent_settings_service,
+        ai_settings_response=ai_settings_response,
+        require_settings_manager=require_settings_manager,
+        require_same_origin=require_same_origin,
+        translate_ai_settings_error=translate_ai_settings_error,
     )
-    def get_ai_settings(
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> AiSettingsResponse:
-        """返回管理员可见的脱敏 AI 配置。"""
 
-        return ai_settings_response()
-
-    @application.get(
-        "/api/v1/settings/ai/agents",
-        response_model=AiAgentSettingsResponse,
+    register_knowledge_routes(
+        application,
+        get_knowledge_base=get_knowledge_base,
+        get_managed_knowledge_base=get_managed_knowledge_base,
+        require_knowledge_manager=require_knowledge_manager,
+        require_same_origin=require_same_origin,
+        translate_knowledge_error=translate_knowledge_error,
     )
-    def get_agent_settings(
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> AiAgentSettingsResponse:
-        """返回四个审查 Agent 的独立脱敏配置。"""
 
-        try:
-            return AiAgentSettingsResponse.from_view(
-                get_agent_settings_service().get()
-            )
-        except (AiSettingsPersistenceError, AiSettingsConfigurationError) as exc:
-            raise translate_ai_settings_error(exc) from exc
-
-    @application.put(
-        "/api/v1/settings/ai/agents/{agent}",
-        response_model=AiAgentSettingsResponse,
+    register_dashboard_routes(
+        application,
+        dashboard_snapshot=dashboard_snapshot,
+        get_dashboard_stream=get_dashboard_stream,
+        get_auth_service=get_auth_service,
+        require_review_viewer=require_review_viewer,
     )
-    def update_agent_settings(
-        agent: ReviewAgent,
-        request_body: AiAgentUpdateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        _: Annotated[None, Depends(require_same_origin)],
-    ) -> AiAgentSettingsResponse:
-        """保存单个 Agent 草稿；每个 Agent 的密钥和测试状态相互隔离。"""
 
-        try:
-            view = get_agent_settings_service().update(
-                agent,
-                request_body.to_draft(),
-                expected_revision=request_body.expected_revision,
-                actor=principal.username,
-                api_key=request_body.api_key,
-                clear_api_key=request_body.clear_api_key,
-            )
-        except (
-            AiSettingsConfigurationError,
-            AiSettingsConflictError,
-            AiSettingsPersistenceError,
-            AiSettingsValidationError,
-        ) as exc:
-            raise translate_ai_settings_error(exc) from exc
-        return AiAgentSettingsResponse.from_view(view)
-
-    @application.post(
-        "/api/v1/settings/ai/agents/{agent}/test",
-        response_model=AiAgentSettingsResponse,
+    register_review_routes(
+        application,
+        get_review_management_service=get_review_management_service,
+        get_review_service=get_review_service,
+        get_github_access_policy=get_github_access_policy,
+        require_review_viewer=require_review_viewer,
+        require_review_manager=require_review_manager,
+        require_adjudicator=require_adjudicator,
+        require_same_origin=require_same_origin,
+        ensure_permission=ensure_permission,
     )
-    def test_agent_settings(
-        agent: ReviewAgent,
-        request_body: AiRevisionRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        _: Annotated[None, Depends(require_same_origin)],
-    ) -> AiAgentSettingsResponse:
-        """在事务外测试一个 Agent 的真实结构化连接。"""
-
-        try:
-            return AiAgentSettingsResponse.from_view(
-                get_agent_settings_service().test(
-                    agent,
-                    expected_revision=request_body.expected_revision,
-                    actor=principal.username,
-                )
-            )
-        except AiConnectionTestError as exc:
-            raise HTTPException(
-                status_code=(
-                    status.HTTP_503_SERVICE_UNAVAILABLE
-                    if exc.retryable
-                    else status.HTTP_422_UNPROCESSABLE_CONTENT
-                ),
-                detail=str(exc),
-            ) from exc
-        except (
-            AiSettingsConfigurationError,
-            AiSettingsConflictError,
-            AiSettingsPersistenceError,
-            AiSettingsValidationError,
-        ) as exc:
-            raise translate_ai_settings_error(exc) from exc
-
-    @application.post(
-        "/api/v1/settings/ai/agents/{agent}/enabled",
-        response_model=AiAgentSettingsResponse,
-    )
-    def set_agent_enabled(
-        agent: ReviewAgent,
-        request_body: AiAgentEnabledRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        _: Annotated[None, Depends(require_same_origin)],
-    ) -> AiAgentSettingsResponse:
-        """启用或停用一个 Agent，不影响其他 Agent 的模型配置。"""
-
-        try:
-            return AiAgentSettingsResponse.from_view(
-                get_agent_settings_service().set_enabled(
-                    agent,
-                    request_body.enabled,
-                    expected_revision=request_body.expected_revision,
-                    actor=principal.username,
-                )
-            )
-        except (
-            AiSettingsConfigurationError,
-            AiSettingsConflictError,
-            AiSettingsPersistenceError,
-            AiSettingsValidationError,
-        ) as exc:
-            raise translate_ai_settings_error(exc) from exc
-
-    @application.put(
-        "/api/v1/settings/ai/providers/{provider}",
-        response_model=AiSettingsResponse,
-    )
-    def update_ai_provider(
-        provider: ModelProvider,
-        request_body: AiProviderUpdateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        _: Annotated[None, Depends(require_same_origin)],
-    ) -> AiSettingsResponse:
-        """保存一个供应商草稿；密钥只交给加密服务，不进入响应。"""
-
-        try:
-            view = get_ai_settings_service().update_provider(
-                provider,
-                request_body.to_draft(),
-                expected_revision=request_body.expected_revision,
-                actor=principal.username,
-                api_key=request_body.api_key,
-                clear_api_key=request_body.clear_api_key,
-            )
-        except (
-            AiSettingsConfigurationError,
-            AiSettingsConflictError,
-            AiSettingsPersistenceError,
-            AiSettingsValidationError,
-        ) as exc:
-            raise translate_ai_settings_error(exc) from exc
-        return AiSettingsResponse.from_view(view)
-
-    @application.post(
-        "/api/v1/settings/ai/providers/{provider}/test",
-        response_model=AiSettingsResponse,
-    )
-    def test_ai_provider(
-        provider: ModelProvider,
-        request_body: AiRevisionRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        _: Annotated[None, Depends(require_same_origin)],
-    ) -> AiSettingsResponse:
-        """在数据库事务外发送一个最小结构化模型请求并保存测试状态。"""
-
-        try:
-            view = get_ai_settings_service().test_provider(
-                provider,
-                expected_revision=request_body.expected_revision,
-                actor=principal.username,
-            )
-        except AiConnectionTestError as exc:
-            raise HTTPException(
-                status_code=(
-                    status.HTTP_503_SERVICE_UNAVAILABLE
-                    if exc.retryable
-                    else status.HTTP_422_UNPROCESSABLE_CONTENT
-                ),
-                detail=str(exc),
-            ) from exc
-        except (
-            AiProviderNotReadyError,
-            AiSettingsConfigurationError,
-            AiSettingsConflictError,
-            AiSettingsPersistenceError,
-            AiSettingsValidationError,
-        ) as exc:
-            raise translate_ai_settings_error(exc) from exc
-        return AiSettingsResponse.from_view(view)
-
-    @application.post(
-        "/api/v1/settings/ai/providers/{provider}/activate",
-        response_model=AiSettingsResponse,
-    )
-    def activate_ai_provider(
-        provider: ModelProvider,
-        request_body: AiRevisionRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        _: Annotated[None, Depends(require_same_origin)],
-    ) -> AiSettingsResponse:
-        """仅激活已经通过当前配置指纹测试的供应商。"""
-
-        try:
-            view = get_ai_settings_service().activate_provider(
-                provider,
-                expected_revision=request_body.expected_revision,
-                actor=principal.username,
-            )
-        except (
-            AiProviderNotReadyError,
-            AiSettingsConfigurationError,
-            AiSettingsConflictError,
-            AiSettingsPersistenceError,
-        ) as exc:
-            raise translate_ai_settings_error(exc) from exc
-        return AiSettingsResponse.from_view(view)
-
-    @application.put(
-        "/api/v1/settings/ai/review-policy",
-        response_model=AiSettingsResponse,
-    )
-    def update_review_policy(
-        request_body: ReviewPolicyUpdateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        _: Annotated[None, Depends(require_same_origin)],
-    ) -> AiSettingsResponse:
-        """保存下一份 Review Plan 使用的动态输入预算。"""
-
-        try:
-            view = get_ai_settings_service().update_review_policy(
-                ReviewPolicyDraft(
-                    max_units=request_body.max_units,
-                    max_scope_depth=request_body.max_scope_depth,
-                    max_unit_input_bytes=request_body.max_unit_input_bytes,
-                    max_total_input_bytes=request_body.max_total_input_bytes,
-                ),
-                expected_revision=request_body.expected_revision,
-                actor=principal.username,
-            )
-        except (
-            AiSettingsConflictError,
-            AiSettingsPersistenceError,
-            AiSettingsValidationError,
-        ) as exc:
-            raise translate_ai_settings_error(exc) from exc
-        return AiSettingsResponse.from_view(view)
-
-    @application.get(
-        "/api/v1/settings/audits",
-        response_model=ConfigurationAuditListResponse,
-    )
-    def list_configuration_audits(
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    ) -> ConfigurationAuditListResponse:
-        """返回有界的配置变更审计；审计行只记录字段名。"""
-
-        try:
-            audits = get_ai_settings_service().audits(limit)
-        except AiSettingsPersistenceError as exc:
-            raise translate_ai_settings_error(exc) from exc
-        return ConfigurationAuditListResponse(
-            items=tuple(
-                ConfigurationAuditResponse.from_view(item) for item in audits
-            )
-        )
-
-    @application.get(
-        "/api/v1/knowledge/search",
-        response_model=KnowledgeSearchResponse,
-    )
-    def search_knowledge(
-        q: Annotated[str, Query(min_length=1, max_length=500)],
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-        limit: Annotated[int, Query(ge=1, le=20)] = 5,
-    ) -> KnowledgeSearchResponse:
-        """检索版本化 Markdown 规则，返回可展示的引用来源。"""
-
-        try:
-            items = get_knowledge_base().search(q, limit=limit)
-        except (
-            KnowledgePersistenceError,
-            KnowledgeValidationError,
-        ) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeSearchResponse(
-            query=q,
-            items=tuple(
-                KnowledgeCitationResponse(
-                    **{
-                        name: getattr(item, name)
-                        for name in KnowledgeCitationResponse.model_fields
-                    }
-                )
-                for item in items
-            ),
-        )
-
-    @application.get(
-        "/api/v1/knowledge/documents",
-        response_model=KnowledgeDocumentListResponse,
-    )
-    def list_knowledge_documents(
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-        include_archived: bool = False,
-        limit: Annotated[int, Query(ge=1, le=128)] = 128,
-    ) -> KnowledgeDocumentListResponse:
-        try:
-            view = get_managed_knowledge_base().list_documents(
-                include_archived=include_archived,
-                limit=limit,
-            )
-        except (
-            KnowledgeConflictError,
-            KnowledgePersistenceError,
-            KnowledgeValidationError,
-        ) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeDocumentListResponse.from_view(view)
-
-    @application.post(
-        "/api/v1/knowledge/documents",
-        response_model=KnowledgeMutationResponse,
-        status_code=status.HTTP_201_CREATED,
-    )
-    def create_knowledge_document(
-        request_body: KnowledgeDocumentCreateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> KnowledgeMutationResponse:
-        try:
-            view = get_managed_knowledge_base().create_document(
-                source=request_body.source,
-                content=request_body.content,
-                enabled=request_body.enabled,
-                expected_revision=request_body.expected_revision,
-                actor=principal.username,
-            )
-        except (
-            KnowledgeConflictError,
-            KnowledgePersistenceError,
-            KnowledgeValidationError,
-        ) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeMutationResponse.from_view(view)
-
-    @application.get(
-        "/api/v1/knowledge/documents/{document_id}",
-        response_model=KnowledgeDocumentResponse,
-    )
-    def get_knowledge_document(
-        document_id: str,
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> KnowledgeDocumentResponse:
-        try:
-            view = get_managed_knowledge_base().get_document(document_id)
-        except (KnowledgeNotFoundError, KnowledgePersistenceError) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeDocumentResponse.from_view(view)
-
-    @application.put(
-        "/api/v1/knowledge/documents/{document_id}",
-        response_model=KnowledgeMutationResponse,
-    )
-    def update_knowledge_document(
-        document_id: str,
-        request_body: KnowledgeDocumentUpdateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> KnowledgeMutationResponse:
-        try:
-            view = get_managed_knowledge_base().update_document(
-                document_id,
-                source=request_body.source,
-                content=request_body.content,
-                enabled=request_body.enabled,
-                expected_revision=request_body.expected_revision,
-                expected_document_version=request_body.expected_document_version,
-                actor=principal.username,
-            )
-        except (
-            KnowledgeConflictError,
-            KnowledgeNotFoundError,
-            KnowledgePersistenceError,
-            KnowledgeValidationError,
-        ) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeMutationResponse.from_view(view)
-
-    @application.post(
-        "/api/v1/knowledge/documents/{document_id}/archive",
-        response_model=KnowledgeMutationResponse,
-    )
-    def archive_knowledge_document(
-        document_id: str,
-        request_body: KnowledgeDocumentStateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> KnowledgeMutationResponse:
-        try:
-            view = get_managed_knowledge_base().archive_document(
-                document_id,
-                archived=True,
-                expected_revision=request_body.expected_revision,
-                expected_document_version=request_body.expected_document_version,
-                actor=principal.username,
-            )
-        except (
-            KnowledgeConflictError,
-            KnowledgeNotFoundError,
-            KnowledgePersistenceError,
-        ) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeMutationResponse.from_view(view)
-
-    @application.post(
-        "/api/v1/knowledge/documents/{document_id}/restore",
-        response_model=KnowledgeMutationResponse,
-    )
-    def restore_knowledge_document(
-        document_id: str,
-        request_body: KnowledgeDocumentStateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> KnowledgeMutationResponse:
-        try:
-            view = get_managed_knowledge_base().archive_document(
-                document_id,
-                archived=False,
-                expected_revision=request_body.expected_revision,
-                expected_document_version=request_body.expected_document_version,
-                actor=principal.username,
-            )
-        except (
-            KnowledgeConflictError,
-            KnowledgeNotFoundError,
-            KnowledgePersistenceError,
-        ) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeMutationResponse.from_view(view)
-
-    @application.post(
-        "/api/v1/knowledge/documents/{document_id}/versions/{version}/restore",
-        response_model=KnowledgeMutationResponse,
-    )
-    def restore_knowledge_document_version(
-        document_id: str,
-        version: Annotated[int, Path(ge=1)],
-        request_body: KnowledgeDocumentStateRequest,
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> KnowledgeMutationResponse:
-        try:
-            view = get_managed_knowledge_base().restore_version(
-                document_id,
-                version,
-                expected_revision=request_body.expected_revision,
-                expected_document_version=request_body.expected_document_version,
-                actor=principal.username,
-            )
-        except (
-            KnowledgeConflictError,
-            KnowledgeNotFoundError,
-            KnowledgePersistenceError,
-            KnowledgeValidationError,
-        ) as exc:
-            raise translate_knowledge_error(exc) from exc
-        return KnowledgeMutationResponse.from_view(view)
-
-    @application.get(
-        "/api/v1/dashboard",
-        response_model=DashboardResponse,
-    )
-    def get_dashboard(
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    ) -> DashboardResponse:
-        """返回认证后的任务统计、最近任务和 Worker 状态。
-
-        参数：
-            _: 仅用于触发管理员会话校验的依赖结果。
-            limit: 最近任务数量，范围 1 到 100，默认 50。
-
-        返回：
-            当前数据库快照；Worker 没有心跳时会明确标记为未配置/离线，而不是
-            猜测健康状态。
-
-        异常：
-            HTTPException(401): 会话无效。
-            HTTPException(503): Dashboard 数据无法读取。
-        """
-        return dashboard_snapshot(limit)
-
-    @application.get(
-        "/api/v1/reviews",
-        response_model=ReviewListResponse,
-    )
-    def list_reviews(
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    ) -> ReviewListResponse:
-        """返回认证后的最近审查任务列表。
-
-        参数：
-            _: 管理员会话依赖。
-            limit: 返回条数，范围 1 到 100，默认 50。
-
-        返回：
-            包含数据库中的总运行数和按创建时间倒序排列的最近任务；任务状态、
-            尝试次数和最后错误来自同一次 Dashboard 读取。
-
-        异常：
-            HTTPException(401): 会话无效。
-            HTTPException(503): 查询失败。
-        """
-        snapshot = dashboard_snapshot(limit)
-        return ReviewListResponse(
-            total=snapshot.total_reviews,
-            items=snapshot.recent_reviews,
-        )
-
-    @application.get("/api/v1/reviews/stream")
-    async def stream_reviews(
-        request: Request,
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> StreamingResponse:
-        """建立认证后的 Server-Sent Events 实时 Dashboard 流。
-
-        内部生成器每两秒读取一次完整快照并发送 ``dashboard`` 事件；客户端断开
-        后循环自然结束。读取暂时失败只发送 ``unavailable`` 事件，不把错误数据
-        伪装成正常快照；响应头关闭 Nginx 缓冲，确保前端及时收到更新。
-
-        参数：
-            request: 用于检测浏览器是否已断开连接。
-            _: 建立流之前执行一次的管理员会话依赖。
-
-        返回：
-            ``text/event-stream`` 响应。每条正常事件包含哈希事件 ID、事件名和
-            完整 Dashboard JSON；暂时读取失败时发送稳定的 ``unavailable`` 事件。
-
-        注意：
-            会话只在建立连接时验证一次；长连接已经建立后不会在 Cookie 到期瞬间
-            被主动关闭。浏览器断线重连时 FastAPI 会重新执行认证依赖。
-        """
-        async def events():
-            """每两秒生成一条 Dashboard SSE 事件，直到浏览器断开。
-
-            生成器先检查 ``request.is_disconnected``，避免客户端离开后继续查询
-            数据库；正常快照的 JSON 内容同时用于计算短事件 ID，便于浏览器识别
-            重复数据。Dashboard 临时不可用时只发送不含内部异常的 ``unavailable``
-            事件，随后等待下一轮恢复，不会结束整个连接。
-            """
-            while not await request.is_disconnected():
-                try:
-                    response_model = await run_in_threadpool(dashboard_snapshot, 50)
-                    payload = response_model.model_dump_json()
-                    event_id = sha256(payload.encode("utf-8")).hexdigest()[:16]
-                    yield (
-                        f"id: {event_id}\n"
-                        "event: dashboard\n"
-                        f"data: {payload}\n\n"
-                    )
-                except HTTPException:
-                    yield (
-                        "event: unavailable\n"
-                        'data: {"detail":"dashboard temporarily unavailable"}\n\n'
-                    )
-                await asyncio.sleep(2)
-
-        return StreamingResponse(
-            events(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-store",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    def review_details_response(review_run_id: str) -> ReviewDetailsResponse:
-        """读取单条任务详情并统一转换存储异常。"""
-
-        try:
-            details = get_review_management_service().details(review_run_id)
-        except ReviewNotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="review task not found",
-            ) from exc
-        except ReviewManagementPersistenceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="review details are temporarily unavailable",
-            ) from exc
-        return ReviewDetailsResponse.from_details(details)
-
-    @application.get(
-        "/api/v1/reviews/{review_run_id}",
-        response_model=ReviewDetailsResponse,
-    )
-    def get_review_details(
-        review_run_id: str,
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-    ) -> ReviewDetailsResponse:
-        """返回任务的阶段、模型结果、Finding、CI 和结构化事件日志。"""
-
-        return review_details_response(review_run_id)
-
-    @application.post(
-        "/api/v1/reviews/{review_run_id}/identity/sync",
-        response_model=ReviewDetailsResponse,
-    )
-    def sync_review_identity(
-        review_run_id: str,
-        idempotency_key: Annotated[
-            str,
-            Header(alias="Idempotency-Key", min_length=1, max_length=200),
-        ],
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        __: Annotated[None, Depends(require_same_origin)],
-    ) -> ReviewDetailsResponse:
-        """从 GitHub 回查并补全历史任务的 PR 作者、链接和分支信息。"""
-
-        normalized_key = idempotency_key.strip()
-        if not normalized_key:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Idempotency-Key must not be blank",
-            )
-        try:
-            details = get_review_management_service().sync_identity(
-                review_run_id,
-                actor=principal.username,
-                request_id=normalized_key,
-                loader=application.state.identity_loader,
-            )
-        except ReviewNotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="review task not found",
-            ) from exc
-        except ReviewIdentitySyncUnavailableError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="GitHub PR identity sync is not configured",
-            ) from exc
-        except ReviewIdentitySyncConflictError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        except ReviewManagementPersistenceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="review identity sync is temporarily unavailable",
-            ) from exc
-        return ReviewDetailsResponse.from_details(details)
-
-    @application.post(
-        "/api/v1/reviews/{review_run_id}/actions",
-        response_model=ReviewActionResponse,
-    )
-    def apply_review_action(
-        review_run_id: str,
-        request_body: ReviewActionRequest,
-        idempotency_key: Annotated[
-            str,
-            Header(alias="Idempotency-Key", min_length=1, max_length=200),
-        ],
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        __: Annotated[None, Depends(require_same_origin)],
-    ) -> ReviewActionResponse:
-        """执行可审计的加速、重试、取消或重新审查动作。"""
-
-        normalized_key = idempotency_key.strip()
-        if not normalized_key:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Idempotency-Key must not be blank",
-            )
-        try:
-            management = get_review_management_service()
-            new_run_id, task_id, execution_status = management.apply_action(
-                review_run_id,
-                request_body.action,
-                actor=principal.username,
-                request_id=normalized_key,
-                target_stage=(
-                    request_body.target_stage.value
-                    if request_body.target_stage is not None
-                    else None
-                ),
-            )
-            # ``execution_status`` 是旧队列兼容字段；人工节点（尤其批准后）
-            # 的真实状态只存在于固定 DAG 的 workflow_status 中。动作提交后
-            # 重新读取一次已提交快照，避免用旧状态集合推断并返回 null。
-            workflow_status = management.details(new_run_id).stored.workflow_status
-        except ReviewNotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="review task not found",
-            ) from exc
-        except ReviewActionConflictError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        except ReviewManagementPersistenceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="review action is temporarily unavailable",
-            ) from exc
-        except ReviewPublishUnavailableError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="GitHub publish is not configured or temporarily unavailable",
-            ) from exc
-        return ReviewActionResponse(
-            action=request_body.action,
-            review_run_id=new_run_id,
-            review_task_id=task_id,
-            execution_status=execution_status,
-            workflow_status=workflow_status,
-        )
-
-    @application.post(
-        "/api/v1/reviews/{review_run_id}/findings/{finding_id}",
-        response_model=ReviewDetailsResponse,
-    )
-    def decide_review_finding(
-        review_run_id: str,
-        finding_id: str,
-        request_body: ReviewFindingDecisionRequest,
-        idempotency_key: Annotated[
-            str,
-            Header(alias="Idempotency-Key", min_length=1, max_length=200),
-        ],
-        principal: Annotated[SessionPrincipal, Depends(require_principal)],
-        __: Annotated[None, Depends(require_same_origin)],
-    ) -> ReviewDetailsResponse:
-        """保存 Finding 的“确认问题/忽略”裁决并返回最新详情。"""
-
-        normalized_key = idempotency_key.strip()
-        if not normalized_key:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Idempotency-Key must not be blank",
-            )
-        try:
-            details = get_review_management_service().review_finding(
-                review_run_id,
-                finding_id,
-                request_body.decision,
-                actor=principal.username,
-                request_id=normalized_key,
-            )
-        except (ReviewNotFoundError, FindingNotFoundError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="review finding not found",
-            ) from exc
-        except ReviewManagementPersistenceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="finding decision is temporarily unavailable",
-            ) from exc
-        return ReviewDetailsResponse.from_details(details)
-
-    @application.post(
-        "/api/v1/reviews",
-        response_model=ReviewAcceptedResponse,
-        status_code=status.HTTP_202_ACCEPTED,
-    )
-    def create_review(
-        request_body: ReviewRequest,
-        idempotency_key: Annotated[
-            str,
-            Header(
-                alias="Idempotency-Key",
-                min_length=1,
-                max_length=200,
-            ),
-        ],
-        _: Annotated[SessionPrincipal, Depends(require_principal)],
-        __: Annotated[None, Depends(require_same_origin)],
-    ) -> ReviewAcceptedResponse:
-        """校验幂等键并接受一个异步审查任务。
-
-        请求必须先通过会话和同源检查；仓储层保证运行、任务和 Outbox 事件在同
-        一个事务中持久化。相同键重复提交返回原任务，不同内容复用同一键则返回
-        409，数据库暂时不可用则返回可安全重试的 503。
-
-        参数：
-            request_body: 已通过 Pydantic 严格字段校验的审查请求。
-            idempotency_key: HTTP ``Idempotency-Key``，长度 1 到 200；函数会再去掉
-                首尾空白，空白键返回 422。
-            _: 管理员会话依赖结果，仅用于确认调用方已登录。
-            __: 同源依赖结果，仅用于阻止带恶意 Origin 的浏览器副作用请求。
-
-        返回：
-            202 响应，包含运行/任务 ID、版本键、当前执行状态、首次接受时间和
-            ``created`` 标志。重复请求的状态可能已经从 ``queued`` 推进到其他状态。
-
-        异常：
-            HTTPException(401/403/422/409/503): 分别对应会话无效、Origin 不匹配、
-            请求或幂等键不合法、键指向不同内容、持久化不可用。
-        """
-        normalized_key = idempotency_key.strip()
-        if not normalized_key:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Idempotency-Key must not be blank",
-            )
-        try:
-            result = get_review_service().submit(request_body, normalized_key)
-        except IdempotencyConflictError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Idempotency-Key was already used for a different request",
-            ) from exc
-        except ReviewPersistenceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="review persistence is temporarily unavailable",
-            ) from exc
-
-        return ReviewAcceptedResponse(
-            review_run_id=result.review_run_id,
-            review_task_id=result.review_task_id,
-            review_version_key=result.review_version_key,
-            execution_status=result.execution_status,
-            accepted_at=result.accepted_at,
-            created=result.created,
-        )
 
     return application
 

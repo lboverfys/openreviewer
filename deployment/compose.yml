@@ -8,6 +8,23 @@ x-openreviewer-environment: &openreviewer-environment
   OPENREVIEWER_DB_NAME: openreviewer
   OPENREVIEWER_DB_USER: openreviewer
   OPENREVIEWER_DB_PASSWORD: "${OPENREVIEWER_POSTGRES_PASSWORD:?Set OPENREVIEWER_POSTGRES_PASSWORD}"
+  OPENREVIEWER_DB_POOL_SIZE: "${OPENREVIEWER_DB_POOL_SIZE:-5}"
+  OPENREVIEWER_DB_MAX_OVERFLOW: "${OPENREVIEWER_DB_MAX_OVERFLOW:-5}"
+  OPENREVIEWER_DB_POOL_TIMEOUT_SECONDS: "${OPENREVIEWER_DB_POOL_TIMEOUT_SECONDS:-10}"
+  OPENREVIEWER_DB_POOL_RECYCLE_SECONDS: "${OPENREVIEWER_DB_POOL_RECYCLE_SECONDS:-1800}"
+  OPENREVIEWER_DB_STATEMENT_TIMEOUT_MS: "${OPENREVIEWER_DB_STATEMENT_TIMEOUT_MS:-30000}"
+  OPENREVIEWER_DB_LOCK_TIMEOUT_MS: "${OPENREVIEWER_DB_LOCK_TIMEOUT_MS:-5000}"
+  OPENREVIEWER_DB_IDLE_TRANSACTION_TIMEOUT_MS: "${OPENREVIEWER_DB_IDLE_TRANSACTION_TIMEOUT_MS:-60000}"
+  # API 只信任同一 Compose edge 网络中的 Nginx 转发头；不要把公网或
+  # Cloudflare 网段直接加入这里。edge 网段在文件末尾固定并允许显式覆盖。
+  OPENREVIEWER_TRUSTED_PROXY_CIDRS: "${OPENREVIEWER_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128,172.23.0.0/16}"
+  OPENREVIEWER_REQUIRE_ORIGIN: "${OPENREVIEWER_REQUIRE_ORIGIN:-true}"
+  OPENREVIEWER_QUOTA_USER_HOURLY: "${OPENREVIEWER_QUOTA_USER_HOURLY:-20}"
+  OPENREVIEWER_QUOTA_REPOSITORY_HOURLY: "${OPENREVIEWER_QUOTA_REPOSITORY_HOURLY:-50}"
+  OPENREVIEWER_QUOTA_GLOBAL_HOURLY: "${OPENREVIEWER_QUOTA_GLOBAL_HOURLY:-200}"
+  OPENREVIEWER_QUOTA_USER_DAILY: "${OPENREVIEWER_QUOTA_USER_DAILY:-100}"
+  OPENREVIEWER_QUOTA_REPOSITORY_DAILY: "${OPENREVIEWER_QUOTA_REPOSITORY_DAILY:-500}"
+  OPENREVIEWER_QUOTA_GLOBAL_DAILY: "${OPENREVIEWER_QUOTA_GLOBAL_DAILY:-2000}"
 
 x-openreviewer-container: &openreviewer-container
   image: "${OPENREVIEWER_IMAGE:?Set OPENREVIEWER_IMAGE to a full SHA-tagged GHCR image}"
@@ -83,16 +100,26 @@ services:
       <<: *openreviewer-environment
       OPENREVIEWER_ADMIN_USERNAME: "${OPENREVIEWER_ADMIN_USERNAME:?Set the administrator username}"
       OPENREVIEWER_ADMIN_PASSWORD_HASH: "${OPENREVIEWER_ADMIN_PASSWORD_HASH:?Set an Argon2id hash}"
+      OPENREVIEWER_AUTH_USERS_FILE: /run/secrets/auth-users.json
       OPENREVIEWER_SESSION_SECRET: "${OPENREVIEWER_SESSION_SECRET:?Set a random session secret}"
       OPENREVIEWER_GITHUB_WEBHOOK_SECRET: "${OPENREVIEWER_GITHUB_WEBHOOK_SECRET:?Set the GitHub webhook secret}"
       OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES: "${OPENREVIEWER_GITHUB_WEBHOOK_MAX_BYTES:-262144}"
       OPENREVIEWER_GITHUB_APP_ID: "${OPENREVIEWER_GITHUB_APP_ID:?Set the GitHub App ID}"
       OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE: /run/secrets/github-app-private-key.pem
+      OPENREVIEWER_GITHUB_ALLOWED_INSTALLATION_IDS: "${OPENREVIEWER_GITHUB_ALLOWED_INSTALLATION_IDS:?Set allowed GitHub installation IDs}"
+      OPENREVIEWER_GITHUB_ALLOWED_ORGANIZATIONS: "${OPENREVIEWER_GITHUB_ALLOWED_ORGANIZATIONS:-}"
+      OPENREVIEWER_GITHUB_ALLOWED_REPOSITORIES: "${OPENREVIEWER_GITHUB_ALLOWED_REPOSITORIES:-}"
       OPENREVIEWER_SESSION_TTL_SECONDS: "${OPENREVIEWER_SESSION_TTL_SECONDS:-28800}"
       OPENREVIEWER_COOKIE_SECURE: "true"
       OPENREVIEWER_AI_CONFIG_KEY_FILE: /run/secrets/ai-config-key
       OPENREVIEWER_AI_CONFIG_KEY_VERSION: "${OPENREVIEWER_AI_CONFIG_KEY_VERSION:-1}"
+      OPENREVIEWER_READY_WORKER_MAX_AGE_SECONDS: "${OPENREVIEWER_READY_WORKER_MAX_AGE_SECONDS:-45}"
+      OPENREVIEWER_DB_APPLICATION_NAME: openreviewer-api
     volumes:
+      - type: bind
+        source: "${OPENREVIEWER_AUTH_USERS_FILE:?Set the additional authentication users file}"
+        target: /run/secrets/auth-users.json
+        read_only: true
       - type: bind
         source: "${OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE:?Set the GitHub App private key file}"
         target: /run/secrets/github-app-private-key.pem
@@ -115,24 +142,43 @@ services:
 
   worker:
     <<: *openreviewer-container
-    container_name: openreviewer-worker
     restart: unless-stopped
+    # 模型请求可能持续数分钟；给 SIGTERM 留出完成当前批次并释放租约的时间。
+    # 发布脚本还会按 OPENREVIEWER_DEPLOY_STOP_TIMEOUT_SECONDS 显式等待全部副本退出。
+    stop_grace_period: 16m
     user: "10001:0"
     command: ["python", "-m", "apps.worker.main"]
     environment:
       <<: *openreviewer-environment
-      OPENREVIEWER_WORKER_ID: openreviewer-worker-1
       OPENREVIEWER_WORKER_POLL_SECONDS: "${OPENREVIEWER_WORKER_POLL_SECONDS:-2}"
       OPENREVIEWER_WORKER_LEASE_SECONDS: "${OPENREVIEWER_WORKER_LEASE_SECONDS:-30}"
       OPENREVIEWER_CI_POLL_SECONDS: "${OPENREVIEWER_CI_POLL_SECONDS:-30}"
       OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS: "${OPENREVIEWER_CI_WAIT_TIMEOUT_SECONDS:-3600}"
       OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS: "${OPENREVIEWER_GITHUB_CONTEXT_LEASE_SECONDS:-600}"
       OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS: "${OPENREVIEWER_MODEL_REVIEW_LEASE_SECONDS:-600}"
+      OPENREVIEWER_WORKER_METRICS_HOST: "0.0.0.0"
+      OPENREVIEWER_WORKER_METRICS_PORT: "18091"
       OPENREVIEWER_KNOWLEDGE_ROOT: "${OPENREVIEWER_KNOWLEDGE_ROOT:-knowledge}"
+      OPENREVIEWER_OUTBOX_BATCH_SIZE: "${OPENREVIEWER_OUTBOX_BATCH_SIZE:-100}"
+      OPENREVIEWER_OUTBOX_LEASE_SECONDS: "${OPENREVIEWER_OUTBOX_LEASE_SECONDS:-30}"
+      OPENREVIEWER_OUTBOX_RETRY_SECONDS: "${OPENREVIEWER_OUTBOX_RETRY_SECONDS:-15}"
+      OPENREVIEWER_CLEANUP_INTERVAL_SECONDS: "${OPENREVIEWER_CLEANUP_INTERVAL_SECONDS:-300}"
+      OPENREVIEWER_CLEANUP_BATCH_SIZE: "${OPENREVIEWER_CLEANUP_BATCH_SIZE:-500}"
+      OPENREVIEWER_OUTBOX_RETENTION_DAYS: "${OPENREVIEWER_OUTBOX_RETENTION_DAYS:-14}"
+      OPENREVIEWER_SESSION_RETENTION_DAYS: "${OPENREVIEWER_SESSION_RETENTION_DAYS:-7}"
+      OPENREVIEWER_HEARTBEAT_RETENTION_DAYS: "${OPENREVIEWER_HEARTBEAT_RETENTION_DAYS:-7}"
+      OPENREVIEWER_WEBHOOK_RETENTION_DAYS: "${OPENREVIEWER_WEBHOOK_RETENTION_DAYS:-90}"
+      OPENREVIEWER_REVIEW_RETENTION_DAYS: "${OPENREVIEWER_REVIEW_RETENTION_DAYS:-180}"
+      OPENREVIEWER_QUOTA_BUCKET_RETENTION_DAYS: "${OPENREVIEWER_QUOTA_BUCKET_RETENTION_DAYS:-3}"
+      OPENREVIEWER_FINDING_EVALUATION_RETENTION_DAYS: "${OPENREVIEWER_FINDING_EVALUATION_RETENTION_DAYS:-730}"
       OPENREVIEWER_GITHUB_APP_ID: "${OPENREVIEWER_GITHUB_APP_ID:?Set the GitHub App ID}"
       OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE: /run/secrets/github-app-private-key.pem
+      OPENREVIEWER_GITHUB_ALLOWED_INSTALLATION_IDS: "${OPENREVIEWER_GITHUB_ALLOWED_INSTALLATION_IDS:?Set allowed GitHub installation IDs}"
+      OPENREVIEWER_GITHUB_ALLOWED_ORGANIZATIONS: "${OPENREVIEWER_GITHUB_ALLOWED_ORGANIZATIONS:-}"
+      OPENREVIEWER_GITHUB_ALLOWED_REPOSITORIES: "${OPENREVIEWER_GITHUB_ALLOWED_REPOSITORIES:-}"
       OPENREVIEWER_AI_CONFIG_KEY_FILE: /run/secrets/ai-config-key
       OPENREVIEWER_AI_CONFIG_KEY_VERSION: "${OPENREVIEWER_AI_CONFIG_KEY_VERSION:-1}"
+      OPENREVIEWER_DB_APPLICATION_NAME: openreviewer-worker
     volumes:
       - type: bind
         source: "${OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE:?Set the GitHub App private key file}"
@@ -145,6 +191,8 @@ services:
     networks:
       - backend
       - egress
+    expose:
+      - "18091"
     healthcheck:
       test: ["CMD", "python", "-m", "apps.worker.healthcheck"]
       interval: 15s
@@ -156,6 +204,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    deploy:
+      replicas: ${OPENREVIEWER_WORKER_REPLICAS:-1}
 
   web:
     image: "${OPENREVIEWER_WEB_IMAGE:?Set OPENREVIEWER_WEB_IMAGE to a full SHA-tagged GHCR image}"
@@ -187,9 +237,139 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  prometheus:
+    image: "${OPENREVIEWER_PROMETHEUS_IMAGE:-prom/prometheus:v3.5.0}"
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+      - --web.enable-lifecycle
+    volumes:
+      - type: bind
+        source: ./observability/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+      - type: bind
+        source: ./prometheus-alerts.yml
+        target: /etc/prometheus/openreviewer-alerts.yml
+        read_only: true
+      - prometheus_data:/prometheus
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=32m"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
+    networks:
+      - backend
+    depends_on:
+      - api
+      - worker
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  alertmanager:
+    image: "${OPENREVIEWER_ALERTMANAGER_IMAGE:-prom/alertmanager:v0.28.1}"
+    restart: unless-stopped
+    user: "65534:0"
+    read_only: true
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --data.retention=120h
+    volumes:
+      - type: bind
+        source: "${OPENREVIEWER_ALERTMANAGER_CONFIG_FILE:-./observability/alertmanager-noop.yml}"
+        target: /etc/alertmanager/alertmanager.yml
+        read_only: true
+      - type: bind
+        source: "${OPENREVIEWER_ALERT_WEBHOOK_URL_FILE:-./observability/alert-webhook-url.placeholder}"
+        target: /run/secrets/alert-webhook-url
+        read_only: true
+      - alertmanager_data:/alertmanager
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=16m"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    networks:
+      - backend
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    image: "${OPENREVIEWER_GRAFANA_IMAGE:-grafana/grafana:12.1.0}"
+    restart: unless-stopped
+    user: "472:0"
+    read_only: true
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - type: bind
+        source: ./observability/grafana-datasource.yml
+        target: /etc/grafana/provisioning/datasources/openreviewer.yml
+        read_only: true
+      - type: bind
+        source: ./observability/grafana-dashboards.yml
+        target: /etc/grafana/provisioning/dashboards/openreviewer.yml
+        read_only: true
+      - type: bind
+        source: ./observability/grafana-dashboard.json
+        target: /etc/grafana/dashboards/openreviewer.json
+        read_only: true
+      - grafana_data:/var/lib/grafana
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=32m"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    networks:
+      - backend
+    ports:
+      - "127.0.0.1:${OPENREVIEWER_GRAFANA_HOST_PORT:-13000}:3000"
+    depends_on:
+      - prometheus
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   postgres_data:
     name: openreviewer-postgres-data
+  prometheus_data:
+    name: openreviewer-prometheus-data
+  alertmanager_data:
+    name: openreviewer-alertmanager-data
+  grafana_data:
+    name: openreviewer-grafana-data
 
 networks:
   backend:
@@ -197,5 +377,8 @@ networks:
     internal: true
   edge:
     name: openreviewer-edge
+    ipam:
+      config:
+        - subnet: "${OPENREVIEWER_EDGE_SUBNET:-172.23.0.0/16}"
   egress:
     name: openreviewer-egress

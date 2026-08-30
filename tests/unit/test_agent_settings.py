@@ -228,6 +228,39 @@ def test_provider_switch_requires_replacing_or_clearing_bound_secret(
     assert switched.agents[1].api_key_configured is False
 
 
+def test_agent_api_base_url_change_requires_replacing_bound_secret(
+    database: Database,
+) -> None:
+    service = AgentSettingsService(
+        database.sessions,
+        AiSecretCipher(b"h" * 32),
+        connection_tester=lambda _settings: None,
+    )
+    service.update(
+        ReviewAgent.SECURITY,
+        AgentConfigDraft(
+            provider=ModelProvider.OPENAI,
+            model="relay-model",
+            api_base_url="https://relay-one.example/v1",
+        ),
+        expected_revision=0,
+        actor="administrator",
+        api_key="host-bound-secret",
+    )
+
+    with pytest.raises(AiSettingsValidationError, match="API 地址"):
+        service.update(
+            ReviewAgent.SECURITY,
+            AgentConfigDraft(
+                provider=ModelProvider.OPENAI,
+                model="relay-model",
+                api_base_url="https://relay-two.example/v1",
+            ),
+            expected_revision=1,
+            actor="administrator",
+        )
+
+
 def test_runtime_requires_all_agents_and_preserves_concurrency_limit(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
@@ -265,8 +298,6 @@ def test_runtime_requires_all_agents_and_preserves_concurrency_limit(
         )
         revision = view.revision
 
-    created: list[StubReviewer] = []
-
     class StubReviewer:
         def __init__(self, settings: ModelServiceSettings) -> None:
             self.settings = settings
@@ -277,6 +308,8 @@ def test_runtime_requires_all_agents_and_preserves_concurrency_limit(
 
         def close(self) -> None:
             self.closed = True
+
+    created: list[StubReviewer] = []
 
     def create_reviewer(settings: ModelServiceSettings) -> StubReviewer:
         reviewer = StubReviewer(settings)

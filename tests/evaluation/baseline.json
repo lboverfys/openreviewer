@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "minimum_precision": 0.85,
+  "minimum_recall": 0.85,
+  "minimum_f1": 0.85,
+  "baseline_precision": 0.90,
+  "baseline_recall": 0.90,
+  "baseline_f1": 0.90,
+  "maximum_regression": 0.02
+}

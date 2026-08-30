@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "source": "recorded-output-fixture",
+    "prompt_version": "structured-review-v4",
+    "provider": "openai",
+    "api_protocol": "responses",
+    "model": "benchmark-snapshot-20260828"
+  },
+  "cases": [
+    {"case_id": "security-sql-injection", "predicted_finding_keys": ["security:src/query.py:18:sql-injection"]},
+    {"case_id": "authorization-missing-scope", "predicted_finding_keys": ["authorization:src/auth.py:42:missing-scope"]},
+    {"case_id": "database-n-plus-one", "predicted_finding_keys": ["database:src/orders.py:73:n-plus-one"]},
+    {"case_id": "reliability-missing-timeout", "predicted_finding_keys": ["reliability:src/client.py:20:missing-timeout"]},
+    {"case_id": "test-gap-checkout", "predicted_finding_keys": ["test_gap:tests/test_checkout.py:1:missing-case"]},
+    {"case_id": "architecture-cycle", "predicted_finding_keys": ["architecture:src/a.py:5:dependency-cycle"]},
+    {"case_id": "business-rounding", "predicted_finding_keys": ["business_contract:src/money.py:55:rounding"]},
+    {"case_id": "security-secret-log", "predicted_finding_keys": ["security:src/log.py:31:secret-log"]},
+    {"case_id": "database-transaction-boundary", "predicted_finding_keys": ["database:src/payment.py:88:remote-in-transaction"]},
+    {"case_id": "authorization-ci-trust", "predicted_finding_keys": []},
+    {"case_id": "security-path-traversal", "predicted_finding_keys": ["security:src/files.py:12:path-traversal"]},
+    {"case_id": "authorization-object-ownership", "predicted_finding_keys": ["authorization:src/invoices.py:65:missing-ownership-check"]},
+    {"case_id": "database-unbounded-audit-query", "predicted_finding_keys": ["database:src/audit.py:30:unbounded-query"]},
+    {"case_id": "reliability-swallowed-error", "predicted_finding_keys": ["reliability:src/jobs.py:48:swallowed-error"]},
+    {"case_id": "business-missing-idempotency", "predicted_finding_keys": ["business_contract:src/checkout.py:90:missing-idempotency"]},
+    {"case_id": "architecture-layer-leak", "predicted_finding_keys": ["architecture:domain/orders.py:14:layer-leak"]},
+    {"case_id": "test-gap-payment-error", "predicted_finding_keys": []},
+    {"case_id": "security-disabled-tls", "predicted_finding_keys": ["security:src/http.py:27:disabled-tls-verification"]},
+    {"case_id": "database-query-in-loop", "predicted_finding_keys": ["database:src/report.py:101:query-in-loop"]},
+    {"case_id": "clean-explicit-timeout", "predicted_finding_keys": []},
+    {"case_id": "clean-indexed-bounded-query", "predicted_finding_keys": []},
+    {"case_id": "clean-comment-clarification", "predicted_finding_keys": []},
+    {"case_id": "clean-rename", "predicted_finding_keys": []},
+    {"case_id": "clean-documentation", "predicted_finding_keys": ["test_gap:README.md:1:unnecessary-test"]}
+  ]
+}

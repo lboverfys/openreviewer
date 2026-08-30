@@ -8,6 +8,28 @@ import {
 } from "react";
 
 import { api, ApiError } from "./api";
+import AgentSettingsPanel from "./AgentSettingsPanel";
+import {
+  batchInputOptions,
+  bytesToInput,
+  contextWindowOptions,
+  formatTokens,
+  inputToBytes,
+  KIB,
+  MIB,
+  normalizeAiSettings,
+  optionalDecimal,
+  optionalUsdToMicrousd,
+  outputTokenOptions,
+  providerDraft,
+  providerHasChanges,
+  requiredInteger,
+  requiredNumber,
+  reviewPolicyDraft,
+  reviewPolicyHasChanges,
+} from "./settings-drafts";
+import type { ProviderDraft, ReviewPolicyDraft } from "./settings-drafts";
+import { testStatusLabels } from "./settings-labels";
 import type {
   AiApiProtocol,
   AiProvider,
@@ -17,9 +39,7 @@ import type {
   AiSettings,
   AuthUser,
   ConfigurationAudit,
-  AiAgentSettings,
-  AiAgentSettingsResponse,
-  ReviewAgent,
+  ReviewPolicyUpdate,
 } from "./types";
 import { errorMessage, formatDate } from "./utils";
 
@@ -28,32 +48,6 @@ interface SettingsPageProps {
   onBack: () => void;
   onSignedOut: (message?: string) => void;
 }
-
-interface ProviderDraft {
-  model: string;
-  apiProtocol: AiApiProtocol;
-  useCustomEndpoint: boolean;
-  apiBaseUrl: string;
-  apiKey: string;
-  clearApiKey: boolean;
-  reasoningEffort: AiReasoningEffort;
-  contextWindowTokens: string;
-  maxOutputTokens: string;
-  maxBatchInputTokens: string;
-  connectTimeoutSeconds: string;
-  readTimeoutSeconds: string;
-  writeTimeoutSeconds: string;
-  poolTimeoutSeconds: string;
-  maxRequestBytes: string;
-  maxResponseBytes: string;
-  inputPrice: string;
-  outputPrice: string;
-  cacheReadPrice: string;
-  cacheWritePrice: string;
-}
-
-const KIB = 1024;
-const MIB = 1024 * KIB;
 
 const providerLabels: Record<AiProvider, string> = {
   openai: "OpenAI 兼容",
@@ -94,12 +88,6 @@ const reasoningEffortLabels: Record<
   max: { title: "极致", note: "仅模型明确支持时" },
 };
 
-const testStatusLabels = {
-  untested: "等待测试",
-  succeeded: "连接正常",
-  failed: "测试失败",
-} as const;
-
 const auditActionLabels: Record<string, string> = {
   "provider.openai.updated": "保存 OpenAI 配置",
   "provider.anthropic.updated": "保存 Anthropic 配置",
@@ -135,196 +123,6 @@ const fieldLabels: Record<string, string> = {
   test_status: "测试状态",
 };
 
-function providerDraft(settings: AiProviderSettings): ProviderDraft {
-  return {
-    model: settings.model,
-    apiProtocol: settings.api_protocol,
-    useCustomEndpoint: Boolean(settings.api_base_url),
-    apiBaseUrl: settings.api_base_url ?? "",
-    apiKey: "",
-    clearApiKey: false,
-    reasoningEffort: settings.reasoning_effort,
-    contextWindowTokens: String(settings.context_window_tokens),
-    maxOutputTokens: String(settings.max_output_tokens),
-    maxBatchInputTokens: String(settings.max_batch_input_tokens),
-    connectTimeoutSeconds: String(settings.connect_timeout_seconds),
-    readTimeoutSeconds: String(settings.read_timeout_seconds),
-    writeTimeoutSeconds: String(settings.write_timeout_seconds),
-    poolTimeoutSeconds: String(settings.pool_timeout_seconds),
-    maxRequestBytes: String(settings.max_request_bytes),
-    maxResponseBytes: String(settings.max_response_bytes),
-    inputPrice: settings.input_usd_per_million ?? "",
-    outputPrice: settings.output_usd_per_million ?? "",
-    cacheReadPrice: settings.cache_read_usd_per_million ?? "",
-    cacheWritePrice: settings.cache_write_usd_per_million ?? "",
-  };
-}
-
-function requiredNumber(value: string, label: string): number {
-  if (!value.trim()) throw new Error(`请填写${label}`);
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`${label}必须是数字`);
-  return parsed;
-}
-
-function optionalDecimal(value: string): string | null {
-  const normalized = value.trim();
-  return normalized ? normalized : null;
-}
-
-function bytesToInput(value: string, unit: number): string {
-  if (!value) return "";
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? String(parsed / unit) : "";
-}
-
-function inputToBytes(value: string, unit: number): string {
-  if (!value) return "";
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? String(Math.round(parsed * unit)) : "";
-}
-
-function formatTokens(value: string | number): string {
-  const tokens = Number(value);
-  if (!Number.isFinite(tokens)) return "--";
-  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(2))}M`;
-  if (tokens >= 1_000) return `${Number((tokens / 1_000).toFixed(0))}K`;
-  return String(tokens);
-}
-
-const reasoningEfforts: AiReasoningEffort[] = [
-  "none",
-  "low",
-  "medium",
-  "high",
-  "max",
-];
-
-function finiteIntegerOr(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)
-    ? value
-    : fallback;
-}
-
-function normalizeProviderSettings(settings: AiProviderSettings): AiProviderSettings {
-  const raw = settings as AiProviderSettings & {
-    reasoning_effort?: unknown;
-    context_window_tokens?: unknown;
-    max_output_tokens?: unknown;
-    max_batch_input_tokens?: unknown;
-  };
-  const defaultContext = settings.provider === "anthropic" ? 200_000 : 128_000;
-  const contextWindowTokens = Math.max(
-    8_192,
-    Math.min(4_000_000, finiteIntegerOr(raw.context_window_tokens, defaultContext)),
-  );
-  const requestedOutput = finiteIntegerOr(raw.max_output_tokens, 8_192);
-  const maxOutputTokens = Math.max(
-    256,
-    Math.min(131_072, contextWindowTokens - 4_096, requestedOutput),
-  );
-  const requestedBatch = finiteIntegerOr(raw.max_batch_input_tokens, 64_000);
-  const maxBatchInputTokens = Math.max(
-    4_096,
-    Math.min(4_000_000, contextWindowTokens - 4_096, requestedBatch),
-  );
-  return {
-    ...settings,
-    reasoning_effort: reasoningEfforts.includes(raw.reasoning_effort as AiReasoningEffort)
-      ? raw.reasoning_effort as AiReasoningEffort
-      : "none",
-    context_window_tokens: contextWindowTokens,
-    max_output_tokens: maxOutputTokens,
-    max_batch_input_tokens: maxBatchInputTokens,
-  };
-}
-
-function normalizeAiSettings(next: AiSettings): AiSettings {
-  return {
-    ...next,
-    providers: next.providers.map(normalizeProviderSettings),
-  };
-}
-
-function contextWindowOptions(current: string): Array<[string, string]> {
-  const presets: Array<[string, string]> = [
-    ["8192", "8K Token"],
-    ["16384", "16K Token"],
-    ["32768", "32K Token"],
-    ["65536", "64K Token"],
-    ["128000", "128K Token"],
-    ["200000", "200K Token"],
-    ["256000", "256K Token"],
-    ["384000", "384K Token"],
-    ["1000000", "1M Token"],
-    ["2000000", "2M Token"],
-    ["4000000", "4M Token"],
-  ];
-  if (presets.some(([value]) => value === current)) return presets;
-  return [[current, `${formatTokens(current)} Token（当前值）`], ...presets];
-}
-
-function outputTokenOptions(context: string, current: string): Array<[string, string]> {
-  const contextTokens = Number(context);
-  const presets: Array<[string, string]> = [
-    ["2048", "简短（2K Token）"],
-    ["4096", "日常（4K Token）"],
-    ["8192", "标准（8K Token）"],
-    ["16384", "详细（16K Token）"],
-    ["32768", "超长（32K Token）"],
-    ["65536", "极长（64K Token）"],
-    ["131072", "最大（128K Token）"],
-  ].filter(([value]) => Number(value) <= contextTokens - 4_096) as Array<[string, string]>;
-  if (presets.some(([value]) => value === current)) return presets;
-  return [[current, `${formatTokens(current)} Token（当前值）`], ...presets];
-}
-
-function batchInputOptions(context: string, current: string): Array<[string, string]> {
-  const contextTokens = Number(context);
-  const presets: Array<[string, string]> = [
-    ["16384", "小批（16K）"],
-    ["32768", "稳妥（32K）"],
-    ["64000", "推荐（64K）"],
-    ["96000", "大批（96K）"],
-    ["128000", "超大（128K）"],
-    ["256000", "极大（256K）"],
-  ].filter(
-    ([value]) => Number(value) <= Math.max(4_096, contextTokens - 4_096),
-  ) as Array<[string, string]>;
-  if (presets.some(([value]) => value === current)) return presets;
-  return [[current, `${formatTokens(current)}（当前值）`], ...presets];
-}
-
-function providerHasChanges(
-  settings: AiProviderSettings,
-  draft: ProviderDraft,
-): boolean {
-  const effectiveBaseUrl = draft.useCustomEndpoint
-    ? draft.apiBaseUrl.trim() || null
-    : null;
-  return (
-    draft.model.trim() !== settings.model ||
-    draft.apiProtocol !== settings.api_protocol ||
-    effectiveBaseUrl !== settings.api_base_url ||
-    Boolean(draft.apiKey.trim()) ||
-    draft.clearApiKey ||
-    draft.reasoningEffort !== settings.reasoning_effort ||
-    Number(draft.contextWindowTokens) !== settings.context_window_tokens ||
-    Number(draft.maxOutputTokens) !== settings.max_output_tokens ||
-    Number(draft.maxBatchInputTokens) !== settings.max_batch_input_tokens ||
-    Number(draft.connectTimeoutSeconds) !== settings.connect_timeout_seconds ||
-    Number(draft.readTimeoutSeconds) !== settings.read_timeout_seconds ||
-    Number(draft.writeTimeoutSeconds) !== settings.write_timeout_seconds ||
-    Number(draft.poolTimeoutSeconds) !== settings.pool_timeout_seconds ||
-    Number(draft.maxRequestBytes) !== settings.max_request_bytes ||
-    Number(draft.maxResponseBytes) !== settings.max_response_bytes ||
-    draft.inputPrice !== (settings.input_usd_per_million ?? "") ||
-    draft.outputPrice !== (settings.output_usd_per_million ?? "") ||
-    draft.cacheReadPrice !== (settings.cache_read_usd_per_million ?? "") ||
-    draft.cacheWritePrice !== (settings.cache_write_usd_per_million ?? "")
-  );
-}
-
 function ProviderStatus({ settings }: { settings: AiProviderSettings }) {
   return (
     <div className="settings-status-line">
@@ -348,6 +146,9 @@ export default function SettingsPage({
   onSignedOut,
 }: SettingsPageProps) {
   const [settings, setSettings] = useState<AiSettings | null>(null);
+  const [policyDraft, setPolicyDraft] = useState<ReviewPolicyDraft | null>(null);
+  const [policyMessage, setPolicyMessage] = useState("");
+  const [policyMessageKind, setPolicyMessageKind] = useState<"success" | "error">("success");
   const [audits, setAudits] = useState<ConfigurationAudit[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<AiProvider>("openai");
   const [drafts, setDrafts] = useState<Partial<Record<AiProvider, ProviderDraft>>>({});
@@ -365,6 +166,7 @@ export default function SettingsPage({
   const applySettings = useCallback((next: AiSettings) => {
     const normalized = normalizeAiSettings(next);
     setSettings(normalized);
+    setPolicyDraft(reviewPolicyDraft(normalized));
     setDrafts(
       Object.fromEntries(
         normalized.providers.map((provider) => [provider.provider, providerDraft(provider)]),
@@ -377,16 +179,17 @@ export default function SettingsPage({
   }, []);
 
   const refresh = useCallback(
-    async (showLoading = true) => {
+    async (showLoading = true, signal?: AbortSignal) => {
       if (showLoading) setLoading(true);
       try {
         const [nextSettings, auditResponse] = await Promise.all([
-          api.aiSettings(),
-          api.configurationAudits(),
+          api.aiSettings(signal),
+          api.configurationAudits(signal),
         ]);
         applySettings(nextSettings);
         setAudits(auditResponse.items);
       } catch (error) {
+        if (signal?.aborted) return;
         if (error instanceof ApiError && error.status === 401) {
           onSignedOut("登录状态已失效，请重新登录");
           return;
@@ -394,14 +197,16 @@ export default function SettingsPage({
         setMessageKind("error");
         setMessage(errorMessage(error));
       } finally {
-        if (showLoading) setLoading(false);
+        if (showLoading && !signal?.aborted) setLoading(false);
       }
     },
     [applySettings, onSignedOut],
   );
 
   useEffect(() => {
-    void refresh();
+    const controller = new AbortController();
+    void refresh(true, controller.signal);
+    return () => controller.abort();
   }, [refresh]);
 
   useEffect(() => {
@@ -537,6 +342,68 @@ export default function SettingsPage({
     );
   }
 
+  function updatePolicyDraft<K extends keyof ReviewPolicyDraft>(
+    field: K,
+    value: ReviewPolicyDraft[K],
+  ) {
+    setPolicyDraft((current) => current ? { ...current, [field]: value } : current);
+  }
+
+  async function saveReviewPolicy(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!settings || !policyDraft) return;
+    setBusyAction("save-policy");
+    setPolicyMessage("");
+    try {
+      const payload: ReviewPolicyUpdate = {
+        expected_revision: settings.revision,
+        max_units: requiredInteger(policyDraft.maxUnits, "最多审查单元"),
+        max_scope_depth: requiredInteger(policyDraft.maxScopeDepth, "规则目录深度"),
+        max_unit_input_bytes: requiredInteger(
+          inputToBytes(policyDraft.maxUnitInputKib, KIB),
+          "单文件输入上限",
+        ),
+        max_total_input_bytes: requiredInteger(
+          inputToBytes(policyDraft.maxTotalInputMib, MIB),
+          "总输入上限",
+        ),
+        max_model_http_calls: requiredInteger(
+          policyDraft.maxModelHttpCalls,
+          "模型请求次数",
+        ),
+        max_model_input_tokens: requiredInteger(
+          policyDraft.maxModelInputTokens,
+          "模型输入 Token 上限",
+        ),
+        max_model_output_tokens: requiredInteger(
+          policyDraft.maxModelOutputTokens,
+          "模型输出 Token 上限",
+        ),
+        max_model_cost_microusd: optionalUsdToMicrousd(
+          policyDraft.maxModelCostUsd,
+        ),
+        max_model_duration_seconds: requiredInteger(
+          policyDraft.maxModelDurationSeconds,
+          "模型总耗时上限",
+        ),
+      };
+      applySettings(await api.updateReviewPolicy(payload));
+      setAudits((await api.configurationAudits()).items);
+      setPolicyMessageKind("success");
+      setPolicyMessage("审查范围和单次任务硬预算已保存");
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onSignedOut("登录状态已失效，请重新登录");
+        return;
+      }
+      setPolicyMessageKind("error");
+      setPolicyMessage(errorMessage(error));
+      if (error instanceof ApiError && error.status === 409) await refresh(false);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function logout() {
     try {
       await api.logout();
@@ -547,6 +414,9 @@ export default function SettingsPage({
 
   const providerDirty = Boolean(
     selectedSettings && draft && providerHasChanges(selectedSettings, draft),
+  );
+  const policyDirty = Boolean(
+    settings && policyDraft && reviewPolicyHasChanges(settings, policyDraft),
   );
   const contextTokens = Number(draft?.contextWindowTokens ?? 0);
   const outputTokens = Number(draft?.maxOutputTokens ?? 0);
@@ -576,7 +446,7 @@ export default function SettingsPage({
     <div className="settings-page-layout">
       <header className="settings-navbar">
         <div className="settings-nav-start">
-          <button className="settings-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
+          <button type="button" className="settings-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
           </button>
           <div className="settings-heading-lockup">
@@ -587,11 +457,11 @@ export default function SettingsPage({
           </div>
         </div>
         <div className="settings-nav-end">
-          <button className="settings-icon-btn" onClick={() => void refreshAllSettings()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
+          <button type="button" className="settings-icon-btn" onClick={() => void refreshAllSettings()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
           </button>
           <div className="settings-user"><span>{user.username.slice(0, 1).toUpperCase()}</span><strong>{user.username}</strong></div>
-          <button className="settings-icon-btn" onClick={logout} title="退出登录" aria-label="退出登录">
+          <button type="button" className="settings-icon-btn" onClick={logout} title="退出登录" aria-label="退出登录">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
           </button>
         </div>
@@ -799,6 +669,58 @@ export default function SettingsPage({
               </div>
             </section>
 
+            {policyDraft && (
+              <section className="settings-policy-section">
+              <form onSubmit={saveReviewPolicy}>
+                <div className="settings-section-heading settings-policy-heading">
+                  <div>
+                    <span className="settings-eyebrow">REVIEW GUARDRAILS</span>
+                    <h2>审查范围与硬预算</h2>
+                    <p>这些上限会固化到新任务，重试不能绕过；已有任务保持原配置。</p>
+                  </div>
+                  {policyDirty && <span className="settings-unsaved-badge">有修改待保存</span>}
+                </div>
+                <fieldset disabled={Boolean(busyAction)}>
+                  <div className="settings-policy-group">
+                    <div className="settings-inline-heading">
+                      <strong>代码范围</strong>
+                      <small>控制一次审查最多接收多少文件、规则层级和文本体积。</small>
+                    </div>
+                    <div className="settings-form-grid settings-policy-grid">
+                      <NumberField name="policy-max-units" label="最多审查单元" value={policyDraft.maxUnits} min="1" max="3000" onChange={(value) => updatePolicyDraft("maxUnits", value)} />
+                      <NumberField name="policy-scope-depth" label="规则目录深度" value={policyDraft.maxScopeDepth} min="1" max="64" onChange={(value) => updatePolicyDraft("maxScopeDepth", value)} />
+                      <NumberField name="policy-unit-kib" label="单文件输入上限" value={policyDraft.maxUnitInputKib} min="4" max="10240" suffix="KiB" onChange={(value) => updatePolicyDraft("maxUnitInputKib", value)} />
+                      <NumberField name="policy-total-mib" label="总输入上限" value={policyDraft.maxTotalInputMib} min="0.00390625" max="100" step="0.00390625" suffix="MiB" onChange={(value) => updatePolicyDraft("maxTotalInputMib", value)} />
+                    </div>
+                  </div>
+                  <div className="settings-policy-group">
+                    <div className="settings-inline-heading">
+                      <strong>每个审查任务的模型预算</strong>
+                      <small>模型请求发送前按最坏情况预留，响应后再按可确认的实际用量结算。</small>
+                    </div>
+                    <div className="settings-form-grid settings-policy-grid">
+                      <NumberField name="policy-http-calls" label="HTTP 请求次数" value={policyDraft.maxModelHttpCalls} min="1" max="10000" onChange={(value) => updatePolicyDraft("maxModelHttpCalls", value)} />
+                      <NumberField name="policy-input-tokens" label="输入 Token" value={policyDraft.maxModelInputTokens} min="1000" max="1000000000" onChange={(value) => updatePolicyDraft("maxModelInputTokens", value)} />
+                      <NumberField name="policy-output-tokens" label="输出 Token" value={policyDraft.maxModelOutputTokens} min="256" max="100000000" onChange={(value) => updatePolicyDraft("maxModelOutputTokens", value)} />
+                      <NumberField name="policy-duration" label="总耗时" value={policyDraft.maxModelDurationSeconds} min="30" max="86400" suffix="秒" onChange={(value) => updatePolicyDraft("maxModelDurationSeconds", value)} />
+                      <NumberField name="policy-cost-usd" label="预估费用上限" value={policyDraft.maxModelCostUsd} min="0.000001" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updatePolicyDraft("maxModelCostUsd", value)} />
+                    </div>
+                    <div className="settings-info-band">
+                      <strong>{policyDraft.maxModelCostUsd ? "费用硬上限已启用" : "费用硬上限未启用"}</strong>
+                      <span>{policyDraft.maxModelCostUsd ? "启用后，当前模型必须填写完整价格，否则任务会在调用前暂停。" : "留空时仍会强制限制请求次数、Token 和总耗时。"}</span>
+                    </div>
+                  </div>
+                </fieldset>
+                <div className="settings-action-bar settings-policy-action">
+                  <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || !policyDirty}>
+                    {busyAction === "save-policy" ? "保存中..." : "保存审查策略"}
+                  </button>
+                  {policyMessage && <div className={`settings-inline-feedback is-${policyMessageKind}`} role="status">{policyMessage}</div>}
+                </div>
+              </form>
+              </section>
+            )}
+
             <details className="settings-audit-section">
               <summary><span><strong>配置变更记录</strong><small>最近 {audits.length} 条，不包含密钥内容</small></span><span>展开查看</span></summary>
               <div className="settings-audit-table-wrap">
@@ -838,301 +760,6 @@ function NumberField({ name, label, value, min, max, step = "1", suffix, require
         {suffix && <i>{suffix}</i>}
       </span>
     </label>
-  );
-}
-
-interface AgentDraft {
-  provider: AiAgentSettings["provider"];
-  model: string;
-  apiProtocol: AiAgentSettings["api_protocol"];
-  apiBaseUrl: string;
-  apiKey: string;
-  clearApiKey: boolean;
-  reasoningEffort: AiAgentSettings["reasoning_effort"];
-  contextWindowTokens: string;
-  maxOutputTokens: string;
-  maxBatchInputTokens: string;
-  connectTimeoutSeconds: string;
-  readTimeoutSeconds: string;
-  writeTimeoutSeconds: string;
-  poolTimeoutSeconds: string;
-  maxRetries: string;
-}
-
-const agentLabels: Record<ReviewAgent, { title: string; description: string }> = {
-  security: { title: "安全审查", description: "关注权限、注入、敏感数据和可靠性风险。" },
-  convention: { title: "规范审查", description: "检查仓库约定、编码风格和接口一致性。" },
-  logic: { title: "逻辑审查", description: "检查业务逻辑、边界条件和回归风险。" },
-  summary: { title: "汇总审查", description: "合并前三路结果并生成最终审查报告。" },
-};
-
-const agentOrder: ReviewAgent[] = ["security", "convention", "logic", "summary"];
-
-function agentDraft(settings: AiAgentSettings): AgentDraft {
-  return {
-    provider: settings.provider,
-    model: settings.model,
-    apiProtocol: settings.api_protocol,
-    apiBaseUrl: settings.api_base_url ?? "",
-    apiKey: "",
-    clearApiKey: false,
-    reasoningEffort: settings.reasoning_effort,
-    contextWindowTokens: String(settings.context_window_tokens),
-    maxOutputTokens: String(settings.max_output_tokens),
-    maxBatchInputTokens: String(settings.max_batch_input_tokens),
-    connectTimeoutSeconds: String(settings.connect_timeout_seconds),
-    readTimeoutSeconds: String(settings.read_timeout_seconds),
-    writeTimeoutSeconds: String(settings.write_timeout_seconds),
-    poolTimeoutSeconds: String(settings.pool_timeout_seconds),
-    maxRetries: String(settings.max_retries),
-  };
-}
-
-function agentDraftDirty(settings: AiAgentSettings, draft: AgentDraft): boolean {
-  const saved = agentDraft(settings);
-  return (
-    draft.provider !== saved.provider
-    || draft.model !== saved.model
-    || draft.apiProtocol !== saved.apiProtocol
-    || draft.apiBaseUrl !== saved.apiBaseUrl
-    || draft.apiKey.trim() !== ""
-    || draft.clearApiKey
-    || draft.reasoningEffort !== saved.reasoningEffort
-    || draft.contextWindowTokens !== saved.contextWindowTokens
-    || draft.maxOutputTokens !== saved.maxOutputTokens
-    || draft.maxBatchInputTokens !== saved.maxBatchInputTokens
-    || draft.connectTimeoutSeconds !== saved.connectTimeoutSeconds
-    || draft.readTimeoutSeconds !== saved.readTimeoutSeconds
-    || draft.writeTimeoutSeconds !== saved.writeTimeoutSeconds
-    || draft.poolTimeoutSeconds !== saved.poolTimeoutSeconds
-    || draft.maxRetries !== saved.maxRetries
-  );
-}
-
-function agentNumber(value: string, label: string, integer = false): number {
-  if (!value.trim()) throw new Error("请填写" + label);
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || (integer && !Number.isInteger(parsed))) {
-    throw new Error(label + "必须是有效数字");
-  }
-  return parsed;
-}
-
-function AgentSettingsPanel({
-  refreshRequest,
-  onSignedOut,
-}: {
-  refreshRequest: number;
-  onSignedOut: (message?: string) => void;
-}) {
-  const [settings, setSettings] = useState<AiAgentSettingsResponse | null>(null);
-  const [drafts, setDrafts] = useState<Partial<Record<ReviewAgent, AgentDraft>>>({});
-  const [busy, setBusy] = useState("");
-  const [message, setMessage] = useState("");
-  const [messageKind, setMessageKind] = useState<"success" | "error">("success");
-  const [messageAgent, setMessageAgent] = useState<ReviewAgent | null>(null);
-
-  const apply = useCallback((next: AiAgentSettingsResponse) => {
-    setSettings(next);
-    setDrafts(
-      Object.fromEntries(
-        next.agents.map((item) => [item.agent, agentDraft(item)]),
-      ) as Record<ReviewAgent, AgentDraft>,
-    );
-  }, []);
-
-  const refresh = useCallback(async () => {
-    try {
-      apply(await api.agentSettings());
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        onSignedOut("登录状态已失效，请重新登录");
-        return;
-      }
-      setMessageKind("error");
-      setMessageAgent(null);
-      setMessage(errorMessage(error));
-    }
-  }, [apply, onSignedOut]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh, refreshRequest]);
-
-  useEffect(() => {
-    if (!message || messageKind !== "success") return undefined;
-    const timer = window.setTimeout(() => setMessage(""), 4000);
-    return () => window.clearTimeout(timer);
-  }, [message, messageKind]);
-
-  function updateDraft(agent: ReviewAgent, field: keyof AgentDraft, value: string | boolean) {
-    setDrafts((current) => ({
-      ...current,
-      [agent]: { ...current[agent]!, [field]: value },
-    }));
-  }
-
-  async function save(agent: ReviewAgent) {
-    const item = settings?.agents.find((candidate) => candidate.agent === agent);
-    const draft = drafts[agent];
-    if (!settings || !item || !draft) return;
-    const revision = settings.revision;
-    setBusy("save-" + agent);
-    setMessage("");
-    setMessageAgent(agent);
-    try {
-      const response = await api.updateAgent(agent, {
-        expected_revision: revision,
-        provider: draft.provider,
-        model: draft.model.trim(),
-        api_protocol: draft.apiProtocol,
-        api_base_url: draft.apiBaseUrl.trim() || null,
-        api_key: draft.apiKey.trim() || null,
-        clear_api_key: draft.clearApiKey,
-        reasoning_effort: draft.reasoningEffort,
-        context_window_tokens: agentNumber(draft.contextWindowTokens, "模型总容量", true),
-        max_output_tokens: agentNumber(draft.maxOutputTokens, "回答上限", true),
-        max_batch_input_tokens: agentNumber(draft.maxBatchInputTokens, "每批代码量", true),
-        connect_timeout_seconds: agentNumber(draft.connectTimeoutSeconds, "连接超时"),
-        read_timeout_seconds: agentNumber(draft.readTimeoutSeconds, "回答超时"),
-        write_timeout_seconds: agentNumber(draft.writeTimeoutSeconds, "发送超时"),
-        pool_timeout_seconds: agentNumber(draft.poolTimeoutSeconds, "连接排队超时"),
-        max_retries: agentNumber(draft.maxRetries, "重试次数", true),
-      });
-      apply(response);
-      setMessageKind("success");
-      setMessage(agentLabels[agent].title + "配置已保存");
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        onSignedOut("登录状态已失效，请重新登录");
-        return;
-      }
-      setMessageKind("error");
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function test(agent: ReviewAgent) {
-    if (!settings) return;
-    setBusy("test-" + agent);
-    setMessage("");
-    setMessageAgent(agent);
-    try {
-      apply(await api.testAgent(agent, settings.revision));
-      setMessageKind("success");
-      setMessage(agentLabels[agent].title + "连接测试通过");
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        onSignedOut("登录状态已失效，请重新登录");
-        return;
-      }
-      setMessageKind("error");
-      setMessage(errorMessage(error));
-      await refresh();
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function setEnabled(agent: ReviewAgent, enabled: boolean) {
-    if (!settings) return;
-    setBusy("enabled-" + agent);
-    setMessage("");
-    setMessageAgent(agent);
-    try {
-      apply(await api.setAgentEnabled(agent, enabled, settings.revision));
-      setMessageKind("success");
-      setMessage(agentLabels[agent].title + (enabled ? "已启用" : "已停用"));
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        onSignedOut("登录状态已失效，请重新登录");
-        return;
-      }
-      setMessageKind("error");
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  if (!settings) {
-    return (
-      <section className="agent-settings-section">
-        <div className="settings-section-heading"><div><span className="settings-eyebrow">固定审查 DAG</span><h2>独立 Agent 配置</h2></div></div>
-        {message && <div className={"settings-message is-" + messageKind}>{message}</div>}
-        {!message && <div className="settings-loading">正在读取 Agent 配置...</div>}
-      </section>
-    );
-  }
-
-  return (
-    <section className="agent-settings-section">
-      <div className="settings-section-heading">
-        <div><span className="settings-eyebrow">固定审查 DAG</span><h2>独立 Agent 配置</h2><p>三路审查并行执行，汇总 Agent 单独使用自己的模型和密钥。</p></div>
-        <span className="settings-summary-value">配置版本 r{settings.revision}</span>
-      </div>
-      {message && messageAgent === null && <div className={"settings-message is-" + messageKind}>{message}</div>}
-      <div className="agent-settings-grid">
-        {agentOrder.map((agent) => {
-          const item = settings.agents.find((candidate) => candidate.agent === agent);
-          const draft = drafts[agent];
-          if (!item || !draft) return null;
-          const dirty = agentDraftDirty(item, draft);
-          const protocolOptions = draft.provider === "anthropic"
-            ? [["messages", "Anthropic Messages"]] as Array<[string, string]>
-            : [["chat_completions", "通用兼容 / Chat Completions"], ["responses", "OpenAI Responses"]] as Array<[string, string]>;
-          return (
-            <article className="agent-settings-card" key={agent}>
-              <div className="agent-settings-card-heading">
-                <div><strong>{agentLabels[agent].title}</strong><small>{agentLabels[agent].description}</small></div>
-                <div className="agent-settings-card-badges">
-                  {dirty && <span className="settings-unsaved-badge">未保存</span>}
-                  <span className={"settings-test-badge is-" + item.test_status}><span className="settings-status-dot" />{testStatusLabels[item.test_status]}</span>
-                </div>
-              </div>
-              <div className="agent-settings-status">
-                <span>{item.api_key_configured ? "密钥 " + item.api_key_mask : "未保存密钥"}</span>
-                <span>{item.enabled ? "运行已启用" : "已停用"}</span>
-              </div>
-              <div className="agent-settings-fields">
-                <label><span>提供商</span><select value={draft.provider} onChange={(event) => {
-                  const provider = event.target.value as AiAgentSettings["provider"];
-                  updateDraft(agent, "provider", provider);
-                  updateDraft(agent, "apiProtocol", provider === "anthropic" ? "messages" : "chat_completions");
-                }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic 兼容</option></select></label>
-                <label><span>模型 ID</span><input value={draft.model} maxLength={200} onChange={(event) => updateDraft(agent, "model", event.target.value)} placeholder="例如 gpt-4.1-mini" /></label>
-                <label><span>Base URL（可选）</span><input value={draft.apiBaseUrl} maxLength={500} onChange={(event) => updateDraft(agent, "apiBaseUrl", event.target.value)} placeholder="留空使用官方地址" /></label>
-                <label><span>中转协议</span><select value={draft.apiProtocol} onChange={(event) => updateDraft(agent, "apiProtocol", event.target.value)}>{protocolOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                <label className="agent-settings-key"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(event) => updateDraft(agent, "apiKey", event.target.value)} placeholder={item.api_key_configured ? item.api_key_mask ?? "已保存密钥" : "粘贴 API Key"} autoComplete="new-password" disabled={draft.clearApiKey} /><small>留空保留原密钥；只显示掩码。</small></label>
-                <label className="agent-settings-check"><input type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft(agent, "clearApiKey", event.target.checked)} disabled={!item.api_key_configured} /><span>保存时删除密钥</span></label>
-                <label><span>总上下文窗口</span><select value={draft.contextWindowTokens} onChange={(event) => updateDraft(agent, "contextWindowTokens", event.target.value)}>{contextWindowOptions(draft.contextWindowTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>模型总容量，与每批输入分别设置。</small></label>
-                <label><span>每批输入上限</span><select value={draft.maxBatchInputTokens} onChange={(event) => updateDraft(agent, "maxBatchInputTokens", event.target.value)}>{batchInputOptions(draft.contextWindowTokens, draft.maxBatchInputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>推荐 64K，过大提交会自动分批。</small></label>
-                <label><span>回答上限</span><select value={draft.maxOutputTokens} onChange={(event) => updateDraft(agent, "maxOutputTokens", event.target.value)}>{outputTokenOptions(draft.contextWindowTokens, draft.maxOutputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                <label><span>推理档位</span><select value={draft.reasoningEffort} onChange={(event) => updateDraft(agent, "reasoningEffort", event.target.value)}><option value="none">自动</option><option value="low">轻量</option><option value="medium">标准</option><option value="high">深入</option><option value="max">极致</option></select></label>
-                <details className="agent-settings-advanced">
-                  <summary>超时与重试</summary>
-                  <div>
-                    <label><span>连接超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.connectTimeoutSeconds} onChange={(event) => updateDraft(agent, "connectTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>回答超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.readTimeoutSeconds} onChange={(event) => updateDraft(agent, "readTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>发送超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.writeTimeoutSeconds} onChange={(event) => updateDraft(agent, "writeTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>连接排队超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.poolTimeoutSeconds} onChange={(event) => updateDraft(agent, "poolTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>最多重试次数</span><input type="number" min={0} max={10} step={1} value={draft.maxRetries} onChange={(event) => updateDraft(agent, "maxRetries", event.target.value)} /></label>
-                  </div>
-                </details>
-              </div>
-              <div className="agent-settings-actions">
-                <button className="settings-primary-btn" type="button" onClick={() => void save(agent)} disabled={Boolean(busy) || !dirty}>{busy === "save-" + agent ? "保存中..." : "保存配置"}</button>
-                <button className="settings-secondary-btn" type="button" onClick={() => void test(agent)} disabled={Boolean(busy) || dirty || !item.configured || !item.api_key_configured} title={dirty ? "请先保存当前修改" : "测试已保存配置"}>{busy === "test-" + agent ? "测试中..." : "测试连接"}</button>
-                <button className={"settings-secondary-btn " + (item.enabled ? "" : "is-activate")} type="button" onClick={() => void setEnabled(agent, !item.enabled)} disabled={Boolean(busy) || (!item.enabled && (dirty || !item.configured || item.test_status !== "succeeded"))} title={!item.enabled && dirty ? "请先保存并重新测试当前修改" : undefined}>{busy === "enabled-" + agent ? "处理中..." : item.enabled ? "停用 Agent" : "启用 Agent"}</button>
-                {message && messageAgent === agent && <div className={`settings-inline-feedback is-${messageKind}`} role="status">{message}</div>}
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 

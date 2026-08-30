@@ -4,6 +4,7 @@ from sqlalchemy import URL
 
 from persistence.database import (
     DatabaseConfigurationError,
+    DatabaseEngineSettings,
     database_url_from_environment,
 )
 
@@ -74,3 +75,53 @@ def test_database_password_can_be_read_from_a_secret_file(tmp_path: Path) -> Non
     )
 
     assert url.password == "file-only-password"
+
+
+def test_postgres_engine_settings_apply_bounded_pool_and_sql_timeouts() -> None:
+    settings = DatabaseEngineSettings.from_environment(
+        {
+            "OPENREVIEWER_DB_POOL_SIZE": "7",
+            "OPENREVIEWER_DB_MAX_OVERFLOW": "3",
+            "OPENREVIEWER_DB_POOL_TIMEOUT_SECONDS": "12",
+            "OPENREVIEWER_DB_POOL_RECYCLE_SECONDS": "900",
+            "OPENREVIEWER_DB_STATEMENT_TIMEOUT_MS": "45000",
+            "OPENREVIEWER_DB_LOCK_TIMEOUT_MS": "4000",
+            "OPENREVIEWER_DB_IDLE_TRANSACTION_TIMEOUT_MS": "55000",
+            "OPENREVIEWER_DB_APPLICATION_NAME": "openreviewer-test",
+        }
+    )
+
+    options = settings.engine_options(
+        "postgresql+psycopg://user:password@postgres/openreviewer"
+    )
+
+    assert options["pool_size"] == 7
+    assert options["max_overflow"] == 3
+    assert options["pool_timeout"] == 12
+    assert options["pool_recycle"] == 900
+    assert options["pool_use_lifo"] is True
+    assert options["pool_reset_on_return"] == "rollback"
+    assert options["connect_args"] == {
+        "application_name": "openreviewer-test",
+        "options": (
+            "-c statement_timeout=45000 -c lock_timeout=4000 "
+            "-c idle_in_transaction_session_timeout=55000"
+        ),
+    }
+
+
+def test_sqlite_engine_does_not_receive_postgres_pool_or_session_options() -> None:
+    options = DatabaseEngineSettings().engine_options("sqlite:///:memory:")
+
+    assert options == {"pool_pre_ping": True}
+
+
+def test_database_engine_settings_reject_unbounded_values() -> None:
+    try:
+        DatabaseEngineSettings.from_environment(
+            {"OPENREVIEWER_DB_STATEMENT_TIMEOUT_MS": "0"}
+        )
+    except DatabaseConfigurationError as exc:
+        assert "OPENREVIEWER_DB_STATEMENT_TIMEOUT_MS" in str(exc)
+    else:
+        raise AssertionError("unbounded database timeout should fail")

@@ -232,8 +232,22 @@ class SqlAlchemyGitHubWebhookRepository:
         dialect = session.get_bind().dialect.name
         if dialect == "postgresql":
             statement = postgresql_insert(GitHubInstallationRecord).values(**values)
+            session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[GitHubInstallationRecord.id],
+                    set_={"last_seen_at": now},
+                )
+            )
+            return
         elif dialect == "sqlite":
-            statement = sqlite_insert(GitHubInstallationRecord).values(**values)
+            sqlite_statement = sqlite_insert(GitHubInstallationRecord).values(**values)
+            session.execute(
+                sqlite_statement.on_conflict_do_update(
+                    index_elements=[GitHubInstallationRecord.id],
+                    set_={"last_seen_at": now},
+                )
+            )
+            return
         else:
             existing = session.get(GitHubInstallationRecord, installation_id)
             if existing is None:
@@ -241,12 +255,6 @@ class SqlAlchemyGitHubWebhookRepository:
             else:
                 existing.last_seen_at = now
             return
-        session.execute(
-            statement.on_conflict_do_update(
-                index_elements=[GitHubInstallationRecord.id],
-                set_={"last_seen_at": now},
-            )
-        )
 
     @staticmethod
     def _upsert_version(
@@ -269,8 +277,22 @@ class SqlAlchemyGitHubWebhookRepository:
         dialect = session.get_bind().dialect.name
         if dialect == "postgresql":
             statement = postgresql_insert(PullRequestVersionRecord).values(**values)
+            session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[PullRequestVersionRecord.review_version_key],
+                    set_={"last_seen_at": now},
+                )
+            )
+            return
         elif dialect == "sqlite":
-            statement = sqlite_insert(PullRequestVersionRecord).values(**values)
+            sqlite_statement = sqlite_insert(PullRequestVersionRecord).values(**values)
+            session.execute(
+                sqlite_statement.on_conflict_do_update(
+                    index_elements=[PullRequestVersionRecord.review_version_key],
+                    set_={"last_seen_at": now},
+                )
+            )
+            return
         else:
             existing = session.scalar(
                 select(PullRequestVersionRecord).where(
@@ -283,12 +305,6 @@ class SqlAlchemyGitHubWebhookRepository:
             else:
                 existing.last_seen_at = now
             return
-        session.execute(
-            statement.on_conflict_do_update(
-                index_elements=[PullRequestVersionRecord.review_version_key],
-                set_={"last_seen_at": now},
-            )
-        )
 
     @staticmethod
     def _persistence_error() -> WebhookPersistenceError:

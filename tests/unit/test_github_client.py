@@ -6,7 +6,6 @@ import pytest
 from domain.security import ErrorCode, SafeApplicationError
 from services.github import GitHubApiClient, GitHubClientSettings
 
-
 FAKE_TOKEN = "ghs_FAKEINSTALLATIONTOKEN123456789"
 
 
@@ -43,6 +42,45 @@ def test_github_client_returns_bounded_payload_and_audit() -> None:
     assert result.audit.github_request_id == "request-001"
     assert result.audit.duration_ms == 25
     assert result.audit.rate_limit_remaining == 4999
+
+
+@pytest.mark.parametrize(
+    ("link_header", "expected"),
+    [
+        ('<https://api.github.test/items?page=2>; rel="next"', True),
+        (
+            '<https://api.github.test/items?page=1>; rel="prev", '
+            '<https://api.github.test/items?page=3>; rel="last"',
+            False,
+        ),
+        (None, None),
+        ("<https://api.github.test/items?page=2>", None),
+    ],
+)
+def test_github_client_records_only_pagination_relation(
+    link_header: str | None,
+    expected: bool | None,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        headers = {} if link_header is None else {"Link": link_header}
+        return httpx.Response(200, json=[], headers=headers)
+
+    client = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    result = client.request_json(
+        "GET",
+        "/items",
+        bearer_token=FAKE_TOKEN,
+    )
+
+    assert result.audit.has_next_page is expected
+    assert "api.github.test" not in str(result.audit)
 
 
 def test_github_client_classifies_rate_limit_without_leaking_token() -> None:

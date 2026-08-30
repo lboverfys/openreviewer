@@ -15,7 +15,6 @@ from services.github import GitHubApiClient, GitHubClientSettings
 from services.github_rules import GitHubRepositoryRuleLoader, GitHubRuleSettings
 from services.task_queue import ReviewTarget
 
-
 INSTALLATION_ID = 156153422
 FAKE_TOKEN = "ghs_FAKEINSTALLATIONTOKEN123456789"
 HEAD_SHA = "c" * 40

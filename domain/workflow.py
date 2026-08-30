@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from domain.enums import ExecutionStatus
 
 
-class WorkflowAction(str, Enum):
+class WorkflowAction(StrEnum):
     START = "start"
     PAUSE = "pause"
     RESUME = "resume"

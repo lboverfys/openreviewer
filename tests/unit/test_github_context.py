@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -9,7 +10,6 @@ from services.github import GitHubApiClient, GitHubClientSettings
 from services.github_context import GitHubContextSettings, GitHubReviewContextLoader
 from services.review_planning import DeterministicReviewPlanner
 from services.task_queue import ReviewTarget
-
 
 APP_ID = 4699977
 INSTALLATION_ID = 156153422
@@ -181,6 +181,11 @@ Binary files /dev/null and b/assets/logo.png differ
     assert requested_paths.count("/repos/lboverfys/NiuMa/pulls/48/files") == 1
 
 
+def test_ci_aggregation_distinguishes_unconfigured_from_incomplete() -> None:
+    assert GitHubReviewContextLoader._aggregate_ci((), True) is CiState.NOT_CONFIGURED
+    assert GitHubReviewContextLoader._aggregate_ci((), False) is CiState.UNKNOWN
+
+
 def test_loader_stops_after_pr_metadata_when_head_sha_is_stale() -> None:
     """验证旧任务不会继续下载文件或 CI，从源头阻止旧结果覆盖新提交。"""
 
@@ -337,6 +342,186 @@ def test_diff_larger_than_legacy_limit_reaches_review_planner() -> None:
     )
     assert len(plan.units) == 1
     assert plan.units[0].patch == context.files[0].patch
+
+
+def test_loader_rebuilds_missing_patches_with_two_batched_blob_queries() -> None:
+    """完整 diff 不可用时，文本和二进制文件仍通过固定批量请求准确恢复。"""
+
+    graphql_bodies: list[dict[str, object]] = []
+    base_text = "value = 1\n"
+    head_text = "value = 2\n"
+
+    def blob(
+        oid: str,
+        text: str | None,
+        *,
+        binary: bool = False,
+        include_text: bool = True,
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "__typename": "Blob",
+            "oid": oid,
+            "byteSize": 4 if binary else len((text or "").encode("utf-8")),
+            "isBinary": binary,
+        }
+        if text is not None and include_text:
+            result["text"] = text
+        return result
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/repos/lboverfys/NiuMa/pulls/48":
+            if request.headers["accept"] == "application/vnd.github.v3.diff":
+                return httpx.Response(406, json={"message": "diff unavailable"})
+            return httpx.Response(200, json=_pull_request_payload())
+        if path == "/repos/lboverfys/NiuMa/pulls/48/files":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "filename": "src/app.py",
+                        "status": "modified",
+                        "sha": "d" * 40,
+                        "additions": 1,
+                        "deletions": 1,
+                        "changes": 2,
+                    },
+                    {
+                        "filename": "assets/logo.png",
+                        "status": "added",
+                        "sha": "e" * 40,
+                        "additions": 0,
+                        "deletions": 0,
+                        "changes": 0,
+                    },
+                ],
+            )
+        if path == "/graphql":
+            body = json.loads(request.content)
+            assert isinstance(body, dict)
+            graphql_bodies.append(body)
+            query = body["query"]
+            assert isinstance(query, str)
+            if "isBinary text" not in query:
+                repository = {
+                    "databaseId": 42,
+                    "nameWithOwner": "lboverfys/NiuMa",
+                    "base0": blob("1" * 40, base_text, include_text=False),
+                    "head0": blob("2" * 40, head_text, include_text=False),
+                    "head1": blob("3" * 40, None, binary=True),
+                }
+            else:
+                repository = {
+                    "databaseId": 42,
+                    "nameWithOwner": "lboverfys/NiuMa",
+                    "base0": blob("1" * 40, base_text),
+                    "head0": blob("2" * 40, head_text),
+                }
+            return httpx.Response(200, json={"data": {"repository": repository}})
+        if path == f"/repos/lboverfys/NiuMa/commits/{HEAD_SHA}/check-runs":
+            return httpx.Response(200, json={"total_count": 0, "check_runs": []})
+        if path == f"/repos/lboverfys/NiuMa/commits/{HEAD_SHA}/statuses":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"未预期的 GitHub 请求：{request.url}")
+
+    api = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    context = GitHubReviewContextLoader(api, StaticTokenProvider()).load(_target())
+
+    assert context.files_complete is True
+    assert context.diff_complete is True
+    assert context.files is not None
+    assert context.files[0].patch_state is PatchState.AVAILABLE
+    assert "-value = 1" in (context.files[0].patch or "")
+    assert "+value = 2" in (context.files[0].patch or "")
+    assert context.files[1].patch_state is PatchState.BINARY
+    assert len(graphql_bodies) == 2
+    metadata_variables = graphql_bodies[0]["variables"]
+    assert isinstance(metadata_variables, dict)
+    assert set(metadata_variables.values()) >= {
+        f"{BASE_SHA}:src/app.py",
+        f"{HEAD_SHA}:src/app.py",
+        f"{HEAD_SHA}:assets/logo.png",
+    }
+
+
+def test_blob_fallback_marks_oversized_content_without_downloading_it() -> None:
+    """Blob 元数据超限时不读取正文，并明确保留不完整状态。"""
+
+    graphql_requests = 0
+    pull_request = {**_pull_request_payload(), "changed_files": 1}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal graphql_requests
+        path = request.url.path
+        if path == "/repos/lboverfys/NiuMa/pulls/48":
+            if request.headers["accept"] == "application/vnd.github.v3.diff":
+                return httpx.Response(422, json={"message": "diff too large"})
+            return httpx.Response(200, json=pull_request)
+        if path == "/repos/lboverfys/NiuMa/pulls/48/files":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "filename": "src/large.py",
+                        "status": "added",
+                        "sha": "d" * 40,
+                        "additions": 1,
+                        "deletions": 0,
+                        "changes": 1,
+                    }
+                ],
+            )
+        if path == "/graphql":
+            graphql_requests += 1
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "databaseId": 42,
+                            "nameWithOwner": "lboverfys/NiuMa",
+                            "head0": {
+                                "__typename": "Blob",
+                                "oid": "4" * 40,
+                                "byteSize": 2048,
+                                "isBinary": False,
+                            },
+                        }
+                    }
+                },
+            )
+        if path == f"/repos/lboverfys/NiuMa/commits/{HEAD_SHA}/check-runs":
+            return httpx.Response(200, json={"total_count": 0, "check_runs": []})
+        if path == f"/repos/lboverfys/NiuMa/commits/{HEAD_SHA}/statuses":
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"未预期的 GitHub 请求：{request.url}")
+
+    api = GitHubApiClient(
+        GitHubClientSettings(api_base_url="https://api.github.test"),
+        client=httpx.Client(
+            base_url="https://api.github.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    context = GitHubReviewContextLoader(
+        api,
+        StaticTokenProvider(),
+        GitHubContextSettings(
+            max_blob_bytes=1024,
+            max_blob_fallback_total_bytes=2048,
+        ),
+    ).load(_target())
+
+    assert context.diff_complete is False
+    assert context.files is not None
+    assert context.files[0].patch_state is PatchState.TOO_LARGE
+    assert graphql_requests == 1
 
 
 def test_loader_enforces_total_time_budget_before_starting_next_request() -> None:

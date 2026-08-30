@@ -20,7 +20,6 @@ from services.review_planning import (
 )
 from services.task_queue import ReviewTarget
 
-
 HEAD_SHA = "c" * 40
 
 
@@ -159,6 +158,35 @@ def test_planner_keeps_all_reviewable_files_and_defers_batching_to_model_stage()
         "c.py": ReviewFileDecision.PLANNED,
     }
     assert plan.total_estimated_input_bytes == 11_000
+
+
+def test_planner_groups_related_layers_and_tests_deterministically() -> None:
+    files = (
+        _file("src/controllers/UserController.py"),
+        _file("src/dto/user_dto.py"),
+        _file("src/services/user.service.py"),
+        _file("tests/test_user_service.py"),
+        _file("src/services/billing_service.py"),
+    )
+
+    planner = DeterministicReviewPlanner()
+    plan = planner.plan(_target(), files, _snapshot())
+    repeated = planner.plan(_target(), tuple(reversed(files)), _snapshot())
+
+    assert plan == repeated
+    groups = {unit.file: unit.group_key for unit in plan.units}
+    user_group = groups["src/controllers/UserController.py"]
+    assert user_group is not None
+    assert groups["src/dto/user_dto.py"] == user_group
+    assert groups["src/services/user.service.py"] == user_group
+    assert groups["tests/test_user_service.py"] == user_group
+    assert groups["src/services/billing_service.py"] != user_group
+    user_positions = [
+        index
+        for index, unit in enumerate(plan.units)
+        if unit.group_key == user_group
+    ]
+    assert user_positions == list(range(min(user_positions), max(user_positions) + 1))
 
 
 def test_planner_changes_identity_for_a_new_head_sha() -> None:

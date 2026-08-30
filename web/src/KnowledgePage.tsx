@@ -82,43 +82,54 @@ export default function KnowledgePage({
     setMessage(errorMessage(reason));
   }, [onSignedOut]);
 
-  const openDocument = useCallback(async (documentId: string, clearFeedback = true) => {
+  const openDocument = useCallback(async (
+    documentId: string,
+    clearFeedback = true,
+    signal?: AbortSignal,
+  ) => {
     setBusy("open");
     try {
-      const next = await api.knowledgeDocument(documentId);
+      const next = await api.knowledgeDocument(documentId, signal);
       setDocument(next);
       setDraft(documentDraft(next));
       setCreating(false);
       if (clearFeedback) setMessage("");
     } catch (reason) {
+      if (signal?.aborted) return;
       handleError(reason);
     } finally {
-      setBusy("");
+      if (!signal?.aborted) setBusy("");
     }
   }, [handleError]);
 
-  const refreshLibrary = useCallback(async (preferredId?: string) => {
+  const refreshLibrary = useCallback(async (
+    preferredId?: string,
+    signal?: AbortSignal,
+  ) => {
     setBusy((current) => current || "refresh");
     try {
-      const next = await api.knowledgeDocuments(includeArchived);
+      const next = await api.knowledgeDocuments(includeArchived, signal);
       setLibrary(next);
       const target = preferredId
         ? next.items.find((item) => item.id === preferredId)
         : next.items.find((item) => item.id === document?.id) ?? next.items[0];
       if (target) {
-        await openDocument(target.id, false);
+        await openDocument(target.id, false, signal);
       } else {
         setDocument(null);
       }
     } catch (reason) {
+      if (signal?.aborted) return;
       handleError(reason);
     } finally {
-      setBusy("");
+      if (!signal?.aborted) setBusy("");
     }
   }, [document?.id, handleError, includeArchived, openDocument]);
 
   useEffect(() => {
-    void refreshLibrary();
+    const controller = new AbortController();
+    void refreshLibrary(undefined, controller.signal);
+    return () => controller.abort();
   }, [includeArchived]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -323,7 +334,7 @@ export default function KnowledgePage({
           </section>
 
           <aside className="knowledge-inspector-pane">
-            <section className="knowledge-search-test"><div><span className="knowledge-eyebrow">RETRIEVAL TEST</span><h2>检索测试</h2></div><form onSubmit={(event) => { event.preventDefault(); void testSearch(); }}><input id="knowledge-search-query" name="knowledge-search-query" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="输入代码或规则关键词" /><button disabled={!searchQuery.trim() || busy === "search"}>{busy === "search" ? "检索中" : "检索"}</button></form><div className="knowledge-citations">{citations.map((item, index) => <article key={`${item.source}-${item.heading}-${index}`}><div><strong>{item.heading}</strong><b>{Math.min(100, Math.round(item.score * 100))}%</b></div><small>{item.source} · {item.version}</small><p>{item.excerpt}</p></article>)}{citations.length === 0 && <p className="knowledge-no-citation">输入关键词可验证当前已启用文档的召回结果。</p>}</div></section>
+            <section className="knowledge-search-test"><div><span className="knowledge-eyebrow">RETRIEVAL TEST</span><h2>检索测试</h2></div><form onSubmit={(event) => { event.preventDefault(); void testSearch(); }}><input id="knowledge-search-query" name="knowledge-search-query" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="输入代码或规则关键词" /><button type="submit" disabled={!searchQuery.trim() || busy === "search"}>{busy === "search" ? "检索中" : "检索"}</button></form><div className="knowledge-citations">{citations.map((item, index) => <article key={`${item.source}-${item.heading}-${index}`}><div><strong>{item.heading}</strong><b>{Math.min(100, Math.round(item.score * 100))}%</b></div><small>{item.source} · {item.version}</small><p>{item.excerpt}</p></article>)}{citations.length === 0 && <p className="knowledge-no-citation">输入关键词可验证当前已启用文档的召回结果。</p>}</div></section>
             {document && <section className="knowledge-history"><div><span className="knowledge-eyebrow">VERSION HISTORY</span><h2>版本记录</h2></div><dl><div><dt>当前版本</dt><dd>v{document.current_version}</dd></div><div><dt>内容指纹</dt><dd><code>{document.content_sha256.slice(0, 12)}</code></dd></div><div><dt>更新人</dt><dd>{document.updated_by}</dd></div><div><dt>更新时间</dt><dd>{formatDate(document.updated_at)}</dd></div></dl><div className="knowledge-version-list">{document.versions.map((version) => <div key={version.version}><span><strong>v{version.version}</strong><small>{formatDate(version.created_at)} · {version.created_by}</small></span>{version.version === document.current_version ? <b>当前</b> : <button type="button" disabled={Boolean(busy) || document.archived} onClick={() => void restoreVersion(version.version)}>恢复</button>}</div>)}</div></section>}
           </aside>
         </div>

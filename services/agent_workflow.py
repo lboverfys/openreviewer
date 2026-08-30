@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
+import json
+import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-import json
-import time
 
 from domain.enums import ModelCallStatus, ReviewAgent
 from domain.model_review import (
@@ -23,7 +23,6 @@ from domain.model_review import (
 )
 from domain.security import SafeError
 from services.model_review import ModelReviewer, ModelServiceSettings
-
 
 PARALLEL_AGENTS: tuple[ReviewAgent, ...] = (
     ReviewAgent.SECURITY,

@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from domain.enums import (
     CoverageStatus,
     ExecutionStatus,
+    FindingAdjudicationStatus,
     FindingCategory,
     LocationSide,
     PullRequestAction,
@@ -19,7 +20,6 @@ from domain.models import (
     ReviewRunState,
     ReviewVersion,
 )
-
 
 HEAD_SHA = "A" * 40
 BASE_SHA = "B" * 40
@@ -71,6 +71,7 @@ def make_finding(**overrides: object) -> ReviewFinding:
         "required_test": "增加跨用户访问被拒绝的测试。",
         "confidence": 0.93,
         "verification_status": VerificationStatus.VERIFIED,
+        "adjudication_status": FindingAdjudicationStatus.VALID,
         "rule_reference": "AUTH-001",
     }
     values.update(overrides)
@@ -147,6 +148,7 @@ def test_finding_serializes_stable_lowercase_values() -> None:
     assert payload["severity"] == "high"
     assert payload["category"] == "authorization"
     assert payload["verification_status"] == "verified"
+    assert payload["adjudication_status"] == "valid"
     assert payload["location"]["side"] == "right"
     assert finding.can_publish_inline(HEAD_SHA) is True
 
@@ -178,6 +180,12 @@ def test_unverified_or_non_diff_finding_cannot_publish_inline() -> None:
         is False
     )
     assert make_finding(location=None).can_publish_inline(HEAD_SHA) is False
+    assert (
+        make_finding(
+            adjudication_status=FindingAdjudicationStatus.FALSE_POSITIVE
+        ).can_publish_inline(HEAD_SHA)
+        is False
+    )
 
 
 def test_stale_low_confidence_or_test_gap_finding_cannot_publish_inline() -> None:

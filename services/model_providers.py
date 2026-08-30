@@ -1,11 +1,11 @@
 """OpenAI 与 Anthropic 官方 API 的严格结构化输出适配器。"""
 
-from copy import deepcopy
-from dataclasses import dataclass
 import json
 import re
 import time
-from typing import Callable
+from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import dataclass
 
 import httpx
 from pydantic import ValidationError
@@ -19,13 +19,21 @@ from domain.model_review import (
     model_review_output_schema,
 )
 from domain.security import ErrorCode, SafeApplicationError, SafeError
+from services.model_budget import (
+    ModelBudgetRequest,
+    ModelBudgetReservation,
+    current_model_budget_accountant,
+)
 from services.model_review import (
     ModelReviewer,
     ModelServiceSettings,
     ReviewPrompt,
     StructuredReviewPromptBuilder,
+    validate_model_api_endpoint,
 )
-
+from services.pinned_http import PublicDnsPinnedHTTPTransport
+from services.telemetry import GLOBAL_TELEMETRY, TelemetryRegistry
+from services.token_estimation import estimate_model_request_tokens
 
 _COMPATIBILITY_ERROR_BODY_LIMIT = 16 * 1024
 _UNSUPPORTED_MARKERS = (
@@ -61,6 +69,7 @@ class ModelHttpAudit:
     response_status: int | None
     provider_request_id: str | None
     duration_ms: int
+    budget_reservation: ModelBudgetReservation | None = None
 
 
 class _StructuredModelReviewer(ModelReviewer):
@@ -77,6 +86,7 @@ class _StructuredModelReviewer(ModelReviewer):
         client: httpx.Client | None = None,
         monotonic: Callable[[], float] | None = None,
         prompt_builder: StructuredReviewPromptBuilder | None = None,
+        telemetry: TelemetryRegistry | None = None,
     ) -> None:
         if settings.provider is not self.provider:
             raise ValueError("model settings provider does not match the adapter")
@@ -88,9 +98,12 @@ class _StructuredModelReviewer(ModelReviewer):
             base_url=settings.resolved_api_base_url,
             timeout=settings.timeout,
             follow_redirects=False,
+            trust_env=False,
+            transport=PublicDnsPinnedHTTPTransport(),
         )
         self._monotonic = monotonic or time.monotonic
         self._prompt_builder = prompt_builder or StructuredReviewPromptBuilder()
+        self._telemetry = telemetry or GLOBAL_TELEMETRY
 
     def close(self) -> None:
         if self._owns_client:
@@ -155,6 +168,12 @@ class _StructuredModelReviewer(ModelReviewer):
             try:
                 output, usage, response_id = self._parse_success(payload)
             except SafeApplicationError as exc:
+                first_usage = _known_failed_usage(exc.error.details)
+                self._settle_budget_audit(
+                    audit,
+                    first_usage,
+                    uncertain=first_usage is None,
+                )
                 if exc.error.details.get("contract_validation") is not True:
                     raise
                 first_error = exc.error
@@ -167,9 +186,21 @@ class _StructuredModelReviewer(ModelReviewer):
                         headers=self._request_headers(),
                         body=repair_body,
                     )
-                    output, repair_usage, response_id = self._parse_success(
-                        repair_payload
-                    )
+                    try:
+                        output, repair_usage, response_id = self._parse_success(
+                            repair_payload
+                        )
+                    except SafeApplicationError as repair_parse_exc:
+                        repair_failed_usage = _known_failed_usage(
+                            repair_parse_exc.error.details
+                        )
+                        self._settle_budget_audit(
+                            repair_audit,
+                            repair_failed_usage,
+                            uncertain=repair_failed_usage is None,
+                        )
+                        raise
+                    self._settle_budget_audit(repair_audit, repair_usage)
                 except SafeApplicationError as repair_exc:
                     raise self._format_repair_failure(
                         first_error,
@@ -186,7 +217,7 @@ class _StructuredModelReviewer(ModelReviewer):
                         ErrorCode.MODEL_INVALID_RESPONSE,
                         "模型格式纠正缺少 HTTP 审计信息",
                         retryable=False,
-                    )
+                    ) from None
                 audit = ModelHttpAudit(
                     response_status=repair_audit.response_status,
                     provider_request_id=_join_request_ids(
@@ -195,9 +226,12 @@ class _StructuredModelReviewer(ModelReviewer):
                     ),
                     duration_ms=first_audit.duration_ms + repair_audit.duration_ms,
                 )
+            else:
+                self._settle_budget_audit(audit, usage)
         except SafeApplicationError:
             raise
         except (TypeError, ValueError, ValidationError) as exc:
+            self._settle_budget_audit(audit, None, uncertain=True)
             raise self._error(
                 ErrorCode.MODEL_INVALID_RESPONSE,
                 "模型 API 用量或响应身份字段无效",
@@ -449,23 +483,58 @@ class _StructuredModelReviewer(ModelReviewer):
                 details={"request_bytes": len(request_content)},
             )
 
+        if self._owns_client:
+            try:
+                validate_model_api_endpoint(self._settings.resolved_api_base_url)
+            except ValueError as exc:
+                raise self._error(
+                    ErrorCode.MODEL_REQUEST_REJECTED,
+                    "模型 API 地址不安全或无法解析",
+                    retryable=False,
+                ) from exc
+
+        reservation = self._reserve_budget(request_content, body)
         started = self._monotonic()
+        audit: ModelHttpAudit | None = None
+        budget_settled = False
         try:
             with self._client.stream(
                 "POST",
                 path,
                 headers=headers,
                 content=request_content,
-                timeout=self._settings.timeout,
+                timeout=self._budget_timeout(reservation),
             ) as response:
-                audit = self._audit(response, started)
+                audit = self._audit(response, started, reservation)
                 if not 200 <= response.status_code < 300:
+                    self._telemetry.observe_external(
+                        self._telemetry_service,
+                        audit.duration_ms / 1000,
+                        status_code=response.status_code,
+                    )
+                    uncertain = (
+                        response.status_code in {408, 409, 429}
+                        or response.status_code >= 500
+                    )
+                    self._settle_budget_audit(
+                        audit,
+                        None
+                        if uncertain
+                        else ModelTokenUsage(input_tokens=0, output_tokens=0),
+                        uncertain=uncertain,
+                    )
+                    budget_settled = True
                     raise SafeApplicationError(
                         self._classify_response(response, audit)
                     )
                 content = bytearray()
                 for chunk in response.iter_bytes():
                     if len(content) + len(chunk) > self._settings.max_response_bytes:
+                        self._telemetry.observe_external(
+                            self._telemetry_service,
+                            audit.duration_ms / 1000,
+                            outcome="invalid_response",
+                        )
                         raise self._error(
                             ErrorCode.MODEL_RESPONSE_TOO_LARGE,
                             "模型 API 响应超过允许大小",
@@ -474,24 +543,60 @@ class _StructuredModelReviewer(ModelReviewer):
                         )
                     content.extend(chunk)
         except SafeApplicationError:
+            if audit is not None and not budget_settled:
+                self._settle_budget_audit(audit, None, uncertain=True)
             raise
         except httpx.TimeoutException as exc:
+            audit = ModelHttpAudit(
+                response_status=None,
+                provider_request_id=None,
+                duration_ms=max(0, int((self._monotonic() - started) * 1000)),
+                budget_reservation=reservation,
+            )
+            self._settle_budget_audit(audit, None, uncertain=True)
+            self._telemetry.observe_external(
+                self._telemetry_service,
+                audit.duration_ms / 1000,
+                outcome="timeout",
+            )
             raise self._error(
                 ErrorCode.MODEL_TIMEOUT,
                 "模型 API 请求超时",
                 retryable=True,
-                details={"path": path},
+                details={"path": path, **self._audit_details(audit)},
             ) from exc
         except httpx.RequestError as exc:
+            audit = ModelHttpAudit(
+                response_status=None,
+                provider_request_id=None,
+                duration_ms=max(0, int((self._monotonic() - started) * 1000)),
+                budget_reservation=reservation,
+            )
+            self._settle_budget_audit(audit, None, uncertain=True)
+            self._telemetry.observe_external(
+                self._telemetry_service,
+                audit.duration_ms / 1000,
+                outcome="network_error",
+            )
             raise self._error(
                 ErrorCode.MODEL_SERVER_ERROR,
                 "模型 API 暂时无法访问",
                 retryable=True,
-                details={"path": path, "exception_type": type(exc).__name__},
+                details={
+                    "path": path,
+                    "exception_type": type(exc).__name__,
+                    **self._audit_details(audit),
+                },
             ) from exc
         try:
             decoded = json.loads(content)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._settle_budget_audit(audit, None, uncertain=True)
+            self._telemetry.observe_external(
+                self._telemetry_service,
+                audit.duration_ms / 1000,
+                outcome="invalid_response",
+            )
             raise self._error(
                 ErrorCode.MODEL_INVALID_RESPONSE,
                 "模型 API 返回了无法解析的 JSON",
@@ -499,15 +604,37 @@ class _StructuredModelReviewer(ModelReviewer):
                 details=self._audit_details(audit),
             ) from exc
         if not isinstance(decoded, dict):
+            self._settle_budget_audit(audit, None, uncertain=True)
+            self._telemetry.observe_external(
+                self._telemetry_service,
+                audit.duration_ms / 1000,
+                outcome="invalid_response",
+            )
             raise self._error(
                 ErrorCode.MODEL_INVALID_RESPONSE,
                 "模型 API 响应不是 JSON 对象",
                 retryable=False,
                 details=self._audit_details(audit),
             )
+        self._telemetry.observe_external(
+            self._telemetry_service,
+            audit.duration_ms / 1000,
+            status_code=audit.response_status,
+        )
         return decoded, audit
 
-    def _audit(self, response: httpx.Response, started: float) -> ModelHttpAudit:
+    @property
+    def _telemetry_service(self) -> str:
+        if self.provider is ModelProvider.OPENAI:
+            return "model_openai"
+        return "model_anthropic"
+
+    def _audit(
+        self,
+        response: httpx.Response,
+        started: float,
+        reservation: ModelBudgetReservation | None = None,
+    ) -> ModelHttpAudit:
         request_id = (
             response.headers.get("x-request-id")
             or response.headers.get("request-id")
@@ -518,6 +645,99 @@ class _StructuredModelReviewer(ModelReviewer):
             response_status=response.status_code,
             provider_request_id=request_id,
             duration_ms=max(0, int((self._monotonic() - started) * 1000)),
+            budget_reservation=reservation,
+        )
+
+    def _reserve_budget(
+        self,
+        request_content: bytes,
+        body: dict[str, object],
+    ) -> ModelBudgetReservation | None:
+        accountant = current_model_budget_accountant()
+        if accountant is None:
+            return None
+        output_limit = next(
+            (
+                value
+                for name in ("max_output_tokens", "max_completion_tokens", "max_tokens")
+                if isinstance((value := body.get(name)), int)
+                and not isinstance(value, bool)
+                and value >= 0
+            ),
+            self._settings.max_output_tokens,
+        )
+        input_estimate = estimate_model_request_tokens(
+            body,
+            request_content,
+            provider=self.provider,
+            protocol=self.api_protocol,
+            model=self._settings.model,
+        )
+        input_limit = input_estimate.upper_bound_tokens
+        cost_limit = (
+            self._settings.pricing.upper_bound_microusd(input_limit, output_limit)
+            if self._settings.pricing is not None
+            else None
+        )
+        return accountant.reserve(
+            ModelBudgetRequest(
+                provider=self.provider.value,
+                api_protocol=self.api_protocol.value,
+                model=self._settings.model,
+                request_bytes=len(request_content),
+                input_token_upper_bound=input_limit,
+                output_token_upper_bound=output_limit,
+                cost_upper_bound_microusd=cost_limit,
+            )
+        )
+
+    def _budget_timeout(
+        self,
+        reservation: ModelBudgetReservation | None,
+    ) -> httpx.Timeout:
+        if reservation is None:
+            return self._settings.timeout
+        remaining = max(0.001, reservation.remaining_duration_ms / 1000)
+        return httpx.Timeout(
+            connect=min(self._settings.connect_timeout_seconds, remaining),
+            read=min(self._settings.read_timeout_seconds, remaining),
+            write=min(self._settings.write_timeout_seconds, remaining),
+            pool=min(self._settings.pool_timeout_seconds, remaining),
+        )
+
+    def _settle_budget_audit(
+        self,
+        audit: ModelHttpAudit | None,
+        usage: ModelTokenUsage | None,
+        *,
+        uncertain: bool = False,
+    ) -> None:
+        accountant = current_model_budget_accountant()
+        if (
+            accountant is None
+            or audit is None
+            or audit.budget_reservation is None
+        ):
+            return
+        estimated_cost = (
+            self._settings.pricing.estimate_microusd(usage)
+            if usage is not None and self._settings.pricing is not None
+            else None
+        )
+        if (
+            usage is not None
+            and self._settings.pricing is not None
+            and estimated_cost is None
+        ):
+            uncertain = True
+        accountant.settle(
+            audit.budget_reservation,
+            input_tokens=usage.total_input_tokens if usage is not None else None,
+            output_tokens=usage.output_tokens if usage is not None else None,
+            estimated_cost_microusd=estimated_cost,
+            response_status=audit.response_status,
+            duration_ms=audit.duration_ms,
+            uncertain=uncertain,
         )
 
     def _classify_response(
@@ -1024,6 +1244,7 @@ def create_model_reviewer(
     *,
     client: httpx.Client | None = None,
     monotonic: Callable[[], float] | None = None,
+    telemetry: TelemetryRegistry | None = None,
 ) -> ModelReviewer:
     """按启动配置选择适配器，Worker 的其余代码无需供应商分支。"""
 
@@ -1037,11 +1258,13 @@ def create_model_reviewer(
             settings,
             client=client,
             monotonic=monotonic,
+            telemetry=telemetry,
         )
     return AnthropicModelReviewer(
         settings,
         client=client,
         monotonic=monotonic,
+        telemetry=telemetry,
     )
 
 
@@ -1129,6 +1352,29 @@ def _failed_usage_details(usage: ModelTokenUsage) -> dict[str, int]:
         "failed_cache_write_tokens": usage.cache_write_input_tokens,
         "failed_reasoning_tokens": usage.reasoning_output_tokens,
     }
+
+
+def _known_failed_usage(details: object) -> ModelTokenUsage | None:
+    """仅在错误详情包含一组完整可信的用量时返回它。"""
+
+    if not isinstance(details, dict):
+        return None
+    names = (
+        "failed_input_tokens",
+        "failed_output_tokens",
+        "failed_cache_read_tokens",
+        "failed_cache_write_tokens",
+        "failed_reasoning_tokens",
+    )
+    if any(
+        name not in details
+        or isinstance(details[name], bool)
+        or not isinstance(details[name], int)
+        or details[name] < 0
+        for name in names
+    ):
+        return None
+    return _failed_usage(details)
 
 
 def _failed_usage(details: object) -> ModelTokenUsage:

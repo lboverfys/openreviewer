@@ -2,16 +2,21 @@
 
 from argon2 import PasswordHasher
 
-from services.auth import AuthService, AuthSettings
-
+from services.auth import AuthService, AuthSettings, SessionStore
+from services.github_access import GitHubAccessPolicy
 
 TEST_USERNAME = "test-administrator"
 TEST_PASSWORD = "test-only-password"
 TEST_HASHER = PasswordHasher(time_cost=1, memory_cost=8192, parallelism=1)
 TEST_PASSWORD_HASH = TEST_HASHER.hash(TEST_PASSWORD)
+TEST_GITHUB_ACCESS_POLICY = GitHubAccessPolicy(
+    installation_ids=frozenset({10}),
+    organizations=frozenset(),
+    repositories=frozenset({"lboverfys/niuma"}),
+)
 
 
-def make_auth_service() -> AuthService:
+def make_auth_service(*, session_store: SessionStore | None = None) -> AuthService:
     """创建使用固定测试凭据的认证服务。
 
     测试专用哈希器降低了 Argon2 计算成本，固定的签名密钥和非 Secure Cookie
@@ -33,4 +38,5 @@ def make_auth_service() -> AuthService:
             cookie_secure=False,
         ),
         password_hasher=TEST_HASHER,
+        session_store=session_store,
     )

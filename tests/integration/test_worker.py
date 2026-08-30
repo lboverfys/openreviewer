@@ -1,13 +1,14 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 from sqlalchemy import func, select
 
 from apps.worker.main import WorkerRuntime, WorkerSettings
 from domain.enums import ExecutionStatus, WorkerStatus
-from domain.security import ErrorCode, SafeError
 from domain.models import ReviewRequest
+from domain.security import ErrorCode, SafeError
 from persistence.database import Database
 from persistence.models import (
     Base,
@@ -19,7 +20,7 @@ from persistence.models import (
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.reviews import ReviewService
-from services.task_queue import TaskLeaseLostError
+from services.task_queue import TaskLeaseLostError, TaskQueueError
 
 
 class MutableClock:
@@ -46,6 +47,14 @@ class MutableClock:
 
 
 TEST_TASK_AVAILABLE_AT = datetime(2000, 1, 1, tzinfo=UTC)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """把数据库驱动返回的时间统一为带 UTC 时区的值。"""
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 @pytest.fixture
@@ -142,6 +151,42 @@ def test_worker_claims_one_task_and_stops_at_waiting_for_ci(
             session.scalar(select(func.count()).select_from(OutboxEventRecord))
             == 3
         )
+
+
+def test_worker_does_not_claim_after_stop_signal_before_claim(
+    database: Database,
+) -> None:
+    """停止信号在轮询前到达时，Worker 不应再启动新的任务。"""
+
+    task_id = submit_review(database, "stop-before-claim")
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    stop_event = Event()
+    stop_event.set()
+    queue = SqlAlchemyReviewTaskQueue(database.sessions, clock=MutableClock(now))
+    runtime = WorkerRuntime(
+        queue,
+        WorkerSettings(
+            worker_id="worker-stop-before-claim",
+            poll_interval=timedelta(seconds=1),
+            lease_duration=timedelta(seconds=30),
+        ),
+        stop_event=stop_event,
+    )
+
+    assert runtime.run_once() is False
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        heartbeat = session.get(
+            WorkerHeartbeatRecord,
+            "worker-stop-before-claim",
+        )
+        assert task is not None
+        assert heartbeat is not None
+        assert task.execution_status == ExecutionStatus.QUEUED.value
+        assert task.lease_owner is None
+        assert heartbeat.status == WorkerStatus.IDLE.value
+        assert heartbeat.current_task_id is None
 
 
 def test_failed_attempt_is_retried_with_backoff_and_old_lease_is_rejected(
@@ -328,6 +373,47 @@ def test_worker_heartbeat_freshness_is_observable(database: Database) -> None:
     assert queue.heartbeat_is_fresh("worker-1", timedelta(seconds=15)) is True
     clock.value += timedelta(seconds=16)
     assert queue.heartbeat_is_fresh("worker-1", timedelta(seconds=15)) is False
+
+
+def test_worker_heartbeat_instance_token_blocks_stale_process_updates(
+    database: Database,
+) -> None:
+    """同一稳定 ID 重启后，旧进程不能覆盖新进程的心跳。"""
+
+    clock = MutableClock(datetime(2026, 8, 18, 12, 0, tzinfo=UTC))
+    first = SqlAlchemyReviewTaskQueue(database.sessions, clock=clock)
+    first.start_heartbeat("worker-1", "instance-old")
+    first.record_heartbeat(
+        "worker-1",
+        WorkerStatus.BUSY,
+        "task-old",
+        instance_id="instance-old",
+    )
+
+    clock.value += timedelta(seconds=3)
+    second = SqlAlchemyReviewTaskQueue(database.sessions, clock=clock)
+    second.start_heartbeat("worker-1", "instance-new")
+    second.record_heartbeat(
+        "worker-1",
+        WorkerStatus.IDLE,
+        instance_id="instance-new",
+    )
+
+    with pytest.raises(TaskQueueError, match="ownership"):
+        first.record_heartbeat(
+            "worker-1",
+            WorkerStatus.BUSY,
+            "task-old",
+            instance_id="instance-old",
+        )
+
+    with database.sessions() as session:
+        heartbeat = session.get(WorkerHeartbeatRecord, "worker-1")
+        assert heartbeat is not None
+        assert heartbeat.instance_id == "instance-new"
+        assert heartbeat.status == WorkerStatus.IDLE.value
+        assert heartbeat.current_task_id is None
+        assert _as_utc(heartbeat.started_at) == clock.value
 
 
 def test_non_retryable_error_is_sanitized_and_fails_without_requeue(

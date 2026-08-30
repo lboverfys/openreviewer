@@ -1,28 +1,41 @@
 """审查任务详情、事件日志和人工控制动作的 SQLAlchemy 适配器。"""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, union_all
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from domain.enums import ExecutionStatus, ReviewAgent
+from domain.enums import (
+    ExecutionStatus,
+    FindingAdjudicationStatus,
+    FindingCategory,
+    FindingEvaluationVerdict,
+    ReviewAgent,
+    Severity,
+)
+from domain.evaluation import (
+    EvaluationGatePolicy,
+    EvaluationMetrics,
+    evaluate_inline_gate,
+)
 from domain.github import PullRequestSnapshot
+from domain.security import ErrorCode, redact_sensitive
 from domain.workflow import (
-    RESUMABLE_STAGES,
     WorkflowAction,
     WorkflowTransitionError,
     next_automatic_stage,
     transition,
 )
-from domain.security import redact_sensitive
 from persistence.models import (
+    FindingEvaluationRecord,
+    FindingLifecycleRecord,
+    GitHubInstallationRecord,
     ModelCallRecord,
     ModelReviewBatchRecord,
-    GitHubInstallationRecord,
     OutboxEventRecord,
     PullRequestCiCheckRecord,
     PullRequestVersionRecord,
@@ -34,23 +47,28 @@ from persistence.models import (
     ReviewTaskRecord,
     ReviewUnitRecord,
 )
+from persistence.resource_scope import resource_predicate
+from services.rbac import ResourceScope
 from services.review_management import (
+    FindingCursor,
     FindingDecision,
-    ReviewIdentitySyncConflictError,
-    ReviewIdentityTarget,
+    FindingNotFoundError,
     ReviewAction,
     ReviewActionConflictError,
-    ReviewManagementRepository,
+    ReviewIdentitySyncConflictError,
+    ReviewIdentityTarget,
     ReviewManagementPersistenceError,
+    ReviewManagementRepository,
     ReviewNotFoundError,
     ReviewPublishUnavailableError,
     StoredCiCheck,
+    StoredEvaluationGate,
     StoredFinding,
+    StoredFindingCounts,
     StoredReviewDetails,
     StoredReviewEvent,
 )
 from services.task_queue import ReviewTarget
-
 
 _PUBLISH_RECOVERY_AFTER = timedelta(minutes=5)
 
@@ -61,6 +79,34 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _required_utc(value: datetime | None, field_name: str) -> datetime:
+    normalized = _as_utc(value)
+    if normalized is None:
+        raise ValueError(f"{field_name} must not be null")
+    return normalized
+
+
+def _review_change_token(
+    run_updated_at: datetime | None,
+    task_updated_at: datetime | None,
+    latest_event_id: str | None,
+) -> str:
+    raw = "|".join(
+        (
+            _required_utc(
+                run_updated_at,
+                "review_run.updated_at",
+            ).isoformat(timespec="microseconds"),
+            _required_utc(
+                task_updated_at,
+                "review_task.updated_at",
+            ).isoformat(timespec="microseconds"),
+            latest_event_id or "",
+        )
+    )
+    return sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 def _safe_payload(value: object) -> object:
@@ -85,12 +131,77 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         self._uuid_factory = uuid_factory or uuid4
         self._publisher = publisher
 
-    def get(self, review_run_id: str) -> StoredReviewDetails:
+    def change_token(
+        self,
+        review_run_id: str,
+        *,
+        scope: ResourceScope | None = None,
+    ) -> str:
+        """用一条索引查询生成任务详情变化令牌。"""
+
+        latest_event_id = (
+            select(OutboxEventRecord.id)
+            .where(
+                OutboxEventRecord.aggregate_type == "review_run",
+                OutboxEventRecord.aggregate_id == review_run_id,
+            )
+            .order_by(
+                OutboxEventRecord.occurred_at.desc(),
+                OutboxEventRecord.id.desc(),
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        with self._sessions() as session:
+            try:
+                row = session.execute(
+                    select(
+                        ReviewRunRecord.updated_at,
+                        ReviewTaskRecord.updated_at,
+                        latest_event_id.label("latest_event_id"),
+                    )
+                    .join(
+                        ReviewTaskRecord,
+                        ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
+                    )
+                    .where(
+                        ReviewRunRecord.id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
+                    .limit(1)
+                ).one_or_none()
+                if row is None:
+                    raise ReviewNotFoundError("审查任务不存在")
+                return _review_change_token(row[0], row[1], row[2])
+            except ReviewNotFoundError:
+                raise
+            except (SQLAlchemyError, ValueError) as exc:
+                raise ReviewManagementPersistenceError(
+                    "review change token could not be loaded"
+                ) from exc
+
+    def get(
+        self,
+        review_run_id: str,
+        *,
+        finding_limit: int = 50,
+        finding_cursor: FindingCursor | None = None,
+        finding_adjudication_status: str | None = None,
+        scope: ResourceScope | None = None,
+    ) -> StoredReviewDetails:
         """读取一条运行、计划、模型调用及其有界子资源快照。
 
-        主记录、Finding、CI、文件覆盖汇总和事件使用固定五次查询；所有子查询都带
-        ``LIMIT``，循环只负责把已取回的行转成不可变读模型。
+        主记录、Finding、Finding 全量聚合、CI、文件覆盖汇总、评测门槛和事件最多
+        使用七次查询；列表子查询都带 ``LIMIT``，循环只负责转换已取回的行。
         """
+
+        if not 1 <= finding_limit <= 200:
+            raise ValueError("finding limit must be between 1 and 200")
 
         with self._sessions() as session:
             try:
@@ -123,6 +234,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ReviewTaskRecord.last_error_details,
                         ReviewRunRecord.created_at,
                         ReviewRunRecord.updated_at,
+                        ReviewTaskRecord.updated_at.label("task_updated_at"),
                         PullRequestVersionRecord.id.label("pr_version_id"),
                         PullRequestVersionRecord.title.label("pr_title"),
                         PullRequestVersionRecord.author_login.label(
@@ -176,6 +288,15 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ),
                         ModelCallRecord.finding_count.label("model_finding_count"),
                         ModelCallRecord.created_at.label("model_created_at"),
+                        select(func.count())
+                        .select_from(FindingLifecycleRecord)
+                        .where(
+                            FindingLifecycleRecord.fixed_by_review_run_id
+                            == ReviewRunRecord.id
+                        )
+                        .correlate(ReviewRunRecord)
+                        .scalar_subquery()
+                        .label("fixed_finding_count"),
                     )
                     .join(
                         ReviewTaskRecord,
@@ -194,12 +315,31 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ModelCallRecord,
                         ModelCallRecord.review_plan_id == ReviewPlanRecord.id,
                     )
-                    .where(ReviewRunRecord.id == review_run_id)
+                    .where(
+                        ReviewRunRecord.id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
                 ).mappings().one_or_none()
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
 
-                findings = self._load_findings(session, review_run_id)
+                findings, finding_has_more = self._load_findings(
+                    session,
+                    review_run_id,
+                    limit=finding_limit,
+                    cursor=finding_cursor,
+                    adjudication_status=finding_adjudication_status,
+                )
+                finding_counts = self._load_finding_counts(session, review_run_id)
+                evaluation_gates = self._load_evaluation_gates(
+                    session,
+                    row["repository_id"],
+                )
                 version_id = row["pr_version_id"]
                 ci_checks = self._load_ci_checks(session, version_id)
                 plan_file_decisions = self._load_plan_file_decisions(
@@ -213,6 +353,11 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 return StoredReviewDetails(
                     review_run_id=row["review_run_id"],
                     review_task_id=row["review_task_id"],
+                    change_token=_review_change_token(
+                        row["updated_at"],
+                        row["task_updated_at"],
+                        events[-1].id if events else None,
+                    ),
                     review_version_key=row["review_version_key"],
                     installation_id=row["installation_id"],
                     repository_id=row["repository_id"],
@@ -230,7 +375,10 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     model_attempt_count=row["model_attempt_count"],
                     max_attempts=row["max_attempts"],
                     ci_poll_count=row["ci_poll_count"],
-                    available_at=_as_utc(row["available_at"]),
+                    available_at=_required_utc(
+                        row["available_at"],
+                        "review_task.available_at",
+                    ),
                     claimed_from_status=row["claimed_from_status"],
                     lease_owner=row["lease_owner"],
                     lease_expires_at=_as_utc(row["lease_expires_at"]),
@@ -240,8 +388,14 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     last_error_details=(
                         safe_details if isinstance(safe_details, dict) else None
                     ),
-                    created_at=_as_utc(row["created_at"]),
-                    updated_at=_as_utc(row["updated_at"]),
+                    created_at=_required_utc(
+                        row["created_at"],
+                        "review_run.created_at",
+                    ),
+                    updated_at=_required_utc(
+                        row["updated_at"],
+                        "review_run.updated_at",
+                    ),
                     pr_title=row["pr_title"],
                     pr_author_login=row["pr_author_login"],
                     pr_html_url=row["pr_html_url"],
@@ -285,6 +439,10 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     model_cost_microusd=row["model_cost_microusd"],
                     model_finding_count=row["model_finding_count"],
                     model_created_at=_as_utc(row["model_created_at"]),
+                    fixed_finding_count=int(row["fixed_finding_count"] or 0),
+                    finding_counts=finding_counts,
+                    finding_has_more=finding_has_more,
+                    evaluation_gates=evaluation_gates,
                     findings=findings,
                     ci_checks=ci_checks,
                     events=events,
@@ -296,7 +454,12 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     "review details could not be loaded"
                 ) from exc
 
-    def get_identity_target(self, review_run_id: str) -> ReviewIdentityTarget:
+    def get_identity_target(
+        self,
+        review_run_id: str,
+        *,
+        scope: ResourceScope | None = None,
+    ) -> ReviewIdentityTarget:
         """读取历史任务的稳定 GitHub 目标，不持有事务访问外部 API。"""
 
         with self._sessions() as session:
@@ -317,7 +480,15 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         PullRequestVersionRecord.review_version_key
                         == ReviewRunRecord.review_version_key,
                     )
-                    .where(ReviewRunRecord.id == review_run_id)
+                    .where(
+                        ReviewRunRecord.id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
                 ).one_or_none()
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
@@ -347,6 +518,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         *,
         actor: str,
         request_id: str,
+        scope: ResourceScope | None = None,
     ) -> None:
         """以幂等短事务保存 GitHub PR 作者、链接和分支信息。"""
 
@@ -358,8 +530,22 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         with self._sessions() as session:
             try:
                 existing = session.scalar(
-                    select(OutboxEventRecord.id).where(
-                        OutboxEventRecord.event_key == event_key
+                    select(OutboxEventRecord.id)
+                    .join(
+                        ReviewRunRecord,
+                        and_(
+                            OutboxEventRecord.aggregate_type == "review_run",
+                            OutboxEventRecord.aggregate_id == ReviewRunRecord.id,
+                        ),
+                    )
+                    .where(
+                        OutboxEventRecord.event_key == event_key,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
                     )
                 )
                 if existing is not None:
@@ -371,6 +557,14 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
                     )
                     .where(ReviewRunRecord.id == review_run_id)
+                    .where(
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        )
+                    )
                     .with_for_update()
                 ).one_or_none()
                 if row is None:
@@ -496,10 +690,15 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
     def _load_findings(
         session: Session,
         review_run_id: str,
-    ) -> tuple[StoredFinding, ...]:
-        rows = session.execute(
-            select(
+        *,
+        limit: int,
+        cursor: FindingCursor | None,
+        adjudication_status: str | None,
+    ) -> tuple[tuple[StoredFinding, ...], bool]:
+        query = select(
                 ReviewFindingRecord.id,
+                ReviewFindingRecord.fingerprint,
+                ReviewFindingRecord.head_sha,
                 ReviewFindingRecord.severity,
                 ReviewFindingRecord.category,
                 ReviewFindingRecord.title,
@@ -509,6 +708,13 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 ReviewFindingRecord.required_test,
                 ReviewFindingRecord.confidence,
                 ReviewFindingRecord.verification_status,
+                ReviewFindingRecord.evidence_verification_status,
+                ReviewFindingRecord.evidence_verification_reason,
+                ReviewFindingRecord.evidence_verified_at,
+                ReviewFindingRecord.adjudication_status,
+                ReviewFindingRecord.lifecycle_status,
+                ReviewFindingRecord.occurrence_count,
+                ReviewFindingRecord.previous_review_run_id,
                 ReviewFindingRecord.location_file,
                 ReviewFindingRecord.location_start_line,
                 ReviewFindingRecord.location_end_line,
@@ -520,13 +726,34 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 ReviewFindingRecord.reviewed_by,
                 ReviewFindingRecord.created_at,
             )
-            .where(ReviewFindingRecord.review_run_id == review_run_id)
-            .order_by(ReviewFindingRecord.created_at.asc(), ReviewFindingRecord.id.asc())
-            .limit(200)
-        ).mappings()
-        return tuple(
+        query = query.where(ReviewFindingRecord.review_run_id == review_run_id)
+        if adjudication_status is not None:
+            query = query.where(
+                ReviewFindingRecord.adjudication_status == adjudication_status
+            )
+        if cursor is not None:
+            query = query.where(
+                or_(
+                    ReviewFindingRecord.created_at > cursor.created_at,
+                    and_(
+                        ReviewFindingRecord.created_at == cursor.created_at,
+                        ReviewFindingRecord.id > cursor.finding_id,
+                    ),
+                )
+            )
+        raw_rows = session.execute(
+            query.order_by(
+                ReviewFindingRecord.created_at.asc(),
+                ReviewFindingRecord.id.asc(),
+            ).limit(limit + 1)
+        ).mappings().all()
+        has_more = len(raw_rows) > limit
+        rows = raw_rows[:limit]
+        findings = tuple(
             StoredFinding(
                 id=row["id"],
+                fingerprint=row["fingerprint"],
+                head_sha=row["head_sha"],
                 severity=row["severity"],
                 category=row["category"],
                 title=row["title"],
@@ -536,6 +763,13 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 required_test=row["required_test"],
                 confidence=float(row["confidence"]),
                 verification_status=row["verification_status"],
+                evidence_verification_status=row["evidence_verification_status"],
+                evidence_verification_reason=row["evidence_verification_reason"],
+                evidence_verified_at=_as_utc(row["evidence_verified_at"]),
+                adjudication_status=row["adjudication_status"],
+                lifecycle_status=row["lifecycle_status"],
+                occurrence_count=row["occurrence_count"],
+                previous_review_run_id=row["previous_review_run_id"],
                 location_file=row["location_file"],
                 location_start_line=row["location_start_line"],
                 location_end_line=row["location_end_line"],
@@ -545,10 +779,215 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 rule_reference=row["rule_reference"],
                 reviewed_at=_as_utc(row["reviewed_at"]),
                 reviewed_by=row["reviewed_by"],
-                created_at=_as_utc(row["created_at"]),
+                created_at=_required_utc(
+                    row["created_at"],
+                    "review_finding.created_at",
+                ),
             )
             for row in rows
         )
+        return findings, has_more
+
+    @staticmethod
+    def _load_finding_counts(
+        session: Session,
+        review_run_id: str,
+    ) -> StoredFindingCounts:
+        """用一次条件聚合计算整次审查的 Finding 统计，不依赖当前页。"""
+
+        def tally(condition):
+            return func.coalesce(func.sum(case((condition, 1), else_=0)), 0)
+
+        row = session.execute(
+            select(
+                func.count(ReviewFindingRecord.id).label("total"),
+                tally(
+                    ReviewFindingRecord.verification_status == "verified"
+                ).label("location_verified"),
+                tally(
+                    ReviewFindingRecord.verification_status == "rejected"
+                ).label("location_rejected"),
+                tally(
+                    ReviewFindingRecord.verification_status == "unverified"
+                ).label("location_unverified"),
+                tally(ReviewFindingRecord.adjudication_status == "valid").label(
+                    "valid"
+                ),
+                tally(
+                    ReviewFindingRecord.adjudication_status == "false_positive"
+                ).label("false_positive"),
+                tally(
+                    ReviewFindingRecord.adjudication_status == "duplicate"
+                ).label("duplicate"),
+                tally(
+                    ReviewFindingRecord.adjudication_status == "out_of_scope"
+                ).label("out_of_scope"),
+                tally(
+                    ReviewFindingRecord.adjudication_status == "known_issue"
+                ).label("known_issue"),
+                tally(
+                    ReviewFindingRecord.adjudication_status == "unreviewed"
+                ).label("unreviewed"),
+                tally(ReviewFindingRecord.lifecycle_status == "new").label("new"),
+                tally(
+                    ReviewFindingRecord.lifecycle_status == "still_present"
+                ).label("still_present"),
+                tally(
+                    ReviewFindingRecord.lifecycle_status == "reintroduced"
+                ).label("reintroduced"),
+            ).where(ReviewFindingRecord.review_run_id == review_run_id)
+        ).mappings().one()
+        return StoredFindingCounts(
+            total=int(row["total"] or 0),
+            location_verified=int(row["location_verified"] or 0),
+            location_rejected=int(row["location_rejected"] or 0),
+            location_unverified=int(row["location_unverified"] or 0),
+            valid=int(row["valid"] or 0),
+            false_positive=int(row["false_positive"] or 0),
+            duplicate=int(row["duplicate"] or 0),
+            out_of_scope=int(row["out_of_scope"] or 0),
+            known_issue=int(row["known_issue"] or 0),
+            unreviewed=int(row["unreviewed"] or 0),
+            new=int(row["new"] or 0),
+            still_present=int(row["still_present"] or 0),
+            reintroduced=int(row["reintroduced"] or 0),
+        )
+
+    @staticmethod
+    def _load_evaluation_gates(
+        session: Session,
+        repository_id: int,
+    ) -> tuple[StoredEvaluationGate, ...]:
+        """用一次有界索引查询计算各风险域最近样本的发布准入。
+
+        不能先对整个仓库做窗口排序再截断：评测表会随人工裁决持续增长，
+        那种写法的扫描量会变成无界。每个固定风险域先在数据库内取最近
+        ``recent_sample_limit`` 行，再 ``UNION ALL`` 成一条语句；因此查询次数
+        始终为 O(1)，返回行数最多为风险域数量乘以样本上限。
+        """
+
+        policy = EvaluationGatePolicy()
+        bounded_by_category = []
+        for category in FindingCategory:
+            # 先物化每个类别的 LIMIT 子查询，再拼成一条 SQL；循环只构造语句，
+            # 不在循环内访问数据库，避免 N+1 查询。
+            recent = (
+                select(
+                    FindingEvaluationRecord.category,
+                    FindingEvaluationRecord.severity,
+                    FindingEvaluationRecord.verdict,
+                    FindingEvaluationRecord.adjudicated_at,
+                    FindingEvaluationRecord.finding_id,
+                )
+                .where(
+                    FindingEvaluationRecord.repository_id == repository_id,
+                    FindingEvaluationRecord.category == category.value,
+                )
+                .order_by(
+                    FindingEvaluationRecord.adjudicated_at.desc(),
+                    FindingEvaluationRecord.finding_id.desc(),
+                )
+                .limit(policy.recent_sample_limit)
+                .subquery()
+            )
+            bounded_by_category.append(
+                select(
+                    recent.c.category,
+                    recent.c.severity,
+                    recent.c.verdict,
+                )
+            )
+        rows = session.execute(union_all(*bounded_by_category)).mappings()
+
+        counters: dict[str, dict[str, int]] = {
+            category.value: {
+                "sample_count": 0,
+                "valid_count": 0,
+                "false_positive_count": 0,
+                "duplicate_count": 0,
+                "out_of_scope_count": 0,
+                "known_issue_count": 0,
+                "high_severity_sample_count": 0,
+                "high_severity_false_positive_count": 0,
+                "high_severity_duplicate_count": 0,
+                "high_severity_out_of_scope_count": 0,
+                "high_severity_known_issue_count": 0,
+            }
+            for category in FindingCategory
+        }
+        high_severities = {Severity.CRITICAL.value, Severity.HIGH.value}
+        for row in rows:
+            row_category = row["category"]
+            values = counters.get(row_category)
+            if values is None:
+                continue
+            values["sample_count"] += 1
+            verdict = row["verdict"]
+            is_valid = verdict == FindingEvaluationVerdict.VALID.value
+            if is_valid:
+                values["valid_count"] += 1
+            else:
+                values[f"{verdict}_count"] += 1
+            if row["severity"] in high_severities:
+                values["high_severity_sample_count"] += 1
+                if not is_valid:
+                    values[f"high_severity_{verdict}_count"] += 1
+
+        gates: list[StoredEvaluationGate] = []
+        for category_value in sorted(counters):
+            values = counters[category_value]
+            metrics = EvaluationMetrics(
+                sample_count=values["sample_count"],
+                valid_count=values["valid_count"],
+                false_positive_count=values["false_positive_count"],
+                duplicate_count=values["duplicate_count"],
+                out_of_scope_count=values["out_of_scope_count"],
+                known_issue_count=values["known_issue_count"],
+                high_severity_sample_count=values[
+                    "high_severity_sample_count"
+                ],
+                high_severity_false_positive_count=values[
+                    "high_severity_false_positive_count"
+                ],
+                high_severity_duplicate_count=values[
+                    "high_severity_duplicate_count"
+                ],
+                high_severity_out_of_scope_count=values[
+                    "high_severity_out_of_scope_count"
+                ],
+                high_severity_known_issue_count=values[
+                    "high_severity_known_issue_count"
+                ],
+            )
+            result = evaluate_inline_gate(metrics, policy)
+            gates.append(
+                StoredEvaluationGate(
+                    category=category_value,
+                    sample_count=metrics.sample_count,
+                    valid_count=metrics.valid_count,
+                    false_positive_count=metrics.false_positive_count,
+                    duplicate_count=metrics.duplicate_count,
+                    out_of_scope_count=metrics.out_of_scope_count,
+                    known_issue_count=metrics.known_issue_count,
+                    rejected_count=metrics.rejected_count,
+                    high_severity_sample_count=(
+                        metrics.high_severity_sample_count
+                    ),
+                    high_severity_false_positive_count=(
+                        metrics.high_severity_false_positive_count
+                    ),
+                    high_severity_rejected_count=(
+                        metrics.high_severity_rejected_count
+                    ),
+                    precision=result.precision,
+                    high_severity_false_positive_rate=(
+                        result.high_severity_false_positive_rate
+                    ),
+                    admitted=result.admitted,
+                    reason=result.reason,
+                )
+            )
+        return tuple(gates)
 
     @staticmethod
     def _load_ci_checks(
@@ -578,7 +1017,10 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 kind=row["kind"],
                 status=row["status"],
                 conclusion=row["conclusion"],
-                observed_at=_as_utc(row["observed_at"]),
+                observed_at=_required_utc(
+                    row["observed_at"],
+                    "pull_request_ci_check.observed_at",
+                ),
             )
             for row in rows
         )
@@ -598,8 +1040,8 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
             .where(ReviewFilePlanRecord.review_plan_id == review_plan_id)
             .group_by(ReviewFilePlanRecord.decision)
             .limit(16)
-        ).all()
-        return {row.decision: row.count for row in rows}
+        ).tuples().all()
+        return {decision: int(count) for decision, count in rows}
 
     @staticmethod
     def _load_events(
@@ -631,7 +1073,10 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     id=row["id"],
                     event_type=row["event_type"],
                     payload=safe_payload if isinstance(safe_payload, dict) else {},
-                    occurred_at=_as_utc(row["occurred_at"]),
+                    occurred_at=_required_utc(
+                        row["occurred_at"],
+                        "outbox_event.occurred_at",
+                    ),
                 )
             )
         events.reverse()
@@ -645,6 +1090,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         actor: str,
         request_id: str,
         target_stage: str | None = None,
+        scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """在一个短事务内执行加速、重试、取消或重新审查。"""
 
@@ -657,50 +1103,21 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         }:
             raise ReviewActionConflictError("当前操作不接受目标阶段")
         action_key = sha256(
-            f"{review_run_id}:{action.value}:{normalized_request_id}".encode("utf-8")
+            f"{review_run_id}:{action.value}:{normalized_request_id}".encode()
         ).hexdigest()
         event_key = f"review.action:{review_run_id}:{action.value}:{action_key}"
         with self._sessions() as session:
             try:
-                existing_event = session.execute(
-                    select(OutboxEventRecord.payload).where(
-                        OutboxEventRecord.event_key == event_key
-                    )
-                ).scalar_one_or_none()
-                if existing_event is not None:
-                    if (
-                        not isinstance(existing_event, dict)
-                        or existing_event.get("target_stage") != target_stage
-                    ):
-                        raise ReviewActionConflictError(
-                            "同一幂等键不能用于不同的目标阶段"
-                        )
-                    if (
-                        action is ReviewAction.RERUN
-                        and isinstance(existing_event, dict)
-                        and isinstance(existing_event.get("new_review_run_id"), str)
-                        and isinstance(existing_event.get("new_review_task_id"), str)
-                    ):
-                        return (
-                            existing_event["new_review_run_id"],
-                            existing_event["new_review_task_id"],
-                            ExecutionStatus.QUEUED,
-                        )
-                    existing = session.execute(
-                        select(
-                            ReviewTaskRecord.id,
-                            ReviewRunRecord.id,
-                            ReviewRunRecord.execution_status,
-                        )
-                        .join(
-                            ReviewRunRecord,
-                            ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
-                        )
-                        .where(ReviewRunRecord.id == review_run_id)
-                    ).one_or_none()
-                    if existing is None:
-                        raise ReviewNotFoundError("审查任务不存在")
-                    return existing[1], existing[0], ExecutionStatus(existing[2])
+                idempotent_result = self._existing_action_result(
+                    session,
+                    review_run_id,
+                    action,
+                    event_key=event_key,
+                    target_stage=target_stage,
+                    scope=scope,
+                )
+                if idempotent_result is not None:
+                    return idempotent_result
 
                 # PostgreSQL 不允许 FOR UPDATE 锁定外连接的可空一侧。
                 # 运行记录和任务记录是必需的，先用内连接一起锁定；计划记录
@@ -711,12 +1128,32 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ReviewTaskRecord,
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
                     )
-                    .where(ReviewRunRecord.id == review_run_id)
+                    .where(
+                        ReviewRunRecord.id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
                     .with_for_update()
                 ).one_or_none()
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
                 run, task = row
+                # 第一次事件查询和业务行加锁之间可能有并发请求已经提交；
+                # 锁定后必须再次检查，避免重复插入唯一 event_key 并误报 503。
+                idempotent_result = self._existing_action_result(
+                    session,
+                    review_run_id,
+                    action,
+                    event_key=event_key,
+                    target_stage=target_stage,
+                    scope=scope,
+                )
+                if idempotent_result is not None:
+                    return idempotent_result
                 plan = session.scalar(
                     select(ReviewPlanRecord)
                     .where(ReviewPlanRecord.review_run_id == review_run_id)
@@ -739,6 +1176,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     ReviewAction.REJECT,
                 }
                 if action in workflow_actions:
+                    budget_grant_payload: dict[str, object] = {}
                     try:
                         target = (
                             ExecutionStatus(target_stage)
@@ -763,6 +1201,23 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     final_workflow_status = result.after
                     automatic_occurred_at: datetime | None = None
                     if action is ReviewAction.APPROVE:
+                        unreviewed_count = int(
+                            session.scalar(
+                                select(func.count())
+                                .select_from(ReviewFindingRecord)
+                                .where(
+                                    ReviewFindingRecord.review_run_id
+                                    == review_run_id,
+                                    ReviewFindingRecord.adjudication_status
+                                    == FindingAdjudicationStatus.UNREVIEWED.value,
+                                )
+                            )
+                            or 0
+                        )
+                        if unreviewed_count:
+                            raise ReviewActionConflictError(
+                                f"仍有 {unreviewed_count} 个候选问题未完成人工裁决"
+                            )
                         automatic_status = next_automatic_stage(result.after)
                         if automatic_status is None:
                             raise ReviewActionConflictError("批准后的工作流状态无效")
@@ -788,6 +1243,40 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ).value
                         run.execution_status = task.execution_status
                     elif action is ReviewAction.RESUME:
+                        if plan is not None and plan.model_budget_exhausted_reason:
+                            exhausted_reason = plan.model_budget_exhausted_reason
+                            plan.model_budget_resume_count += 1
+                            plan.model_budget_exhausted_reason = None
+                            plan.model_budget_exhausted_at = None
+                            plan.model_budget_started_at = now
+                            multiplier = plan.model_budget_resume_count + 1
+                            budget_grant_payload = {
+                                "model_budget_granted": True,
+                                "previous_budget_reason": exhausted_reason,
+                                "budget_resume_count": plan.model_budget_resume_count,
+                                "max_model_http_calls": (
+                                    plan.max_model_http_calls * multiplier
+                                ),
+                                "max_model_input_tokens": (
+                                    plan.max_model_input_tokens * multiplier
+                                ),
+                                "max_model_output_tokens": (
+                                    plan.max_model_output_tokens * multiplier
+                                ),
+                                "max_model_cost_microusd": (
+                                    plan.max_model_cost_microusd * multiplier
+                                    if plan.max_model_cost_microusd is not None
+                                    else None
+                                ),
+                                "max_model_duration_seconds": (
+                                    plan.max_model_duration_seconds
+                                ),
+                            }
+                            if task.last_error_code == ErrorCode.MODEL_BUDGET_EXCEEDED.value:
+                                task.last_error = None
+                                task.last_error_code = None
+                                task.last_error_retryable = None
+                                task.last_error_details = None
                         task.workflow_paused_from = None
                         run.workflow_paused_from = None
                         task.lease_owner = None
@@ -847,6 +1336,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                                     if action is ReviewAction.PAUSE
                                     else None
                                 ),
+                                **budget_grant_payload,
                             },
                             occurred_at=now,
                             publish_attempts=0,
@@ -880,10 +1370,21 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         raise ReviewActionConflictError("任务正在处理中，暂时不能重新审查")
                     new_run_id = str(self._uuid_factory())
                     new_task_id = str(self._uuid_factory())
-                    rerun_key = f"manual-rerun:{review_run_id}:{request_id}"[:200]
+                    # 幂等键可能达到 API 允许的 200 字符；直接拼接后截断会让
+                    # 只在尾部不同的两个键发生碰撞。新记录使用固定长度摘要，
+                    # 同时回读旧版明文键，保证发布新版后重试仍然幂等。
+                    rerun_key = (
+                        f"manual-rerun:{review_run_id}:"
+                        f"{sha256(normalized_request_id.encode('utf-8')).hexdigest()}"
+                    )
+                    legacy_rerun_key = (
+                        f"manual-rerun:{review_run_id}:{request_id}"
+                    )[:200]
                     existing_rerun = session.scalar(
                         select(ReviewRunRecord.id).where(
-                            ReviewRunRecord.idempotency_key == rerun_key
+                            ReviewRunRecord.idempotency_key.in_(
+                                (rerun_key, legacy_rerun_key)
+                            )
                         )
                     )
                     if existing_rerun is not None:
@@ -1068,6 +1569,89 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 ) from exc
 
     @staticmethod
+    def _existing_action_result(
+        session: Session,
+        review_run_id: str,
+        action: ReviewAction,
+        *,
+        event_key: str,
+        target_stage: str | None,
+        scope: ResourceScope | None = None,
+    ) -> tuple[str, str, ExecutionStatus] | None:
+        """读取已提交的人工动作，供加锁前后两次幂等检查复用。"""
+
+        # 先验证资源范围，再读取幂等事件；否则越权请求可以通过已存在的
+        # event_key 得到“成功”响应或冲突信息，间接确认别的仓库存在任务。
+        scoped_run = session.scalar(
+            select(ReviewRunRecord.id)
+            .where(
+                ReviewRunRecord.id == review_run_id,
+                resource_predicate(
+                    scope,
+                    installation_column=ReviewRunRecord.installation_id,
+                    repository_column=ReviewRunRecord.repository,
+                    repository_key_column=ReviewRunRecord.repository_key,
+                ),
+            )
+            .limit(1)
+        )
+        if scoped_run is None:
+            raise ReviewNotFoundError("审查任务不存在")
+        existing_event = session.execute(
+            select(OutboxEventRecord.payload).where(
+                OutboxEventRecord.event_key == event_key
+            )
+        ).scalar_one_or_none()
+        if existing_event is None:
+            return None
+        if (
+            not isinstance(existing_event, dict)
+            or existing_event.get("target_stage") != target_stage
+        ):
+            raise ReviewActionConflictError("同一幂等键不能用于不同的目标阶段")
+        if (
+            action is ReviewAction.RERUN
+            and isinstance(existing_event, dict)
+            and isinstance(existing_event.get("new_review_run_id"), str)
+            and isinstance(existing_event.get("new_review_task_id"), str)
+        ):
+            new_review_run_id = existing_event["new_review_run_id"]
+            new_review_task_id = existing_event["new_review_task_id"]
+            if not isinstance(new_review_run_id, str) or not isinstance(
+                new_review_task_id,
+                str,
+            ):
+                raise ReviewActionConflictError("重跑事件中的任务标识无效")
+            return (
+                new_review_run_id,
+                new_review_task_id,
+                ExecutionStatus.QUEUED,
+            )
+        existing = session.execute(
+            select(
+                ReviewTaskRecord.id,
+                ReviewRunRecord.id,
+                ReviewRunRecord.execution_status,
+            )
+            .join(
+                ReviewRunRecord,
+                ReviewRunRecord.id == ReviewTaskRecord.review_run_id,
+            )
+            .where(
+                ReviewRunRecord.id == review_run_id,
+                resource_predicate(
+                    scope,
+                    installation_column=ReviewRunRecord.installation_id,
+                    repository_column=ReviewRunRecord.repository,
+                    repository_key_column=ReviewRunRecord.repository_key,
+                ),
+            )
+        ).one_or_none()
+        if existing is None:
+            raise ReviewNotFoundError("审查任务不存在")
+        return existing[1], existing[0], ExecutionStatus(existing[2])
+
+    @staticmethod
     def _prepare_stage_retry(
         session: Session,
         run: ReviewRunRecord,
@@ -1206,11 +1790,10 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         *,
         actor: str,
         request_id: str,
+        scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """批准后才允许的人工发布；外部 GitHub 调用永远在事务之外。"""
 
-        if self._publisher is None:
-            raise ReviewPublishUnavailableError("GitHub 人工发布器尚未配置")
         normalized_request_id = request_id.strip()
         if not normalized_request_id:
             raise ReviewActionConflictError("操作幂等键不能为空")
@@ -1225,12 +1808,22 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ReviewTaskRecord,
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
                     )
-                    .where(ReviewRunRecord.id == review_run_id)
+                    .where(
+                        ReviewRunRecord.id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
                     .with_for_update()
                 ).one_or_none()
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
                 run, task = row
+                if self._publisher is None:
+                    raise ReviewPublishUnavailableError("GitHub 人工发布器尚未配置")
                 existing_started = session.execute(
                     select(OutboxEventRecord.payload).where(
                         OutboxEventRecord.event_key == event_key
@@ -1257,14 +1850,16 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         raise ReviewActionConflictError("GitHub 发布正在进行中")
                 elif current is not ExecutionStatus.AWAITING_PUBLISH:
                     raise ReviewActionConflictError("只有批准后的审查可以发布")
+                attempt_token = str(self._uuid_factory())
                 run.workflow_status = ExecutionStatus.PUBLISHING.value
+                run.publish_attempt_token = attempt_token
                 task.workflow_status = ExecutionStatus.PUBLISHING.value
                 run.updated_at = now
                 task.updated_at = now
                 attempt_event_key = (
                     event_key
                     if existing_started is None
-                    else f"{event_key}:retry:{self._uuid_factory()}"
+                    else f"{event_key}:retry:{attempt_token}"
                 )
                 session.add(
                     OutboxEventRecord(
@@ -1276,6 +1871,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         payload={
                             "actor": actor,
                             "request_id_hash": request_digest,
+                            "attempt_token": attempt_token,
                             "recovered": current is ExecutionStatus.PUBLISHING,
                         },
                         occurred_at=now,
@@ -1293,10 +1889,36 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 ) from exc
 
         try:
-            details = self.get(review_run_id)
+            details = self.get(
+                review_run_id,
+                finding_limit=200,
+                finding_adjudication_status=FindingDecision.VALID.value,
+                scope=scope,
+            )
+            if details.finding_has_more:
+                raise ReviewActionConflictError(
+                    "有效 Finding 超过 200 条，请先减少发布范围"
+                )
             self._publisher(details)
+        except ReviewActionConflictError as exc:
+            self._mark_publish_failed(
+                review_run_id,
+                event_key,
+                attempt_token,
+                actor,
+                str(exc),
+                scope=scope,
+            )
+            raise
         except Exception as exc:
-            self._mark_publish_failed(review_run_id, event_key, actor, str(exc))
+            self._mark_publish_failed(
+                review_run_id,
+                event_key,
+                attempt_token,
+                actor,
+                str(exc),
+                scope=scope,
+            )
             raise ReviewPublishUnavailableError("GitHub 发布失败，请稍后重试") from exc
 
         with self._sessions() as session:
@@ -1307,20 +1929,68 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ReviewTaskRecord,
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
                     )
-                    .where(ReviewRunRecord.id == review_run_id)
+                    .where(
+                        ReviewRunRecord.id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
                     .with_for_update()
                 ).one_or_none()
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
                 run, task = row
-                existing_completed = session.scalar(
+                completed_event_id = session.scalar(
                     select(OutboxEventRecord.id).where(
                         OutboxEventRecord.event_key == completed_event_key
                     )
                 )
-                if existing_completed is not None:
+                if completed_event_id is not None:
                     return run.id, task.id, ExecutionStatus.COMPLETED
                 now = self._clock()
+                current_workflow_status = ExecutionStatus(
+                    run.workflow_status or run.execution_status
+                )
+                if (
+                    current_workflow_status is not ExecutionStatus.PUBLISHING
+                    or run.publish_attempt_token != attempt_token
+                ):
+                    # 外部调用已经返回，但本地状态在调用期间被其他尝试或
+                    # 新提交替换；绝不能把旧结果写成 completed。令牌匹配时
+                    # 清掉残留标记，避免管理端误判仍有发布在途。
+                    if run.publish_attempt_token == attempt_token:
+                        run.publish_attempt_token = None
+                        session.add(
+                            OutboxEventRecord(
+                                id=str(self._uuid_factory()),
+                                event_key=(
+                                    f"{completed_event_key}:conflict:{attempt_token}"
+                                )[:200],
+                                aggregate_type="review_run",
+                                aggregate_id=review_run_id,
+                                event_type="review.manual.publish_result_conflict",
+                                payload={
+                                    "actor": actor,
+                                    "attempt_token": attempt_token,
+                                    "published": True,
+                                    "current_workflow_status": (
+                                        current_workflow_status.value
+                                    ),
+                                },
+                                occurred_at=now,
+                                publish_attempts=0,
+                            )
+                        )
+                        session.commit()
+                    else:
+                        session.rollback()
+                    raise ReviewActionConflictError(
+                        "发布结果与当前任务状态冲突，请先核对 GitHub 后再处理"
+                    )
+                run.publish_attempt_token = None
                 run.workflow_status = ExecutionStatus.COMPLETED.value
                 task.workflow_status = ExecutionStatus.COMPLETED.value
                 run.updated_at = now
@@ -1332,7 +2002,11 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         aggregate_type="review_run",
                         aggregate_id=review_run_id,
                         event_type="review.manual.publish_completed",
-                        payload={"actor": actor, "published": True},
+                        payload={
+                            "actor": actor,
+                            "published": True,
+                            "attempt_token": attempt_token,
+                        },
                         occurred_at=now,
                         publish_attempts=0,
                     )
@@ -1352,8 +2026,11 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         self,
         review_run_id: str,
         event_key: str,
+        attempt_token: str,
         actor: str,
         safe_reason: str,
+        *,
+        scope: ResourceScope | None = None,
     ) -> None:
         """发布异常只回到待发布，不把外部错误文本原样暴露给客户端。"""
 
@@ -1365,7 +2042,15 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ReviewTaskRecord,
                         ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
                     )
-                    .where(ReviewRunRecord.id == review_run_id)
+                    .where(
+                        ReviewRunRecord.id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
                     .with_for_update()
                 ).one_or_none()
                 if row is None:
@@ -1374,8 +2059,9 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 now = self._clock()
                 if ExecutionStatus(
                     run.workflow_status or run.execution_status
-                ) is not ExecutionStatus.PUBLISHING:
+                ) is not ExecutionStatus.PUBLISHING or run.publish_attempt_token != attempt_token:
                     return
+                run.publish_attempt_token = None
                 run.workflow_status = ExecutionStatus.AWAITING_PUBLISH.value
                 task.workflow_status = ExecutionStatus.AWAITING_PUBLISH.value
                 run.updated_at = now
@@ -1383,12 +2069,13 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 session.add(
                     OutboxEventRecord(
                         id=str(self._uuid_factory()),
-                        event_key=f"{event_key}:failed:{self._uuid_factory()}",
+                        event_key=f"{event_key}:failed:{attempt_token}"[:200],
                         aggregate_type="review_run",
                         aggregate_id=review_run_id,
                         event_type="review.manual.publish_failed",
                         payload={
                             "actor": actor,
+                            "attempt_token": attempt_token,
                             "error_message": redact_sensitive(safe_reason)[:300],
                         },
                         occurred_at=now,
@@ -1407,37 +2094,99 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         *,
         actor: str,
         request_id: str,
+        scope: ResourceScope | None = None,
     ) -> None:
         """保存一次人工裁决，并追加可追踪的事件。"""
 
+        normalized_request_id = request_id.strip()
+        if not normalized_request_id:
+            raise ValueError("操作幂等键不能为空")
         decision_key = sha256(
-            f"{review_run_id}:{finding_id}:{decision.value}:{request_id}".encode(
-                "utf-8"
-            )
+            f"{review_run_id}:{finding_id}:{decision.value}:{normalized_request_id}".encode()
         ).hexdigest()
         event_key = f"review.finding.decision:{finding_id}:{decision_key}"
         with self._sessions() as session:
             try:
+                # 先验证 Finding 所属运行和资源范围，再读取幂等事件；否则越权
+                # 请求可能通过已存在的 event_key 观察到其他仓库的操作结果。
+                scoped_finding = session.scalar(
+                    select(ReviewFindingRecord.id)
+                    .join(
+                        ReviewRunRecord,
+                        ReviewRunRecord.id == ReviewFindingRecord.review_run_id,
+                    )
+                    .where(
+                        ReviewFindingRecord.id == finding_id,
+                        ReviewFindingRecord.review_run_id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
+                    )
+                    .limit(1)
+                )
+                if scoped_finding is None:
+                    raise FindingNotFoundError("候选问题不存在")
                 if session.scalar(
                     select(OutboxEventRecord.id).where(
                         OutboxEventRecord.event_key == event_key
                     )
                 ) is not None:
                     return
-                finding = session.scalar(
-                    select(ReviewFindingRecord)
+                finding_row = session.execute(
+                    select(ReviewFindingRecord, ReviewRunRecord.repository_id)
+                    .join(
+                        ReviewRunRecord,
+                        ReviewRunRecord.id == ReviewFindingRecord.review_run_id,
+                    )
                     .where(
                         ReviewFindingRecord.id == finding_id,
                         ReviewFindingRecord.review_run_id == review_run_id,
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        ),
                     )
                     .with_for_update()
-                )
-                if finding is None:
+                ).one_or_none()
+                if finding_row is None:
                     raise FindingDecisionError("候选问题不存在")
+                finding, repository_id = finding_row
+                # 与任务动作相同，第一次事件查询可能早于并发事务提交；
+                # Finding 行锁之后复查才能把重复请求当作成功处理。
+                if session.scalar(
+                    select(OutboxEventRecord.id).where(
+                        OutboxEventRecord.event_key == event_key
+                    )
+                ) is not None:
+                    return
                 now = self._clock()
-                finding.verification_status = decision.value
+                finding.adjudication_status = decision.value
                 finding.reviewed_at = now
                 finding.reviewed_by = actor[:100]
+                verdict = FindingEvaluationVerdict(decision.value)
+                evaluation = session.get(FindingEvaluationRecord, finding_id)
+                if evaluation is None:
+                    evaluation = FindingEvaluationRecord(
+                        finding_id=finding_id,
+                        repository_id=repository_id,
+                        category=finding.category,
+                        severity=finding.severity,
+                        verdict=verdict.value,
+                        adjudicated_at=now,
+                        adjudicated_by=actor[:100],
+                        updated_at=now,
+                    )
+                    session.add(evaluation)
+                else:
+                    evaluation.verdict = verdict.value
+                    evaluation.adjudicated_at = now
+                    evaluation.adjudicated_by = actor[:100]
+                    evaluation.updated_at = now
                 session.add(
                     OutboxEventRecord(
                         id=str(self._uuid_factory()),
@@ -1455,9 +2204,12 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     )
                 )
                 session.commit()
-            except FindingDecisionError:
+            except FindingNotFoundError:
                 session.rollback()
-                raise FindingNotFoundError("候选问题不存在")
+                raise
+            except FindingDecisionError as exc:
+                session.rollback()
+                raise FindingNotFoundError("候选问题不存在") from exc
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise ReviewManagementPersistenceError(

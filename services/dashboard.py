@@ -1,15 +1,97 @@
 """认证运维 Dashboard 使用的只读模型。"""
 
+import base64
+import binascii
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from hashlib import sha256
+from typing import Protocol, overload
 
 from domain.enums import ExecutionStatus, WorkerStatus
+from services.rbac import ResourceScope
 
 
 class DashboardPersistenceError(RuntimeError):
     """无法从持久化存储读取 Dashboard 数据。"""
+
+
+def _effective_scope(scope: ResourceScope | None) -> ResourceScope | None:
+    """把管理员的显式全量范围归一为旧仓储协议使用的 ``None``。"""
+
+    return None if scope is None or scope.unrestricted else scope
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCursor:
+    created_at: datetime
+    review_run_id: str
+
+
+def encode_review_cursor(created_at: datetime, review_run_id: str) -> str:
+    """把稳定排序键编码为不透明、URL 安全的下一页游标。"""
+
+    payload = json.dumps(
+        {
+            "v": 1,
+            "created_at": as_utc(created_at).isoformat(timespec="microseconds"),
+            "review_run_id": review_run_id,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_review_cursor(value: str) -> ReviewCursor:
+    """严格解析游标；畸形、过长或未知版本均拒绝。"""
+
+    if not value or len(value) > 512:
+        raise ValueError("review cursor is invalid")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = base64.b64decode(
+            padded.encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        decoded = json.loads(payload.decode("utf-8"))
+        if not isinstance(decoded, dict) or set(decoded) != {
+            "v",
+            "created_at",
+            "review_run_id",
+        }:
+            raise ValueError
+        if decoded["v"] != 1 or not isinstance(decoded["review_run_id"], str):
+            raise ValueError
+        review_run_id = decoded["review_run_id"]
+        if not 1 <= len(review_run_id) <= 36:
+            raise ValueError
+        created_at = datetime.fromisoformat(decoded["created_at"])
+        if created_at.tzinfo is None:
+            raise ValueError
+    except (
+        UnicodeError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ) as exc:
+        raise ValueError("review cursor is invalid") from exc
+    return ReviewCursor(
+        created_at=created_at.astimezone(UTC),
+        review_run_id=review_run_id,
+    )
+
+
+@overload
+def as_utc(value: datetime) -> datetime: ...
+
+
+@overload
+def as_utc(value: None) -> None: ...
 
 
 def as_utc(value: datetime | None) -> datetime | None:
@@ -34,6 +116,15 @@ def as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def required_utc(value: datetime | None, field_name: str) -> datetime:
+    """规范化必填数据库时间；缺失时拒绝返回不完整读模型。"""
+
+    normalized = as_utc(value)
+    if normalized is None:
+        raise ValueError(f"{field_name} must not be null")
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewListItem:
     review_run_id: str
@@ -52,7 +143,7 @@ class ReviewListItem:
     coverage_status: str
     model_review_completed_at: datetime | None
     finding_count: int
-    unverified_finding_count: int
+    unreviewed_finding_count: int
     model_attempt_count: int
     created_at: datetime
     updated_at: datetime
@@ -80,11 +171,24 @@ class DashboardData:
     total_reviews: int
     status_counts: Mapping[ExecutionStatus, int]
     recent_reviews: tuple[ReviewListItem, ...]
-    latest_worker: StoredWorkerHeartbeat | None
+    workers: tuple[StoredWorkerHeartbeat, ...]
+    has_more: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardChangeState:
+    latest_event_id: str | None
+    latest_event_at: datetime | None
+    workers: tuple[StoredWorkerHeartbeat, ...]
 
 
 class DashboardRepository(Protocol):
-    def load(self, limit: int) -> DashboardData:
+    def load(
+        self,
+        limit: int,
+        cursor: ReviewCursor | None = None,
+        scope: ResourceScope | None = None,
+    ) -> DashboardData:
         """从持久化层一次性读取 Dashboard 所需的原始数据。
 
         参数：
@@ -99,6 +203,15 @@ class DashboardRepository(Protocol):
         协议只约定数据形状，不负责判断 Worker 是否在线；在线状态需要结合服务层
         的当前时钟和窗口计算。
         """
+        ...
+
+    def change_state(
+        self,
+        *,
+        scope: ResourceScope | None = None,
+    ) -> DashboardChangeState:
+        """读取可表示 Dashboard 可见变更的轻量索引状态。"""
+
         ...
 
 
@@ -119,7 +232,9 @@ class DashboardSnapshot:
     total_reviews: int
     status_counts: Mapping[ExecutionStatus, int]
     worker: WorkerSnapshot
+    workers: tuple[WorkerSnapshot, ...]
     recent_reviews: tuple[ReviewListItem, ...]
+    next_cursor: str | None
 
 
 class DashboardService:
@@ -151,7 +266,12 @@ class DashboardService:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._worker_online_window = worker_online_window
 
-    def snapshot(self, limit: int = 50) -> DashboardSnapshot:
+    def snapshot(
+        self,
+        limit: int = 50,
+        cursor: str | None = None,
+        scope: ResourceScope | None = None,
+    ) -> DashboardSnapshot:
         """组装一个可直接返回给 API 和 SSE 的完整 Dashboard 快照。
 
         方法会限制查询数量、补齐所有执行状态的计数，并把数据库中的心跳转换
@@ -175,20 +295,15 @@ class DashboardService:
         if not 1 <= limit <= 100:
             raise ValueError("dashboard limit must be between 1 and 100")
         now = self._clock().astimezone(UTC)
-        data = self._repository.load(limit)
-        heartbeat = data.latest_worker
-        if heartbeat is None:
-            worker = WorkerSnapshot(
-                configured=False,
-                online=False,
-                worker_id=None,
-                status=None,
-                current_task_id=None,
-                started_at=None,
-                last_seen_at=None,
-            )
-        else:
-            worker = WorkerSnapshot(
+        decoded_cursor = decode_review_cursor(cursor) if cursor is not None else None
+        effective_scope = _effective_scope(scope)
+        data = (
+            self._repository.load(limit, decoded_cursor)
+            if effective_scope is None
+            else self._repository.load(limit, decoded_cursor, effective_scope)
+        )
+        workers = tuple(
+            WorkerSnapshot(
                 configured=True,
                 online=now - as_utc(heartbeat.last_seen_at)
                 <= self._worker_online_window,
@@ -198,6 +313,21 @@ class DashboardService:
                 started_at=as_utc(heartbeat.started_at),
                 last_seen_at=as_utc(heartbeat.last_seen_at),
             )
+            for heartbeat in data.workers
+        )
+        worker = (
+            next((item for item in workers if item.online), workers[0])
+            if workers
+            else WorkerSnapshot(
+                configured=False,
+                online=False,
+                worker_id=None,
+                status=None,
+                current_task_id=None,
+                started_at=None,
+                last_seen_at=None,
+            )
+        )
         complete_counts = {
             status: int(data.status_counts.get(status, 0))
             for status in ExecutionStatus
@@ -207,5 +337,51 @@ class DashboardService:
             total_reviews=data.total_reviews,
             status_counts=complete_counts,
             worker=worker,
+            workers=workers,
             recent_reviews=data.recent_reviews,
+            next_cursor=(
+                encode_review_cursor(
+                    data.recent_reviews[-1].created_at,
+                    data.recent_reviews[-1].review_run_id,
+                )
+                if data.has_more and data.recent_reviews
+                else None
+            ),
         )
+
+    def change_token(self, scope: ResourceScope | None = None) -> str:
+        """返回轻量变化令牌，并按在线窗口刷新 Worker 离线判定。"""
+
+        effective_scope = _effective_scope(scope)
+        state = (
+            self._repository.change_state()
+            if effective_scope is None
+            else self._repository.change_state(scope=effective_scope)
+        )
+        now = self._clock().astimezone(UTC)
+        worker_state = [
+            {
+                "worker_id": worker.worker_id,
+                "status": worker.status.value,
+                "current_task_id": worker.current_task_id,
+                "started_at": as_utc(worker.started_at).isoformat(),
+                "online": now - as_utc(worker.last_seen_at)
+                <= self._worker_online_window,
+            }
+            for worker in sorted(state.workers, key=lambda item: item.worker_id)
+        ]
+        raw = json.dumps(
+            {
+                "latest_event_id": state.latest_event_id,
+                "latest_event_at": (
+                    as_utc(state.latest_event_at).isoformat()
+                    if state.latest_event_at
+                    else None
+                ),
+                "workers": worker_state,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return sha256(raw.encode("utf-8")).hexdigest()[:24]

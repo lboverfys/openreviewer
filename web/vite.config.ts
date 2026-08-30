@@ -1,11 +1,10 @@
-import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
   cacheDir:
-    process.env.OPENREVIEWER_VITE_CACHE_DIR ??
-    "D:/rubbish/zhongjian/caches/node/openreviewer/vite",
+    process.env.OPENREVIEWER_VITE_CACHE_DIR ?? ".vite-cache",
   server: {
     host: "127.0.0.1",
     port: 5173,
@@ -20,5 +19,15 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      thresholds: {
+        lines: 20,
+        functions: 15,
+        branches: 10,
+        statements: 20,
+      },
+    },
   },
 });

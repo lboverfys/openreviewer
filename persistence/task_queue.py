@@ -3,17 +3,23 @@
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import delete, func, insert, or_, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import delete, func, insert, literal, or_, select, update
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Load, Session, sessionmaker
 
 from domain.enums import (
     ChangedFileStatus,
     CiState,
     CoverageStatus,
+    EvidenceVerificationStatus,
     ExecutionStatus,
+    FindingAdjudicationStatus,
+    FindingLifecycleState,
+    FindingOccurrenceStatus,
     ModelBatchStatus,
     PatchState,
     PullRequestState,
@@ -29,7 +35,6 @@ from domain.model_review import (
     ModelReviewResult,
     materialize_findings,
 )
-from services.model_review import MAX_MODEL_REVIEW_BATCHES, ModelReviewBatch
 from domain.review_planning import (
     RepositoryRule,
     RepositoryRulesSnapshot,
@@ -38,8 +43,10 @@ from domain.review_planning import (
 )
 from domain.security import ErrorCode, SafeError, redact_sensitive
 from persistence.models import (
+    FindingLifecycleRecord,
     GitHubInstallationRecord,
     ModelCallRecord,
+    ModelHttpCallRecord,
     ModelReviewBatchRecord,
     OutboxEventRecord,
     PullRequestCiCheckRecord,
@@ -54,18 +61,21 @@ from persistence.models import (
     ReviewUnitRecord,
     WorkerHeartbeatRecord,
 )
+from services.model_budget import ModelBudgetRequest, ModelBudgetReservation
+from services.model_review import MAX_MODEL_REVIEW_BATCHES, ModelReviewBatch
 from services.task_queue import (
-    ModelReviewConflictError,
     ModelBatchBusyError,
+    ModelBudgetExceededError,
+    ModelReviewConflictError,
     ModelReviewInputError,
     ReviewPlanConflictError,
     ReviewPlanInputError,
     ReviewPlanningInput,
-    ReviewTaskLease,
     ReviewTarget,
-    StoredReviewPlan,
-    StoredModelReview,
+    ReviewTaskLease,
     StoredModelBatch,
+    StoredModelReview,
+    StoredReviewPlan,
     TaskLeaseLostError,
     TaskQueueError,
 )
@@ -170,11 +180,81 @@ class SqlAlchemyReviewTaskQueue:
         self._retry_cap_seconds = retry_cap_seconds
         self._recovery_batch_size = recovery_batch_size
 
+    @staticmethod
+    def _validate_heartbeat_identity(worker_id: str, instance_id: str | None) -> None:
+        if not worker_id or len(worker_id) > 200:
+            raise ValueError("worker ID must contain 1 to 200 characters")
+        if instance_id is not None and (not instance_id or len(instance_id) > 64):
+            raise ValueError("worker instance ID must contain 1 to 64 characters")
+
+    def start_heartbeat(
+        self,
+        worker_id: str,
+        instance_id: str,
+    ) -> None:
+        """原子接管稳定 Worker ID，并把旧进程的后续 CAS 心跳变为失败。
+
+        每次进程启动都生成新的 ``instance_id``。已有行会在一个 UPDATE 中替换
+        token、启动时间和状态；没有行时插入。并发首次启动发生唯一键竞争时，
+        失败方回滚后再执行一次接管 UPDATE，因此最终只会有一个 token 生效。
+        """
+
+        self._validate_heartbeat_identity(worker_id, instance_id)
+        now = self._clock()
+
+        def takeover(session: Session) -> Any:
+            return session.execute(
+                update(WorkerHeartbeatRecord)
+                .where(WorkerHeartbeatRecord.worker_id == worker_id)
+                .values(
+                    instance_id=instance_id,
+                    status=WorkerStatus.STARTING.value,
+                    current_task_id=None,
+                    started_at=now,
+                    last_seen_at=now,
+                )
+            )
+
+        with self._sessions() as session:
+            try:
+                result = takeover(session)
+                if result.rowcount == 0:
+                    session.add(
+                        WorkerHeartbeatRecord(
+                            worker_id=worker_id,
+                            instance_id=instance_id,
+                            status=WorkerStatus.STARTING.value,
+                            current_task_id=None,
+                            started_at=now,
+                            last_seen_at=now,
+                        )
+                    )
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                try:
+                    result = takeover(session)
+                    if getattr(result, "rowcount", None) != 1:
+                        raise TaskQueueError("worker heartbeat could not be claimed")
+                    session.commit()
+                except (TaskQueueError, SQLAlchemyError) as exc:
+                    session.rollback()
+                    if isinstance(exc, TaskQueueError):
+                        raise
+                    raise TaskQueueError(
+                        "worker heartbeat could not be claimed"
+                    ) from exc
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("worker heartbeat could not be claimed") from exc
+
     def record_heartbeat(
         self,
         worker_id: str,
         worker_status: WorkerStatus,
         current_task_id: str | None = None,
+        *,
+        instance_id: str | None = None,
     ) -> None:
         """记录 Worker 心跳。
 
@@ -187,21 +267,42 @@ class SqlAlchemyReviewTaskQueue:
             worker_status: 当前生命周期状态。
             current_task_id: ``busy`` 时正在处理的任务 ID；空闲、启动或停止时
                 通常传 ``None``。
+            instance_id: 进程启动时接管得到的 token。提供时使用条件 UPDATE，旧
+                进程 token 不匹配会失败，不能覆盖新进程状态。省略只用于旧调用方。
 
         异常：
             TaskQueueError: 查询、插入、更新或提交失败。事务会先回滚，调用方
             不应把失败的心跳当成在线信号。
 
-        ``started_at`` 只在首次插入时设置；固定 Worker ID 重启后不会自动重置，
-        因而它表示数据库第一次见到该 ID 的时间，而非进程最近一次启动时间。
+        新 Worker 进程应先调用 :meth:`start_heartbeat`；该操作会重置
+        ``started_at``。不带 token 的兼容调用不会覆盖已经被新进程接管的行。
         """
+        self._validate_heartbeat_identity(worker_id, instance_id)
         now = self._clock()
         with self._sessions() as session:
             try:
+                if instance_id is not None:
+                    result = session.execute(
+                        update(WorkerHeartbeatRecord)
+                        .where(
+                            WorkerHeartbeatRecord.worker_id == worker_id,
+                            WorkerHeartbeatRecord.instance_id == instance_id,
+                        )
+                        .values(
+                            status=worker_status.value,
+                            current_task_id=current_task_id,
+                            last_seen_at=now,
+                        )
+                    )
+                    if getattr(result, "rowcount", None) != 1:
+                        raise TaskQueueError("worker heartbeat ownership was lost")
+                    session.commit()
+                    return
                 heartbeat = session.get(WorkerHeartbeatRecord, worker_id)
                 if heartbeat is None:
                     heartbeat = WorkerHeartbeatRecord(
                         worker_id=worker_id,
+                        instance_id=None,
                         status=worker_status.value,
                         current_task_id=current_task_id,
                         started_at=now,
@@ -209,10 +310,15 @@ class SqlAlchemyReviewTaskQueue:
                     )
                     session.add(heartbeat)
                 else:
+                    if heartbeat.instance_id is not None:
+                        raise TaskQueueError("worker heartbeat ownership was lost")
                     heartbeat.status = worker_status.value
                     heartbeat.current_task_id = current_task_id
                     heartbeat.last_seen_at = now
                 session.commit()
+            except TaskQueueError:
+                session.rollback()
+                raise
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise TaskQueueError("worker heartbeat could not be persisted") from exc
@@ -370,7 +476,7 @@ class SqlAlchemyReviewTaskQueue:
                         ),
                         ReviewTaskRecord.available_at <= now,
                         or_(
-                            ai_configured,
+                            literal(ai_configured),
                             ReviewTaskRecord.execution_status
                             != ExecutionStatus.READY_FOR_REVIEW.value,
                         ),
@@ -621,6 +727,13 @@ class SqlAlchemyReviewTaskQueue:
                         ExecutionStatus.SUPERSEDED,
                         now,
                     )
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.SUPERSEDED,
+                        now,
+                    )
+                    run.publish_attempt_token = None
                     run.coverage_status = CoverageStatus.STALE.value
                     self._add_event(
                         session,
@@ -644,6 +757,13 @@ class SqlAlchemyReviewTaskQueue:
                         ExecutionStatus.CANCELLED,
                         now,
                     )
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.CANCELLED,
+                        now,
+                    )
+                    run.publish_attempt_token = None
                     self._add_event(
                         session,
                         task,
@@ -744,6 +864,10 @@ class SqlAlchemyReviewTaskQueue:
                         )
                         next_status = ExecutionStatus.WAITING_FOR_CI
                 else:
+                    # 终态（包括明确的“未配置 CI”）不应残留上一轮等待期限，
+                    # 否则后续重试可能被旧 deadline 误判为超时。
+                    task.ci_wait_started_at = None
+                    task.ci_deadline_at = None
                     self._set_owned_status(
                         task,
                         run,
@@ -1029,6 +1153,13 @@ class SqlAlchemyReviewTaskQueue:
                         ExecutionStatus.SUPERSEDED,
                         now,
                     )
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.SUPERSEDED,
+                        now,
+                    )
+                    run.publish_attempt_token = None
                     run.coverage_status = CoverageStatus.STALE.value
                     self._add_event(
                         session,
@@ -1073,6 +1204,19 @@ class SqlAlchemyReviewTaskQueue:
                         total_estimated_input_bytes=(
                             plan.total_estimated_input_bytes
                         ),
+                        max_model_http_calls=plan.model_budget.max_http_calls,
+                        max_model_input_tokens=plan.model_budget.max_input_tokens,
+                        max_model_output_tokens=plan.model_budget.max_output_tokens,
+                        max_model_cost_microusd=(
+                            plan.model_budget.max_estimated_cost_microusd
+                        ),
+                        max_model_duration_seconds=(
+                            plan.model_budget.max_duration_seconds
+                        ),
+                        model_http_calls=0,
+                        model_input_tokens=0,
+                        model_output_tokens=0,
+                        model_estimated_cost_microusd=0,
                         created_at=now,
                     )
                 )
@@ -1115,6 +1259,7 @@ class SqlAlchemyReviewTaskQueue:
                         "review_plan_id": plan_id,
                         "ordinal": ordinal,
                         "unit_key": unit.unit_key,
+                        "group_key": unit.group_key or unit.unit_key,
                         "file": unit.file,
                         "blob_sha": unit.blob_sha,
                         "language": unit.language,
@@ -1261,6 +1406,7 @@ class SqlAlchemyReviewTaskQueue:
         units_statement = (
             select(
                 ReviewUnitRecord.unit_key,
+                ReviewUnitRecord.group_key,
                 ReviewUnitRecord.file,
                 ReviewUnitRecord.blob_sha,
                 ReviewUnitRecord.language,
@@ -1307,6 +1453,7 @@ class SqlAlchemyReviewTaskQueue:
             units = tuple(
                 ReviewUnit(
                     unit_key=row.unit_key,
+                    group_key=row.group_key,
                     review_version_key=plan_row.review_version_key,
                     head_sha=plan_row.plan_head_sha,
                     file=row.file,
@@ -1339,6 +1486,125 @@ class SqlAlchemyReviewTaskQueue:
                 "持久化 Review Plan 不符合模型输入契约"
             ) from exc
 
+    @staticmethod
+    def _reconcile_finding_lifecycles(
+        session: Session,
+        run: ReviewRunRecord,
+        findings: tuple[MaterializedFinding, ...],
+        now: datetime,
+        *,
+        coverage_complete: bool,
+    ) -> tuple[
+        dict[str, tuple[FindingOccurrenceStatus, int, str | None]],
+        int,
+    ]:
+        """批量判定当前 Finding，并在完整覆盖时消解上一轮遗留问题。"""
+
+        fingerprints = tuple(sorted(item.finding.fingerprint for item in findings))
+        predicates = [
+            FindingLifecycleRecord.state == FindingLifecycleState.PRESENT.value,
+            FindingLifecycleRecord.fixed_by_review_run_id == run.id,
+        ]
+        if fingerprints:
+            predicates.append(FindingLifecycleRecord.fingerprint.in_(fingerprints))
+        lifecycle_rows = list(
+            session.scalars(
+                select(FindingLifecycleRecord)
+                .where(
+                    FindingLifecycleRecord.repository_id == run.repository_id,
+                    FindingLifecycleRecord.pull_request_number
+                    == run.pull_request_number,
+                    or_(*predicates),
+                )
+                .limit(401)
+                .with_for_update()
+            )
+        )
+        # 每轮最多 200 个 Finding；上一轮 present 集合也最多 200 个。超过
+        # 400 说明持久化状态已违反边界，不能继续做不完整的生命周期判定。
+        if len(lifecycle_rows) > 400:
+            raise ModelReviewConflictError("Finding 生命周期集合超过安全上限")
+        lifecycles = {row.fingerprint: row for row in lifecycle_rows}
+        occurrence_by_fingerprint: dict[
+            str, tuple[FindingOccurrenceStatus, int, str | None]
+        ] = {}
+
+        for fingerprint in fingerprints:
+            lifecycle = lifecycles.get(fingerprint)
+            if lifecycle is None:
+                lifecycle = FindingLifecycleRecord(
+                    repository_id=run.repository_id,
+                    pull_request_number=run.pull_request_number,
+                    fingerprint=fingerprint,
+                    state=FindingLifecycleState.PRESENT.value,
+                    first_seen_review_run_id=run.id,
+                    last_seen_review_run_id=run.id,
+                    previous_seen_review_run_id=None,
+                    fixed_by_review_run_id=None,
+                    first_seen_head_sha=run.head_sha,
+                    last_seen_head_sha=run.head_sha,
+                    last_occurrence_status=FindingOccurrenceStatus.NEW.value,
+                    occurrence_count=1,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    fixed_at=None,
+                    historical_backfilled_at=now,
+                    updated_at=now,
+                )
+                session.add(lifecycle)
+                lifecycles[fingerprint] = lifecycle
+                status = FindingOccurrenceStatus.NEW
+            elif lifecycle.last_seen_review_run_id == run.id:
+                # 阶段级重审会删除并重建本轮 Finding。复用已有判定，避免同一
+                # review_run 被重复计数或错误标成再次出现。
+                status = FindingOccurrenceStatus(lifecycle.last_occurrence_status)
+                lifecycle.state = FindingLifecycleState.PRESENT.value
+                lifecycle.fixed_by_review_run_id = None
+                lifecycle.fixed_at = None
+                lifecycle.updated_at = now
+            else:
+                status = (
+                    FindingOccurrenceStatus.REINTRODUCED
+                    if lifecycle.state == FindingLifecycleState.FIXED.value
+                    else FindingOccurrenceStatus.STILL_PRESENT
+                )
+                lifecycle.previous_seen_review_run_id = (
+                    lifecycle.last_seen_review_run_id
+                )
+                lifecycle.last_seen_review_run_id = run.id
+                lifecycle.last_seen_head_sha = run.head_sha
+                lifecycle.last_occurrence_status = status.value
+                lifecycle.occurrence_count += 1
+                lifecycle.last_seen_at = now
+                lifecycle.state = FindingLifecycleState.PRESENT.value
+                lifecycle.fixed_by_review_run_id = None
+                lifecycle.fixed_at = None
+                lifecycle.updated_at = now
+            occurrence_by_fingerprint[fingerprint] = (
+                status,
+                lifecycle.occurrence_count,
+                lifecycle.previous_seen_review_run_id,
+            )
+
+        if coverage_complete:
+            current = set(fingerprints)
+            for lifecycle in lifecycle_rows:
+                if (
+                    lifecycle.fingerprint not in current
+                    and lifecycle.state == FindingLifecycleState.PRESENT.value
+                ):
+                    lifecycle.state = FindingLifecycleState.FIXED.value
+                    lifecycle.fixed_by_review_run_id = run.id
+                    lifecycle.fixed_at = now
+                    lifecycle.updated_at = now
+
+        fixed_count = sum(
+            lifecycle.state == FindingLifecycleState.FIXED.value
+            and lifecycle.fixed_by_review_run_id == run.id
+            for lifecycle in lifecycles.values()
+        )
+        return occurrence_by_fingerprint, fixed_count
+
     def store_model_review(
         self,
         lease: ReviewTaskLease,
@@ -1363,8 +1629,27 @@ class SqlAlchemyReviewTaskQueue:
             raise ModelReviewConflictError(
                 "模型 Finding 引用了计划外的 Unit、文件或规则"
             ) from exc
-        if findings != expected_findings:
+        if len(findings) != len(expected_findings):
             raise ModelReviewConflictError("模型 Finding 没有按平台契约完成身份补齐")
+        for actual, expected in zip(findings, expected_findings, strict=True):
+            if actual.source_unit_key != expected.source_unit_key:
+                raise ModelReviewConflictError(
+                    "模型 Finding 没有按平台契约完成身份补齐"
+                )
+            actual_finding = actual.finding.model_copy(
+                update={
+                    "evidence_verification_status": (
+                        expected.finding.evidence_verification_status
+                    ),
+                    "evidence_verification_reason": (
+                        expected.finding.evidence_verification_reason
+                    ),
+                }
+            )
+            if actual_finding != expected.finding:
+                raise ModelReviewConflictError(
+                    "模型 Finding 没有按平台契约完成身份补齐"
+                )
         if not review_input.units and result.status.value != "skipped":
             raise ModelReviewConflictError("空 Review Plan 不应调用模型")
         if review_input.units and result.status.value != "succeeded":
@@ -1467,6 +1752,13 @@ class SqlAlchemyReviewTaskQueue:
                         ExecutionStatus.SUPERSEDED,
                         now,
                     )
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.SUPERSEDED,
+                        now,
+                    )
+                    run.publish_attempt_token = None
                     run.coverage_status = CoverageStatus.STALE.value
                     self._add_event(
                         session,
@@ -1483,6 +1775,27 @@ class SqlAlchemyReviewTaskQueue:
                         execution_status=ExecutionStatus.SUPERSEDED,
                     )
 
+                incomplete_file_count = session.scalar(
+                    select(func.count())
+                    .select_from(ReviewFilePlanRecord)
+                    .where(
+                        ReviewFilePlanRecord.review_plan_id == plan.id,
+                        ReviewFilePlanRecord.decision
+                        != ReviewFileDecision.PLANNED.value,
+                    )
+                )
+                coverage_complete = bool(
+                    plan.rules_complete and not incomplete_file_count
+                )
+                lifecycle_occurrences, fixed_finding_count = (
+                    self._reconcile_finding_lifecycles(
+                        session,
+                        run,
+                        findings,
+                        now,
+                        coverage_complete=coverage_complete,
+                    )
+                )
                 model_call_id = str(
                     uuid5(
                         NAMESPACE_URL,
@@ -1527,14 +1840,24 @@ class SqlAlchemyReviewTaskQueue:
                 finding_rows: list[dict[str, object]] = []
                 for item in findings:
                     finding = item.finding
+                    evidence_status = (
+                        finding.evidence_verification_status
+                        or EvidenceVerificationStatus.UNVERIFIED
+                    )
+                    location = finding.location
+                    lifecycle_status, occurrence_count, previous_run_id = (
+                        lifecycle_occurrences[finding.fingerprint]
+                    )
                     if (
                         finding.head_sha != review_input.head_sha
-                        or finding.verification_status.value != "unverified"
+                        or (
+                            finding.verification_status.value == "verified"
+                            and (location is None or not location.in_diff)
+                        )
                     ):
                         raise ModelReviewConflictError(
-                            "模型 Finding 的 SHA 或复核状态无效"
+                            "模型 Finding 的 SHA 或机器定位状态无效"
                         )
-                    location = finding.location
                     finding_rows.append(
                         {
                             "id": str(
@@ -1580,6 +1903,25 @@ class SqlAlchemyReviewTaskQueue:
                             "verification_status": (
                                 finding.verification_status.value
                             ),
+                            "evidence_verification_status": (
+                                evidence_status.value
+                            ),
+                            "evidence_verification_reason": (
+                                finding.evidence_verification_reason
+                            ),
+                            "evidence_verified_at": (
+                                now
+                                if evidence_status
+                                is EvidenceVerificationStatus.VERIFIED
+                                else None
+                            ),
+                            "adjudication_status": (
+                                FindingAdjudicationStatus.UNREVIEWED.value
+                            ),
+                            "lifecycle_status": lifecycle_status.value,
+                            "occurrence_count": occurrence_count,
+                            "previous_review_run_id": previous_run_id,
+                            "lifecycle_backfilled_at": now,
                             "rule_reference": finding.rule_reference,
                             "created_at": now,
                         }
@@ -1588,15 +1930,6 @@ class SqlAlchemyReviewTaskQueue:
                     session.execute(insert(ReviewFindingRecord), finding_rows)
 
                 plan.model_review_completed_at = now
-                incomplete_file_count = session.scalar(
-                    select(func.count())
-                    .select_from(ReviewFilePlanRecord)
-                    .where(
-                        ReviewFilePlanRecord.review_plan_id == plan.id,
-                        ReviewFilePlanRecord.decision
-                        != ReviewFileDecision.PLANNED.value,
-                    )
-                )
                 run.review_conclusion = (
                     ReviewConclusion.FINDINGS_PRESENT.value
                     if findings
@@ -1604,7 +1937,7 @@ class SqlAlchemyReviewTaskQueue:
                 )
                 run.coverage_status = (
                     CoverageStatus.COMPLETE.value
-                    if plan.rules_complete and not incomplete_file_count
+                    if coverage_complete
                     else CoverageStatus.PARTIAL.value
                 )
                 self._set_owned_status(
@@ -1634,6 +1967,19 @@ class SqlAlchemyReviewTaskQueue:
                         "model": result.model,
                         "model_call_status": result.status.value,
                         "finding_count": len(findings),
+                        "new_finding_count": sum(
+                            status is FindingOccurrenceStatus.NEW
+                            for status, _count, _previous in lifecycle_occurrences.values()
+                        ),
+                        "still_present_finding_count": sum(
+                            status is FindingOccurrenceStatus.STILL_PRESENT
+                            for status, _count, _previous in lifecycle_occurrences.values()
+                        ),
+                        "reintroduced_finding_count": sum(
+                            status is FindingOccurrenceStatus.REINTRODUCED
+                            for status, _count, _previous in lifecycle_occurrences.values()
+                        ),
+                        "fixed_finding_count": fixed_finding_count,
                         "input_tokens": result.usage.input_tokens,
                         "output_tokens": result.usage.output_tokens,
                         "cache_read_input_tokens": (
@@ -2119,8 +2465,8 @@ class SqlAlchemyReviewTaskQueue:
         if row.result is not None:
             try:
                 result = ModelReviewResult.model_validate(row.result)
-            except (TypeError, ValueError):
-                raise TaskQueueError("已保存的模型批次结果无效")
+            except (TypeError, ValueError) as exc:
+                raise TaskQueueError("已保存的模型批次结果无效") from exc
         return StoredModelBatch(
             id=row.id,
             review_plan_id=row.review_plan_id,
@@ -2136,6 +2482,408 @@ class SqlAlchemyReviewTaskQueue:
             error_code=row.error_code,
             error_message=row.error_message,
         )
+
+    def reserve_model_budget(
+        self,
+        lease: ReviewTaskLease,
+        request: ModelBudgetRequest,
+        *,
+        agent: str = "default",
+    ) -> ModelBudgetReservation:
+        """在发送 HTTP 前锁定计划并预留最坏情况用量。"""
+
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型预算缺少 Review Plan")
+        if not agent or len(agent) > 32:
+            raise ValueError("model budget agent name is invalid")
+        numeric_values = (
+            request.request_bytes,
+            request.input_token_upper_bound,
+            request.output_token_upper_bound,
+        )
+        if any(value < 0 for value in numeric_values):
+            raise ValueError("model budget reservation values cannot be negative")
+        if (
+            request.cost_upper_bound_microusd is not None
+            and request.cost_upper_bound_microusd < 0
+        ):
+            raise ValueError("model budget reservation values cannot be negative")
+        if request.input_token_upper_bound == 0 and request.request_bytes > 0:
+            raise ValueError("non-empty model request requires an input reservation")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                task, _run = self._locked_owned_task_with_run(session, lease, now)
+                plan = session.scalar(
+                    select(ReviewPlanRecord)
+                    .where(ReviewPlanRecord.id == lease.review_plan_id)
+                    .with_for_update()
+                )
+                if plan is None:
+                    raise ModelReviewConflictError("模型预算关联的计划不存在")
+                started_at = plan.model_budget_started_at or now
+                elapsed_ms = max(
+                    0,
+                    int((_as_utc(now) - _as_utc(started_at)).total_seconds() * 1000),
+                )
+                max_duration_ms = plan.max_model_duration_seconds * 1000
+                budget_multiplier = plan.model_budget_resume_count + 1
+                max_http_calls = plan.max_model_http_calls * budget_multiplier
+                max_input_tokens = plan.max_model_input_tokens * budget_multiplier
+                max_output_tokens = plan.max_model_output_tokens * budget_multiplier
+                max_estimated_cost_microusd = (
+                    plan.max_model_cost_microusd * budget_multiplier
+                    if plan.max_model_cost_microusd is not None
+                    else None
+                )
+                reserved_cost_microusd = request.cost_upper_bound_microusd or 0
+                projections = {
+                    "http_calls": plan.model_http_calls + 1,
+                    "input_tokens": (
+                        plan.model_input_tokens + request.input_token_upper_bound
+                    ),
+                    "output_tokens": (
+                        plan.model_output_tokens + request.output_token_upper_bound
+                    ),
+                    "estimated_cost_microusd": (
+                        plan.model_estimated_cost_microusd
+                        + reserved_cost_microusd
+                    ),
+                }
+                reason = plan.model_budget_exhausted_reason
+                if reason is None and elapsed_ms >= max_duration_ms:
+                    reason = "duration"
+                if (
+                    reason is None
+                    and max_estimated_cost_microusd is not None
+                    and request.cost_upper_bound_microusd is None
+                ):
+                    reason = "pricing_unknown"
+                if reason is None and projections["http_calls"] > max_http_calls:
+                    reason = "http_calls"
+                if (
+                    reason is None
+                    and projections["input_tokens"] > max_input_tokens
+                ):
+                    reason = "input_tokens"
+                if (
+                    reason is None
+                    and projections["output_tokens"] > max_output_tokens
+                ):
+                    reason = "output_tokens"
+                if (
+                    reason is None
+                    and max_estimated_cost_microusd is not None
+                    and projections["estimated_cost_microusd"]
+                    > max_estimated_cost_microusd
+                ):
+                    reason = "estimated_cost"
+                if reason is not None:
+                    plan.model_budget_started_at = started_at
+                    plan.model_budget_exhausted_at = (
+                        plan.model_budget_exhausted_at or now
+                    )
+                    plan.model_budget_exhausted_reason = reason
+                    error = ModelBudgetExceededError(
+                        reason,
+                        details={
+                            "review_plan_id": plan.id,
+                            "http_calls": plan.model_http_calls,
+                            "max_http_calls": max_http_calls,
+                            "input_tokens": plan.model_input_tokens,
+                            "max_input_tokens": max_input_tokens,
+                            "output_tokens": plan.model_output_tokens,
+                            "max_output_tokens": max_output_tokens,
+                            "estimated_cost_microusd": (
+                                plan.model_estimated_cost_microusd
+                            ),
+                            "max_estimated_cost_microusd": (
+                                max_estimated_cost_microusd
+                            ),
+                            "pricing_configured": (
+                                request.cost_upper_bound_microusd is not None
+                            ),
+                            "budget_resume_count": plan.model_budget_resume_count,
+                            "elapsed_ms": elapsed_ms,
+                            "max_duration_ms": max_duration_ms,
+                        },
+                    )
+                    self._add_event(
+                        session,
+                        task,
+                        "review.model.budget_exhausted",
+                        f"{plan.id}:{reason}",
+                        now,
+                        error=error.error,
+                        extra_payload={
+                            "review_plan_id": plan.id,
+                            "budget_reason": reason,
+                        },
+                    )
+                    session.commit()
+                    raise error
+
+                call_id = str(self._uuid_factory())
+                sequence = projections["http_calls"]
+                plan.model_budget_started_at = started_at
+                plan.model_http_calls = projections["http_calls"]
+                plan.model_input_tokens = projections["input_tokens"]
+                plan.model_output_tokens = projections["output_tokens"]
+                plan.model_estimated_cost_microusd = projections[
+                    "estimated_cost_microusd"
+                ]
+                session.add(
+                    ModelHttpCallRecord(
+                        id=call_id,
+                        review_plan_id=plan.id,
+                        sequence=sequence,
+                        agent=agent,
+                        provider=request.provider,
+                        api_protocol=request.api_protocol,
+                        model=request.model,
+                        request_bytes=request.request_bytes,
+                        reserved_input_tokens=request.input_token_upper_bound,
+                        reserved_output_tokens=request.output_token_upper_bound,
+                        reserved_cost_microusd=reserved_cost_microusd,
+                        status="reserved",
+                        started_at=now,
+                    )
+                )
+                session.commit()
+                return ModelBudgetReservation(
+                    id=call_id,
+                    review_plan_id=plan.id,
+                    sequence=sequence,
+                    reserved_input_tokens=request.input_token_upper_bound,
+                    reserved_output_tokens=request.output_token_upper_bound,
+                    reserved_cost_microusd=reserved_cost_microusd,
+                    remaining_duration_ms=max(1, max_duration_ms - elapsed_ms),
+                )
+            except (
+                ModelBudgetExceededError,
+                ModelReviewConflictError,
+                TaskLeaseLostError,
+            ):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model budget could not be reserved") from exc
+
+    def settle_model_budget(
+        self,
+        reservation: ModelBudgetReservation,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        estimated_cost_microusd: int | None,
+        response_status: int | None,
+        duration_ms: int,
+        uncertain: bool = False,
+    ) -> None:
+        """结算真实用量；无法确认是否计费时保留全部预留。"""
+
+        if duration_ms < 0:
+            raise ValueError("model budget duration cannot be negative")
+        if response_status is not None and not 100 <= response_status <= 599:
+            raise ValueError("model budget response status is invalid")
+        actual_values = (input_tokens, output_tokens, estimated_cost_microusd)
+        if any(value is not None and value < 0 for value in actual_values):
+            raise ValueError("model budget actual values cannot be negative")
+        if not uncertain and (input_tokens is None or output_tokens is None):
+            raise ValueError("settled model budget requires token usage")
+        now = self._clock()
+        budget_error: ModelBudgetExceededError | None = None
+        with self._sessions() as session:
+            try:
+                row = session.scalar(
+                    select(ModelHttpCallRecord)
+                    .where(ModelHttpCallRecord.id == reservation.id)
+                    .with_for_update()
+                )
+                if row is None or row.review_plan_id != reservation.review_plan_id:
+                    raise ModelReviewConflictError("模型预算预留不存在")
+                if row.status != "reserved":
+                    return
+                plan = session.scalar(
+                    select(ReviewPlanRecord)
+                    .where(ReviewPlanRecord.id == reservation.review_plan_id)
+                    .with_for_update()
+                )
+                if plan is None:
+                    raise ModelReviewConflictError("模型预算关联的计划不存在")
+                started_at = plan.model_budget_started_at or row.started_at or now
+                elapsed_ms = max(
+                    0,
+                    int((_as_utc(now) - _as_utc(started_at)).total_seconds() * 1000),
+                )
+                max_duration_ms = plan.max_model_duration_seconds * 1000
+                row.response_status = response_status
+                row.duration_ms = duration_ms
+                row.completed_at = now
+                overrun_reason = plan.model_budget_exhausted_reason
+                if uncertain:
+                    row.status = "uncertain"
+                else:
+                    actual_input = int(input_tokens or 0)
+                    actual_output = int(output_tokens or 0)
+                    actual_cost = int(estimated_cost_microusd or 0)
+                    plan.model_input_tokens = max(
+                        0,
+                        plan.model_input_tokens
+                        - row.reserved_input_tokens
+                        + actual_input,
+                    )
+                    plan.model_output_tokens = max(
+                        0,
+                        plan.model_output_tokens
+                        - row.reserved_output_tokens
+                        + actual_output,
+                    )
+                    plan.model_estimated_cost_microusd = max(
+                        0,
+                        plan.model_estimated_cost_microusd
+                        - row.reserved_cost_microusd
+                        + actual_cost,
+                    )
+                    row.actual_input_tokens = actual_input
+                    row.actual_output_tokens = actual_output
+                    row.actual_cost_microusd = (
+                        actual_cost if estimated_cost_microusd is not None else None
+                    )
+                    row.status = "settled"
+                    budget_multiplier = plan.model_budget_resume_count + 1
+                    if overrun_reason is None and (
+                        plan.model_input_tokens
+                        > plan.max_model_input_tokens * budget_multiplier
+                    ):
+                        overrun_reason = "input_tokens"
+                    elif overrun_reason is None and (
+                        plan.model_output_tokens
+                        > plan.max_model_output_tokens * budget_multiplier
+                    ):
+                        overrun_reason = "output_tokens"
+                    elif overrun_reason is None and (
+                        plan.max_model_cost_microusd is not None
+                        and plan.model_estimated_cost_microusd
+                        > plan.max_model_cost_microusd * budget_multiplier
+                    ):
+                        overrun_reason = "estimated_cost"
+                # 结算时再次检查墙上时钟。HTTP 层的 timeout 只是尽力而为，
+                # 最后一个响应可能在截止线之后才返回；这种结果不能绕过硬预算。
+                if overrun_reason is None and elapsed_ms >= max_duration_ms:
+                    overrun_reason = "duration"
+                if overrun_reason is not None:
+                    newly_exhausted = plan.model_budget_exhausted_reason is None
+                    plan.model_budget_exhausted_at = (
+                        plan.model_budget_exhausted_at or now
+                    )
+                    plan.model_budget_exhausted_reason = overrun_reason
+                    if newly_exhausted:
+                        error = ModelBudgetExceededError(
+                            overrun_reason,
+                            details={
+                                "review_plan_id": plan.id,
+                                "model_http_calls": plan.model_http_calls,
+                                "model_input_tokens": plan.model_input_tokens,
+                                "model_output_tokens": plan.model_output_tokens,
+                                "model_estimated_cost_microusd": (
+                                    plan.model_estimated_cost_microusd
+                                ),
+                                "budget_resume_count": plan.model_budget_resume_count,
+                                "elapsed_ms": elapsed_ms,
+                                "max_duration_ms": max_duration_ms,
+                                "settled_after_deadline": (
+                                    overrun_reason == "duration"
+                                ),
+                            },
+                        )
+                        self._add_event(
+                            session,
+                            None,
+                            "review.model.budget_exhausted",
+                            f"{plan.id}:{overrun_reason}:{reservation.sequence}",
+                            now,
+                            error=error.error,
+                            aggregate_id=plan.review_run_id,
+                            extra_payload={
+                                "review_plan_id": plan.id,
+                                "budget_reason": overrun_reason,
+                                "settled_after_deadline": (
+                                    overrun_reason == "duration"
+                                ),
+                            },
+                        )
+                        budget_error = error
+                session.commit()
+            except ModelReviewConflictError:
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model budget could not be settled") from exc
+        if budget_error is not None:
+            raise budget_error
+
+    def pause_for_model_budget(
+        self,
+        lease: ReviewTaskLease,
+        error: SafeError,
+    ) -> None:
+        """把预算超限任务转为人工暂停，并保留原工作流节点。"""
+
+        if error.code is not ErrorCode.MODEL_BUDGET_EXCEEDED:
+            raise ValueError("only model budget errors can pause this workflow")
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                task, run = self._locked_owned_task_with_run(session, lease, now)
+                current = ExecutionStatus(task.workflow_status)
+                paused_from = (
+                    current
+                    if current
+                    in {ExecutionStatus.AGENT_BATCHES, ExecutionStatus.AGGREGATING}
+                    else ExecutionStatus.AGENT_BATCHES
+                )
+                task.last_error = error.safe_message[:4000]
+                task.last_error_code = error.code.value
+                task.last_error_retryable = False
+                task.last_error_details = dict(error.details)
+                task.workflow_paused_from = paused_from.value
+                run.workflow_paused_from = paused_from.value
+                task.workflow_status = ExecutionStatus.PAUSED.value
+                run.workflow_status = ExecutionStatus.PAUSED.value
+                task.execution_status = ExecutionStatus.READY_FOR_REVIEW.value
+                run.execution_status = ExecutionStatus.READY_FOR_REVIEW.value
+                task.available_at = now
+                task.lease_owner = None
+                task.lease_expires_at = None
+                task.claimed_from_status = None
+                task.updated_at = now
+                run.updated_at = now
+                self._add_event(
+                    session,
+                    task,
+                    "review.workflow.pause",
+                    f"model-budget:{lease.review_plan_id}",
+                    now,
+                    error=error,
+                    extra_payload={
+                        "action": "pause",
+                        "actor": "model_budget",
+                        "previous_status": paused_from.value,
+                        "new_status": ExecutionStatus.PAUSED.value,
+                        "paused_from": paused_from.value,
+                        "review_plan_id": lease.review_plan_id,
+                    },
+                )
+                session.commit()
+            except TaskLeaseLostError:
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model budget pause could not be persisted") from exc
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
         """供兼容测试路径把任务直接推进到 ``waiting_for_ci``。
@@ -2550,6 +3298,8 @@ class SqlAlchemyReviewTaskQueue:
             )
             .values(
                 execution_status=ExecutionStatus.SUPERSEDED.value,
+                workflow_status=ExecutionStatus.SUPERSEDED.value,
+                workflow_paused_from=None,
                 lease_owner=None,
                 lease_expires_at=None,
                 claimed_from_status=None,
@@ -2565,11 +3315,16 @@ class SqlAlchemyReviewTaskQueue:
             )
             .values(
                 execution_status=ExecutionStatus.SUPERSEDED.value,
+                workflow_status=ExecutionStatus.SUPERSEDED.value,
+                workflow_paused_from=None,
+                publish_attempt_token=None,
                 coverage_status=CoverageStatus.STALE.value,
                 updated_at=now,
             )
             .execution_options(synchronize_session=False)
         )
+        if not isinstance(result, CursorResult):
+            raise TaskQueueError("superseded review update returned no row count")
         return max(0, int(result.rowcount or 0))
 
     @staticmethod
@@ -2780,7 +3535,7 @@ class SqlAlchemyReviewTaskQueue:
         event_identity = (
             f"{event_type}:{task.id if task is not None else aggregate_id}:"
             f"{key_suffix}:{event_id}"
-        ).encode("utf-8")
+        ).encode()
         session.add(
             OutboxEventRecord(
                 id=event_id,

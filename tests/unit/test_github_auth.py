@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,8 +10,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from domain.security import ErrorCode, SafeApplicationError
 from services.github import GitHubApiClient, GitHubClientSettings
-from services.github_auth import GitHubAppSettings, GitHubAppTokenProvider
-
+from services.github_auth import (
+    GITHUB_PUBLISH_TOKEN_SCOPE,
+    GITHUB_READ_TOKEN_SCOPE,
+    GitHubAppSettings,
+    GitHubAppTokenProvider,
+    GitHubTokenScope,
+)
 
 APP_ID = 4699977
 INSTALLATION_ID = 156153422
@@ -49,6 +55,14 @@ def test_app_jwt_requests_and_caches_short_lived_installation_token(
         assert request.url.path == (
             f"/app/installations/{INSTALLATION_ID}/access_tokens"
         )
+        assert json.loads(request.content) == {
+            "permissions": {
+                "checks": "read",
+                "contents": "read",
+                "pull_requests": "read",
+                "statuses": "read",
+            }
+        }
         authorization = request.headers["authorization"]
         assert authorization.startswith("Bearer ")
         claims = jwt.decode(
@@ -81,6 +95,7 @@ def test_app_jwt_requests_and_caches_short_lived_installation_token(
             app_id=APP_ID,
             private_key_file=private_key_file,
         ),
+        GITHUB_READ_TOKEN_SCOPE,
         clock=lambda: NOW,
     )
 
@@ -124,6 +139,7 @@ def test_private_key_reader_rejects_oversized_file_before_signing(
                 private_key_file=private_key_file,
                 max_private_key_bytes=1024,
             ),
+            GITHUB_READ_TOKEN_SCOPE,
         )
     except ValueError as error:
         assert "private key file size" in str(error)
@@ -154,9 +170,26 @@ def test_installation_token_expiry_must_include_timezone(tmp_path: Path) -> None
     provider = GitHubAppTokenProvider(
         api,
         GitHubAppSettings(app_id=APP_ID, private_key_file=private_key_file),
+        GITHUB_PUBLISH_TOKEN_SCOPE,
         clock=lambda: NOW,
     )
 
     with pytest.raises(SafeApplicationError) as captured:
         provider.get_token(INSTALLATION_ID)
     assert captured.value.error.code is ErrorCode.GITHUB_INVALID_RESPONSE
+
+
+def test_token_scope_rejects_unknown_or_duplicate_permissions() -> None:
+    with pytest.raises(ValueError, match="permissions"):
+        GitHubTokenScope((("administration", "write"),))
+    with pytest.raises(ValueError, match="permissions"):
+        GitHubTokenScope((("contents", "read"), ("contents", "write")))
+
+
+def test_publish_scope_contains_only_required_write_permissions() -> None:
+    assert GITHUB_PUBLISH_TOKEN_SCOPE.request_body() == {
+        "permissions": {
+            "checks": "write",
+            "pull_requests": "write",
+        }
+    }

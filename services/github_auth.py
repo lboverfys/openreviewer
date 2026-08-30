@@ -1,9 +1,9 @@
 """GitHub App JWT 与短期 installation token 身份服务。"""
 
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import os
 from pathlib import Path
 
 import jwt
@@ -11,6 +11,41 @@ from jwt.exceptions import InvalidKeyError
 
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.github import GitHubApiClient
+from services.github_access import GitHubAccessPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubTokenScope:
+    """installation token 可申请的固定最小权限集合。"""
+
+    permissions: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        allowed_names = {"checks", "contents", "pull_requests", "statuses"}
+        names = [name for name, _level in self.permissions]
+        if (
+            not self.permissions
+            or len(names) != len(set(names))
+            or any(name not in allowed_names for name in names)
+            or any(level not in {"read", "write"} for _name, level in self.permissions)
+        ):
+            raise ValueError("GitHub installation token permissions are invalid")
+
+    def request_body(self) -> dict[str, dict[str, str]]:
+        return {"permissions": dict(self.permissions)}
+
+
+GITHUB_READ_TOKEN_SCOPE = GitHubTokenScope(
+    permissions=(
+        ("checks", "read"),
+        ("contents", "read"),
+        ("pull_requests", "read"),
+        ("statuses", "read"),
+    )
+)
+GITHUB_PUBLISH_TOKEN_SCOPE = GitHubTokenScope(
+    permissions=(("checks", "write"), ("pull_requests", "write"))
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,11 +110,15 @@ class GitHubAppTokenProvider:
         self,
         api: GitHubApiClient,
         settings: GitHubAppSettings,
+        scope: GitHubTokenScope,
         *,
+        access_policy: GitHubAccessPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._api = api
         self._settings = settings
+        self._scope = scope
+        self._access_policy = access_policy
         self._clock = clock or (lambda: datetime.now(UTC))
         self._private_key = self._read_private_key()
         self._cache: dict[int, InstallationToken] = {}
@@ -92,6 +131,17 @@ class GitHubAppTokenProvider:
     def get_token(self, installation_id: int) -> str:
         if installation_id <= 0:
             raise ValueError("GitHub installation ID must be positive")
+        if (
+            self._access_policy is not None
+            and not self._access_policy.allows_installation(installation_id)
+        ):
+            raise SafeApplicationError(
+                SafeError(
+                    code=ErrorCode.GITHUB_PERMISSION_DENIED,
+                    safe_message="GitHub installation 不在允许范围内",
+                    retryable=False,
+                )
+            )
         now = self._now()
         cached = self._cache.get(installation_id)
         if (
@@ -105,6 +155,7 @@ class GitHubAppTokenProvider:
             "POST",
             f"/app/installations/{installation_id}/access_tokens",
             bearer_token=app_jwt,
+            json_body=self._scope.request_body(),
             max_response_bytes=64 * 1024,
         )
         token = self._parse_token_response(result.payload, now)

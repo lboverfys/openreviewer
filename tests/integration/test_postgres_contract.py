@@ -1,11 +1,14 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from threading import Barrier
+from uuid import uuid4
 
+import pytest
 from alembic import command
 from alembic.config import Config
-import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 
 from domain.enums import (
@@ -28,7 +31,7 @@ from domain.github import (
     PullRequestFile,
     PullRequestSnapshot,
 )
-from domain.models import PullRequestWebhook, ReviewRequest
+from domain.model_budget import ModelBudgetPolicy
 from domain.model_review import (
     ModelFindingCandidate,
     ModelFindingLocation,
@@ -37,24 +40,30 @@ from domain.model_review import (
     ModelTokenUsage,
     materialize_findings,
 )
+from domain.models import PullRequestWebhook, ReviewRequest
 from domain.review_planning import RepositoryRule, RepositoryRulesSnapshot
 from persistence.database import Database
 from persistence.models import (
     Base,
     GitHubWebhookDeliveryRecord,
     ModelCallRecord,
+    ModelHttpCallRecord,
+    OutboxEventRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
 )
+from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
-from services.reviews import ReviewService
+from services.model_budget import ModelBudgetRequest
 from services.review_management import ReviewAction
-from services.review_planning import DeterministicReviewPlanner
+from services.review_planning import DeterministicReviewPlanner, ReviewPlanningSettings
+from services.reviews import ReviewService
+from services.task_queue import ModelBudgetExceededError
 
 
 @pytest.fixture(scope="module")
@@ -386,5 +395,218 @@ def test_postgres_review_plan_is_claimed_and_saved_atomically(
         assert task.claimed_from_status is None
         assert session.scalar(select(ModelCallRecord.id)) == stored_model.model_call_id
         assert session.scalar(select(ReviewFindingRecord.verification_status)) == (
-            "unverified"
+            "verified"
         )
+
+
+def _prepare_postgres_budget_lease(database: Database):
+    now = datetime.now(UTC)
+    head_sha = "9" * 40
+    ReviewService(
+        SqlAlchemyReviewRepository(database.sessions)
+    ).submit(
+        ReviewRequest(
+            installation_id=32,
+            repository_id=79,
+            repository="lboverfys/BudgetConcurrencyContract",
+            pull_request_number=503,
+            head_sha=head_sha,
+        ),
+        "postgres-budget-concurrency",
+    )
+    queue = SqlAlchemyReviewTaskQueue(database.sessions)
+    context_lease = queue.claim_next("worker-budget-pg", timedelta(seconds=30))
+    assert context_lease is not None
+    changed_file = PullRequestFile(
+        path="src/budget.py",
+        status=ChangedFileStatus.MODIFIED,
+        blob_sha="7" * 40,
+        additions=1,
+        deletions=1,
+        changes=2,
+        patch_state=PatchState.AVAILABLE,
+        patch="@@ -1 +1 @@\n-old\n+new\n",
+    )
+    context = GitHubReviewContext(
+        pull_request=PullRequestSnapshot(
+            repository_id=79,
+            repository="lboverfys/BudgetConcurrencyContract",
+            pull_request_number=503,
+            author_login="contributor",
+            html_url=(
+                "https://github.com/lboverfys/BudgetConcurrencyContract/pull/503"
+            ),
+            head_repository="contributor/BudgetConcurrencyContract",
+            head_ref="feature/budget-concurrency",
+            base_repository="lboverfys/BudgetConcurrencyContract",
+            base_ref="main",
+            base_sha="8" * 40,
+            head_sha=head_sha,
+            state=PullRequestState.OPEN,
+            draft=False,
+            title="Protect model budget under concurrency",
+            changed_files=1,
+            updated_at=now,
+        ),
+        files=(changed_file,),
+        files_complete=True,
+        diff_complete=True,
+        ci=CiSnapshot(
+            head_sha=head_sha,
+            state=CiState.SUCCESS,
+            checks=(),
+            complete=True,
+            checked_at=now,
+        ),
+    )
+    assert queue.store_github_context(
+        context_lease,
+        context,
+        ci_poll_interval=timedelta(seconds=30),
+        ci_wait_timeout=timedelta(hours=1),
+    ) is ExecutionStatus.READY_FOR_REVIEW
+
+    planning_lease = queue.claim_next("worker-budget-pg", timedelta(seconds=30))
+    assert planning_lease is not None
+    planning_input = queue.load_planning_input(planning_lease)
+    rule_content = "# Budget concurrency contract\n"
+    encoded_rule = rule_content.encode("utf-8")
+    rules = RepositoryRulesSnapshot(
+        repository_id=79,
+        repository="lboverfys/BudgetConcurrencyContract",
+        head_sha=head_sha,
+        rules=(
+            RepositoryRule(
+                path="AGENTS.md",
+                scope=None,
+                blob_sha="6" * 40,
+                content=rule_content,
+                content_sha256=sha256(encoded_rule).hexdigest(),
+                byte_size=len(encoded_rule),
+            ),
+        ),
+        incomplete_files=(),
+        issues=(),
+        candidate_count=1,
+        requested_candidate_count=1,
+    )
+    plan = DeterministicReviewPlanner(
+        ReviewPlanningSettings(
+            model_budget=ModelBudgetPolicy(
+                max_http_calls=1,
+                max_input_tokens=1_000,
+                max_output_tokens=256,
+                max_duration_seconds=30,
+            )
+        )
+    ).plan(planning_input.target, planning_input.files, rules)
+    stored = queue.store_review_plan(planning_lease, rules, plan)
+    model_lease = queue.claim_next("worker-budget-pg", timedelta(seconds=30))
+    assert model_lease is not None
+    assert model_lease.review_plan_id == stored.plan_id
+    assert stored.plan_id is not None
+    return queue, model_lease, stored.plan_id
+
+
+def test_postgres_outbox_claim_skips_a_row_locked_by_another_worker(
+    postgres_database: Database,
+) -> None:
+    occurred_at = datetime(2000, 1, 1, tzinfo=UTC)
+    claim_at = occurred_at + timedelta(seconds=10)
+    event_ids = (str(uuid4()), str(uuid4()))
+    with postgres_database.sessions() as session, session.begin():
+        for index, event_id in enumerate(event_ids):
+            session.add(
+                OutboxEventRecord(
+                    id=event_id,
+                    event_key=f"postgres-outbox-lock:{event_id}",
+                    aggregate_type="review_run",
+                    aggregate_id=event_id,
+                    event_type="review.postgres_lock_contract",
+                    payload={"index": index},
+                    occurred_at=occurred_at + timedelta(seconds=index),
+                    publish_attempts=0,
+                    next_publish_attempt_at=occurred_at,
+                )
+            )
+
+    repository = SqlAlchemyOperationsRepository(
+        postgres_database.sessions,
+        clock=lambda: claim_at,
+    )
+    with postgres_database.sessions() as blocker:
+        transaction = blocker.begin()
+        locked = blocker.scalar(
+            select(OutboxEventRecord)
+            .where(OutboxEventRecord.id == event_ids[0])
+            .with_for_update()
+        )
+        assert locked is not None
+        claimed = repository.claim_outbox(
+            "postgres-outbox-worker",
+            batch_size=1,
+            lease_duration=timedelta(seconds=30),
+        )
+        transaction.rollback()
+
+    assert tuple(item.id for item in claimed) == (event_ids[1],)
+    with postgres_database.sessions() as session, session.begin():
+        rows = tuple(
+            session.scalars(
+                select(OutboxEventRecord).where(OutboxEventRecord.id.in_(event_ids))
+            )
+        )
+        for row in rows:
+            row.published_at = claim_at
+            row.publish_lease_owner = None
+            row.publish_lease_expires_at = None
+
+
+def test_postgres_model_budget_allows_only_one_concurrent_reservation(
+    postgres_database: Database,
+) -> None:
+    queue, lease, plan_id = _prepare_postgres_budget_lease(postgres_database)
+    request = ModelBudgetRequest(
+        provider="openai",
+        api_protocol="responses",
+        model="postgres-budget-contract",
+        request_bytes=100,
+        input_token_upper_bound=100,
+        output_token_upper_bound=100,
+        cost_upper_bound_microusd=None,
+    )
+    barrier = Barrier(2)
+
+    def reserve(agent: str):
+        barrier.wait()
+        try:
+            return queue.reserve_model_budget(lease, request, agent=agent)
+        except ModelBudgetExceededError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (
+            executor.submit(reserve, "security"),
+            executor.submit(reserve, "logic"),
+        )
+        results = tuple(future.result(timeout=10) for future in futures)
+
+    failures = tuple(
+        item for item in results if isinstance(item, ModelBudgetExceededError)
+    )
+    successes = tuple(
+        item for item in results if not isinstance(item, ModelBudgetExceededError)
+    )
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert failures[0].error.details["budget_reason"] == "http_calls"
+    with postgres_database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        assert plan is not None
+        assert plan.model_http_calls == 1
+        assert plan.model_budget_exhausted_reason == "http_calls"
+        assert session.scalar(
+            select(func.count())
+            .select_from(ModelHttpCallRecord)
+            .where(ModelHttpCallRecord.review_plan_id == plan_id)
+        ) == 1

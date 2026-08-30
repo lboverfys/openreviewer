@@ -4,9 +4,11 @@ import httpx
 import pytest
 
 from apps.api.main import create_app
+from services.operations import ReadinessSnapshot
+from services.telemetry import TelemetryRegistry
 
 
-async def get_from_app(path: str) -> httpx.Response:
+async def get_from_app(path: str, application=None) -> httpx.Response:
     """通过内存 ASGI 传输向新建 API 应用发送 GET 请求。
 
     参数：
@@ -18,7 +20,7 @@ async def get_from_app(path: str) -> httpx.Response:
     该辅助函数不绑定端口、不启动 Uvicorn，也不读取真实浏览器状态；它直接调用
     ASGI 应用，适合验证路由和中间件。每次调用创建独立客户端并在退出时关闭。
     """
-    transport = httpx.ASGITransport(app=create_app())
+    transport = httpx.ASGITransport(app=application or create_app())
     async with httpx.AsyncClient(
         transport=transport,
         base_url="http://testserver",
@@ -41,6 +43,69 @@ def test_healthz_returns_minimal_public_status() -> None:
         "status": "ok",
         "service": "openreviewer",
     }
+
+
+class StubOperationsService:
+    def __init__(self, snapshot: ReadinessSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def readiness(self) -> ReadinessSnapshot:
+        return self._snapshot
+
+    def metrics(self) -> str:
+        return "# TYPE openreviewer_workers_fresh gauge\nopenreviewer_workers_fresh 1\n"
+
+
+def test_readyz_requires_database_migration_and_worker() -> None:
+    ready_app = create_app(
+        operations_service=StubOperationsService(
+            ReadinessSnapshot(database=True, migration=True, worker=True)
+        )
+    )
+    ready = asyncio.run(get_from_app("/readyz", ready_app))
+
+    assert ready.status_code == 200
+    assert ready.json() == {
+        "status": "ready",
+        "checks": {"database": "ok", "migration": "ok", "worker": "ok"},
+    }
+
+    unavailable_app = create_app(
+        operations_service=StubOperationsService(
+            ReadinessSnapshot(database=True, migration=False, worker=False)
+        )
+    )
+    unavailable = asyncio.run(get_from_app("/readyz", unavailable_app))
+
+    assert unavailable.status_code == 503
+    assert unavailable.json()["status"] == "not_ready"
+    assert unavailable.json()["checks"] == {
+        "database": "ok",
+        "migration": "failed",
+        "worker": "failed",
+    }
+
+
+def test_metrics_returns_prometheus_text_without_authentication() -> None:
+    telemetry = TelemetryRegistry()
+    application = create_app(
+        operations_service=StubOperationsService(
+            ReadinessSnapshot(database=True, migration=True, worker=True)
+        ),
+        telemetry_registry=telemetry,
+    )
+
+    asyncio.run(get_from_app("/healthz", application))
+    response = asyncio.run(get_from_app("/metrics", application))
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "openreviewer_workers_fresh 1" in response.text
+    assert (
+        'openreviewer_http_server_request_duration_seconds_count{method="GET",'
+        'route="/healthz",status_class="2xx"} 1'
+        in response.text
+    )
 
 
 @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])

@@ -7,10 +7,12 @@ from services.auth import (
     AuthConfigurationError,
     AuthService,
     AuthSettings,
+    InMemorySessionStore,
     InvalidSessionError,
     LoginAttemptLimiter,
     LoginRateLimitError,
 )
+from services.rbac import AccessRole
 from tests.support import (
     TEST_HASHER,
     TEST_PASSWORD,
@@ -105,6 +107,40 @@ def test_tampered_and_expired_sessions_are_rejected() -> None:
         service.verify_session(token)
 
 
+def test_revoked_session_is_rejected() -> None:
+    """服务端吊销后，即使客户端仍持有签名正确的 Cookie 也必须失效。"""
+
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    service = AuthService(
+        settings(),
+        password_hasher=TEST_HASHER,
+        clock=MutableClock(now),
+    )
+    token, _ = service.create_session()
+    service.revoke_session(token)
+
+    with pytest.raises(InvalidSessionError, match="revoked"):
+        service.verify_session(token)
+
+
+def test_all_sessions_can_be_revoked_without_touching_other_users() -> None:
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    store = InMemorySessionStore()
+    service = AuthService(
+        settings(),
+        password_hasher=TEST_HASHER,
+        clock=MutableClock(now),
+        session_store=store,
+    )
+    first, _ = service.create_session()
+    second, _ = service.create_session()
+    assert service.revoke_all_sessions(TEST_USERNAME) == 2
+    with pytest.raises(InvalidSessionError, match="revoked"):
+        service.verify_session(first)
+    with pytest.raises(InvalidSessionError, match="revoked"):
+        service.verify_session(second)
+
+
 def test_auth_settings_load_secrets_from_files(tmp_path: Path) -> None:
     """验证容器 secret 文件可以提供密码哈希和会话密钥。
 
@@ -132,6 +168,94 @@ def test_auth_settings_load_secrets_from_files(tmp_path: Path) -> None:
     assert loaded.password_hash == TEST_PASSWORD_HASH
     assert loaded.session_secret == b"s" * 48
     assert loaded.cookie_name == "openreviewer_session"
+
+
+def test_session_secret_rotation_accepts_old_tokens_and_signs_with_current_key() -> None:
+    """轮换窗口内接受旧 Token，但新 Token 只能由当前密钥验证。"""
+
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    clock = MutableClock(now)
+    store = InMemorySessionStore()
+    old_secret = b"old-session-secret-is-at-least-32-bytes-long"
+    current_secret = b"new-session-secret-is-at-least-32-bytes-long"
+    old_settings = AuthSettings(
+        username=TEST_USERNAME,
+        password_hash=TEST_PASSWORD_HASH,
+        session_secret=old_secret,
+        cookie_secure=False,
+    )
+    rotated_settings = AuthSettings(
+        username=TEST_USERNAME,
+        password_hash=TEST_PASSWORD_HASH,
+        session_secret=current_secret,
+        previous_session_secrets=(old_secret,),
+        cookie_secure=False,
+    )
+    old_service = AuthService(old_settings, clock=clock, session_store=store)
+    rotated_service = AuthService(rotated_settings, clock=clock, session_store=store)
+
+    old_token, _ = old_service.create_session()
+    assert rotated_service.verify_session(old_token).username == TEST_USERNAME
+
+    current_token, _ = rotated_service.create_session()
+    with pytest.raises(InvalidSessionError, match="signature"):
+        old_service.verify_session(current_token)
+
+
+def test_auth_settings_load_and_validate_previous_session_secrets() -> None:
+    """旧会话密钥列表必须是有界、无重复的 JSON 数组。"""
+
+    loaded = AuthSettings.from_environment(
+        {
+            "OPENREVIEWER_ADMIN_USERNAME": TEST_USERNAME,
+            "OPENREVIEWER_ADMIN_PASSWORD_HASH": TEST_PASSWORD_HASH,
+            "OPENREVIEWER_SESSION_SECRET": "n" * 48,
+            "OPENREVIEWER_SESSION_PREVIOUS_SECRETS_JSON": '["o' + "o" * 47 + '"]',
+        }
+    )
+
+    assert loaded.previous_session_secrets == (b"o" * 48,)
+
+    with pytest.raises(AuthConfigurationError, match="unique"):
+        AuthSettings.from_environment(
+            {
+                "OPENREVIEWER_ADMIN_USERNAME": TEST_USERNAME,
+                "OPENREVIEWER_ADMIN_PASSWORD_HASH": TEST_PASSWORD_HASH,
+                "OPENREVIEWER_SESSION_SECRET": "n" * 48,
+                "OPENREVIEWER_SESSION_PREVIOUS_SECRETS_JSON": '["n' + "n" * 47 + '"]',
+            }
+        )
+
+
+def test_additional_user_scope_is_carried_by_signed_session() -> None:
+    configured = AuthSettings.from_environment(
+        {
+            "OPENREVIEWER_ADMIN_USERNAME": TEST_USERNAME,
+            "OPENREVIEWER_ADMIN_PASSWORD_HASH": TEST_PASSWORD_HASH,
+            "OPENREVIEWER_SESSION_SECRET": "s" * 48,
+            "OPENREVIEWER_AUTH_USERS_JSON": (
+                '[{"username":"reviewer","password_hash":"'
+                + TEST_PASSWORD_HASH
+                + '","role":"viewer","scope":{"installation_ids":[10],'
+                '"organizations":["lboverfys"],"repositories":[]}}]'
+            ),
+        }
+    )
+    reviewer = next(user for user in configured.users if user.username == "reviewer")
+    assert reviewer.role is AccessRole.VIEWER
+    assert reviewer.resource_scope.allows(10, "lboverfys/NiuMa") is True
+    assert reviewer.resource_scope.allows(10, "other/secret") is False
+
+    service = AuthService(
+        configured,
+        password_hasher=TEST_HASHER,
+    )
+    authenticated = service.authenticate("reviewer", TEST_PASSWORD)
+    assert authenticated is not None
+    token, principal = service.create_session(authenticated)
+    verified = service.verify_session(token)
+    assert principal.resource_scope == verified.resource_scope
+    assert verified.resource_scope.allows(10, "lboverfys/NiuMa") is True
 
 
 def test_auth_settings_reject_plaintext_password_configuration() -> None:
@@ -177,3 +301,27 @@ def test_login_failures_are_limited_by_sliding_window() -> None:
 
     clock.value = now + timedelta(minutes=11)
     limiter.check("client|user")
+
+
+def test_in_memory_login_limiter_does_not_create_unknown_keys() -> None:
+    """只读检查未知键时不应留下空队列，避免随机键耗尽内存。"""
+
+    limiter = LoginAttemptLimiter(maximum_keys=2)
+
+    limiter.check("unknown-1")
+    limiter.check("unknown-2")
+
+    assert len(limiter._failures) == 0
+
+
+def test_in_memory_login_limiter_evicts_old_keys_at_capacity() -> None:
+    """超过容量时应淘汰最久未访问的键，而不是无限增长。"""
+
+    limiter = LoginAttemptLimiter(maximum_failures=3, maximum_keys=2)
+    limiter.record_failure("first")
+    limiter.record_failure("second")
+    limiter.record_failure("third")
+
+    assert len(limiter._failures) == 2
+    assert "first" not in limiter._failures
+    assert set(limiter._failures) == {"second", "third"}

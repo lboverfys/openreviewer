@@ -10,10 +10,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Test Python 3.12
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16.10-bookworm
@@ -31,56 +36,223 @@ jobs:
     env:
       OPENREVIEWER_TEST_POSTGRES_URL: >-
         postgresql+psycopg://openreviewer_test:ci-only-postgres-password@127.0.0.1:5432/openreviewer_test
+      PIP_CONSTRAINT: ${{ github.workspace }}/requirements.lock
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.lock
       - name: Install dependencies
-        run: python -m pip install ".[dev]"
-      - name: Run tests
-        run: python -m pytest -q -W error
+        run: |
+          python -m pip install "pip==26.2.1"
+          python -m pip install ".[dev]"
+      - name: Run Ruff lint gate
+        run: python -m ruff check apps domain persistence services tests
+      - name: Run Mypy type gate
+        run: python -m mypy apps domain persistence services
+      - name: Verify OpenAPI snapshot
+        run: python -m apps.maintenance.export_openapi --check docs/openapi.json
+      - name: Verify real evaluation schema
+        run: >-
+          python -m apps.maintenance.export_real_evaluation_schema
+          --check docs/contracts/real-evaluation.schema.json
+      - name: Audit Python dependencies
+        run: python -m pip_audit
+      - name: Run recorded-output pipeline regression gate
+        run: python -m apps.maintenance.evaluate_golden_set
+      - name: Run tests and coverage gate
+        run: >-
+          python -m pytest -q -W error
+          --cov=apps --cov=domain --cov=persistence --cov=services
+          --cov-report=term-missing
 
   web-test:
     name: Test React on Node 22.19
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22.19.0"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+      - name: Verify generated API types
+        run: npm run check:api-types
       - name: Run typecheck
         run: npm run typecheck
       - name: Run tests
         run: npm test
+      - name: Run frontend coverage gate
+        run: npm run test:coverage
       - name: Build frontend
         run: npm run build
 
+  dependency-review:
+    name: Review dependency changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
+  container-verify:
+    name: Verify container builds and source security
+    needs: [test, web-test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Prepare isolated Compose smoke configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          secret_dir="$RUNNER_TEMP/openreviewer-compose-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$secret_dir"
+          install -d -m 700 "$secret_dir"
+          printf '[]\n' > "$secret_dir/auth-users.json"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+            -out "$secret_dir/github-app-private-key.pem" >/dev/null 2>&1
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=localhost' \
+            -keyout "$secret_dir/openreviewer.key" \
+            -out "$secret_dir/openreviewer.crt" >/dev/null 2>&1
+          openssl rand -base64 32 > "$secret_dir/ai-config-key"
+          chmod 600 "$secret_dir"/*
+          {
+            printf 'OPENREVIEWER_CI_SECRET_DIR=%s\n' "$secret_dir"
+            printf 'OPENREVIEWER_IMAGE=openreviewer-api:ci\n'
+            printf 'OPENREVIEWER_WEB_IMAGE=openreviewer-web:ci\n'
+            printf 'OPENREVIEWER_POSTGRES_PASSWORD=ci-only-postgres-password\n'
+            printf 'OPENREVIEWER_ADMIN_USERNAME=ci-admin\n'
+            printf '%s\n' 'OPENREVIEWER_ADMIN_PASSWORD_HASH=$argon2id$v=19$m=8192,t=1,p=1$ec3W1UGaHBuO8uXQ7VDIbQ$j5tcBBAFKzeTXLWwpveKhOqodn9A7n1ceS6ImrZCVUY'
+            printf 'OPENREVIEWER_AUTH_USERS_FILE=%s/auth-users.json\n' "$secret_dir"
+            printf 'OPENREVIEWER_SESSION_SECRET=ci-session-secret-at-least-32-bytes-long\n'
+            printf 'OPENREVIEWER_GITHUB_WEBHOOK_SECRET=ci-webhook-secret-at-least-32-bytes-long\n'
+            printf 'OPENREVIEWER_GITHUB_APP_ID=1\n'
+            printf 'OPENREVIEWER_GITHUB_PRIVATE_KEY_FILE=%s/github-app-private-key.pem\n' "$secret_dir"
+            printf 'OPENREVIEWER_GITHUB_ALLOWED_INSTALLATION_IDS=1\n'
+            printf 'OPENREVIEWER_AI_CONFIG_KEY_FILE=%s/ai-config-key\n' "$secret_dir"
+            printf 'OPENREVIEWER_TLS_CERT_FILE=%s/openreviewer.crt\n' "$secret_dir"
+            printf 'OPENREVIEWER_TLS_KEY_FILE=%s/openreviewer.key\n' "$secret_dir"
+            printf 'OPENREVIEWER_ENV=test\n'
+          } >> "$GITHUB_ENV"
+      - name: Validate deployment configuration and shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n deployment/deploy.sh deployment/backup.sh deployment/restore.sh
+          docker compose -f deployment/compose.yml config --quiet
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Scan source and deployment configuration
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Build API and Worker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: openreviewer-api:ci
+          cache-from: type=gha,scope=openreviewer-api
+          cache-to: type=gha,mode=max,scope=openreviewer-api
+      - name: Build web image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          push: false
+          load: true
+          tags: openreviewer-web:ci
+          cache-from: type=gha,scope=openreviewer-web
+          cache-to: type=gha,mode=max,scope=openreviewer-web
+      - name: Start and verify the complete Compose stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose=(docker compose -f deployment/compose.yml)
+          "${compose[@]}" up -d --wait --wait-timeout 240
+          test "$(docker inspect --format '{{.State.Health.Status}}' openreviewer-postgres)" = healthy
+          test "$(docker inspect --format '{{.State.ExitCode}}' openreviewer-migrate)" = 0
+          test "$(docker inspect --format '{{.State.Health.Status}}' openreviewer-api)" = healthy
+          test "$(docker inspect --format '{{.State.Health.Status}}' openreviewer-web)" = healthy
+          mapfile -t workers < <("${compose[@]}" ps --all --quiet worker)
+          test "${#workers[@]}" -eq 1
+          test "$(docker inspect --format '{{.State.Health.Status}}' "${workers[0]}")" = healthy
+          curl --fail --silent --show-error http://127.0.0.1:18090/healthz >/dev/null
+          curl --fail --silent --show-error http://127.0.0.1:18090/readyz >/dev/null
+          curl --fail --silent --show-error http://127.0.0.1:18090/metrics >/dev/null
+          curl --fail --silent --show-error --insecure https://127.0.0.1:18443/healthz >/dev/null
+          docker exec openreviewer-api python -c \
+            "from urllib.request import urlopen; assert urlopen('http://prometheus:9090/-/ready', timeout=5).status == 200"
+          docker exec openreviewer-api python -c \
+            "from urllib.request import urlopen; assert urlopen('http://alertmanager:9093/-/ready', timeout=5).status == 200"
+          docker exec openreviewer-api python -c \
+            "from urllib.request import urlopen; assert urlopen('http://grafana:3000/api/health', timeout=5).status == 200"
+      - name: Clean Compose smoke resources
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f deployment/compose.yml down --volumes --remove-orphans || true
+          case "${OPENREVIEWER_CI_SECRET_DIR:-}" in
+            "$RUNNER_TEMP"/openreviewer-compose-smoke-*)
+              rm -rf -- "$OPENREVIEWER_CI_SECRET_DIR"
+              ;;
+            "") ;;
+            *) echo "拒绝清理意外的临时目录" >&2; exit 1 ;;
+          esac
+
   publish:
     name: Publish GHCR images
-    needs: [test, web-test]
+    needs: [test, web-test, container-verify]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    outputs:
+      api_digest: ${{ steps.api-image.outputs.digest }}
+      web_digest: ${{ steps.web-image.outputs.digest }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish API and Worker image
-        uses: docker/build-push-action@v6
+        id: api-image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Dockerfile
@@ -88,12 +260,16 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.sha }}
             ghcr.io/${{ github.repository }}:main
-          provenance: false
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=openreviewer-api
+          cache-to: type=gha,mode=max,scope=openreviewer-api
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
       - name: Publish web image
-        uses: docker/build-push-action@v6
+        id: web-image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./web
           file: ./web/Dockerfile
@@ -101,16 +277,46 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}-web:${{ github.sha }}
             ghcr.io/${{ github.repository }}-web:main
-          provenance: false
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=openreviewer-web
+          cache-to: type=gha,mode=max,scope=openreviewer-web
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Attest API and Worker image provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.api-image.outputs.digest }}
+          push-to-registry: true
+      - name: Attest web image provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-name: ghcr.io/${{ github.repository }}-web
+          subject-digest: ${{ steps.web-image.outputs.digest }}
+          push-to-registry: true
+      - name: Scan published API and Worker image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}@${{ steps.api-image.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan published web image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}-web@${{ steps.web-image.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
 
   deploy:
     name: Deploy to niuma-2
     needs: [publish]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     environment: niuma-2
     concurrency:
       group: openreviewer-niuma-2
@@ -118,7 +324,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Configure restricted SSH connection
         env:
@@ -172,7 +378,47 @@ jobs:
 
       - name: Deploy immutable commit release
         shell: bash
+        env:
+          API_IMAGE_DIGEST: ${{ needs.publish.outputs.api_digest }}
+          WEB_IMAGE_DIGEST: ${{ needs.publish.outputs.web_digest }}
         run: |
           set -euo pipefail
-          ssh -o ConnectTimeout=20 openreviewer-deploy-target \
-            "openreviewer-deploy ${GITHUB_SHA}" < deployment/compose.yml
+          [[ "$API_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "API image digest has invalid format" >&2
+            exit 1
+          }
+          [[ "$WEB_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "Web image digest has invalid format" >&2
+            exit 1
+          }
+          manifest_dir="$RUNNER_TEMP/openreviewer-image-manifest-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$manifest_dir"
+          install -d -m 700 "$manifest_dir"
+          printf 'OPENREVIEWER_API_IMAGE_DIGEST=%s\nOPENREVIEWER_WEB_IMAGE_DIGEST=%s\n' \
+            "$API_IMAGE_DIGEST" "$WEB_IMAGE_DIGEST" > "$manifest_dir/image-digests.env"
+          deploy_helper_sha256="$(sha256sum deployment/deploy.sh | awk '{print $1}')"
+          backup_helper_sha256="$(sha256sum deployment/backup.sh | awk '{print $1}')"
+          restore_helper_sha256="$(sha256sum deployment/restore.sh | awk '{print $1}')"
+          for helper_sha256 in "$deploy_helper_sha256" "$backup_helper_sha256" "$restore_helper_sha256"; do
+            [[ "$helper_sha256" =~ ^[0-9a-f]{64}$ ]]
+          done
+          printf 'OPENREVIEWER_DEPLOY_HELPER_SHA256=%s\nOPENREVIEWER_BACKUP_HELPER_SHA256=%s\nOPENREVIEWER_RESTORE_HELPER_SHA256=%s\n' \
+            "$deploy_helper_sha256" "$backup_helper_sha256" "$restore_helper_sha256" \
+            > "$manifest_dir/helper-digests.env"
+          chmod 600 "$manifest_dir/image-digests.env"
+          chmod 600 "$manifest_dir/helper-digests.env"
+          tar --create --file - \
+            --directory "$manifest_dir" image-digests.env helper-digests.env \
+            --directory "$GITHUB_WORKSPACE/deployment" \
+            compose.yml \
+            prometheus-alerts.yml \
+            observability/alertmanager.yml \
+            observability/alertmanager-noop.yml \
+            observability/alert-webhook-url.placeholder \
+            observability/grafana-dashboard.json \
+            observability/grafana-dashboards.yml \
+            observability/grafana-datasource.yml \
+            observability/prometheus.yml \
+            | ssh -o ConnectTimeout=20 openreviewer-deploy-target \
+                "openreviewer-deploy ${GITHUB_SHA}"
+          rm -rf -- "$manifest_dir"

@@ -6,16 +6,28 @@ import httpx
 import pytest
 
 from apps.api.main import create_app
+from domain.models import ReviewRequest
 from domain.security import ErrorCode, SafeApplicationError, SafeError
+from persistence.auth import SqlAlchemySessionStore
 from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database
 from persistence.models import Base, ReviewTaskRecord
 from persistence.repositories import SqlAlchemyReviewRepository
-from services.dashboard import DashboardService
+from persistence.review_management import SqlAlchemyReviewManagementRepository
 from services.agent_settings import AgentSettingsService
 from services.ai_settings import AiSecretCipher, AiSettingsService
+from services.auth import AuthService, AuthSettings, UserCredential
+from services.dashboard import DashboardService
+from services.rbac import AccessRole, ResourceScope
+from services.review_management import ReviewManagementService
 from services.reviews import ReviewService
-from tests.support import TEST_PASSWORD, TEST_USERNAME, make_auth_service
+from tests.support import (
+    TEST_GITHUB_ACCESS_POLICY,
+    TEST_HASHER,
+    TEST_PASSWORD,
+    TEST_USERNAME,
+    make_auth_service,
+)
 
 
 @pytest.fixture
@@ -52,11 +64,151 @@ def application_for(database: Database):
     """
     return create_app(
         ReviewService(SqlAlchemyReviewRepository(database.sessions)),
-        auth_service=make_auth_service(),
+        auth_service=make_auth_service(
+            session_store=SqlAlchemySessionStore(database.sessions)
+        ),
         dashboard_service=DashboardService(
             SqlAlchemyDashboardRepository(database.sessions)
         ),
+        review_management_service=ReviewManagementService(
+            SqlAlchemyReviewManagementRepository(database.sessions)
+        ),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
     )
+
+
+def role_application_for(database: Database, role: AccessRole):
+    """创建带指定非管理员角色的真实登录与权限集成测试应用。"""
+
+    username = f"test-{role.value}"
+    auth_service = AuthService(
+        AuthSettings(
+            username=TEST_USERNAME,
+            password_hash=TEST_HASHER.hash(TEST_PASSWORD),
+            session_secret=b"test-session-secret-is-at-least-32-bytes-long",
+            cookie_secure=False,
+            additional_users=(
+                UserCredential(
+                    username=username,
+                    password_hash=TEST_HASHER.hash(TEST_PASSWORD),
+                    role=role,
+                ),
+            ),
+        ),
+        password_hasher=TEST_HASHER,
+    )
+    return (
+        create_app(
+            ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+            auth_service=auth_service,
+            dashboard_service=DashboardService(
+                SqlAlchemyDashboardRepository(database.sessions)
+            ),
+            github_access_policy=TEST_GITHUB_ACCESS_POLICY,
+        ),
+        username,
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "action", "expected_status"),
+    [
+        (AccessRole.VIEWER, "approve", 403),
+        (AccessRole.VIEWER, "publish", 403),
+        (AccessRole.VIEWER, "cancel", 403),
+        (AccessRole.ADJUDICATOR, "approve", 503),
+        (AccessRole.ADJUDICATOR, "publish", 403),
+        (AccessRole.ADJUDICATOR, "cancel", 403),
+        (AccessRole.PUBLISHER, "approve", 403),
+        (AccessRole.PUBLISHER, "publish", 503),
+        (AccessRole.PUBLISHER, "cancel", 403),
+    ],
+)
+def test_role_action_permission_matrix(
+    database: Database,
+    role: AccessRole,
+    action: str,
+    expected_status: int,
+) -> None:
+    application, username = role_application_for(database, role)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            logged_in = await client.post(
+                "/api/v1/auth/login",
+                json={"username": username, "password": TEST_PASSWORD},
+            )
+            assert logged_in.status_code == 200
+            assert logged_in.json()["role"] == role.value
+
+            readable = await client.get("/api/v1/dashboard")
+            assert readable.status_code == 200
+
+            response = await client.post(
+                "/api/v1/reviews/missing-run/actions",
+                headers={"Idempotency-Key": f"rbac-{role.value}-{action}"},
+                json={"action": action},
+            )
+            assert response.status_code == expected_status
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_finding_status"),
+    [
+        (AccessRole.VIEWER, 403),
+        (AccessRole.ADJUDICATOR, 503),
+        (AccessRole.PUBLISHER, 403),
+    ],
+)
+def test_role_endpoint_permission_matrix(
+    database: Database,
+    role: AccessRole,
+    expected_finding_status: int,
+) -> None:
+    application, username = role_application_for(database, role)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            logged_in = await client.post(
+                "/api/v1/auth/login",
+                json={"username": username, "password": TEST_PASSWORD},
+            )
+            assert logged_in.status_code == 200
+
+            settings = await client.get("/api/v1/settings/ai")
+            assert settings.status_code == 403
+
+            create = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": f"rbac-create-{role.value}"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 128,
+                    "head_sha": "a" * 40,
+                },
+            )
+            assert create.status_code == 403
+
+            finding = await client.post(
+                "/api/v1/reviews/missing-run/findings/missing-finding",
+                headers={"Idempotency-Key": f"rbac-finding-{role.value}"},
+                json={"decision": "valid"},
+            )
+            assert finding.status_code == expected_finding_status
+
+    asyncio.run(exercise())
 
 
 async def exercise_login_and_dashboard(application) -> None:
@@ -97,6 +249,8 @@ async def exercise_login_and_dashboard(application) -> None:
         assert "HttpOnly" in cookie
         assert "SameSite=strict" in cookie
         assert TEST_PASSWORD not in cookie
+        copied_session = client.cookies.get("openreviewer_session")
+        assert copied_session is not None
 
         current_user = await client.get("/api/v1/auth/me")
         assert current_user.status_code == 200
@@ -139,6 +293,14 @@ async def exercise_login_and_dashboard(application) -> None:
         assert logout.status_code == 204
         assert (await client.get("/api/v1/auth/me")).status_code == 401
 
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            cookies={"openreviewer_session": copied_session},
+        ) as copied_cookie_client:
+            copied_cookie_response = await copied_cookie_client.get("/api/v1/auth/me")
+            assert copied_cookie_response.status_code == 401
+
 
 def test_login_cookie_and_authenticated_dashboard(database: Database) -> None:
     """把异步管理链路作为同步 pytest 用例执行。
@@ -178,6 +340,25 @@ def test_cross_origin_login_is_rejected(database: Database) -> None:
             return await client.post(
                 "/api/v1/auth/login",
                 headers={"Origin": "https://attacker.example"},
+                json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+            )
+
+    response = asyncio.run(request())
+    assert response.status_code == 403
+
+
+def test_malformed_origin_is_rejected_without_server_error(database: Database) -> None:
+    """Origin 端口解析失败时也必须返回稳定的跨站拒绝。"""
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=application_for(database))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            return await client.post(
+                "/api/v1/auth/login",
+                headers={"Origin": "https://testserver:not-a-port"},
                 json={"username": TEST_USERNAME, "password": TEST_PASSWORD},
             )
 
@@ -239,6 +420,97 @@ def test_dashboard_redacts_legacy_error_text_and_details(database: Database) -> 
         assert item["last_error_code"] == "future_worker_error"
         assert item["last_error_retryable"] is True
         assert "<redacted>" in str(item)
+
+
+def test_resource_scoped_user_cannot_enumerate_other_repository_runs(
+    database: Database,
+) -> None:
+    """资源范围必须同时约束 Dashboard 聚合和单条详情。"""
+
+    repository = SqlAlchemyReviewRepository(database.sessions)
+    visible = repository.create_or_get(
+        ReviewRequest(
+            installation_id=10,
+            repository_id=42,
+            repository="lboverfys/NiuMa",
+            pull_request_number=200,
+            head_sha="a" * 40,
+        ),
+        "scope-visible",
+        "scope-visible-fingerprint",
+    )
+    hidden = repository.create_or_get(
+        ReviewRequest(
+            installation_id=10,
+            repository_id=43,
+            repository="other/Secret",
+            pull_request_number=201,
+            head_sha="b" * 40,
+        ),
+        "scope-hidden",
+        "scope-hidden-fingerprint",
+    )
+    scoped_username = "scoped-viewer"
+    scoped_auth = AuthService(
+        AuthSettings(
+            username=TEST_USERNAME,
+            password_hash=TEST_HASHER.hash(TEST_PASSWORD),
+            session_secret=b"test-session-secret-is-at-least-32-bytes-long",
+            cookie_secure=False,
+            additional_users=(
+                UserCredential(
+                    username=scoped_username,
+                    password_hash=TEST_HASHER.hash(TEST_PASSWORD),
+                    role=AccessRole.VIEWER,
+                    resource_scope=ResourceScope(
+                        installation_ids=frozenset({10}),
+                        # 数据库保留 GitHub 的展示大小写；资源范围使用规范化键
+                        # 后，仓库名大小写差异也必须仍然可见。
+                        repositories=frozenset({"LBOVERFYS/NIUMA"}),
+                    ),
+                ),
+            ),
+        ),
+        password_hasher=TEST_HASHER,
+        session_store=SqlAlchemySessionStore(database.sessions),
+    )
+    application = create_app(
+        ReviewService(SqlAlchemyReviewRepository(database.sessions)),
+        auth_service=scoped_auth,
+        dashboard_service=DashboardService(
+            SqlAlchemyDashboardRepository(database.sessions)
+        ),
+        review_management_service=ReviewManagementService(
+            SqlAlchemyReviewManagementRepository(database.sessions)
+        ),
+        github_access_policy=TEST_GITHUB_ACCESS_POLICY,
+    )
+
+    async def exercise() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={"username": scoped_username, "password": TEST_PASSWORD},
+            )
+            assert login.status_code == 200
+            return (
+                await client.get("/api/v1/dashboard"),
+                await client.get(f"/api/v1/reviews/{visible.review_run_id}"),
+                await client.get(f"/api/v1/reviews/{hidden.review_run_id}"),
+            )
+
+    dashboard, visible_details, hidden_details = asyncio.run(exercise())
+    assert dashboard.status_code == 200
+    assert dashboard.json()["total_reviews"] == 1
+    assert [item["review_run_id"] for item in dashboard.json()["recent_reviews"]] == [
+        visible.review_run_id
+    ]
+    assert visible_details.status_code == 200
+    assert hidden_details.status_code == 404
 
 
 def test_dynamic_ai_settings_are_authenticated_redacted_tested_and_activated(

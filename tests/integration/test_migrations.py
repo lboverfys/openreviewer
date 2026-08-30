@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
+from services.operations import EXPECTED_DATABASE_REVISION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -27,6 +30,8 @@ def test_initial_migration_creates_durable_review_task_schema(
     database_url = f"sqlite:///{database_path}"
     configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
     configuration.set_main_option("sqlalchemy.url", database_url)
+    expected_revision = ScriptDirectory.from_config(configuration).get_current_head()
+    assert expected_revision == EXPECTED_DATABASE_REVISION
 
     command.upgrade(configuration, "head")
 
@@ -34,6 +39,7 @@ def test_initial_migration_creates_durable_review_task_schema(
     try:
         inspector = inspect(engine)
         assert set(inspector.get_table_names()) == {
+            "admin_sessions",
             "ai_provider_configs",
             "ai_provider_secrets",
             "ai_agent_configs",
@@ -42,12 +48,16 @@ def test_initial_migration_creates_durable_review_task_schema(
             "alembic_version",
             "configuration_audits",
             "external_actions",
+            "finding_evaluations",
+            "finding_lifecycles",
             "github_installations",
             "github_webhook_deliveries",
             "knowledge_document_versions",
             "knowledge_documents",
             "knowledge_library",
+            "login_rate_limits",
             "model_calls",
+            "model_http_calls",
             "model_review_batches",
             "outbox_events",
             "pull_request_ci_checks",
@@ -61,6 +71,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "review_tasks",
             "review_units",
             "worker_heartbeats",
+            "review_quota_buckets",
         }
         assert {
             constraint["name"]
@@ -110,9 +121,18 @@ def test_initial_migration_creates_durable_review_task_schema(
             index["name"] for index in inspector.get_indexes("outbox_events")
         }
         assert {
+            "publish_lease_owner",
+            "publish_lease_expires_at",
+            "next_publish_attempt_at",
+            "last_publish_error",
+        } <= {
+            column["name"] for column in inspector.get_columns("outbox_events")
+        }
+        assert {
             "ix_review_runs_created_at",
             "ix_review_runs_execution_status",
             "ix_review_runs_repository_pr_status",
+            "ix_review_runs_status_created",
         } <= {index["name"] for index in inspector.get_indexes("review_runs")}
         assert {
             constraint["name"]
@@ -143,7 +163,10 @@ def test_initial_migration_creates_durable_review_task_schema(
         assert {
             constraint["name"]
             for constraint in inspector.get_check_constraints("outbox_events")
-        } == {"ck_outbox_events_publish_attempts_nonnegative"}
+        } == {
+            "ck_outbox_events_publish_attempts_nonnegative",
+            "ck_outbox_events_publish_lease_shape",
+        }
         assert {
             constraint["name"]
             for constraint in inspector.get_check_constraints(
@@ -169,6 +192,9 @@ def test_initial_migration_creates_durable_review_task_schema(
         } == {"uq_review_plans_review_run_id"}
         assert "model_review_completed_at" in {
             column["name"] for column in inspector.get_columns("review_plans")
+        }
+        assert "group_key" in {
+            column["name"] for column in inspector.get_columns("review_units")
         }
         assert {
             constraint["name"]
@@ -207,8 +233,22 @@ def test_initial_migration_creates_durable_review_task_schema(
         }
         assert {
             "workflow_status",
+            "publish_attempt_token",
         } <= {
             column["name"] for column in inspector.get_columns("review_runs")
+        }
+        assert {
+            "lease_owner",
+            "lease_expires_at",
+        } <= {
+            column["name"] for column in inspector.get_columns("external_actions")
+        }
+        assert "ix_external_actions_claimable" in {
+            index["name"] for index in inspector.get_indexes("external_actions")
+        }
+        assert "ck_external_actions_lease_shape" in {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("external_actions")
         }
         assert {
             "workflow_status",
@@ -273,8 +313,33 @@ def test_initial_migration_creates_durable_review_task_schema(
             constraint["name"]
             for constraint in inspector.get_unique_constraints("review_findings")
         } == {"uq_review_findings_run_fingerprint"}
-        assert {"reviewed_at", "reviewed_by"} <= {
+        assert {
+            "reviewed_at",
+            "reviewed_by",
+            "lifecycle_status",
+            "occurrence_count",
+            "previous_review_run_id",
+            "lifecycle_backfilled_at",
+            "evidence_verification_status",
+            "evidence_verification_reason",
+            "evidence_verified_at",
+        } <= {
             column["name"] for column in inspector.get_columns("review_findings")
+        }
+        assert "historical_backfilled_at" in {
+            column["name"]
+            for column in inspector.get_columns("finding_lifecycles")
+        }
+        assert "ix_review_findings_lifecycle_backfill" in {
+            index["name"]
+            for index in inspector.get_indexes("review_findings")
+        }
+        assert {
+            "ix_finding_lifecycles_pr_state",
+            "ix_finding_lifecycles_fixed_run",
+        } == {
+            index["name"]
+            for index in inspector.get_indexes("finding_lifecycles")
         }
         assert {
             constraint["name"]
@@ -299,13 +364,206 @@ def test_initial_migration_creates_durable_review_task_schema(
                 "knowledge_document_versions"
             )
         } == {"uq_knowledge_document_versions_document_id"}
-        assert revision == "20260827_0019"
+        assert {
+            "session_hash",
+            "username",
+            "role",
+            "issued_at",
+            "expires_at",
+            "revoked_at",
+        } == {
+            column["name"] for column in inspector.get_columns("admin_sessions")
+        }
+        assert {
+            "ix_admin_sessions_active",
+            "ix_admin_sessions_expires_at",
+        } == {
+            index["name"] for index in inspector.get_indexes("admin_sessions")
+        }
+        assert {
+            "key_hash",
+            "attempt_count",
+            "window_started_at",
+            "updated_at",
+        } == {
+            column["name"]
+            for column in inspector.get_columns("login_rate_limits")
+        }
+        assert {"ix_login_rate_limits_updated_at"} == {
+            index["name"]
+            for index in inspector.get_indexes("login_rate_limits")
+        }
+        assert {
+            "max_model_http_calls",
+            "max_model_input_tokens",
+            "max_model_output_tokens",
+            "max_model_cost_microusd",
+            "max_model_duration_seconds",
+        } <= {
+            column["name"] for column in inspector.get_columns("ai_settings")
+        }
+        assert {
+            "max_model_http_calls",
+            "max_model_input_tokens",
+            "max_model_output_tokens",
+            "max_model_cost_microusd",
+            "max_model_duration_seconds",
+            "model_http_calls",
+            "model_input_tokens",
+            "model_output_tokens",
+            "model_estimated_cost_microusd",
+            "model_budget_resume_count",
+            "model_budget_started_at",
+            "model_budget_exhausted_at",
+            "model_budget_exhausted_reason",
+        } <= {
+            column["name"] for column in inspector.get_columns("review_plans")
+        }
+        assert "instance_id" in {
+            column["name"]
+            for column in inspector.get_columns("worker_heartbeats")
+        }
+        assert "repository_key" in {
+            column["name"] for column in inspector.get_columns("review_runs")
+        }
+        assert "ix_review_runs_installation_repository_key" in {
+            index["name"] for index in inspector.get_indexes("review_runs")
+        }
+        assert {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("model_http_calls")
+        } == {"uq_model_http_calls_plan_sequence"}
+        assert "ix_model_http_calls_plan_started" in {
+            index["name"] for index in inspector.get_indexes("model_http_calls")
+        }
+        assert "adjudication_status" in {
+            column["name"] for column in inspector.get_columns("review_findings")
+        }
+        assert "ix_review_findings_run_adjudication" in {
+            index["name"] for index in inspector.get_indexes("review_findings")
+        }
+        assert "ix_review_findings_run_evidence_verification" in {
+            index["name"] for index in inspector.get_indexes("review_findings")
+        }
+        assert "ck_review_findings_evidence_verification_status_value" in {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("review_findings")
+        }
+        assert "ix_review_quota_buckets_cleanup" in {
+            index["name"]
+            for index in inspector.get_indexes("review_quota_buckets")
+        }
+        assert "ix_finding_evaluations_adjudicated_cleanup" in {
+            index["name"]
+            for index in inspector.get_indexes("finding_evaluations")
+        }
+        assert {
+            "ck_review_quota_buckets_scope_value",
+            "ck_review_quota_buckets_window_value",
+            "ck_review_quota_buckets_request_count_nonnegative",
+        } <= {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints(
+                "review_quota_buckets"
+            )
+        }
+        assert "ix_review_runs_created_id" in {
+            index["name"] for index in inspector.get_indexes("review_runs")
+        }
+        assert "ix_outbox_events_occurred_id" in {
+            index["name"] for index in inspector.get_indexes("outbox_events")
+        }
+        assert revision == expected_revision
     finally:
         engine.dispose()
 
     command.downgrade(configuration, "20260824_0003")
     command.upgrade(configuration, "head")
     command.check(configuration)
+
+
+def test_finding_evaluation_samples_survive_missing_findings(
+    tmp_path: Path,
+) -> None:
+    """评测样本允许引用已按保留期删除的 Finding。"""
+
+    database_path = (tmp_path / "finding-evaluation-retention.sqlite3").as_posix()
+    database_url = f"sqlite:///{database_path}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "head")
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            foreign_keys = inspect(connection).get_foreign_keys("finding_evaluations")
+            assert all(
+                item["name"] != "fk_finding_evaluations_finding"
+                for item in foreign_keys
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO finding_evaluations ("
+                    "finding_id, repository_id, category, severity, verdict, "
+                    "adjudicated_at, adjudicated_by, updated_at"
+                    ") VALUES ("
+                    ":finding_id, :repository_id, :category, :severity, :verdict, "
+                    ":adjudicated_at, :adjudicated_by, :updated_at"
+                    ")"
+                ),
+                {
+                    "finding_id": "retained-after-cleanup",
+                    "repository_id": 42,
+                    "category": "security",
+                    "severity": "high",
+                    "verdict": "valid",
+                    "adjudicated_at": "2026-08-20 00:00:00",
+                    "adjudicated_by": "reviewer",
+                    "updated_at": "2026-08-20 00:00:00",
+                },
+            )
+        with engine.connect() as connection:
+            assert connection.scalar(
+                text(
+                    "SELECT COUNT(*) FROM finding_evaluations "
+                    "WHERE finding_id = 'retained-after-cleanup'"
+                )
+            ) == 1
+    finally:
+        engine.dispose()
+
+
+def test_finding_evaluation_fk_downgrade_refuses_dangling_samples(
+    tmp_path: Path,
+) -> None:
+    """降级不能悄悄恢复级联外键并丢弃历史评测引用。"""
+
+    database_path = (tmp_path / "finding-evaluation-downgrade.sqlite3").as_posix()
+    database_url = f"sqlite:///{database_path}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "head")
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO finding_evaluations ("
+                    "finding_id, repository_id, category, severity, verdict, "
+                    "adjudicated_at, adjudicated_by, updated_at"
+                    ") VALUES ("
+                    ":finding_id, 42, 'security', 'high', 'valid', "
+                    "'2026-08-20 00:00:00', 'reviewer', '2026-08-20 00:00:00'"
+                    ")"
+                ),
+                {"finding_id": "missing-finding"},
+            )
+    finally:
+        engine.dispose()
+
+    with pytest.raises(RuntimeError, match="historical rows"):
+        command.downgrade(configuration, "20260830_0033")
 
 
 def test_postgres_migration_keeps_execution_constraint_names_fixed(
@@ -332,6 +590,37 @@ def test_postgres_migration_keeps_execution_constraint_names_fixed(
     ) in output
     assert "DROP CONSTRAINT ck_review_runs_ck_review_runs_" not in output
     assert "DROP CONSTRAINT ck_review_tasks_ck_review_tasks_" not in output
+    assert (
+        "ALTER TABLE finding_evaluations DROP CONSTRAINT "
+        "fk_finding_evaluations_finding"
+    ) in output
+    assert (
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+        "ix_finding_evaluations_adjudicated_cleanup"
+    ) in output
+    assert (
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+        "ix_review_findings_run_adjudication"
+    ) in output
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_review_runs_created_id" in output
+    assert (
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_outbox_events_occurred_id"
+        in output
+    )
+    assert (
+        "ck_review_findings_lifecycle_status_value "
+        "CHECK (lifecycle_status IN ('new', 'still_present', 'reintroduced')) "
+        "NOT VALID"
+    ) in output
+    assert (
+        "ck_review_findings_occurrence_count_positive "
+        "CHECK (occurrence_count > 0) NOT VALID"
+    ) in output
+    assert (
+        "ck_review_findings_adjudication_status_value "
+        "CHECK (adjudication_status IN ("
+    ) in output
+    assert output.count("NOT VALID") >= 3
 
 
 def test_workflow_downgrade_restores_legacy_execution_constraints(

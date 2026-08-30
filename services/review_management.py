@@ -1,18 +1,28 @@
 """审查任务详情、阶段投影与人工控制用例。"""
 
+import base64
+import binascii
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Protocol
 
-from domain.enums import ExecutionStatus
+from domain.enums import ExecutionStatus, VerificationStatus
 from domain.github import PullRequestSnapshot
+from services.rbac import ResourceScope
 from services.task_queue import ReviewTarget
 
 
 class ReviewManagementPersistenceError(RuntimeError):
     """任务详情或人工操作无法可靠地从数据库完成。"""
+
+
+def _effective_scope(scope: ResourceScope | None) -> ResourceScope | None:
+    """管理员全量范围不向旧仓储实现传递额外关键字参数。"""
+
+    return None if scope is None or scope.unrestricted else scope
 
 
 class ReviewNotFoundError(LookupError):
@@ -39,7 +49,7 @@ class ReviewIdentitySyncConflictError(ValueError):
     """GitHub 返回的 PR 身份与任务目标不一致。"""
 
 
-class ReviewAction(str, Enum):
+class ReviewAction(StrEnum):
     START = "start"
     PAUSE = "pause"
     RESUME = "resume"
@@ -53,9 +63,80 @@ class ReviewAction(str, Enum):
     RERUN = "rerun"
 
 
-class FindingDecision(str, Enum):
-    VERIFIED = "verified"
-    REJECTED = "rejected"
+class FindingDecision(StrEnum):
+    VALID = "valid"
+    FALSE_POSITIVE = "false_positive"
+    DUPLICATE = "duplicate"
+    OUT_OF_SCOPE = "out_of_scope"
+    KNOWN_ISSUE = "known_issue"
+
+
+@dataclass(frozen=True, slots=True)
+class FindingCursor:
+    created_at: datetime
+    finding_id: str
+
+
+def encode_finding_cursor(created_at: datetime, finding_id: str) -> str:
+    """把 Finding 的稳定排序键编码为不透明 Base64URL 游标。"""
+
+    normalized = (
+        created_at.replace(tzinfo=UTC)
+        if created_at.tzinfo is None
+        else created_at.astimezone(UTC)
+    )
+    payload = json.dumps(
+        {
+            "v": 1,
+            "created_at": normalized.isoformat(timespec="microseconds"),
+            "finding_id": finding_id,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_finding_cursor(value: str) -> FindingCursor:
+    """严格解析 Finding 游标，拒绝未知字段、版本、时区和非 URL 安全数据。"""
+
+    if not value or len(value) > 512:
+        raise ValueError("finding cursor is invalid")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = base64.b64decode(
+            padded.encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        decoded = json.loads(payload.decode("utf-8"))
+        if not isinstance(decoded, dict) or set(decoded) != {
+            "v",
+            "created_at",
+            "finding_id",
+        }:
+            raise ValueError
+        finding_id = decoded["finding_id"]
+        if decoded["v"] != 1 or not isinstance(finding_id, str):
+            raise ValueError
+        if not 1 <= len(finding_id) <= 36:
+            raise ValueError
+        created_at = datetime.fromisoformat(decoded["created_at"])
+        if created_at.tzinfo is None:
+            raise ValueError
+    except (
+        UnicodeError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ) as exc:
+        raise ValueError("finding cursor is invalid") from exc
+    return FindingCursor(
+        created_at=created_at.astimezone(UTC),
+        finding_id=finding_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +159,8 @@ class StoredCiCheck:
 @dataclass(frozen=True, slots=True)
 class StoredFinding:
     id: str
+    fingerprint: str
+    head_sha: str
     severity: str
     category: str
     title: str
@@ -87,6 +170,13 @@ class StoredFinding:
     required_test: str | None
     confidence: float
     verification_status: str
+    evidence_verification_status: str
+    evidence_verification_reason: str
+    evidence_verified_at: datetime | None
+    adjudication_status: str
+    lifecycle_status: str
+    occurrence_count: int
+    previous_review_run_id: str | None
     location_file: str | None
     location_start_line: int | None
     location_end_line: int | None
@@ -98,11 +188,53 @@ class StoredFinding:
     reviewed_by: str | None
     created_at: datetime
 
+    @property
+    def location_verification_status(self) -> VerificationStatus:
+        """兼容旧存储名，明确表示这里只校验 Diff 定位。"""
+
+        return VerificationStatus(self.verification_status)
+
+@dataclass(frozen=True, slots=True)
+class StoredEvaluationGate:
+    category: str
+    sample_count: int
+    valid_count: int
+    false_positive_count: int
+    duplicate_count: int
+    out_of_scope_count: int
+    known_issue_count: int
+    rejected_count: int
+    high_severity_sample_count: int
+    high_severity_false_positive_count: int
+    high_severity_rejected_count: int
+    precision: float
+    high_severity_false_positive_rate: float
+    admitted: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredFindingCounts:
+    total: int
+    location_verified: int
+    location_rejected: int
+    location_unverified: int
+    valid: int
+    false_positive: int
+    duplicate: int
+    out_of_scope: int
+    known_issue: int
+    unreviewed: int
+    new: int
+    still_present: int
+    reintroduced: int
+
 
 @dataclass(frozen=True, slots=True)
 class StoredReviewDetails:
     review_run_id: str
     review_task_id: str
+    change_token: str
     review_version_key: str
     installation_id: int
     repository_id: int
@@ -162,6 +294,10 @@ class StoredReviewDetails:
     model_cost_microusd: int | None
     model_finding_count: int | None
     model_created_at: datetime | None
+    fixed_finding_count: int
+    finding_counts: StoredFindingCounts
+    finding_has_more: bool
+    evaluation_gates: tuple[StoredEvaluationGate, ...]
     findings: tuple[StoredFinding, ...]
     ci_checks: tuple[StoredCiCheck, ...]
     events: tuple[StoredReviewEvent, ...]
@@ -190,9 +326,21 @@ class ReviewDetails:
     phase: str
     stages: tuple[ReviewStage, ...]
     available_actions: tuple[ReviewAction, ...]
-    verified_finding_count: int
-    rejected_finding_count: int
-    unverified_finding_count: int
+    finding_total_count: int
+    finding_next_cursor: str | None
+    location_verified_finding_count: int
+    location_rejected_finding_count: int
+    location_unverified_finding_count: int
+    valid_finding_count: int
+    false_positive_finding_count: int
+    duplicate_finding_count: int
+    out_of_scope_finding_count: int
+    known_issue_finding_count: int
+    unreviewed_finding_count: int
+    new_finding_count: int
+    still_present_finding_count: int
+    reintroduced_finding_count: int
+    fixed_finding_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,10 +354,31 @@ class PullRequestIdentityLoader(Protocol):
 
 
 class ReviewManagementRepository(Protocol):
-    def get(self, review_run_id: str) -> StoredReviewDetails:
+    def get(
+        self,
+        review_run_id: str,
+        *,
+        finding_limit: int = 50,
+        finding_cursor: FindingCursor | None = None,
+        finding_adjudication_status: str | None = None,
+        scope: ResourceScope | None = None,
+    ) -> StoredReviewDetails:
         """返回单条任务及其有界事件、CI 和 Finding 快照。"""
 
-    def get_identity_target(self, review_run_id: str) -> ReviewIdentityTarget:
+    def change_token(
+        self,
+        review_run_id: str,
+        *,
+        scope: ResourceScope | None = None,
+    ) -> str:
+        """用一次有界查询返回任务详情的轻量变化令牌。"""
+
+    def get_identity_target(
+        self,
+        review_run_id: str,
+        *,
+        scope: ResourceScope | None = None,
+    ) -> ReviewIdentityTarget:
         """读取一次历史任务的 GitHub PR 身份，供事务外回查。"""
 
     def save_pull_request_identity(
@@ -219,6 +388,7 @@ class ReviewManagementRepository(Protocol):
         *,
         actor: str,
         request_id: str,
+        scope: ResourceScope | None = None,
     ) -> None:
         """在短事务内保存已校验的 GitHub PR 身份。"""
 
@@ -230,6 +400,7 @@ class ReviewManagementRepository(Protocol):
         actor: str,
         request_id: str,
         target_stage: str | None = None,
+        scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """幂等执行任务控制动作并返回运行、任务和新状态。"""
 
@@ -241,6 +412,7 @@ class ReviewManagementRepository(Protocol):
         *,
         actor: str,
         request_id: str,
+        scope: ResourceScope | None = None,
     ) -> None:
         """幂等保存人工 Finding 裁决和对应审计事件。"""
 
@@ -250,6 +422,7 @@ class ReviewManagementRepository(Protocol):
         *,
         actor: str,
         request_id: str,
+        scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """在批准门之后执行一次人工 GitHub 发布。"""
 
@@ -264,6 +437,19 @@ class ReviewManagementService:
         self._repository = repository
         self._identity_loader = identity_loader
 
+    def change_token(
+        self,
+        review_run_id: str,
+        *,
+        scope: ResourceScope | None = None,
+    ) -> str:
+        """读取任务变化令牌，供详情页避免无变化时重复加载完整快照。"""
+
+        effective_scope = _effective_scope(scope)
+        if effective_scope is None:
+            return self._repository.change_token(review_run_id)
+        return self._repository.change_token(review_run_id, scope=effective_scope)
+
     def sync_identity(
         self,
         review_run_id: str,
@@ -271,47 +457,103 @@ class ReviewManagementService:
         actor: str,
         request_id: str,
         loader: PullRequestIdentityLoader | None = None,
+        scope: ResourceScope | None = None,
     ) -> ReviewDetails:
         """事务外回查 GitHub 并保存历史 PR 身份，再返回最新详情。"""
 
-        identity = self._repository.get_identity_target(review_run_id)
+        effective_scope = _effective_scope(scope)
+        identity = (
+            self._repository.get_identity_target(review_run_id)
+            if effective_scope is None
+            else self._repository.get_identity_target(
+                review_run_id,
+                scope=effective_scope,
+            )
+        )
         if identity.fetched_at is not None:
-            return self.details(review_run_id)
+            return self.details(review_run_id, scope=effective_scope)
         identity_loader = loader or self._identity_loader
         if identity_loader is None:
             raise ReviewIdentitySyncUnavailableError(
                 "GitHub PR 身份同步器尚未配置"
             )
         snapshot = identity_loader.load_pull_request(identity.target)
-        self._repository.save_pull_request_identity(
-            review_run_id,
-            snapshot,
-            actor=actor,
-            request_id=request_id,
-        )
-        return self.details(review_run_id)
+        if effective_scope is None:
+            self._repository.save_pull_request_identity(
+                review_run_id,
+                snapshot,
+                actor=actor,
+                request_id=request_id,
+            )
+        else:
+            self._repository.save_pull_request_identity(
+                review_run_id,
+                snapshot,
+                actor=actor,
+                request_id=request_id,
+                scope=effective_scope,
+            )
+        return self.details(review_run_id, scope=effective_scope)
 
-    def details(self, review_run_id: str) -> ReviewDetails:
-        stored = self._repository.get(review_run_id)
-        verified = sum(
-            item.verification_status == FindingDecision.VERIFIED.value
-            for item in stored.findings
+    def details(
+        self,
+        review_run_id: str,
+        *,
+        finding_limit: int = 50,
+        finding_cursor: str | None = None,
+        scope: ResourceScope | None = None,
+    ) -> ReviewDetails:
+        if not 1 <= finding_limit <= 100:
+            raise ValueError("finding limit must be between 1 and 100")
+        decoded_cursor = (
+            decode_finding_cursor(finding_cursor)
+            if finding_cursor is not None
+            else None
         )
-        rejected = sum(
-            item.verification_status == FindingDecision.REJECTED.value
-            for item in stored.findings
-        )
-        unverified = len(stored.findings) - verified - rejected
-        current_stage, phase = self._current_stage(stored, unverified)
+        effective_scope = _effective_scope(scope)
+        if effective_scope is None:
+            stored = self._repository.get(
+                review_run_id,
+                finding_limit=finding_limit,
+                finding_cursor=decoded_cursor,
+            )
+        else:
+            stored = self._repository.get(
+                review_run_id,
+                finding_limit=finding_limit,
+                finding_cursor=decoded_cursor,
+                scope=effective_scope,
+            )
+        counts = stored.finding_counts
+        current_stage, phase = self._current_stage(stored, counts.unreviewed)
         return ReviewDetails(
             stored=stored,
             current_stage=current_stage,
             phase=phase,
-            stages=self._stages(stored, current_stage, phase, unverified),
-            available_actions=self._available_actions(stored),
-            verified_finding_count=verified,
-            rejected_finding_count=rejected,
-            unverified_finding_count=unverified,
+            stages=self._stages(stored, current_stage, phase, counts.unreviewed),
+            available_actions=self._available_actions(stored, counts.unreviewed),
+            finding_total_count=counts.total,
+            finding_next_cursor=(
+                encode_finding_cursor(
+                    stored.findings[-1].created_at,
+                    stored.findings[-1].id,
+                )
+                if stored.finding_has_more and stored.findings
+                else None
+            ),
+            location_verified_finding_count=counts.location_verified,
+            location_rejected_finding_count=counts.location_rejected,
+            location_unverified_finding_count=counts.location_unverified,
+            valid_finding_count=counts.valid,
+            false_positive_finding_count=counts.false_positive,
+            duplicate_finding_count=counts.duplicate,
+            out_of_scope_finding_count=counts.out_of_scope,
+            known_issue_finding_count=counts.known_issue,
+            unreviewed_finding_count=counts.unreviewed,
+            new_finding_count=counts.new,
+            still_present_finding_count=counts.still_present,
+            reintroduced_finding_count=counts.reintroduced,
+            fixed_finding_count=stored.fixed_finding_count,
         )
 
     def apply_action(
@@ -322,12 +564,29 @@ class ReviewManagementService:
         actor: str,
         request_id: str,
         target_stage: str | None = None,
+        scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
+        effective_scope = _effective_scope(scope)
         if action is ReviewAction.PUBLISH:
+            if effective_scope is None:
+                return self._repository.publish(
+                    review_run_id,
+                    actor=actor,
+                    request_id=request_id,
+                )
             return self._repository.publish(
                 review_run_id,
                 actor=actor,
                 request_id=request_id,
+                scope=effective_scope,
+            )
+        if effective_scope is None:
+            return self._repository.apply_action(
+                review_run_id,
+                action,
+                actor=actor,
+                request_id=request_id,
+                target_stage=target_stage,
             )
         return self._repository.apply_action(
             review_run_id,
@@ -335,6 +594,7 @@ class ReviewManagementService:
             actor=actor,
             request_id=request_id,
             target_stage=target_stage,
+            scope=effective_scope,
         )
 
     def review_finding(
@@ -345,20 +605,32 @@ class ReviewManagementService:
         *,
         actor: str,
         request_id: str,
+        scope: ResourceScope | None = None,
     ) -> ReviewDetails:
-        self._repository.review_finding(
-            review_run_id,
-            finding_id,
-            decision,
-            actor=actor,
-            request_id=request_id,
-        )
-        return self.details(review_run_id)
+        effective_scope = _effective_scope(scope)
+        if effective_scope is None:
+            self._repository.review_finding(
+                review_run_id,
+                finding_id,
+                decision,
+                actor=actor,
+                request_id=request_id,
+            )
+        else:
+            self._repository.review_finding(
+                review_run_id,
+                finding_id,
+                decision,
+                actor=actor,
+                request_id=request_id,
+                scope=effective_scope,
+            )
+        return self.details(review_run_id, scope=effective_scope)
 
     @staticmethod
     def _current_stage(
         item: StoredReviewDetails,
-        _unverified_findings: int,
+        unreviewed_findings: int,
     ) -> tuple[str, str]:
         status = item.workflow_status
         if status is ExecutionStatus.SUPERSEDED:
@@ -368,15 +640,14 @@ class ReviewManagementService:
         if status is ExecutionStatus.TIMED_OUT:
             return "ci", "ci_timed_out"
         if status is ExecutionStatus.PAUSED:
-            paused_from = next(
-                (
-                    event.payload.get("paused_from")
-                    for event in reversed(item.events)
-                    if event.event_type == "review.workflow.pause"
-                    and isinstance(event.payload.get("paused_from"), str)
-                ),
-                None,
-            )
+            paused_from: str | None = None
+            for event in reversed(item.events):
+                if event.event_type != "review.workflow.pause":
+                    continue
+                paused_from_value = event.payload.get("paused_from")
+                if isinstance(paused_from_value, str):
+                    paused_from = paused_from_value
+                    break
             paused_stage = {
                 ExecutionStatus.QUEUED.value: "context",
                 ExecutionStatus.CI.value: "ci",
@@ -385,7 +656,7 @@ class ReviewManagementService:
                 ExecutionStatus.AGGREGATING.value: "aggregating",
                 ExecutionStatus.AWAITING_APPROVAL.value: "approval",
                 ExecutionStatus.AWAITING_PUBLISH.value: "publish",
-            }.get(paused_from, "context")
+            }.get(paused_from, "context") if paused_from is not None else "context"
             return paused_stage, "paused"
         if status is ExecutionStatus.COMPLETED:
             return "result", "completed"
@@ -400,7 +671,12 @@ class ReviewManagementService:
         if status is ExecutionStatus.PUBLISHING:
             return "publish", "publishing"
         if status is ExecutionStatus.AWAITING_APPROVAL:
-            return "approval", "awaiting_approval"
+            return (
+                "approval",
+                "awaiting_finding_adjudication"
+                if unreviewed_findings
+                else "awaiting_approval",
+            )
         if status is ExecutionStatus.APPROVED:
             return "approval", "approved"
         if status is ExecutionStatus.REJECTED:
@@ -425,6 +701,7 @@ class ReviewManagementService:
                 ),
             )
         if item.context_fetched_at is not None and item.ci_state in {
+            "not_configured",
             "success",
             "failure",
         }:
@@ -451,6 +728,7 @@ class ReviewManagementService:
     @staticmethod
     def _available_actions(
         item: StoredReviewDetails,
+        unreviewed_findings: int,
     ) -> tuple[ReviewAction, ...]:
         status = item.workflow_status
         if status is ExecutionStatus.FAILED:
@@ -458,13 +736,15 @@ class ReviewManagementService:
         if status is ExecutionStatus.TIMED_OUT:
             return (ReviewAction.RETRY, ReviewAction.RERUN)
         if status is ExecutionStatus.AWAITING_APPROVAL:
+            if unreviewed_findings:
+                return (ReviewAction.REJECT, ReviewAction.PAUSE)
             return (ReviewAction.APPROVE, ReviewAction.REJECT, ReviewAction.PAUSE)
         if status is ExecutionStatus.AWAITING_PUBLISH:
             return (ReviewAction.PUBLISH, ReviewAction.REJECT)
         if status is ExecutionStatus.REJECTED:
             return (ReviewAction.RETRY_STAGE, ReviewAction.RERUN)
         if status is ExecutionStatus.PAUSED:
-            actions = (ReviewAction.RESUME,)
+            actions: tuple[ReviewAction, ...] = (ReviewAction.RESUME,)
             if item.execution_status in {
                 ExecutionStatus.QUEUED,
                 ExecutionStatus.WAITING_FOR_CI,
@@ -522,7 +802,7 @@ class ReviewManagementService:
             "context": item.context_fetched_at,
             "ci": (
                 item.ci_checked_at
-                if item.ci_state in {"success", "failure"}
+                if item.ci_state in {"not_configured", "success", "failure"}
                 else None
             ),
             "planning": item.plan_created_at,

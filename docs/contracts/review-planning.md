@@ -60,20 +60,23 @@ services/auth/AGENTS.md
 `planned` 表示文件已进入模型输入，任务完成后可视为本轮 AI 已覆盖。所有其他 decision 都没有
 `unit_key`，不能制造空 Review Unit 掩盖缺口。
 
-首版使用“一文件一 Unit”。支持常见代码、脚本、配置、Markdown、Vue、Mapper XML 和 SQL；
+持久化保持“一文件一 Unit”。`review-planner-v3` 会为 Controller、Service、DTO、测试等同一业务名
+的文件生成稳定 `group_key`；一组最多 8 个文件，超出后按规范化路径确定性分片。支持常见代码、
+脚本、配置、Markdown、Vue、Mapper XML 和 SQL；
 `node_modules`、`vendor`、`build`、`dist`、`target`、覆盖率目录、压缩 JS/CSS、source map 和常见
 锁文件按生成内容处理。这个分类是确定性策略，不读取或执行文件内容。
 
 ## 4. 分批与稳定身份
 
-`review-planner-v2` 会收集最多 3000 个 changed files 中的全部可审查补丁，不再使用旧版“最多
+`review-planner-v3` 会收集最多 3000 个 changed files 中的全部可审查补丁，不再使用旧版“最多
 100 个 Unit、单 PR 2 MiB”配置丢弃后面的文件。旧字段暂时保留用于配置和历史数据兼容，其中
 规则作用域深度仍然生效。
 
 模型适配器再按单批输入配置、上下文窗口和 HTTP 大小分批，默认每批输入上限为 64K Token。
 Token 使用保守的 `2 UTF-8 字节/Token` 估算，
-并记录供应商返回的实际输入、输出、缓存与推理 Token、耗时和成本。文件按规范化路径排序，
-因此同一输入不会因 GitHub 列表顺序不同而改变结果。
+并记录供应商返回的实际输入、输出、缓存与推理 Token、耗时和成本。关联组按组内首个规范化
+路径排序，组内再按文件路径排序，因此同一输入不会因 GitHub 列表顺序不同而改变结果。整组能够
+放入单次预算时优先同批发送；只有整组本身超限才拆开，不改变 Finding 的单文件定位和 blob 身份。
 Unit 稳定键包含：
 
 ```text
@@ -105,3 +108,16 @@ Plan 指纹再包含全部规则摘要、文件 decision 和 Unit 键。新 `hea
 会报告冲突。保存前若发现同一 PR 已有更新 `head_sha`，旧任务进入 `superseded`，旧计划不会落库。
 `files_complete=false`、文件数量不一致或超过 3000 个时拒绝规划；单文件 `patch_missing`、
 `patch_too_large` 和二进制仍作为明确 decision 保存。
+
+## 7. Finding 跨提交生命周期
+
+模型阶段使用类别、文件、符号、规范化证据和规则引用生成不绑定标题、行号的稳定指纹。每次完整
+审查在同一事务中批量读取当前 PR 的最多 200 个现存指纹，并将本轮结果标为：
+
+- `new`：第一次出现；
+- `still_present`：上一轮仍存在；
+- `reintroduced`：曾被完整审查判定已修复，本轮再次出现。
+
+完整覆盖下，上轮 `present` 而本轮缺失的指纹转为 `fixed`；只要文件或规则覆盖不完整，就不做
+消解，避免把未看到的代码误判成已修复。生命周期读取和更新均为固定次数的批量 SQL，文件与
+Finding 循环内不访问数据库。

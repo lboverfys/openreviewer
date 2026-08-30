@@ -23,8 +23,8 @@ from domain.github import (
 )
 from domain.models import ReviewRequest
 from domain.security import ErrorCode
-from persistence.database import Database
 from persistence.dashboard import SqlAlchemyDashboardRepository
+from persistence.database import Database
 from persistence.models import (
     Base,
     PullRequestCiCheckRecord,
@@ -33,8 +33,8 @@ from persistence.models import (
     ReviewRunRecord,
     ReviewTaskRecord,
 )
-from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.dashboard import DashboardService
 from services.review_management import ReviewManagementService
@@ -115,11 +115,29 @@ def _context(
         if include_files
         else None
     )
-    check_status = "completed" if ci_state in {CiState.SUCCESS, CiState.FAILURE} else "in_progress"
+    check_status = (
+        "completed"
+        if ci_state in {CiState.NOT_CONFIGURED, CiState.SUCCESS, CiState.FAILURE}
+        else "in_progress"
+    )
     conclusion = (
         "success"
         if ci_state is CiState.SUCCESS
         else "failure" if ci_state is CiState.FAILURE else None
+    )
+    checks = (
+        ()
+        if ci_state is CiState.NOT_CONFIGURED
+        else (
+            CiCheckSnapshot(
+                kind=CiCheckKind.CHECK_RUN,
+                external_key="101",
+                name="Backend tests",
+                status=check_status,
+                conclusion=conclusion,
+                app_id=123,
+            ),
+        )
     )
     return GitHubReviewContext(
         pull_request=PullRequestSnapshot(
@@ -146,16 +164,7 @@ def _context(
         ci=CiSnapshot(
             head_sha=head_sha,
             state=ci_state,
-            checks=(
-                CiCheckSnapshot(
-                    kind=CiCheckKind.CHECK_RUN,
-                    external_key="101",
-                    name="Backend tests",
-                    status=check_status,
-                    conclusion=conclusion,
-                    app_id=123,
-                ),
-            ),
+            checks=checks,
             complete=True,
             checked_at=checked_at,
         ),
@@ -254,6 +263,41 @@ def test_pending_ci_is_polled_without_consuming_failure_attempts(
     assert stored_details.base_ref == "main"
 
 
+def test_unconfigured_ci_moves_directly_to_ready_for_review(
+    database: Database,
+) -> None:
+    """完整但为空的 CI 快照不应无意义地等待到超时。"""
+
+    head_sha = "a" * 40
+    task_id, run_id = _submit(database, "ci-not-configured", head_sha)
+    clock = MutableClock(datetime(2026, 8, 24, 12, 0, tzinfo=UTC))
+    queue = SqlAlchemyReviewTaskQueue(database.sessions, clock=clock)
+    lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert lease is not None
+
+    assert queue.store_github_context(
+        lease,
+        _context(head_sha, CiState.NOT_CONFIGURED, clock.value, include_files=True),
+        ci_poll_interval=timedelta(seconds=30),
+        ci_wait_timeout=timedelta(hours=1),
+    ) is ExecutionStatus.READY_FOR_REVIEW
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, run_id)
+        version = session.scalar(
+            select(PullRequestVersionRecord).where(
+                PullRequestVersionRecord.review_version_key
+                == run.review_version_key
+            )
+        )
+        assert task.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert run.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert task.ci_wait_started_at is None
+        assert task.ci_deadline_at is None
+        assert version.ci_state == CiState.NOT_CONFIGURED.value
+
+
 def test_worker_runtime_wires_github_loader_to_ready_state(
     database: Database,
 ) -> None:
@@ -319,8 +363,15 @@ def test_new_head_supersedes_all_previous_active_runs_in_bulk(
         old_task = session.get(ReviewTaskRecord, old_task_id)
         old_run = session.get(ReviewRunRecord, old_run_id)
         new_run = session.get(ReviewRunRecord, new_run_id)
+        assert old_task is not None
+        assert old_run is not None
+        assert new_run is not None
         assert old_task.execution_status == ExecutionStatus.SUPERSEDED.value
+        assert old_task.workflow_status == ExecutionStatus.SUPERSEDED.value
         assert old_run.execution_status == ExecutionStatus.SUPERSEDED.value
+        assert old_run.workflow_status == ExecutionStatus.SUPERSEDED.value
+        assert old_task.workflow_paused_from is None
+        assert old_run.workflow_paused_from is None
         assert old_run.coverage_status == CoverageStatus.STALE.value
         assert new_run.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
 
@@ -409,8 +460,12 @@ def test_current_github_head_mismatch_supersedes_before_context_is_saved(
     with database.sessions() as session:
         task = session.get(ReviewTaskRecord, task_id)
         run = session.get(ReviewRunRecord, run_id)
+        assert task is not None
+        assert run is not None
         assert task.execution_status == ExecutionStatus.SUPERSEDED.value
+        assert task.workflow_status == ExecutionStatus.SUPERSEDED.value
         assert run.execution_status == ExecutionStatus.SUPERSEDED.value
+        assert run.workflow_status == ExecutionStatus.SUPERSEDED.value
         assert run.coverage_status == CoverageStatus.STALE.value
         assert session.scalar(
             select(func.count()).select_from(PullRequestVersionRecord)

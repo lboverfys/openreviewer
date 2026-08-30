@@ -1,9 +1,8 @@
 """基于数据库 Worker 心跳的容器健康检查。"""
 
 from datetime import timedelta
-import os
 
-from apps.worker.main import WorkerSettings
+from apps.worker.settings import WorkerSettings
 from persistence.database import Database
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 

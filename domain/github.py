@@ -15,7 +15,6 @@ from domain.enums import (
 from domain.identifiers import normalize_sha
 from domain.paths import normalize_repository_path
 
-
 # GitHub 的统一 diff 会受客户端总响应上限保护；单文件保留到这个边界后，
 # 后续模型规划器会按 Token 预算继续切片，而不是在上下文阶段直接丢弃文件。
 MAX_PATCH_BYTES = 8 * 1024 * 1024
@@ -130,7 +129,11 @@ class CiCheckSnapshot(GitHubContractModel):
 
 
 class CiSnapshot(GitHubContractModel):
-    """与精确提交绑定、数量有上限的 CI 汇总。"""
+    """与精确提交绑定、数量有上限的 CI 汇总。
+
+    ``not_configured`` 表示已完整读取但没有任何可见检查；``unknown`` 只表示
+    读取结果不完整，不能把这两种情况混为一谈。
+    """
 
     head_sha: str = Field(min_length=40, max_length=64)
     state: CiState

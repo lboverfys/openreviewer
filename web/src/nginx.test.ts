@@ -17,6 +17,7 @@ describe("Nginx API allowlist", () => {
     proxyLocations.some((location) => location.test(path));
 
   it.each([
+    "/api/v1/auth/sessions/revoke-all",
     "/api/v1/settings/ai",
     "/api/v1/settings/ai/providers/openai",
     "/api/v1/settings/ai/providers/openai/test",
@@ -49,6 +50,7 @@ describe("Nginx API allowlist", () => {
   it.each([
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/actions",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/change-token",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/identity/sync",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings/finding-1",
   ])("proxies the supported review detail route %s", (path) => {
@@ -74,5 +76,18 @@ describe("Nginx API allowlist", () => {
 
   it("keeps the catch-all API denial", () => {
     expect(nginxConfig).toMatch(/location \/api\/\s*\{\s*return 404;/);
+  });
+
+  it("overwrites the forwarded authority for the API origin guard", () => {
+    const proxyBlocks = Array.from(
+      nginxConfig.matchAll(/location[^\{]*\{([^}]*)\}/g),
+    )
+      .map((match) => match[1])
+      .filter((block) => block.includes("proxy_pass http://openreviewer_api;"));
+    expect(proxyBlocks.length).toBeGreaterThan(0);
+    expect(proxyBlocks.every((block) =>
+      block.includes("proxy_set_header X-Forwarded-Proto $scheme;") &&
+      block.includes("proxy_set_header X-Forwarded-Host $http_host;")
+    )).toBe(true);
   });
 });

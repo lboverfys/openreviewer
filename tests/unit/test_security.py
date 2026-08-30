@@ -1,5 +1,5 @@
-from io import StringIO
 import logging
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -18,7 +18,6 @@ from domain.security import (
     redact_sensitive,
     redact_text,
 )
-
 
 FAKE_GITHUB_TOKEN = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
 FAKE_MODEL_KEY = "sk-abcdefghijklmnopqrstuvwxyz123456"

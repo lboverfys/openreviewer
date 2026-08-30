@@ -1,8 +1,9 @@
 """不硬编码凭据的 SQLAlchemy 数据库引擎配置。"""
 
+import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-import os
 from pathlib import Path
 
 from sqlalchemy import URL, Engine, create_engine, make_url
@@ -11,6 +12,136 @@ from sqlalchemy.orm import Session, sessionmaker
 
 class DatabaseConfigurationError(RuntimeError):
     """必需的数据库配置缺失或无效。"""
+
+
+_APPLICATION_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,63}$")
+
+
+def _bounded_environment_integer(
+    values: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = values.get(name, str(default)).strip()
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise DatabaseConfigurationError(f"{name} must be an integer") from exc
+    if not minimum <= parsed <= maximum:
+        raise DatabaseConfigurationError(
+            f"{name} must be between {minimum} and {maximum}"
+        )
+    return parsed
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseEngineSettings:
+    """API 与 Worker 共用的有界连接池和 PostgreSQL 会话超时。"""
+
+    pool_size: int = 5
+    max_overflow: int = 5
+    pool_timeout_seconds: int = 10
+    pool_recycle_seconds: int = 1800
+    statement_timeout_ms: int = 30_000
+    lock_timeout_ms: int = 5_000
+    idle_transaction_timeout_ms: int = 60_000
+    application_name: str = "openreviewer"
+
+    @classmethod
+    def from_environment(
+        cls,
+        environment: Mapping[str, str] | None = None,
+    ) -> "DatabaseEngineSettings":
+        values = os.environ if environment is None else environment
+        application_name = values.get(
+            "OPENREVIEWER_DB_APPLICATION_NAME",
+            "openreviewer",
+        ).strip()
+        if not _APPLICATION_NAME.fullmatch(application_name):
+            raise DatabaseConfigurationError(
+                "OPENREVIEWER_DB_APPLICATION_NAME must contain 1 to 63 safe characters"
+            )
+        return cls(
+            pool_size=_bounded_environment_integer(
+                values,
+                "OPENREVIEWER_DB_POOL_SIZE",
+                5,
+                minimum=1,
+                maximum=100,
+            ),
+            max_overflow=_bounded_environment_integer(
+                values,
+                "OPENREVIEWER_DB_MAX_OVERFLOW",
+                5,
+                minimum=0,
+                maximum=100,
+            ),
+            pool_timeout_seconds=_bounded_environment_integer(
+                values,
+                "OPENREVIEWER_DB_POOL_TIMEOUT_SECONDS",
+                10,
+                minimum=1,
+                maximum=300,
+            ),
+            pool_recycle_seconds=_bounded_environment_integer(
+                values,
+                "OPENREVIEWER_DB_POOL_RECYCLE_SECONDS",
+                1800,
+                minimum=30,
+                maximum=86_400,
+            ),
+            statement_timeout_ms=_bounded_environment_integer(
+                values,
+                "OPENREVIEWER_DB_STATEMENT_TIMEOUT_MS",
+                30_000,
+                minimum=1_000,
+                maximum=600_000,
+            ),
+            lock_timeout_ms=_bounded_environment_integer(
+                values,
+                "OPENREVIEWER_DB_LOCK_TIMEOUT_MS",
+                5_000,
+                minimum=100,
+                maximum=60_000,
+            ),
+            idle_transaction_timeout_ms=_bounded_environment_integer(
+                values,
+                "OPENREVIEWER_DB_IDLE_TRANSACTION_TIMEOUT_MS",
+                60_000,
+                minimum=1_000,
+                maximum=600_000,
+            ),
+            application_name=application_name,
+        )
+
+    def engine_options(self, url: str | URL) -> dict[str, object]:
+        parsed = make_url(url)
+        options: dict[str, object] = {"pool_pre_ping": True}
+        if parsed.get_backend_name() != "postgresql":
+            return options
+        options.update(
+            {
+                "pool_size": self.pool_size,
+                "max_overflow": self.max_overflow,
+                "pool_timeout": self.pool_timeout_seconds,
+                "pool_recycle": self.pool_recycle_seconds,
+                "pool_use_lifo": True,
+                "pool_reset_on_return": "rollback",
+                "connect_args": {
+                    "application_name": self.application_name,
+                    "options": (
+                        f"-c statement_timeout={self.statement_timeout_ms} "
+                        f"-c lock_timeout={self.lock_timeout_ms} "
+                        "-c idle_in_transaction_session_timeout="
+                        f"{self.idle_transaction_timeout_ms}"
+                    ),
+                },
+            }
+        )
+        return options
 
 
 def _password_from_environment(values: Mapping[str, str]) -> str:
@@ -118,7 +249,12 @@ class Database:
     sessions: sessionmaker[Session]
 
     @classmethod
-    def connect(cls, url: str | URL) -> "Database":
+    def connect(
+        cls,
+        url: str | URL,
+        *,
+        engine_settings: DatabaseEngineSettings | None = None,
+    ) -> "Database":
         """创建数据库引擎和可复用的 SQLAlchemy 会话工厂。
 
         ``pool_pre_ping`` 会在取出连接前检查连接是否仍然可用，适合 PostgreSQL
@@ -136,7 +272,8 @@ class Database:
         连接池的实际连接通常在第一次查询时建立；如果后续初始化失败，调用方仍
         应在清理路径调用 :meth:`dispose`。
         """
-        engine = create_engine(url, pool_pre_ping=True)
+        settings = engine_settings or DatabaseEngineSettings()
+        engine = create_engine(url, **settings.engine_options(url))
         return cls(
             engine=engine,
             sessions=sessionmaker(
@@ -147,7 +284,10 @@ class Database:
         )
 
     @classmethod
-    def from_environment(cls) -> "Database":
+    def from_environment(
+        cls,
+        environment: Mapping[str, str] | None = None,
+    ) -> "Database":
         """读取当前进程环境并建立数据库连接。
 
         返回：
@@ -160,7 +300,11 @@ class Database:
         方法不读取项目文件之外的配置，也不会自动创建数据库或执行迁移；迁移由
         Alembic 单独负责。
         """
-        return cls.connect(database_url_from_environment())
+        values = os.environ if environment is None else environment
+        return cls.connect(
+            database_url_from_environment(values),
+            engine_settings=DatabaseEngineSettings.from_environment(values),
+        )
 
     def dispose(self) -> None:
         """释放连接池中的全部连接。

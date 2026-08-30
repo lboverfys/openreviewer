@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"case_id": "security-sql-injection", "file": "src/query.py", "patch": "@@ -18,1 +18,1 @@\n-old_query()\n+cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")\n", "expected_finding_keys": ["security:src/query.py:18:sql-injection"]},
+    {"case_id": "authorization-missing-scope", "file": "src/auth.py", "patch": "@@ -42,1 +42,1 @@\n-require_scope(user, 'admin')\n+load_admin_panel(user)\n", "expected_finding_keys": ["authorization:src/auth.py:42:missing-scope"]},
+    {"case_id": "database-n-plus-one", "file": "src/orders.py", "patch": "@@ -73,1 +73,1 @@\n-orders = load_orders_with_customers()\n+customers = [load_customer(order.customer_id) for order in orders]\n", "expected_finding_keys": ["database:src/orders.py:73:n-plus-one"]},
+    {"case_id": "reliability-missing-timeout", "file": "src/client.py", "patch": "@@ -20,1 +20,1 @@\n-response = client.get(url, timeout=10)\n+response = client.get(url)\n", "expected_finding_keys": ["reliability:src/client.py:20:missing-timeout"]},
+    {"case_id": "test-gap-checkout", "file": "tests/test_checkout.py", "patch": "@@ -1,1 +1,1 @@\n-def test_checkout_failure(): ...\n+def test_checkout_success(): ...\n", "expected_finding_keys": ["test_gap:tests/test_checkout.py:1:missing-case"]},
+    {"case_id": "architecture-cycle", "file": "src/a.py", "patch": "@@ -5,1 +5,1 @@\n-from src.contracts import Service\n+from src.b import Service\n", "expected_finding_keys": ["architecture:src/a.py:5:dependency-cycle"]},
+    {"case_id": "business-rounding", "file": "src/money.py", "patch": "@@ -55,1 +55,1 @@\n-return amount.quantize(CENT)\n+return round(float(amount), 2)\n", "expected_finding_keys": ["business_contract:src/money.py:55:rounding"]},
+    {"case_id": "security-secret-log", "file": "src/log.py", "patch": "@@ -31,1 +31,1 @@\n-logger.info('login succeeded')\n+logger.info('token=%s', access_token)\n", "expected_finding_keys": ["security:src/log.py:31:secret-log"]},
+    {"case_id": "database-transaction-boundary", "file": "src/payment.py", "patch": "@@ -88,1 +88,1 @@\n-enqueue_capture(payment.id)\n+gateway.capture(payment.id)  # inside transaction\n", "expected_finding_keys": ["database:src/payment.py:88:remote-in-transaction"]},
+    {"case_id": "authorization-ci-trust", "file": ".github/workflows/deploy.yml", "patch": "@@ -24,1 +24,1 @@\n-if: github.event.pull_request.head.repo.fork == false\n+if: always()\n", "expected_finding_keys": ["authorization:.github/workflows/deploy.yml:24:untrusted-check"]},
+    {"case_id": "security-path-traversal", "file": "src/files.py", "patch": "@@ -12,1 +12,1 @@\n-return storage.open(validated_name)\n+return open(upload_root / user_path, 'rb')\n", "expected_finding_keys": ["security:src/files.py:12:path-traversal"]},
+    {"case_id": "authorization-object-ownership", "file": "src/invoices.py", "patch": "@@ -65,1 +65,1 @@\n-return load_owned_invoice(user.id, invoice_id)\n+return load_invoice(invoice_id)\n", "expected_finding_keys": ["authorization:src/invoices.py:65:missing-ownership-check"]},
+    {"case_id": "database-unbounded-audit-query", "file": "src/audit.py", "patch": "@@ -30,1 +30,1 @@\n-return query.limit(page_size).all()\n+return session.execute(select(AuditEvent)).all()\n", "expected_finding_keys": ["database:src/audit.py:30:unbounded-query"]},
+    {"case_id": "reliability-swallowed-error", "file": "src/jobs.py", "patch": "@@ -48,1 +48,1 @@\n-except RetryableError as exc: raise\n+except Exception: pass\n", "expected_finding_keys": ["reliability:src/jobs.py:48:swallowed-error"]},
+    {"case_id": "business-missing-idempotency", "file": "src/checkout.py", "patch": "@@ -90,1 +90,1 @@\n-charge_card(order.total, idempotency_key=order.id)\n+charge_card(order.total)\n", "expected_finding_keys": ["business_contract:src/checkout.py:90:missing-idempotency"]},
+    {"case_id": "architecture-layer-leak", "file": "domain/orders.py", "patch": "@@ -14,1 +14,1 @@\n-from domain.ports import OrderStore\n+from infrastructure.db import Session\n", "expected_finding_keys": ["architecture:domain/orders.py:14:layer-leak"]},
+    {"case_id": "test-gap-payment-error", "file": "tests/test_payment.py", "patch": "@@ -75,1 +75,1 @@\n-def test_payment_timeout(): ...\n+def test_payment_success_with_discount(): ...\n", "expected_finding_keys": ["test_gap:tests/test_payment.py:75:missing-error-path"]},
+    {"case_id": "security-disabled-tls", "file": "src/http.py", "patch": "@@ -27,1 +27,1 @@\n-return requests.get(url, timeout=10)\n+return requests.get(url, verify=False, timeout=10)\n", "expected_finding_keys": ["security:src/http.py:27:disabled-tls-verification"]},
+    {"case_id": "database-query-in-loop", "file": "src/report.py", "patch": "@@ -101,1 +101,1 @@\n-send(preloaded_orders[user.id])\n+send(load_orders(user.id))  # inside user loop\n", "expected_finding_keys": ["database:src/report.py:101:query-in-loop"]},
+    {"case_id": "clean-explicit-timeout", "file": "src/client_v2.py", "patch": "@@ -16,1 +16,1 @@\n-return legacy_fetch(url)\n+return client.get(url, timeout=10)\n", "expected_finding_keys": []},
+    {"case_id": "clean-indexed-bounded-query", "file": "src/users.py", "patch": "@@ -38,1 +38,1 @@\n-return legacy_user_lookup(user_id)\n+return select(User.id, User.name).where(User.id == user_id).limit(1)\n", "expected_finding_keys": []},
+    {"case_id": "clean-comment-clarification", "file": "src/cache.py", "patch": "@@ -7,1 +7,1 @@\n-# cache\n+# Cache entries expire after the configured TTL.\n", "expected_finding_keys": []},
+    {"case_id": "clean-rename", "file": "src/names.py", "patch": "@@ -10,1 +10,1 @@\n-old_name = value\n+display_name = value\n", "expected_finding_keys": []},
+    {"case_id": "clean-documentation", "file": "README.md", "patch": "@@ -1,1 +1,1 @@\n-Old title\n+OpenReviewer\n", "expected_finding_keys": []}
+  ]
+}

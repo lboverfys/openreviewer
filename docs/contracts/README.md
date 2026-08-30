@@ -23,7 +23,7 @@ OpenAI/Anthropic 结构化调用、上下文自动分批、模型用量、成本
 安全、规范、逻辑、汇总四 Agent 固定 DAG、独立配置、可恢复批次和版本化 RAG 见
 [agent-workflow.md](agent-workflow.md)。
 
-批准门、稳定幂等键、PR 版本复核和 GitHub 汇总评论见
+批准门、稳定幂等键、PR 版本复核和 GitHub Check/Review/汇总发布见
 [github-publishing.md](github-publishing.md)。
 
 管理界面的 AI 草稿、连接测试、激活、密钥加密、revision 和审计契约见
@@ -31,3 +31,9 @@ OpenAI/Anthropic 结构化调用、上下文自动分批、模型用量、成本
 
 Markdown 知识库的数据库持久化、文档编辑、不可变版本、归档、检索、Worker 快照和管理 API
 见 [knowledge-management.md](knowledge-management.md)。
+
+录制输出回放门禁、指标边界以及真实模型评测尚需满足的条件见
+[evaluation.md](evaluation.md)。
+
+真实模型观测、脱敏输出、双人裁决和成本数据格式见
+[real-evaluation.schema.json](real-evaluation.schema.json)。

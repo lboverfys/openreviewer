@@ -1,3 +1,5 @@
+import json
+from base64 import urlsafe_b64encode
 from decimal import Decimal
 
 import pytest
@@ -17,6 +19,7 @@ from services.ai_settings import (
     AiSettingsConfigurationError,
     AiSettingsConflictError,
     AiSettingsService,
+    AiSettingsValidationError,
     ReviewPolicyDraft,
 )
 from services.model_review import ModelServiceSettings
@@ -52,6 +55,43 @@ def test_secret_cipher_authenticates_provider_and_key_version() -> None:
             encrypted.ciphertext,
             encrypted.nonce,
             encrypted.key_version,
+        )
+
+
+def test_secret_cipher_loads_bounded_previous_key_ring() -> None:
+    current_key = b"n" * 32
+    previous_key = b"o" * 32
+    encoded_current = urlsafe_b64encode(current_key).decode("ascii").rstrip("=")
+    encoded_previous = urlsafe_b64encode(previous_key).decode("ascii").rstrip("=")
+    old_cipher = AiSecretCipher(previous_key, key_version=4)
+    encrypted = old_cipher.encrypt(ModelProvider.OPENAI, "sk-before-rotation")
+
+    cipher = AiSecretCipher.from_environment(
+        {
+            "OPENREVIEWER_AI_CONFIG_KEY": encoded_current,
+            "OPENREVIEWER_AI_CONFIG_KEY_VERSION": "5",
+            "OPENREVIEWER_AI_CONFIG_PREVIOUS_KEYS_JSON": json.dumps(
+                [{"version": 4, "key": encoded_previous}]
+            ),
+        }
+    )
+
+    assert cipher.decrypt(
+        ModelProvider.OPENAI,
+        encrypted.ciphertext,
+        encrypted.nonce,
+        encrypted.key_version,
+    ) == "sk-before-rotation"
+    assert cipher.encrypt(ModelProvider.OPENAI, "sk-current").key_version == 5
+    assert encoded_current not in repr(cipher)
+    assert encoded_previous not in repr(cipher)
+
+    with pytest.raises(AiSettingsConfigurationError, match="不在当前解密密钥环"):
+        cipher.decrypt(
+            ModelProvider.OPENAI,
+            encrypted.ciphertext,
+            encrypted.nonce,
+            3,
         )
 
 
@@ -307,6 +347,18 @@ def test_switching_api_base_url_invalidates_test_and_active_provider(
         actor="administrator",
     )
 
+    with pytest.raises(AiSettingsValidationError, match="API 地址"):
+        service.update_provider(
+            ModelProvider.OPENAI,
+            AiProviderDraft(
+                model="relay-model",
+                api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+                api_base_url="https://relay-two.example/api/v1/",
+            ),
+            expected_revision=3,
+            actor="administrator",
+        )
+
     changed = service.update_provider(
         ModelProvider.OPENAI,
         AiProviderDraft(
@@ -316,6 +368,7 @@ def test_switching_api_base_url_invalidates_test_and_active_provider(
         ),
         expected_revision=3,
         actor="administrator",
+        api_key="new-relay-key",
     )
 
     assert changed.active_provider is None

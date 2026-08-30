@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the verified OpenReviewer database backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=openreviewer-backup.service
+
+[Install]
+WantedBy=timers.target

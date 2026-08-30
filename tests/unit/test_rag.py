@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import event
 
+import services.rag as rag_module
 from persistence.database import Database
 from persistence.models import Base
 from services.rag import (
@@ -27,6 +28,25 @@ def test_knowledge_search_matches_versioned_source_name() -> None:
     }
     assert all(len(item.version) == 16 for item in citations)
     assert all(item.excerpt for item in citations)
+
+
+def test_knowledge_search_reuses_chunk_token_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    knowledge = MarkdownKnowledgeBase("knowledge")
+    original_tokens = rag_module._tokens
+    calls = 0
+
+    def counted_tokens(value: str) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        return original_tokens(value)
+
+    monkeypatch.setattr(rag_module, "_tokens", counted_tokens)
+    knowledge.search("security database")
+    first_search_calls = calls
+    knowledge.search("security database")
+
+    # 第二次查询只需重新切分查询词，不应再次扫描每个 chunk 的正文。
+    assert calls - first_search_calls == 1
 
 
 def _managed_knowledge(tmp_path: Path) -> tuple[Database, ManagedMarkdownKnowledgeBase]:
@@ -102,6 +122,27 @@ def test_managed_knowledge_versions_archive_restore_and_search(tmp_path: Path) -
         )
         assert restored.document.archived is False
         assert restored.document.enabled is False
+    finally:
+        database.dispose()
+
+
+def test_managed_search_invalidates_index_after_content_update(tmp_path: Path) -> None:
+    database, knowledge = _managed_knowledge(tmp_path)
+    try:
+        seeded = knowledge.list_documents()
+        assert knowledge.search("鉴权")[0].source == "security.md"
+        updated = knowledge.update_document(
+            seeded.items[0].id,
+            source="security.md",
+            content="# 安全规则\n\n只检查新的审查词。",
+            enabled=True,
+            expected_revision=seeded.revision,
+            expected_document_version=1,
+            actor="tester",
+        )
+        assert updated.document.current_version == 2
+        assert not knowledge.search("鉴权")
+        assert knowledge.search("新的审查词")
     finally:
         database.dispose()
 

@@ -1,26 +1,36 @@
 """运维 Dashboard 只读模型使用的 SQLAlchemy 查询。"""
 
-from sqlalchemy import func, select
+from datetime import datetime
+
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.enums import ExecutionStatus, WorkerStatus
 from domain.security import redact_sensitive
 from persistence.models import (
+    OutboxEventRecord,
+    PullRequestVersionRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
-    PullRequestVersionRecord,
     WorkerHeartbeatRecord,
 )
+from persistence.resource_scope import resource_predicate
 from services.dashboard import (
+    DashboardChangeState,
     DashboardData,
     DashboardPersistenceError,
+    ReviewCursor,
     ReviewListItem,
     StoredWorkerHeartbeat,
     as_utc,
+    required_utc,
 )
+from services.rbac import ResourceScope
+
+_MAX_DASHBOARD_WORKERS = 100
 
 
 class SqlAlchemyDashboardRepository:
@@ -33,7 +43,12 @@ class SqlAlchemyDashboardRepository:
         """
         self._sessions = sessions
 
-    def load(self, limit: int) -> DashboardData:
+    def load(
+        self,
+        limit: int,
+        cursor: ReviewCursor | None = None,
+        scope: ResourceScope | None = None,
+    ) -> DashboardData:
         """从数据库读取 Dashboard 所需的聚合数据。
 
         查询一次任务总数和按状态分组的数量，再读取最近任务及最近一次心跳。
@@ -47,7 +62,8 @@ class SqlAlchemyDashboardRepository:
 
         返回：
             按创建时间倒序排列的最近任务、所有状态计数、总运行数和最后心跳。
-            没有心跳时 ``latest_worker`` 为 ``None``。
+            Worker 心跳按最近更新时间倒序返回，并硬限制为 100 条，避免异常实例 ID
+            持续增长时形成无界查询。
 
         异常：
             DashboardPersistenceError: SQL 查询失败、记录里的状态字符串无法映射
@@ -59,43 +75,43 @@ class SqlAlchemyDashboardRepository:
         """
         with self._sessions() as session:
             try:
-                total_reviews = int(
-                    session.scalar(
-                        select(func.count()).select_from(ReviewRunRecord)
-                    )
-                    or 0
+                # 总数和状态分组原本是两次扫描；条件聚合在同一次索引/表扫描中
+                # 返回两者。使用 CASE 而不是方言专属的 FILTER，兼容 SQLite 和
+                # PostgreSQL 的测试/生产数据库。
+                stats_columns = tuple(
+                    func.sum(
+                        case(
+                            (
+                                ReviewRunRecord.execution_status == status.value,
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label(f"status_{status.value}")
+                    for status in ExecutionStatus
                 )
-                grouped_counts = session.execute(
+                stats_row = session.execute(
                     select(
-                        ReviewRunRecord.execution_status,
-                        func.count(ReviewRunRecord.id),
-                    ).group_by(ReviewRunRecord.execution_status)
-                )
+                        func.count(ReviewRunRecord.id).label("total_reviews"),
+                        *stats_columns,
+                    )
+                    .select_from(ReviewRunRecord)
+                    .where(
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        )
+                    )
+                ).one()
+                total_reviews = int(stats_row.total_reviews or 0)
                 status_counts = {
-                    ExecutionStatus(status): int(count)
-                    for status, count in grouped_counts
+                    status: int(getattr(stats_row, f"status_{status.value}") or 0)
+                    for status in ExecutionStatus
                 }
 
-                model_completed_query = (
-                    select(ReviewPlanRecord.model_review_completed_at)
-                    .where(ReviewPlanRecord.review_run_id == ReviewRunRecord.id)
-                    .scalar_subquery()
-                )
-                finding_count_query = (
-                    select(func.count(ReviewFindingRecord.id))
-                    .where(ReviewFindingRecord.review_run_id == ReviewRunRecord.id)
-                    .scalar_subquery()
-                )
-                unverified_finding_count_query = (
-                    select(func.count(ReviewFindingRecord.id))
-                    .where(
-                        ReviewFindingRecord.review_run_id == ReviewRunRecord.id,
-                        ReviewFindingRecord.verification_status == "unverified",
-                    )
-                    .scalar_subquery()
-                )
-
-                rows = session.execute(
+                reviews_query = (
                     select(
                         ReviewRunRecord.id.label("review_run_id"),
                         ReviewTaskRecord.id.label("review_task_id"),
@@ -121,11 +137,6 @@ class SqlAlchemyDashboardRepository:
                         ReviewTaskRecord.last_error_details,
                         ReviewRunRecord.review_conclusion,
                         ReviewRunRecord.coverage_status,
-                        model_completed_query.label("model_review_completed_at"),
-                        finding_count_query.label("finding_count"),
-                        unverified_finding_count_query.label(
-                            "unverified_finding_count"
-                        ),
                         ReviewTaskRecord.model_attempt_count,
                         ReviewRunRecord.created_at,
                         ReviewRunRecord.updated_at,
@@ -139,11 +150,90 @@ class SqlAlchemyDashboardRepository:
                         PullRequestVersionRecord.review_version_key
                         == ReviewRunRecord.review_version_key,
                     )
-                    .order_by(ReviewRunRecord.created_at.desc())
-                    .limit(limit)
+                    .order_by(
+                        ReviewRunRecord.created_at.desc(),
+                        ReviewRunRecord.id.desc(),
+                    )
+                    .where(
+                        resource_predicate(
+                            scope,
+                            installation_column=ReviewRunRecord.installation_id,
+                            repository_column=ReviewRunRecord.repository,
+                            repository_key_column=ReviewRunRecord.repository_key,
+                        )
+                    )
                 )
+                if cursor is not None:
+                    reviews_query = reviews_query.where(
+                        or_(
+                            ReviewRunRecord.created_at < cursor.created_at,
+                            and_(
+                                ReviewRunRecord.created_at == cursor.created_at,
+                                ReviewRunRecord.id < cursor.review_run_id,
+                            ),
+                        )
+                    )
+                raw_rows = session.execute(
+                    reviews_query.limit(limit + 1)
+                ).all()
+                has_more = len(raw_rows) > limit
+                rows = raw_rows[:limit]
+
+                # 只对当前页的运行批量读取模型完成时间和 Finding 计数。这样既
+                # 避免每行两个相关子查询，也不会为了第一页而聚合整张 findings
+                # 表；本页最多 100 个 ID，查询次数始终为 O(1)。
+                review_metrics: dict[str, tuple[datetime | None, int, int]] = {}
+                review_ids = tuple(row.review_run_id for row in rows)
+                if review_ids:
+                    metrics_rows = session.execute(
+                        select(
+                            ReviewRunRecord.id.label("review_run_id"),
+                            func.max(
+                                ReviewPlanRecord.model_review_completed_at
+                            ).label("model_review_completed_at"),
+                            func.count(ReviewFindingRecord.id).label("finding_count"),
+                            func.coalesce(
+                                func.sum(
+                                    case(
+                                        (
+                                            ReviewFindingRecord.adjudication_status
+                                            == "unreviewed",
+                                            1,
+                                        ),
+                                        else_=0,
+                                    )
+                                ),
+                                0,
+                            ).label("unreviewed_finding_count"),
+                        )
+                        .select_from(ReviewRunRecord)
+                        .outerjoin(
+                            ReviewPlanRecord,
+                            ReviewPlanRecord.review_run_id == ReviewRunRecord.id,
+                        )
+                        .outerjoin(
+                            ReviewFindingRecord,
+                            ReviewFindingRecord.review_run_id == ReviewRunRecord.id,
+                        )
+                        .where(ReviewRunRecord.id.in_(review_ids))
+                        .group_by(ReviewRunRecord.id)
+                    ).all()
+                    review_metrics = {
+                        metric.review_run_id: (
+                            metric.model_review_completed_at,
+                            int(metric.finding_count or 0),
+                            int(metric.unreviewed_finding_count or 0),
+                        )
+                        for metric in metrics_rows
+                    }
+
                 review_items: list[ReviewListItem] = []
                 for row in rows:
+                    (
+                        model_review_completed_at,
+                        finding_count,
+                        unreviewed_finding_count,
+                    ) = review_metrics.get(row.review_run_id, (None, 0, 0))
                     safe_last_error = (
                         redact_sensitive(row.last_error)
                         if row.last_error is not None
@@ -200,42 +290,181 @@ class SqlAlchemyDashboardRepository:
                             review_conclusion=row.review_conclusion,
                             coverage_status=row.coverage_status,
                             model_review_completed_at=as_utc(
-                                row.model_review_completed_at
+                                model_review_completed_at
                             ),
-                            finding_count=int(row.finding_count or 0),
-                            unverified_finding_count=int(
-                                row.unverified_finding_count or 0
-                            ),
+                            finding_count=finding_count,
+                            unreviewed_finding_count=unreviewed_finding_count,
                             model_attempt_count=row.model_attempt_count,
-                            created_at=as_utc(row.created_at),
-                            updated_at=as_utc(row.updated_at),
+                            created_at=required_utc(row.created_at, "review.created_at"),
+                            updated_at=required_utc(row.updated_at, "review.updated_at"),
                         )
                     )
                 reviews = tuple(review_items)
 
-                heartbeat = session.scalar(
-                    select(WorkerHeartbeatRecord)
-                    .order_by(WorkerHeartbeatRecord.last_seen_at.desc())
-                    .limit(1)
-                )
-                stored_worker = (
+                heartbeat_rows = session.execute(
+                    select(
+                        WorkerHeartbeatRecord.worker_id,
+                        WorkerHeartbeatRecord.status,
+                        WorkerHeartbeatRecord.current_task_id,
+                        WorkerHeartbeatRecord.started_at,
+                        WorkerHeartbeatRecord.last_seen_at,
+                        ReviewRunRecord.installation_id.label("task_installation_id"),
+                        ReviewRunRecord.repository.label("task_repository"),
+                    )
+                    .outerjoin(
+                        ReviewTaskRecord,
+                        WorkerHeartbeatRecord.current_task_id == ReviewTaskRecord.id,
+                    )
+                    .outerjoin(
+                        ReviewRunRecord,
+                        ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
+                    )
+                    .order_by(
+                        WorkerHeartbeatRecord.last_seen_at.desc(),
+                        WorkerHeartbeatRecord.worker_id.asc(),
+                    )
+                    .limit(_MAX_DASHBOARD_WORKERS)
+                ).all()
+                workers = tuple(
                     StoredWorkerHeartbeat(
                         worker_id=heartbeat.worker_id,
                         status=WorkerStatus(heartbeat.status),
-                        current_task_id=heartbeat.current_task_id,
-                        started_at=as_utc(heartbeat.started_at),
-                        last_seen_at=as_utc(heartbeat.last_seen_at),
+                        current_task_id=(
+                            heartbeat.current_task_id
+                            if (
+                                scope is None
+                                or scope.unrestricted
+                                or (
+                                    heartbeat.task_installation_id is not None
+                                    and heartbeat.task_repository is not None
+                                    and scope.allows(
+                                        heartbeat.task_installation_id,
+                                        heartbeat.task_repository,
+                                    )
+                                )
+                            )
+                            else None
+                        ),
+                        started_at=required_utc(
+                            heartbeat.started_at,
+                            "worker.started_at",
+                        ),
+                        last_seen_at=required_utc(
+                            heartbeat.last_seen_at,
+                            "worker.last_seen_at",
+                        ),
                     )
-                    if heartbeat is not None
-                    else None
+                    for heartbeat in heartbeat_rows
                 )
                 return DashboardData(
                     total_reviews=total_reviews,
                     status_counts=status_counts,
                     recent_reviews=reviews,
-                    latest_worker=stored_worker,
+                    workers=workers,
+                    has_more=has_more,
                 )
             except (SQLAlchemyError, ValueError) as exc:
                 raise DashboardPersistenceError(
                     "dashboard data could not be loaded"
+                ) from exc
+
+    def change_state(
+        self,
+        *,
+        scope: ResourceScope | None = None,
+    ) -> DashboardChangeState:
+        """用两个索引首行查询读取 SSE 变化状态。"""
+
+        with self._sessions() as session:
+            try:
+                latest_event_query = select(
+                    OutboxEventRecord.id,
+                    OutboxEventRecord.occurred_at,
+                ).order_by(
+                    OutboxEventRecord.occurred_at.desc(),
+                    OutboxEventRecord.id.desc(),
+                ).limit(1)
+                if scope is not None and not scope.unrestricted:
+                    latest_event_query = (
+                        latest_event_query.join(
+                            ReviewRunRecord,
+                            and_(
+                                OutboxEventRecord.aggregate_type == "review_run",
+                                OutboxEventRecord.aggregate_id == ReviewRunRecord.id,
+                            ),
+                        )
+                        .where(
+                            resource_predicate(
+                                scope,
+                                installation_column=ReviewRunRecord.installation_id,
+                                repository_column=ReviewRunRecord.repository,
+                                repository_key_column=ReviewRunRecord.repository_key,
+                            )
+                        )
+                    )
+                latest_event = session.execute(latest_event_query).one_or_none()
+                worker_rows = session.execute(
+                    select(
+                        WorkerHeartbeatRecord.worker_id,
+                        WorkerHeartbeatRecord.status,
+                        WorkerHeartbeatRecord.current_task_id,
+                        WorkerHeartbeatRecord.started_at,
+                        WorkerHeartbeatRecord.last_seen_at,
+                        ReviewRunRecord.installation_id.label("task_installation_id"),
+                        ReviewRunRecord.repository.label("task_repository"),
+                    )
+                    .outerjoin(
+                        ReviewTaskRecord,
+                        WorkerHeartbeatRecord.current_task_id == ReviewTaskRecord.id,
+                    )
+                    .outerjoin(
+                        ReviewRunRecord,
+                        ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
+                    )
+                    .order_by(
+                        WorkerHeartbeatRecord.last_seen_at.desc(),
+                        WorkerHeartbeatRecord.worker_id.desc(),
+                    )
+                    .limit(_MAX_DASHBOARD_WORKERS)
+                ).all()
+                return DashboardChangeState(
+                    latest_event_id=latest_event.id if latest_event else None,
+                    latest_event_at=(
+                        as_utc(latest_event.occurred_at) if latest_event else None
+                    ),
+                    workers=tuple(
+                        StoredWorkerHeartbeat(
+                            worker_id=worker.worker_id,
+                            status=WorkerStatus(worker.status),
+                            current_task_id=(
+                                worker.current_task_id
+                                if (
+                                    scope is None
+                                    or scope.unrestricted
+                                    or (
+                                        worker.task_installation_id is not None
+                                        and worker.task_repository is not None
+                                        and scope.allows(
+                                            worker.task_installation_id,
+                                            worker.task_repository,
+                                        )
+                                    )
+                                )
+                                else None
+                            ),
+                            started_at=required_utc(
+                                worker.started_at,
+                                "worker.started_at",
+                            ),
+                            last_seen_at=required_utc(
+                                worker.last_seen_at,
+                                "worker.last_seen_at",
+                            ),
+                        )
+                        for worker in worker_rows
+                    ),
+                )
+            except SQLAlchemyError as exc:
+                raise DashboardPersistenceError(
+                    "dashboard change state could not be loaded"
                 ) from exc

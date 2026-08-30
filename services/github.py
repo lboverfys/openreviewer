@@ -1,21 +1,54 @@
 """带安全错误分类、大小限制和审计数据的 GitHub REST 客户端。"""
 
-from dataclasses import dataclass
 import json
+import re
 import time
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
 
 from domain.security import ErrorCode, SafeApplicationError, SafeError
-
+from services.telemetry import GLOBAL_TELEMETRY, TelemetryRegistry
 
 _ALLOWED_ACCEPT_HEADERS = {
     "application/vnd.github+json",
     "application/vnd.github.v3.diff",
 }
 _MAX_JSON_REQUEST_BYTES = 1024 * 1024
+_LINK_ENTRY_RE = re.compile(r"^\s*<[^>]*>(?P<params>.*)$")
+_LINK_REL_RE = re.compile(
+    r"(?:^|;)\s*rel\s*=\s*(?P<value>\"[^\"]*\"|[^,;]+)",
+    re.IGNORECASE,
+)
+
+
+def _has_next_page(link_header: str | None) -> bool | None:
+    """从 RFC 8288 Link 头提取 ``rel=next``，不保留远端 URL。"""
+
+    if not link_header or not link_header.strip():
+        # 某些测试替身和 GitHub 兼容 API 不发送 Link；此时不能把“未知”
+        # 当成“没有下一页”，否则整页结果会造成漏查。
+        return None
+    saw_entry = False
+    saw_unknown_relation = False
+    for raw_entry in link_header.split(","):
+        entry = _LINK_ENTRY_RE.fullmatch(raw_entry)
+        if entry is None:
+            # 无法证明分页关系时交给调用方按保守策略处理。
+            return None
+        saw_entry = True
+        relation = _LINK_REL_RE.search(entry.group("params"))
+        if relation is None:
+            saw_unknown_relation = True
+            continue
+        value = relation.group("value").strip().strip('"')
+        if "next" in {part.casefold() for part in value.split()}:
+            return True
+    if saw_unknown_relation:
+        return None
+    return False if saw_entry else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +103,9 @@ class GitHubCallAudit:
     github_request_id: str | None
     duration_ms: int
     rate_limit_remaining: int | None
+    # 只保留分页关系的布尔结果，避免把 Link 头中的远端 URL 写入审计；
+    # None 表示服务端没有提供可判定的 Link 头。
+    has_next_page: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +133,7 @@ class GitHubApiClient:
         *,
         client: httpx.Client | None = None,
         monotonic: Callable[[], float] | None = None,
+        telemetry: TelemetryRegistry | None = None,
     ) -> None:
         self.settings = settings or GitHubClientSettings()
         self._owns_client = client is None
@@ -104,8 +141,12 @@ class GitHubApiClient:
             base_url=self.settings.api_base_url,
             timeout=self.settings.timeout,
             follow_redirects=False,
+            # GitHub Token 不应因为宿主机的 HTTP(S)_PROXY 环境变量而经过
+            # 未经审计的代理；如需代理必须通过显式应用配置注入客户端。
+            trust_env=False,
         )
         self._monotonic = monotonic or time.monotonic
+        self._telemetry = telemetry or GLOBAL_TELEMETRY
 
     def close(self) -> None:
         if self._owns_client:
@@ -250,11 +291,21 @@ class GitHubApiClient:
             ) as response:
                 if not 200 <= response.status_code < 300:
                     audit = self._audit(normalized_method, path, response, started)
+                    self._telemetry.observe_external(
+                        "github",
+                        audit.duration_ms / 1000,
+                        status_code=response.status_code,
+                    )
                     raise SafeApplicationError(self._classify_response(response, audit))
                 content = bytearray()
                 for chunk in response.iter_bytes():
                     if len(content) + len(chunk) > response_limit:
                         audit = self._audit(normalized_method, path, response, started)
+                        self._telemetry.observe_external(
+                            "github",
+                            audit.duration_ms / 1000,
+                            outcome="invalid_response",
+                        )
                         raise GitHubResponseTooLargeError(
                             SafeError(
                                 code=ErrorCode.GITHUB_RESPONSE_TOO_LARGE,
@@ -265,9 +316,19 @@ class GitHubApiClient:
                         )
                     content.extend(chunk)
                 audit = self._audit(normalized_method, path, response, started)
+                self._telemetry.observe_external(
+                    "github",
+                    audit.duration_ms / 1000,
+                    status_code=response.status_code,
+                )
         except SafeApplicationError:
             raise
         except httpx.TimeoutException as exc:
+            self._telemetry.observe_external(
+                "github",
+                self._monotonic() - started,
+                outcome="timeout",
+            )
             raise SafeApplicationError(
                 SafeError(
                     code=ErrorCode.GITHUB_TIMEOUT,
@@ -277,6 +338,11 @@ class GitHubApiClient:
                 )
             ) from exc
         except httpx.RequestError as exc:
+            self._telemetry.observe_external(
+                "github",
+                self._monotonic() - started,
+                outcome="network_error",
+            )
             raise SafeApplicationError(
                 SafeError(
                     code=ErrorCode.GITHUB_SERVER_ERROR,
@@ -310,6 +376,7 @@ class GitHubApiClient:
             github_request_id=response.headers.get("x-github-request-id"),
             duration_ms=max(0, int((self._monotonic() - started) * 1000)),
             rate_limit_remaining=remaining,
+            has_next_page=_has_next_page(response.headers.get("link")),
         )
 
     def _classify_response(

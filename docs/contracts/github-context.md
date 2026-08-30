@@ -12,15 +12,16 @@ installation token。Token 只存在于 Worker 进程内存，按 installation �
 | 权限 | 级别 | 用途 |
 | --- | --- | --- |
 | Metadata | Read-only | 校验仓库稳定数字 ID 和名称 |
-| Pull requests | Read and write | 读取 PR；API 在人工批准后创建汇总评论 |
+| Pull requests | Read and write | 读取 PR；API 在人工发布时创建行内和汇总评论 |
 | Contents | Read-only | 读取私有仓库 PR 的完整 diff 表示 |
-| Checks | Read-only | 分页读取当前 `head_sha` 的 Check Runs |
+| Checks | Read and write | 分页读取 Check Runs；API 在人工发布时创建或更新 Check Run |
 | Commit statuses | Read-only | 分页读取当前 `head_sha` 的 Commit Statuses |
 
-GitHub 对私有仓库的 PR diff 表示会同时校验 `Pull requests` 和
-`Contents: Read-only`。当前阶段不需要 Contents 写权限、Administration、Workflows 或
-Secrets。当前不创建 Check Run，因此 Checks 仍保持只读。人工发布的版本复核、幂等标记和
-评论边界见 [github-publishing.md](github-publishing.md)。
+GitHub 对私有仓库的 PR diff 表示会同时校验 `Pull requests` 和 `Contents: Read-only`。
+读取阶段签发的 installation token 只申请 `contents/pull_requests/checks/statuses: read`；人工
+发布阶段另签发仅含 `checks/pull_requests: write` 的 Token。当前不需要 Contents 写权限、
+Administration、Workflows 或 Secrets。人工发布的版本复核、幂等标记和评论边界见
+[github-publishing.md](github-publishing.md)。
 
 ## 2. 读取顺序与版本保护
 
@@ -63,14 +64,17 @@ GitHub App ID 排除 OpenReviewer 自己的 Check，避免等待自身结果。�
 
 | 状态 | 含义 |
 | --- | --- |
-| `unknown` | 没有检查，或分页因数量上限无法证明完整 |
+| `not_configured` | 已完整读取当前提交，但没有任何可见的 Check Run 或 Commit Status |
+| `unknown` | 分页、权限或响应不完整，无法证明当前检查集合完整 |
 | `pending` | 至少一项仍在排队或运行，且没有失败终态 |
 | `success` | 所有可见检查均为成功、跳过或中性终态 |
 | `failure` | 至少一项失败、错误、取消、超时或需要操作 |
 
 `unknown` 和 `pending` 会按默认 30 秒间隔重新入队，正常轮询不增加任务失败尝试次数。默认等待
-上限为 1 小时，到期进入 `timed_out`，不得显示为审查通过。`success` 和 `failure` 都表示 CI
-已经终止，任务进入 `ready_for_review`；这个状态只代表可以进入后续模型阶段，不代表 CI 成功。
+上限为 1 小时，到期进入 `timed_out`，不得显示为审查通过。`not_configured`、`success` 和
+`failure` 都表示 CI 读取已经终止，任务进入 `ready_for_review`；其中 `not_configured` 只表示
+没有可见 CI 门禁，不能解释为 CI 通过。`ready_for_review` 只代表可以进入后续模型阶段，不代表
+CI 成功。
 
 ## 5. 查询与数据规模
 

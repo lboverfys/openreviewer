@@ -1,19 +1,18 @@
+import json
 from decimal import Decimal
 from hashlib import sha256
-import json
 
 import pytest
 
 import services.model_review as model_review_service
-
 from domain.enums import (
     FindingCategory,
     LocationSide,
     ModelApiProtocol,
     ModelCallStatus,
     ModelProvider,
-    ModelReviewVerdict,
     ModelReasoningEffort,
+    ModelReviewVerdict,
     ReviewAgent,
     Severity,
     VerificationStatus,
@@ -25,6 +24,7 @@ from domain.model_review import (
     ModelReviewOutput,
     ModelReviewResult,
     ModelTokenUsage,
+    finding_identity_fingerprint,
     materialize_findings,
     model_review_output_schema,
 )
@@ -32,14 +32,14 @@ from domain.review_planning import RepositoryRule, ReviewUnit
 from services.model_review import (
     FragmentLineMap,
     ModelPricing,
-    ModelReviewBatch,
     ModelServiceSettings,
     StructuredReviewPromptBuilder,
     combine_model_review_results,
     plan_model_review_batches,
     remap_model_review_result,
+    validate_model_api_endpoint,
 )
-
+from services.pinned_http import PublicDnsPinnedNetworkBackend
 
 HEAD_SHA = "a" * 40
 BLOB_SHA = "b" * 40
@@ -162,7 +162,7 @@ def make_many_line_input(line_count: int = 10_000) -> ModelReviewInput:
 
     source = make_model_input()
     patch = (
-        "@@ -1,{count} +1,{count} @@\n".format(count=line_count)
+        f"@@ -1,{line_count} +1,{line_count} @@\n"
         + "".join(f"+line-{index}\n" for index in range(1, line_count + 1))
     )
     unit = source.units[0].model_copy(update={"patch": patch})
@@ -177,6 +177,45 @@ def make_many_line_input(line_count: int = 10_000) -> ModelReviewInput:
             "units": (unit,),
             "total_estimated_input_bytes": unit.estimated_input_bytes
             + sum(rule.byte_size for rule in source.rules),
+        }
+    )
+
+
+def make_related_v3_input() -> ModelReviewInput:
+    source = make_model_input()
+    definitions = (
+        ("1" * 64, "a" * 64, "src/audit.py", 35_000),
+        ("2" * 64, "b" * 64, "src/user_controller.py", 14_000),
+        ("3" * 64, "b" * 64, "src/user_service.py", 14_000),
+    )
+    units = []
+    for index, (unit_key, group_key, file, size) in enumerate(definitions):
+        patch = f"@@ -1 +1 @@\n-old-{index}\n+" + ("x" * size) + "\n"
+        encoded = patch.encode("utf-8")
+        units.append(
+            ReviewUnit(
+                unit_key=unit_key,
+                group_key=group_key,
+                review_version_key=source.review_version_key,
+                head_sha=source.head_sha,
+                file=file,
+                blob_sha=f"{index + 4}" * 40,
+                language="python",
+                patch=patch,
+                patch_sha256=sha256(encoded).hexdigest(),
+                rule_paths=("AGENTS.md",),
+                estimated_input_bytes=len(encoded),
+                planner_version="review-planner-v3",
+            )
+        )
+    return source.model_copy(
+        update={
+            "planner_version": "review-planner-v3",
+            "units": tuple(units),
+            "total_estimated_input_bytes": (
+                sum(unit.estimated_input_bytes for unit in units)
+                + sum(rule.byte_size for rule in source.rules)
+            ),
         }
     )
 
@@ -247,13 +286,59 @@ def test_materialization_adds_trusted_identity_and_line_independent_fingerprint(
     review_input = make_model_input()
     first = materialize_findings(review_input, make_output(start_line=2))[0].finding
     moved = materialize_findings(review_input, make_output(start_line=200))[0].finding
+    retitled_output = make_output(start_line=2)
+    retitled_output = retitled_output.model_copy(
+        update={
+            "findings": (
+                retitled_output.findings[0].model_copy(update={"title": "不同措辞"}),
+            )
+        }
+    )
+    retitled = materialize_findings(review_input, retitled_output)[0].finding
 
     assert first.fingerprint == moved.fingerprint
+    assert first.fingerprint == retitled.fingerprint
     assert first.head_sha == HEAD_SHA
-    assert first.verification_status is VerificationStatus.UNVERIFIED
+    assert first.verification_status is VerificationStatus.VERIFIED
     assert first.location is not None
     assert first.location.blob_sha == BLOB_SHA
-    assert first.location.in_diff is False
+    assert first.location.in_diff is True
+    assert moved.verification_status is VerificationStatus.REJECTED
+    assert moved.location is not None
+    assert moved.location.in_diff is False
+
+
+def test_identity_hint_keeps_finding_identity_across_file_renames() -> None:
+    candidate = candidate_at("a" * 64, 2).model_copy(
+        update={"identity_hint": "authorization-missing-scope"}
+    )
+    renamed = candidate.model_copy(
+        update={
+            "location": candidate.location.model_copy(
+                update={"file": "src/renamed_auth.py"}
+            )
+        }
+    )
+
+    assert finding_identity_fingerprint(candidate, "src/auth.py") == (
+        finding_identity_fingerprint(renamed, "src/renamed_auth.py")
+    )
+
+
+def test_identity_fingerprint_does_not_depend_on_evidence_wording() -> None:
+    first = candidate_at("a" * 64, 2).model_copy(
+        update={
+            "identity_hint": "authorization-missing-scope",
+            "evidence": "普通用户可以绕过管理员范围校验。",
+        }
+    )
+    second = first.model_copy(
+        update={"evidence": "缺少对象级权限检查导致越权访问。"}
+    )
+
+    assert finding_identity_fingerprint(first, "src/auth.py") == (
+        finding_identity_fingerprint(second, "src/auth.py")
+    )
 
 
 def test_materialization_rejects_unit_and_rule_references_outside_the_plan() -> None:
@@ -401,6 +486,72 @@ def test_model_batches_use_context_window_without_omitting_files() -> None:
         batch.estimated_input_tokens <= small_context.batch_input_budget_tokens
         for batch in small_batches
     )
+
+
+def test_model_batch_planning_caches_rule_and_piece_sizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_input = make_large_v2_input()
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="cache-check-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_request_bytes=1024 * 1024,
+    )
+    original_rule_size = model_review_service._rule_prompt_bytes
+    original_unit_size = model_review_service._unit_prompt_bytes
+    rule_calls: list[str] = []
+    unit_calls: list[tuple[str, int]] = []
+
+    def counted_rule_size(rule: RepositoryRule) -> int:
+        rule_calls.append(rule.path)
+        return original_rule_size(rule)
+
+    def counted_unit_size(unit: ReviewUnit, patch: str) -> int:
+        unit_calls.append((unit.unit_key, len(patch)))
+        return original_unit_size(unit, patch)
+
+    monkeypatch.setattr(model_review_service, "_rule_prompt_bytes", counted_rule_size)
+    monkeypatch.setattr(model_review_service, "_unit_prompt_bytes", counted_unit_size)
+
+    batches = plan_model_review_batches(review_input, settings)
+
+    assert rule_calls == [rule.path for rule in review_input.rules]
+    assert len(unit_calls) == len(review_input.units) + sum(
+        len(batch.review_input.units) for batch in batches
+    )
+
+
+def test_related_files_stay_in_one_batch_when_the_group_fits() -> None:
+    review_input = make_related_v3_input()
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="related-file-model",
+        api_key="relay-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_batch_input_tokens=24_000,
+        max_request_bytes=1024 * 1024,
+    )
+
+    batches = plan_model_review_batches(review_input, settings)
+    related_keys = {"2" * 64, "3" * 64}
+    containing_batches = [
+        batch
+        for batch in batches
+        if related_keys
+        & {unit.unit_key for unit in batch.review_input.units}
+    ]
+
+    assert len(batches) == 2
+    assert len(containing_batches) == 1
+    assert related_keys <= {
+        unit.unit_key for unit in containing_batches[0].review_input.units
+    }
 
 
 def test_model_settings_default_to_gateway_safe_batching_and_optional_reasoning() -> None:
@@ -769,7 +920,11 @@ def test_cross_fragment_results_are_deduplicated_and_sorted_after_remapping() ->
         update={"confidence": 0.95}
     )
     unique = candidate_at(unit_key, 3, title="另一个问题").model_copy(
-        update={"severity": Severity.CRITICAL, "confidence": 0.7}
+        update={
+            "severity": Severity.CRITICAL,
+            "confidence": 0.7,
+            "evidence": "另一段独立证据",
+        }
     )
     results = (
         make_result(ModelReviewOutput(findings=(duplicate_first, unique)), "3" * 64),
@@ -890,6 +1045,11 @@ def test_model_settings_accept_relay_prefix_and_reject_unsafe_base_urls() -> Non
         "https://relay.example/v1?key=secret",
         "https://relay.example/v1#fragment",
         "https://relay.example:invalid/v1",
+        "https://127.0.0.1/v1",
+        "https://[::1]/v1",
+        "https://169.254.169.254/latest/meta-data",
+        "https://service.internal/v1",
+        "https://localhost/v1",
     ):
         with pytest.raises(ValueError, match="API base URL"):
             ModelServiceSettings(
@@ -898,3 +1058,68 @@ def test_model_settings_accept_relay_prefix_and_reject_unsafe_base_urls() -> Non
                 api_key="relay-key",
                 api_base_url=unsafe_url,
             )
+
+
+def test_model_endpoint_dns_validation_rejects_mixed_or_private_answers() -> None:
+    def public_resolver(*_args, **_kwargs):
+        return [
+            (2, 1, 6, "", ("93.184.216.34", 443)),
+            (10, 1, 6, "", ("2606:2800:220:1:248:1893:25c8:1946", 443, 0, 0)),
+        ]
+
+    assert validate_model_api_endpoint(
+        "https://relay.example/v1",
+        resolver=public_resolver,
+    ) == ("2606:2800:220:1:248:1893:25c8:1946", "93.184.216.34")
+
+    def mixed_resolver(*_args, **_kwargs):
+        return [
+            (2, 1, 6, "", ("93.184.216.34", 443)),
+            (2, 1, 6, "", ("10.0.0.8", 443)),
+        ]
+
+    with pytest.raises(ValueError, match="non-public"):
+        validate_model_api_endpoint(
+            "https://relay.example/v1",
+            resolver=mixed_resolver,
+        )
+
+
+def test_model_tcp_backend_connects_only_to_the_validated_ip_literal() -> None:
+    connected_hosts: list[str] = []
+
+    class Delegate:
+        def connect_tcp(self, host, _port, **_kwargs):
+            connected_hosts.append(host)
+            return "stream"
+
+    backend = PublicDnsPinnedNetworkBackend(
+        lambda *_args, **_kwargs: [
+            (2, 1, 6, "", ("93.184.216.34", 443)),
+        ]
+    )
+    backend._delegate = Delegate()  # type: ignore[assignment]
+
+    assert backend.connect_tcp("relay.example", 443) == "stream"
+    assert connected_hosts == ["93.184.216.34"]
+
+
+def test_model_tcp_backend_fails_closed_on_a_mixed_dns_answer() -> None:
+    connected_hosts: list[str] = []
+
+    class Delegate:
+        def connect_tcp(self, host, _port, **_kwargs):
+            connected_hosts.append(host)
+            return "stream"
+
+    backend = PublicDnsPinnedNetworkBackend(
+        lambda *_args, **_kwargs: [
+            (2, 1, 6, "", ("93.184.216.34", 443)),
+            (2, 1, 6, "", ("10.0.0.8", 443)),
+        ]
+    )
+    backend._delegate = Delegate()  # type: ignore[assignment]
+
+    with pytest.raises(Exception, match="non-public"):
+        backend.connect_tcp("relay.example", 443)
+    assert connected_hosts == []

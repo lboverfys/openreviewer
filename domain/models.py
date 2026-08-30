@@ -6,8 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from domain.enums import (
     CoverageStatus,
+    EvidenceVerificationStatus,
     ExecutionStatus,
     FileDisposition,
+    FindingAdjudicationStatus,
     FindingCategory,
     LocationSide,
     PullRequestAction,
@@ -263,6 +265,16 @@ class ReviewFinding(ContractModel):
     required_test: str | None = Field(default=None, max_length=10000)
     confidence: float = Field(ge=0, le=1)
     verification_status: VerificationStatus = VerificationStatus.UNVERIFIED
+    # 证据核验由平台回读 Git Blob 后写入；模型输出不能直接声明 verified。
+    evidence_verification_status: EvidenceVerificationStatus | None = None
+    evidence_verification_reason: str = Field(
+        default="not_checked",
+        min_length=1,
+        max_length=120,
+    )
+    adjudication_status: FindingAdjudicationStatus = (
+        FindingAdjudicationStatus.UNREVIEWED
+    )
     rule_reference: str | None = Field(default=None, max_length=512)
 
     @field_validator("head_sha")
@@ -288,7 +300,7 @@ class ReviewFinding(ContractModel):
     ) -> bool:
         """判断 Finding 是否满足发布行内评论的全部安全门槛。
 
-        必须同时满足：已被复核、存在定位、定位在当前 diff 的新增侧、提交没有
+        必须同时满足：机器定位有效、人工确认有效、定位在当前 diff 的新增侧、提交没有
         过期、置信度达到阈值，并且不是普通测试缺口。返回 ``True`` 只表示“可以
         作为候选”，最终是否调用 GitHub 评论 API 仍应由策略层决定。
 
@@ -308,8 +320,19 @@ class ReviewFinding(ContractModel):
 
         if not 0 <= confidence_threshold <= 1:
             raise ValueError("confidence_threshold must be between 0 and 1")
+        evidence_status = self.evidence_verification_status
+        if evidence_status is None:
+            # 迁移前的内存/客户端对象没有独立字段，沿用旧人工裁决语义；
+            # Worker 生成的对象总会显式写入 unverified/verified。
+            evidence_status = (
+                EvidenceVerificationStatus.VERIFIED
+                if self.adjudication_status is FindingAdjudicationStatus.VALID
+                else EvidenceVerificationStatus.UNVERIFIED
+            )
         return (
             self.verification_status is VerificationStatus.VERIFIED
+            and evidence_status is EvidenceVerificationStatus.VERIFIED
+            and self.adjudication_status is FindingAdjudicationStatus.VALID
             and self.location is not None
             and self.location.in_diff
             and self.location.side is LocationSide.RIGHT

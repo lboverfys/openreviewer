@@ -1,8 +1,9 @@
 # 模型审查契约 v1
 
 本文固定 Review Plan 到 Finding 的供应商无关边界。当前固定 DAG 由安全、规范、逻辑和汇总
-四个 Agent 生成候选；结果保存后进入人工批准门，批准后可显式发布 GitHub PR 汇总评论。
-GitHub Check、自动证据复核和行内评论仍未实现。
+四个 Agent 生成候选；结果保存后进入人工批准门，批准后可显式发布 GitHub Check、通过评测
+准入的高置信行内评论和 PR 汇总评论。机器定位校验与人工证据事实复核使用独立字段，不能互相
+替代。
 
 ## 1. 供应商协议
 
@@ -65,10 +66,17 @@ Prompt 同时携带平台实际使用的完整 `output_contract`，避免中转�
 - `head_sha` 和位置的 `blob_sha`；
 - 不依赖行号的稳定 `fingerprint`；
 - `in_diff`；
-- `verification_status`。
+- `verification_status`（存储层兼容名，仅表示机器定位校验）；
+- `evidence_verification_status` 和 `evidence_verification_reason`（Worker 回读 Git Blob 后
+  的自动源码证据核验结果）。
 
-模型引用的 `unit_key`、文件和规则必须存在于当前计划。平台补齐身份后统一保存为
-`verification_status = unverified`、`in_diff = false`。模型阶段成功保存后，旧队列兼容字段
+模型引用的 `unit_key`、文件和规则必须存在于当前计划。平台补齐身份时会立即用可信 unified
+diff 校验位置：没有位置时保存 `verification_status = unverified`、`in_diff = false`；位置
+落在当前 diff 时保存 `verified`/`in_diff = true`，位置不在 diff 时保存 `rejected`/`in_diff = false`。
+对外分别投影为 `location_verification_status`。源码证据状态初始为 `unverified`，随后由 Worker
+使用当前 Blob SHA、行范围和证据文本进行自动核验，模型不能直接把它设成已验证；回读失败或
+文本无法确认时仍保持 `unverified`。人工 `adjudication_status` 独立记录是否确认、误报或其他
+处置，不会覆盖自动核验结果。模型阶段成功保存后，旧队列兼容字段
 `execution_status` 进入 `completed`，真实 `workflow_status` 进入 `awaiting_approval`。结果立即
 显示在管理界面；人工确认或忽略更新候选标记，批准整份结果后还要单独点击发布。
 
