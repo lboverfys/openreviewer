@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   batchInputOptions,
+  mergeProviderDrafts,
+  mergeReviewPolicyDraft,
   normalizeProviderSettings,
   optionalUsdToMicrousd,
   outputTokenOptions,
   providerDraft,
   providerHasChanges,
   requiredInteger,
+  reviewPolicyDraft,
 } from "./settings-drafts";
-import type { AiProviderSettings } from "./types";
+import type { AiProviderSettings, AiSettings } from "./types";
 
 function provider(
   overrides: Partial<AiProviderSettings> = {},
@@ -86,5 +89,53 @@ describe("设置草稿数值转换", () => {
       useCustomEndpoint: true,
       apiBaseUrl: " https://gateway.example.com ",
     })).toBe(true);
+  });
+});
+
+describe("设置快照与本地草稿合并", () => {
+  it("保存一个 Provider 时保留另一个 Provider 的未保存输入", () => {
+    const openai = provider({ provider: "openai", model: "server-openai" });
+    const anthropic = provider({
+      provider: "anthropic",
+      model: "server-anthropic",
+      api_protocol: "messages",
+    });
+    const previous = { providers: [openai, anthropic] } as AiSettings;
+    const next = { providers: [
+      { ...openai, model: "saved-openai" },
+      anthropic,
+    ] } as AiSettings;
+    const local = providerDraft(anthropic);
+    local.model = "local-anthropic-draft";
+
+    const merged = mergeProviderDrafts(
+      previous,
+      { openai: providerDraft(openai), anthropic: local },
+      next,
+      "openai",
+    );
+
+    expect(merged.openai.model).toBe("saved-openai");
+    expect(merged.anthropic.model).toBe("local-anthropic-draft");
+  });
+
+  it("刷新时保留未保存的审查策略，成功保存后才重置", () => {
+    const previous = {
+      max_units: 10,
+      max_scope_depth: 2,
+      max_unit_input_bytes: 1024,
+      max_total_input_bytes: 2048,
+      max_model_http_calls: 4,
+      max_model_input_tokens: 1000,
+      max_model_output_tokens: 500,
+      max_model_cost_microusd: null,
+      max_model_duration_seconds: 60,
+    } as AiSettings;
+    const next = { ...previous, max_units: 20 } as AiSettings;
+    const local = reviewPolicyDraft(previous);
+    local.maxUnits = "15";
+
+    expect(mergeReviewPolicyDraft(previous, local, next).maxUnits).toBe("15");
+    expect(mergeReviewPolicyDraft(previous, local, next, true).maxUnits).toBe("20");
   });
 });

@@ -107,13 +107,39 @@ class ModelReviewConflictError(TaskQueueError):
 class ModelBatchBusyError(TaskQueueError):
     """批次仍有有效执行租约，应等待而不是重复调用模型。"""
 
-    def __init__(self, message: str = "模型批次正在执行，请稍后重试") -> None:
+    def __init__(
+        self,
+        message: str = "模型批次正在执行，请稍后重试",
+        *,
+        retry_at: datetime | None = None,
+        lease_expires_at: datetime | None = None,
+        available_at: datetime | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        """构造可安全持久化的批次级等待错误。
+
+        ``retry_at`` 由队列从批次租约或退避时间计算得出。把时间放进结构化
+        错误详情后，Worker 可以把任务重新排到正确的时间点，而不会在默认的
+        5 秒任务退避内反复抢同一批次。
+        """
+
+        error_details: dict[str, object] = {
+            "batch_retry_managed": True,
+            **dict(details or {}),
+        }
+        if retry_at is not None:
+            error_details["retry_at"] = retry_at.isoformat()
+        if lease_expires_at is not None:
+            error_details["lease_expires_at"] = lease_expires_at.isoformat()
+        if available_at is not None:
+            error_details["available_at"] = available_at.isoformat()
         SafeApplicationError.__init__(
             self,
             SafeError(
                 code=ErrorCode.MODEL_BATCH_BUSY,
                 safe_message=message,
                 retryable=True,
+                details=error_details,
             ),
         )
 
@@ -208,6 +234,15 @@ class StoredModelBatch:
     result: ModelReviewResult | None
     error_code: str | None
     error_message: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelBatchLease:
+    """心跳续租所需的批次身份和租约时长。"""
+
+    agent: str
+    batch_number: int
+    lease_duration: timedelta
 
 
 class ReviewTaskQueue(Protocol):
@@ -352,7 +387,11 @@ class ReviewTaskQueue(Protocol):
         *,
         agent: str = "default",
     ) -> tuple[StoredModelBatch, ...]:
-        """幂等保存批次定义并返回当前状态。"""
+        """幂等保存批次定义并返回当前状态。
+
+        同一计划因配置变化而重新规划时，仅在旧批次没有成功结果且没有有效
+        运行租约的情况下允许安全重建；否则应报告模型计划冲突。
+        """
         ...
 
     def claim_model_batch(
@@ -366,6 +405,25 @@ class ReviewTaskQueue(Protocol):
         """锁定一个待执行批次；已成功批次直接返回且不会再次执行。"""
         ...
 
+    def renew_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        *,
+        agent: str = "default",
+        lease_duration: timedelta,
+    ) -> StoredModelBatch:
+        """在任务租约有效且当前 Worker 仍持有批次时延长批次租约。"""
+        ...
+
+    def renew_model_batches(
+        self,
+        lease: ReviewTaskLease,
+        batches: tuple[ModelBatchLease, ...],
+    ) -> tuple[StoredModelBatch, ...]:
+        """在一个短事务中批量延长所有活动模型批次租约。"""
+        ...
+
     def complete_model_batch(
         self,
         lease: ReviewTaskLease,
@@ -373,8 +431,9 @@ class ReviewTaskQueue(Protocol):
         result: ModelReviewResult,
         *,
         agent: str = "default",
+        expected_attempt_count: int | None = None,
     ) -> StoredModelBatch:
-        """原子保存单批结果。"""
+        """原子保存单批结果，并可校验领取时的批次代次。"""
         ...
 
     def fail_model_batch(
@@ -385,6 +444,7 @@ class ReviewTaskQueue(Protocol):
         *,
         agent: str = "default",
         retry_delay: timedelta | None = None,
+        expected_attempt_count: int | None = None,
     ) -> StoredModelBatch:
         """保存单批安全错误并安排阶段级重试。"""
         ...

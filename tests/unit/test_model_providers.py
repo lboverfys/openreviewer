@@ -9,6 +9,7 @@ from domain.enums import (
     ModelCallStatus,
     ModelProvider,
     ModelReasoningEffort,
+    ReviewAgent,
 )
 from domain.security import ErrorCode, SafeApplicationError
 from services.model_budget import (
@@ -18,8 +19,14 @@ from services.model_budget import (
 )
 from services.model_providers import create_model_reviewer
 from services.model_review import ModelPricing, ModelServiceSettings
+from services.task_queue import ModelBudgetExceededError, TaskQueueError
 from services.telemetry import TelemetryRegistry
-from tests.unit.test_model_review import make_model_input, make_output
+from services.token_estimation import estimate_model_request_tokens
+from tests.unit.test_model_review import (
+    make_large_v2_input,
+    make_model_input,
+    make_output,
+)
 
 
 class RecordingBudgetAccountant:
@@ -74,6 +81,7 @@ def _settings(
     api_protocol: ModelApiProtocol | None = None,
     api_base_url: str | None = None,
     reasoning_effort: ModelReasoningEffort = ModelReasoningEffort.NONE,
+    max_output_tokens: int = 8192,
 ):
     return ModelServiceSettings(
         provider=provider,
@@ -82,6 +90,7 @@ def _settings(
         api_protocol=api_protocol,
         reasoning_effort=reasoning_effort,
         pricing=pricing,
+        max_output_tokens=max_output_tokens,
         api_base_url=api_base_url or f"https://api.{provider.value}.test",
     )
 
@@ -95,6 +104,8 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
         body = json.loads(request.content)
         assert request.url.path == "/v1/responses"
         assert request.headers["authorization"] == "Bearer test-only-api-key"
+        assert request.headers["accept"] == "text/event-stream"
+        assert body["stream"] is True
         assert body["store"] is False
         assert body["reasoning"] == {"effort": "medium"}
         assert body["text"]["format"]["type"] == "json_schema"
@@ -170,6 +181,199 @@ def test_openai_responses_request_and_usage_are_normalized() -> None:
         'service="model_openai",outcome="success"} 1'
         in telemetry.render()
     )
+    client.close()
+
+
+def test_budget_reservation_uses_estimate_margin_for_valid_request() -> None:
+    """适配器的预算预留必须与批次规划使用同一 Token 估算口径。"""
+
+    accountant = RecordingBudgetAccountant()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-budget-estimate",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": make_output().model_dump_json()},
+                    }
+                ],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 20},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = _settings(
+        ModelProvider.OPENAI,
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+    )
+    reviewer = create_model_reviewer(settings, client=client)
+
+    with model_budget_scope(accountant):
+        reviewer.review(make_model_input())
+
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    estimate = estimate_model_request_tokens(
+        body,
+        requests[0].content,
+        provider=settings.provider,
+        protocol=settings.resolved_api_protocol,
+        model=settings.model,
+    )
+    assert accountant.requests[0].input_token_upper_bound == estimate.reservation_tokens
+    # 小请求的 4096 Token 最低安全余量可能已经覆盖结构化上界；此时
+    # 预留值按边界取最小值，允许与 upper_bound_tokens 相等。
+    assert accountant.requests[0].input_token_upper_bound <= estimate.upper_bound_tokens
+    client.close()
+
+
+def test_openai_responses_streaming_sse_uses_completed_response() -> None:
+    requests: list[dict[str, object]] = []
+    output_text = make_output().model_dump_json()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        completed = {
+            "id": "resp_stream_1",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": output_text}],
+                }
+            ],
+            "usage": {"input_tokens": 120, "output_tokens": 40},
+        }
+        content = (
+            "event: response.created\n"
+            "data: {\"type\":\"response.created\"}\n\n"
+            "event: response.output_text.delta\n"
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\"}\n\n"
+            "event: response.completed\n"
+            "data: "
+            + json.dumps(
+                {"type": "response.completed", "response": completed},
+                separators=(",", ":"),
+            )
+            + "\n\n"
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream; charset=utf-8",
+                "x-request-id": "relay-stream-1",
+            },
+            content=content.encode("utf-8"),
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert len(requests) == 1
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert result.provider_response_id == "resp_stream_1"
+    assert result.provider_request_id == "relay-stream-1"
+    assert result.usage.input_tokens == 120
+    assert result.usage.output_tokens == 40
+    assert result.output == make_output()
+    client.close()
+
+
+def test_openai_responses_streaming_sse_without_terminal_response_is_rejected() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        content = (
+            "event: response.output_text.delta\n"
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}\n\n"
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=content.encode("utf-8"),
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert captured.value.error.code is ErrorCode.MODEL_INVALID_RESPONSE
+    assert captured.value.error.details["status_code"] == 200
+    client.close()
+
+
+def test_openai_responses_streaming_falls_back_when_relay_rejects_stream() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if body.get("stream") is True:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "stream is not supported"}},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_sync_fallback",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": make_output().model_dump_json(),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert len(requests) == 2
+    assert requests[0]["stream"] is True
+    assert "stream" not in requests[1]
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert result.provider_response_id == "resp_sync_fallback"
     client.close()
 
 
@@ -305,6 +509,87 @@ def test_invalid_contract_is_repaired_once_and_usage_is_accumulated() -> None:
             "uncertain": False,
         },
     ]
+    client.close()
+
+
+def test_contract_repair_parse_error_settles_retry_reservation() -> None:
+    """格式纠正的响应用量损坏时，第二次 reservation 也必须结算。"""
+
+    requests: list[dict[str, object]] = []
+    accountant = RecordingBudgetAccountant()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        repaired = len(requests) == 2
+        return httpx.Response(
+            200,
+            headers={"x-request-id": f"req_repair_parse_{len(requests)}"},
+            json={
+                "id": f"resp_repair_parse_{len(requests)}",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    make_output().model_dump_json()
+                                    if repaired
+                                    else json.dumps({"findings": []})
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "usage": (
+                    {"input_tokens": "bad", "output_tokens": 3}
+                    if repaired
+                    else {"input_tokens": 10, "output_tokens": 2}
+                ),
+            },
+        )
+
+    ticks = iter((10.0, 11.0, 20.0, 22.0))
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+        monotonic=lambda: next(ticks),
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    error = captured.value.error
+    assert len(requests) == 2
+    assert error.code is ErrorCode.MODEL_INVALID_RESPONSE
+    assert error.details["format_repair_attempted"] is True
+    assert error.details["provider_request_id"] == (
+        "req_repair_parse_1,req_repair_parse_2"
+    )
+    assert error.details["status_code"] == 200
+    assert error.details["duration_ms"] == 3_000
+    assert len(accountant.settlements) == 2
+    assert accountant.settlements[0]["uncertain"] is False
+    assert accountant.settlements[0]["input_tokens"] == 10
+    assert accountant.settlements[0]["output_tokens"] == 2
+    assert accountant.settlements[1] == {
+        "reservation_id": "reservation-2",
+        "input_tokens": None,
+        "output_tokens": None,
+        "estimated_cost_microusd": None,
+        "response_status": 200,
+        "duration_ms": 2_000,
+        "uncertain": True,
+    }
+    assert {
+        item["reservation_id"] for item in accountant.settlements
+    } == {"reservation-1", "reservation-2"}
     client.close()
 
 
@@ -547,6 +832,7 @@ def test_chat_retries_with_legacy_max_tokens_only_when_explicitly_rejected() -> 
     requests: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
         body = json.loads(request.content)
         requests.append(body)
         if len(requests) == 1:
@@ -594,6 +880,67 @@ def test_chat_retries_with_legacy_max_tokens_only_when_explicitly_rejected() -> 
     )
 
     assert reviewer.review(make_model_input()).status is ModelCallStatus.SUCCEEDED
+    assert len(requests) == 2
+    client.close()
+
+
+def test_custom_chat_relay_omits_store_and_recovers_5xx_parameter_rejection() -> None:
+    """兼容端即使把参数校验错误包装成 5xx，也应有界降级一次。"""
+
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        body = json.loads(request.content)
+        requests.append(body)
+        # ``store`` 与审查语义无关，且不少中转站的请求模型不接受它。
+        assert "store" not in body
+        if len(requests) == 1:
+            return httpx.Response(
+                502,
+                json={
+                    "error": {
+                        "param": "max_completion_tokens",
+                        "message": "invalid parameter max_completion_tokens",
+                    }
+                },
+            )
+        assert "max_completion_tokens" not in body
+        assert body["max_tokens"] == 8192
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-5xx-fallback",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": make_output().model_dump_json(),
+                            "refusal": None,
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    base_url = "https://relay.example.test/v1"
+    client = httpx.Client(
+        base_url=base_url,
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url=base_url,
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert result.status is ModelCallStatus.SUCCEEDED
     assert len(requests) == 2
     client.close()
 
@@ -654,6 +1001,188 @@ def test_chat_downgrades_json_schema_to_json_object_and_still_validates_locally(
     client.close()
 
 
+@pytest.mark.parametrize(
+    ("protocol", "supported_phrase"),
+    [
+        (ModelApiProtocol.CHAT_COMPLETIONS, "Supported values are"),
+        (ModelApiProtocol.RESPONSES, "Allowed values are"),
+        (ModelApiProtocol.CHAT_COMPLETIONS, "Expected one of"),
+    ],
+)
+def test_relay_invalid_value_supported_values_triggers_safe_schema_fallback(
+    protocol: ModelApiProtocol,
+    supported_phrase: str,
+) -> None:
+    """兼容端常见的值域文案也应触发一次安全 Schema 降级。"""
+
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            if protocol is ModelApiProtocol.CHAT_COMPLETIONS:
+                assert body["response_format"]["type"] == "json_schema"
+                error = {
+                    "error": {
+                        "param": "response_format",
+                        "message": (
+                            f"Invalid value: 'json_schema'. {supported_phrase}: "
+                            "'text', 'json_object'."
+                        ),
+                    }
+                }
+            else:
+                assert body["text"]["format"]["type"] == "json_schema"
+                error = {
+                    "error": {
+                        "param": "text.format",
+                        "message": (
+                            f"Invalid value: 'json_schema'. {supported_phrase}: "
+                            "'text', 'json_object'."
+                        ),
+                    }
+                }
+            return httpx.Response(400, json=error)
+
+        if protocol is ModelApiProtocol.CHAT_COMPLETIONS:
+            assert body["response_format"] == {"type": "json_object"}
+            payload = {
+                "id": "chat-supported-values-fallback",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": make_output().model_dump_json(),
+                            "refusal": None,
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            }
+        else:
+            assert body["text"] == {"format": {"type": "json_object"}}
+            payload = {
+                "id": "responses-supported-values-fallback",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": make_output().model_dump_json(),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 2, "output_tokens": 1},
+            }
+        return httpx.Response(200, json=payload)
+
+    base_url = "https://relay.example.test/v1"
+    client = httpx.Client(
+        base_url=base_url,
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=protocol,
+            api_base_url=base_url,
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert len(requests) == 2
+    client.close()
+
+
+def test_invalid_supported_values_for_unknown_parameter_do_not_retry() -> None:
+    """值域措辞本身不足以触发重试，未知参数必须保持原始拒绝。"""
+
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "param": "temperature",
+                    "message": (
+                        "Invalid value: 3. Supported values are between 0 and 2."
+                    ),
+                }
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://relay.example.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://relay.example.test/v1",
+        ),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert requests == 1
+    assert captured.value.error.code is ErrorCode.MODEL_REQUEST_REJECTED
+    assert "unsupported_parameters" not in captured.value.error.details
+    client.close()
+
+
+def test_invalid_value_without_supported_list_for_known_parameter_does_not_retry() -> None:
+    """仅有 Invalid value 文案时，即使字段已知也不能猜测兼容降级。"""
+
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            422,
+            json={
+                "error": {
+                    "param": "response_format",
+                    "message": "Invalid value for response_format.",
+                }
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://relay.example.test/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://relay.example.test/v1",
+        ),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert requests == 1
+    assert captured.value.error.code is ErrorCode.MODEL_REQUEST_REJECTED
+    assert "unsupported_parameters" not in captured.value.error.details
+    client.close()
+
+
 def test_generic_bad_request_is_not_retried_or_exposed() -> None:
     calls = 0
     secret = "sk-hidden-relay-error-123456789"
@@ -699,7 +1228,13 @@ def test_retryable_provider_errors_keep_budget_reservation_uncertain(
             lambda _request: httpx.Response(status_code, json={"error": {}})
         ),
     )
-    reviewer = create_model_reviewer(_settings(ModelProvider.OPENAI), client=client)
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        ),
+        client=client,
+    )
 
     with model_budget_scope(accountant), pytest.raises(SafeApplicationError):
         reviewer.review(make_model_input())
@@ -708,6 +1243,127 @@ def test_retryable_provider_errors_keep_budget_reservation_uncertain(
     assert accountant.settlements[0]["input_tokens"] is None
     assert accountant.settlements[0]["output_tokens"] is None
     assert accountant.settlements[0]["uncertain"] is True
+    client.close()
+
+
+def test_budget_settlement_exception_does_not_trigger_a_second_settlement() -> None:
+    """结算已落库但抛出预算错误时，异常分支不能重复调用结算。"""
+
+    class CommitThenRaiseAccountant(RecordingBudgetAccountant):
+        def settle(self, *args: object, **kwargs: object) -> None:
+            super().settle(*args, **kwargs)  # type: ignore[arg-type]
+            raise ModelBudgetExceededError("http_calls")
+
+    accountant = CommitThenRaiseAccountant()
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(503, json={"error": {}})
+        ),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert captured.value.error.code is ErrorCode.MODEL_BUDGET_EXCEEDED
+    assert len(accountant.settlements) == 1
+    client.close()
+
+
+def test_transient_budget_settlement_error_is_retried_idempotently() -> None:
+    """结算暂时失败时，必须补偿一次，避免 reservation 永久保持 reserved。"""
+
+    class RetryOnceAccountant(RecordingBudgetAccountant):
+        def __init__(self) -> None:
+            super().__init__()
+            self.settle_attempts = 0
+
+        def settle(self, *args: object, **kwargs: object) -> None:
+            self.settle_attempts += 1
+            if self.settle_attempts == 1:
+                raise TaskQueueError("temporary settlement failure")
+            super().settle(*args, **kwargs)  # type: ignore[arg-type]
+
+    accountant = RetryOnceAccountant()
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(400, json={"error": {}})
+        ),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+        monotonic=lambda: 100.0,
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert captured.value.error.code is ErrorCode.MODEL_REQUEST_REJECTED
+    assert accountant.settle_attempts == 2
+    assert len(accountant.settlements) == 1
+    assert accountant.settlements[0] == {
+        "reservation_id": "reservation-1",
+        "input_tokens": None,
+        "output_tokens": None,
+        "estimated_cost_microusd": None,
+        "response_status": 400,
+        "duration_ms": 0,
+        "uncertain": True,
+    }
+    client.close()
+
+
+def test_telemetry_failure_cannot_leave_a_successful_budget_reserved() -> None:
+    """指标旁路异常不能阻断响应解析和预算结算。"""
+
+    class ExplodingTelemetry:
+        def observe_external(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("telemetry backend unavailable")
+
+    accountant = RecordingBudgetAccountant()
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={
+                    "id": "resp_telemetry_failure",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": make_output().model_dump_json(),
+                                }
+                            ],
+                        }
+                    ],
+                    "usage": {"input_tokens": 12, "output_tokens": 8},
+                },
+            )
+        ),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=client,
+        telemetry=ExplodingTelemetry(),  # type: ignore[arg-type]
+    )
+
+    with model_budget_scope(accountant):
+        result = reviewer.review(make_model_input())
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert len(accountant.settlements) == 1
+    assert accountant.settlements[0]["uncertain"] is False
+    assert accountant.settlements[0]["input_tokens"] == 12
     client.close()
 
 
@@ -746,6 +1402,39 @@ def test_provider_http_errors_are_classified_without_response_body(
     client.close()
 
 
+def test_relay_gateway_timeout_is_explained_without_exposing_body() -> None:
+    client = httpx.Client(
+        base_url="https://relay.example.test/v1",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                524,
+                headers={"retry-after": "120"},
+                content=b"origin response timed out; secret=must-not-escape",
+            )
+        ),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.RESPONSES,
+            api_base_url="https://relay.example.test/v1",
+        ),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    error = captured.value.error
+    assert error.code is ErrorCode.MODEL_SERVER_ERROR
+    assert error.safe_message == "模型中转站网关等待超时（524）"
+    assert error.retryable is True
+    assert error.details["upstream_timeout"] is True
+    assert error.details["retry_after_seconds"] == 120
+    assert "secret=must-not-escape" not in str(error.details)
+    client.close()
+
+
 @pytest.mark.parametrize("provider", [ModelProvider.OPENAI, ModelProvider.ANTHROPIC])
 def test_provider_truncation_is_not_accepted_as_structured_output(
     provider: ModelProvider,
@@ -771,6 +1460,426 @@ def test_provider_truncation_is_not_accepted_as_structured_output(
 
     assert captured.value.error.code is ErrorCode.MODEL_OUTPUT_TRUNCATED
     assert captured.value.error.retryable is False
+    client.close()
+
+
+def test_responses_truncation_retry_succeeds_with_compact_request_and_usage() -> None:
+    requests: list[dict[str, object]] = []
+    accountant = RecordingBudgetAccountant()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            assert body["max_output_tokens"] == 16_384
+            return httpx.Response(
+                200,
+                headers={"x-request-id": "req_truncated_1"},
+                json={
+                    "id": "resp_truncated_1",
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 8,
+                        "input_tokens_details": {"cached_tokens": 2},
+                        "output_tokens_details": {"reasoning_tokens": 3},
+                    },
+                },
+            )
+        assert body["max_output_tokens"] == 8_192
+        assert "reasoning" not in body
+        assert "最多 8 条" in body["input"][-1]["content"][0]["text"]
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "req_truncated_2"},
+            json={
+                "id": "resp_truncated_2",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": make_output().model_dump_json(),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 3},
+            },
+        )
+
+    ticks = iter((10.0, 11.0, 20.0, 22.0))
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.RESPONSES,
+            reasoning_effort=ModelReasoningEffort.MEDIUM,
+            max_output_tokens=16_384,
+        ),
+        client=client,
+        monotonic=lambda: next(ticks),
+    )
+
+    with model_budget_scope(accountant):
+        result = reviewer.review(make_model_input())
+
+    assert len(requests) == 2
+    assert result.provider_response_id == "resp_truncated_2"
+    assert result.provider_request_id == "req_truncated_1,req_truncated_2"
+    assert result.response_status == 200
+    assert result.duration_ms == 3_000
+    assert result.usage.input_tokens == 20
+    assert result.usage.cache_read_input_tokens == 2
+    assert result.usage.output_tokens == 11
+    assert result.usage.reasoning_output_tokens == 3
+    assert accountant.settlements == [
+        {
+            "reservation_id": "reservation-1",
+            "input_tokens": 10,
+            "output_tokens": 8,
+            "estimated_cost_microusd": None,
+            "response_status": 200,
+            "duration_ms": 1_000,
+            "uncertain": False,
+        },
+        {
+            "reservation_id": "reservation-2",
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "estimated_cost_microusd": None,
+            "response_status": 200,
+            "duration_ms": 2_000,
+            "uncertain": False,
+        },
+    ]
+    client.close()
+
+
+def test_responses_truncation_retry_failure_preserves_usage_and_audit() -> None:
+    requests = 0
+    accountant = RecordingBudgetAccountant()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            headers={"x-request-id": f"req_fail_{requests}"},
+            json={
+                "id": f"resp_fail_{requests}",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [],
+                "usage": {
+                    "input_tokens": 7 + requests,
+                    "output_tokens": 5 + requests,
+                },
+            },
+        )
+
+    ticks = iter((30.0, 31.0, 40.0, 42.0))
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.RESPONSES,
+            max_output_tokens=16_384,
+        ),
+        client=client,
+        monotonic=lambda: next(ticks),
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    error = captured.value.error
+    assert requests == 2
+    assert error.code is ErrorCode.MODEL_OUTPUT_TRUNCATED
+    assert error.retryable is False
+    assert error.details["compact_retry_attempted"] is True
+    assert error.details["incomplete_reason"] == "max_output_tokens"
+    assert error.details["initial_incomplete_reason"] == "max_output_tokens"
+    assert error.details["initial_status_code"] == 200
+    assert error.details["status_code"] == 200
+    assert error.details["initial_duration_ms"] == 1_000
+    assert error.details["duration_ms"] == 3_000
+    assert error.details["provider_request_id"] == "req_fail_1,req_fail_2"
+    assert error.details["failed_input_tokens"] == 17
+    assert error.details["failed_output_tokens"] == 13
+    assert [item["uncertain"] for item in accountant.settlements] == [False, False]
+    client.close()
+
+
+def test_truncation_retry_parse_error_settles_retry_reservation() -> None:
+    """截断后的精简响应用量损坏时，不得遗留第二次 reservation。"""
+
+    requests: list[dict[str, object]] = []
+    accountant = RecordingBudgetAccountant()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        retried = len(requests) == 2
+        if not retried:
+            payload = {
+                "id": "resp_compact_parse_1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [],
+                "usage": {"input_tokens": 9, "output_tokens": 6},
+            }
+        else:
+            payload = {
+                "id": "resp_compact_parse_2",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": make_output().model_dump_json(),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": "bad", "output_tokens": 4},
+            }
+        return httpx.Response(
+            200,
+            headers={"x-request-id": f"req_compact_parse_{len(requests)}"},
+            json=payload,
+        )
+
+    ticks = iter((30.0, 31.0, 40.0, 42.0))
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.RESPONSES,
+            max_output_tokens=16_384,
+        ),
+        client=client,
+        monotonic=lambda: next(ticks),
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    error = captured.value.error
+    assert len(requests) == 2
+    assert error.code is ErrorCode.MODEL_INVALID_RESPONSE
+    assert error.details["compact_retry_attempted"] is True
+    assert error.details["initial_error_code"] == ErrorCode.MODEL_OUTPUT_TRUNCATED.value
+    assert error.details["initial_incomplete_reason"] == "max_output_tokens"
+    assert error.details["provider_request_id"] == (
+        "req_compact_parse_1,req_compact_parse_2"
+    )
+    assert error.details["status_code"] == 200
+    assert error.details["duration_ms"] == 3_000
+    assert error.details["failed_input_tokens"] == 9
+    assert error.details["failed_output_tokens"] == 6
+    assert len(accountant.settlements) == 2
+    assert accountant.settlements[0]["uncertain"] is False
+    assert accountant.settlements[1] == {
+        "reservation_id": "reservation-2",
+        "input_tokens": None,
+        "output_tokens": None,
+        "estimated_cost_microusd": None,
+        "response_status": 200,
+        "duration_ms": 2_000,
+        "uncertain": True,
+    }
+    assert {
+        item["reservation_id"] for item in accountant.settlements
+    } == {"reservation-1", "reservation-2"}
+    client.close()
+
+
+def test_responses_content_filter_is_refusal_and_does_not_retry() -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_filter",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": [],
+                "usage": {"input_tokens": 4, "output_tokens": 2},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI, api_protocol=ModelApiProtocol.RESPONSES),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert requests == 1
+    assert captured.value.error.code is ErrorCode.MODEL_OUTPUT_REFUSED
+    assert captured.value.error.details["incomplete_reason"] == "content_filter"
+    assert captured.value.error.details["failed_input_tokens"] == 4
+    assert captured.value.error.details["failed_output_tokens"] == 2
+    client.close()
+
+
+@pytest.mark.parametrize("reason", [None, "server_error", ["max_output_tokens"]])
+def test_responses_unknown_incomplete_reason_does_not_retry(reason: object) -> None:
+    """只有明确的长度原因才允许精简重试，未知原因不能额外消耗预算。"""
+
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        incomplete_details = {} if reason is None else {"reason": reason}
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_unknown_incomplete",
+                "status": "incomplete",
+                "incomplete_details": incomplete_details,
+                "output": [],
+                "usage": {"input_tokens": 4, "output_tokens": 2},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI, api_protocol=ModelApiProtocol.RESPONSES),
+        client=client,
+    )
+
+    with pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert requests == 1
+    assert captured.value.error.code is ErrorCode.MODEL_OUTPUT_TRUNCATED
+    assert captured.value.error.details.get("incomplete_reason") == reason
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("provider", "protocol", "limit_field"),
+    [
+        (
+            ModelProvider.OPENAI,
+            ModelApiProtocol.CHAT_COMPLETIONS,
+            "max_completion_tokens",
+        ),
+        (ModelProvider.ANTHROPIC, ModelApiProtocol.MESSAGES, "max_tokens"),
+    ],
+)
+def test_non_responses_truncation_retry_uses_compact_limit(
+    provider: ModelProvider,
+    protocol: ModelApiProtocol,
+    limit_field: str,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            assert body[limit_field] == 16_384
+            return httpx.Response(
+                200,
+                json=(
+                    {
+                        "id": "chat_truncated",
+                        "choices": [
+                            {"finish_reason": "length", "message": {"content": ""}}
+                        ],
+                        "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                    }
+                    if protocol is ModelApiProtocol.CHAT_COMPLETIONS
+                    else {
+                        "id": "message_truncated",
+                        "stop_reason": "max_tokens",
+                        "content": [],
+                        "usage": {"input_tokens": 2, "output_tokens": 3},
+                    }
+                ),
+            )
+        assert body[limit_field] == 8_192
+        if protocol is ModelApiProtocol.CHAT_COMPLETIONS:
+            assert "reasoning_effort" not in body
+            assert "最多 8 条" in body["messages"][-1]["content"]
+            payload = {
+                "id": "chat_retried",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": make_output().model_dump_json(),
+                            "refusal": None,
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 5},
+            }
+        else:
+            assert "effort" not in body["output_config"]
+            assert "最多 8 条" in body["messages"][-1]["content"]
+            payload = {
+                "id": "message_retried",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": make_output().model_dump_json()}],
+                "usage": {"input_tokens": 4, "output_tokens": 5},
+            }
+        return httpx.Response(200, json=payload)
+
+    base_url = (
+        "https://api.openai.test/v1"
+        if protocol is ModelApiProtocol.CHAT_COMPLETIONS
+        else "https://api.anthropic.test"
+    )
+    client = httpx.Client(
+        base_url=base_url,
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            provider,
+            api_protocol=protocol,
+            api_base_url=base_url,
+            max_output_tokens=16_384,
+            reasoning_effort=ModelReasoningEffort.HIGH,
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(make_model_input())
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert len(requests) == 2
     client.close()
 
 
@@ -851,6 +1960,142 @@ def test_empty_plan_skips_http_but_records_zero_usage() -> None:
     client.close()
 
 
+def test_summary_context_without_units_still_calls_model() -> None:
+    """汇总阶段只携带前三路结论时不能被普通空计划捷径跳过。"""
+
+    review_input = make_model_input().model_copy(
+        update={
+            "rules": (),
+            "units": (),
+            "total_estimated_input_bytes": 0,
+            "review_agent": ReviewAgent.SUMMARY,
+            "prior_agent_results": ('{"agent":"security","findings":[]}',),
+        }
+    )
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "id": "summary-response",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": make_output().model_dump_json()},
+                }],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(review_input)
+
+    assert calls == 1
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert result.output.findings
+    client.close()
+
+
+def test_non_summary_context_without_units_still_skips_http() -> None:
+    """临时上下文不能把普通 Agent 的空计划误变成真实模型请求。"""
+
+    review_input = make_model_input().model_copy(
+        update={
+            "rules": (),
+            "units": (),
+            "total_estimated_input_bytes": 0,
+            "review_agent": ReviewAgent.SECURITY,
+            "prior_agent_results": ('{"agent":"summary","findings":[]}',),
+        }
+    )
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(review_input)
+
+    assert calls == 0
+    assert result.status is ModelCallStatus.SKIPPED
+    client.close()
+
+
+def test_summary_provider_compacts_direct_large_input_before_http() -> None:
+    """即使绕过编排器直接调用，汇总适配器也不能发送完整补丁。"""
+
+    source = make_large_v2_input()
+    review_input = source.model_copy(
+        update={
+            "review_agent": ReviewAgent.SUMMARY,
+            "prior_agent_results": ('{"agent":"security","findings":[]}',),
+        }
+    )
+    request_sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_sizes.append(len(request.content))
+        body = json.loads(request.content)
+        payload = json.loads(body["messages"][1]["content"])
+        assert payload["review_units"] == []
+        assert payload["repository_rules"] == []
+        return httpx.Response(
+            200,
+            json={
+                "id": "summary-compact",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": make_output().model_dump_json()},
+                }],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8},
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(
+        _settings(
+            ModelProvider.OPENAI,
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        ),
+        client=client,
+    )
+
+    result = reviewer.review(review_input)
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert request_sizes and request_sizes[0] < 100_000
+    client.close()
+
+
 def test_timeout_keeps_the_full_budget_reservation_once() -> None:
     accountant = RecordingBudgetAccountant()
 
@@ -886,6 +2131,188 @@ def test_timeout_keeps_the_full_budget_reservation_once() -> None:
         }
     ]
     client.close()
+
+
+def test_unexpected_client_exception_settles_budget_reservation() -> None:
+    """非 httpx 异常也不能让预算行停留在 reserved。"""
+
+    class ExplodingClient:
+        def stream(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("transport secret must not escape")
+
+        def close(self) -> None:
+            return None
+
+    accountant = RecordingBudgetAccountant()
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=ExplodingClient(),  # type: ignore[arg-type]
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    assert captured.value.error.code is ErrorCode.MODEL_SERVER_ERROR
+    assert captured.value.error.retryable is True
+    assert "transport secret" not in str(captured.value.error.details)
+    assert len(accountant.requests) == 1
+    assert accountant.settlements == [
+        {
+            "reservation_id": "reservation-1",
+            "input_tokens": None,
+            "output_tokens": None,
+            "estimated_cost_microusd": None,
+            "response_status": None,
+            "duration_ms": 0,
+            "uncertain": True,
+        }
+    ]
+
+
+def test_unexpected_response_iterator_exception_preserves_http_audit() -> None:
+    class ExplodingResponse:
+        status_code = 200
+        headers = {"x-request-id": "request-before-iterator-error"}
+
+        def __enter__(self) -> "ExplodingResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def iter_bytes(self) -> object:
+            raise RuntimeError("response iterator failed")
+
+    class ExplodingClient:
+        def stream(self, *_args: object, **_kwargs: object) -> ExplodingResponse:
+            return ExplodingResponse()
+
+        def close(self) -> None:
+            return None
+
+    accountant = RecordingBudgetAccountant()
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=ExplodingClient(),  # type: ignore[arg-type]
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    error = captured.value.error
+    assert error.code is ErrorCode.MODEL_SERVER_ERROR
+    assert error.details["status_code"] == 200
+    assert error.details["provider_request_id"] == "request-before-iterator-error"
+    assert len(accountant.settlements) == 1
+    assert accountant.settlements[0]["uncertain"] is True
+
+
+def test_timeout_response_iterator_preserves_http_audit() -> None:
+    """响应头已到达后读超时，不能丢失状态码和供应商请求 ID。"""
+
+    class TimeoutResponse:
+        status_code = 200
+        headers = {"x-request-id": "request-before-timeout"}
+
+        def __enter__(self) -> "TimeoutResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def iter_bytes(self) -> object:
+            raise httpx.ReadTimeout(
+                "response body timed out",
+                request=httpx.Request(
+                    "POST",
+                    "https://api.openai.test/v1/responses",
+                ),
+            )
+
+    class TimeoutClient:
+        def stream(self, *_args: object, **_kwargs: object) -> TimeoutResponse:
+            return TimeoutResponse()
+
+        def close(self) -> None:
+            return None
+
+    accountant = RecordingBudgetAccountant()
+    # _post_json samples the clock at request start, when headers are audited,
+    # and once more when the body read raises.
+    ticks = iter((10.0, 10.5, 12.5))
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=TimeoutClient(),  # type: ignore[arg-type]
+        monotonic=lambda: next(ticks),
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    error = captured.value.error
+    assert error.code is ErrorCode.MODEL_TIMEOUT
+    assert error.details["status_code"] == 200
+    assert error.details["provider_request_id"] == "request-before-timeout"
+    assert accountant.settlements == [
+        {
+            "reservation_id": "reservation-1",
+            "input_tokens": None,
+            "output_tokens": None,
+            "estimated_cost_microusd": None,
+            "response_status": 200,
+            "duration_ms": 2_500,
+            "uncertain": True,
+        }
+    ]
+
+
+def test_http_classification_iterator_exception_does_not_settle_twice() -> None:
+    """HTTP 错误分类异常时，已结算的 reservation 不能再次结算。"""
+
+    class ClassificationErrorResponse:
+        status_code = 400
+        headers = {"x-request-id": "request-before-classification-error"}
+
+        def __enter__(self) -> "ClassificationErrorResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def iter_bytes(self) -> object:
+            # _unsupported_parameters_from_response 只吞掉明确的 HTTP/运行时/
+            # 值错误；用 KeyError 模拟第三方响应迭代器的未预期异常。
+            raise KeyError("iterator failed")
+
+    class ClassificationErrorClient:
+        def stream(
+            self,
+            *_args: object,
+            **_kwargs: object,
+        ) -> ClassificationErrorResponse:
+            return ClassificationErrorResponse()
+
+        def close(self) -> None:
+            return None
+
+    accountant = RecordingBudgetAccountant()
+    reviewer = create_model_reviewer(
+        _settings(ModelProvider.OPENAI),
+        client=ClassificationErrorClient(),  # type: ignore[arg-type]
+    )
+
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+
+    error = captured.value.error
+    assert error.code is ErrorCode.MODEL_SERVER_ERROR
+    assert error.details["status_code"] == 400
+    assert error.details["provider_request_id"] == (
+        "request-before-classification-error"
+    )
+    assert len(accountant.settlements) == 1
+    assert accountant.settlements[0]["uncertain"] is False
+    assert accountant.settlements[0]["response_status"] == 400
 
 
 def test_invalid_json_keeps_the_full_budget_reservation_once() -> None:

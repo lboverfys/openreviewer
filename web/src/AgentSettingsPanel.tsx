@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api, ApiError } from "./api";
+import {
+  api,
+  ApiError,
+  clearSettingsCache,
+  peekReadCache,
+  subscribeReadCache,
+} from "./api";
 import {
   batchInputOptions,
   contextWindowOptions,
@@ -92,32 +98,181 @@ function agentNumber(value: string, label: string, integer = false): number {
 
 export default function AgentSettingsPanel({
   refreshRequest,
+  parentRevision,
+  onRevisionChange,
   onSignedOut,
 }: {
   refreshRequest: number;
+  /** 主设置页与 Agent 配置共用 AiSettingsRecord.revision。 */
+  parentRevision: number | null;
+  /** 将 Agent 写操作产生的全局 revision 反馈给父页面。 */
+  onRevisionChange: (revision: number) => void;
   onSignedOut: (message?: string) => void;
 }) {
-  const [settings, setSettings] = useState<AiAgentSettingsResponse | null>(null);
-  const [drafts, setDrafts] = useState<Partial<Record<ReviewAgent, AgentDraft>>>({});
+  // 与主设置页一样，优先使用 API 层的短时快照。这样返回设置页时 Agent
+  // 表格会立即可见；若快照已过期，后台 refresh 仍会取最新数据。
+  const cachedSettings = peekReadCache<AiAgentSettingsResponse>("agent-settings");
+  const initialSettings = cachedSettings ?? null;
+  const [settings, setSettings] = useState<AiAgentSettingsResponse | null>(initialSettings);
+  const [drafts, setDrafts] = useState<Partial<Record<ReviewAgent, AgentDraft>>>(
+    initialSettings
+      ? Object.fromEntries(
+        initialSettings.agents.map((item) => [item.agent, agentDraft(item)]),
+      ) as Record<ReviewAgent, AgentDraft>
+      : {},
+  );
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
   const [messageAgent, setMessageAgent] = useState<ReviewAgent | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(initialSettings !== null);
+  const refreshSequence = useRef(0);
+  const parentRevisionRef = useRef<number | null>(parentRevision);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const appliedSettingsRef = useRef<AiAgentSettingsResponse | null>(initialSettings);
+  const initialCacheValidationPendingRef = useRef(initialSettings !== null);
+  // 每个 Agent 草稿独立记录开始编辑时的全局 revision，防止主设置或
+  // 其他 Agent 在编辑期间变更后被本地旧草稿覆盖。
+  const draftRevisionRef = useRef<Partial<Record<ReviewAgent, number>>>({});
 
-  const apply = useCallback((next: AiAgentSettingsResponse) => {
-    setSettings(next);
-    setDrafts(
-      Object.fromEntries(
-        next.agents.map((item) => [item.agent, agentDraft(item)]),
-      ) as Record<ReviewAgent, AgentDraft>,
+  const apply = useCallback((
+    next: AiAgentSettingsResponse,
+    resetDraftAgent?: ReviewAgent,
+  ): boolean => {
+    // 主设置与 Agent 设置共用全局 revision。若 Agent GET 恰好返回旧快照，
+    // 只提升 revision，不覆盖用户正在编辑的草稿。
+    const knownRevision = parentRevisionRef.current;
+    const current = appliedSettingsRef.current;
+    if (knownRevision !== null && next.revision < knownRevision) {
+      return false;
+    }
+    const effectiveRevision = Math.max(
+      next.revision,
+      knownRevision ?? next.revision,
     );
-  }, []);
+    // 父页面只需要接收单调递增的 revision；避免一次普通刷新重复触发
+    // 父页面更新，也避免旧快照把已知版本再次传播出去。
+    if (knownRevision === null || effectiveRevision > knownRevision) {
+      parentRevisionRef.current = effectiveRevision;
+      onRevisionChange(effectiveRevision);
+    }
+    const applied =
+      effectiveRevision === next.revision
+        ? next
+        : { ...next, revision: effectiveRevision };
+    // 响应可能是 mutation 之前发出的旧快照。已有较新本地快照时，只
+    // 提升显示版本，不替换 Agent 行和用户正在编辑的草稿。
+    const staleAgainstLocal = current && next.revision < current.revision;
+    const staleAgainstParent =
+      current && knownRevision !== null && next.revision < knownRevision;
+    if (current && (staleAgainstLocal || staleAgainstParent)) {
+      if (effectiveRevision > current.revision) {
+        const advanced = { ...current, revision: effectiveRevision };
+        appliedSettingsRef.current = advanced;
+        setSettings(advanced);
+      }
+      return false;
+    }
+    appliedSettingsRef.current = applied;
+    setSettings(applied);
+    setDrafts((currentDrafts) => {
+      const merged = Object.fromEntries(
+        next.agents.map((item) => {
+        const previousItem = current?.agents.find(
+          (candidate) => candidate.agent === item.agent,
+        );
+        const currentDraft = currentDrafts[item.agent];
+        const preserveDirtyDraft =
+          item.agent !== resetDraftAgent
+          && previousItem
+          && currentDraft
+          && agentDraftDirty(previousItem, currentDraft);
+        return [
+          item.agent,
+          preserveDirtyDraft ? currentDraft : agentDraft(item),
+        ];
+        }),
+      ) as Record<ReviewAgent, AgentDraft>;
+      for (const item of next.agents) {
+        const localDraft = merged[item.agent];
+        if (
+          item.agent === resetDraftAgent
+          || !localDraft
+          || !agentDraftDirty(item, localDraft)
+        ) {
+          delete draftRevisionRef.current[item.agent];
+        } else if (draftRevisionRef.current[item.agent] === undefined) {
+          draftRevisionRef.current[item.agent] = knownRevision ?? next.revision;
+        }
+      }
+      return merged;
+    });
+    return true;
+  }, [onRevisionChange]);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  // 后台 stale-while-revalidate 完成后，API 层会写入新快照；把它推入
+  // 当前面板，避免只有重新进入设置页才能看到 Agent 的最新状态。
+  useEffect(() => subscribeReadCache<AiAgentSettingsResponse>("agent-settings", (next) => {
+    apply(next);
+  }), [apply]);
+
+  useEffect(() => {
+    if (parentRevision === null) {
+      parentRevisionRef.current = null;
+      return;
+    }
+    // 回调更新父状态是异步的；保留本地已经观察到的更高版本，防止旧
+    // prop 在中间一次渲染中把它降回去。
+    parentRevisionRef.current = Math.max(
+      parentRevisionRef.current ?? parentRevision,
+      parentRevision,
+    );
+    setSettings((current) => {
+      if (!current || current.revision >= parentRevision) return current;
+      const advanced = { ...current, revision: parentRevision };
+      appliedSettingsRef.current = advanced;
+      return advanced;
+    });
+  }, [parentRevision]);
+
+  const refresh = useCallback(async (signal?: AbortSignal, force = false) => {
+    const sequence = ++refreshSequence.current;
+    let retriedStaleSnapshot = false;
+    let requestForce = force;
     try {
-      apply(await api.agentSettings(signal));
+      while (true) {
+        const next = await api.agentSettings(signal, requestForce);
+        if (sequence !== refreshSequence.current || signal?.aborted) return;
+        const knownRevision = parentRevisionRef.current;
+        // 若服务端返回了比父页面更旧的快照（包括路由返回时的初始缓存），
+        // 不能只把 revision 改大后继续显示旧 Agent 行；清缓存并有界重试一次。
+        if (
+          knownRevision !== null
+          && next.revision < knownRevision
+          && (
+            appliedSettingsRef.current === null
+            || initialCacheValidationPendingRef.current
+          )
+        ) {
+          if (retriedStaleSnapshot) {
+            setMessageKind("error");
+            setMessageAgent(null);
+            setMessage("Agent 配置正在同步，请稍后刷新");
+            return;
+          }
+          retriedStaleSnapshot = true;
+          clearSettingsCache();
+          requestForce = true;
+          continue;
+        }
+        initialCacheValidationPendingRef.current = false;
+        // 普通刷新期间若拿到旧快照，保留当前本地快照即可；只有初始缓存
+        // 校验阶段才重试一次，避免每次父 revision 变化都制造额外 GET。
+        apply(next);
+        return;
+      }
     } catch (error) {
-      if (signal?.aborted) return;
+      if (signal?.aborted || sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
@@ -129,10 +284,36 @@ export default function AgentSettingsPanel({
   }, [apply, onSignedOut]);
 
   useEffect(() => {
+    if (shouldLoad) return undefined;
+    const node = sectionRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") {
+      setShouldLoad(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "480px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [shouldLoad]);
+
+  useEffect(() => {
+    // Agent 保存/测试/启停期间，父页面的“刷新设置”不能抢占当前操作的
+    // request sequence；否则响应会被视为旧请求，busy 状态也无法收尾。
+    // 操作结束后 busy 变化会再次触发这里，补取一次最新快照。
+    if (!shouldLoad || busy) return undefined;
     const controller = new AbortController();
+    // 未过期缓存直接复用；父页面的显式刷新会先清缓存并递增
+    // refreshRequest，因此这里仍会读取最新 Agent 配置。
     void refresh(controller.signal);
     return () => controller.abort();
-  }, [refresh, refreshRequest]);
+  }, [busy, refresh, refreshRequest, shouldLoad]);
 
   useEffect(() => {
     if (!message || messageKind !== "success") return undefined;
@@ -141,17 +322,37 @@ export default function AgentSettingsPanel({
   }, [message, messageKind]);
 
   function updateDraft(agent: ReviewAgent, field: keyof AgentDraft, value: string | boolean) {
-    setDrafts((current) => ({
-      ...current,
-      [agent]: { ...current[agent]!, [field]: value },
-    }));
+    setDrafts((current) => {
+      const previousDraft = current[agent];
+      if (!previousDraft) return current;
+      const nextDraft = { ...previousDraft, [field]: value };
+      const saved = appliedSettingsRef.current?.agents.find(
+        (item) => item.agent === agent,
+      );
+      if (saved && agentDraftDirty(saved, nextDraft)) {
+        if (draftRevisionRef.current[agent] === undefined) {
+          draftRevisionRef.current[agent] =
+            parentRevisionRef.current
+              ?? appliedSettingsRef.current?.revision
+              ?? 0;
+        }
+      } else {
+        delete draftRevisionRef.current[agent];
+      }
+      return { ...current, [agent]: nextDraft };
+    });
   }
 
   async function save(agent: ReviewAgent) {
     const item = settings?.agents.find((candidate) => candidate.agent === agent);
     const draft = drafts[agent];
     if (!settings || !item || !draft) return;
-    const revision = settings.revision;
+    const revision = draftRevisionRef.current[agent]
+      ?? Math.max(
+        settings.revision,
+        parentRevisionRef.current ?? settings.revision,
+      );
+    const sequence = ++refreshSequence.current;
     setBusy("save-" + agent);
     setMessage("");
     setMessageAgent(agent);
@@ -174,10 +375,19 @@ export default function AgentSettingsPanel({
         pool_timeout_seconds: agentNumber(draft.poolTimeoutSeconds, "连接排队超时"),
         max_retries: agentNumber(draft.maxRetries, "重试次数", true),
       });
-      apply(response);
+      if (sequence !== refreshSequence.current) return;
+      const applied = apply(response, agent);
+      if (!applied) {
+        clearSettingsCache();
+        const refreshSequenceBefore = refreshSequence.current;
+        await refresh(undefined, true);
+        if (refreshSequence.current === refreshSequenceBefore + 1) setBusy("");
+        return;
+      }
       setMessageKind("success");
       setMessage(agentLabels[agent].title + "配置已保存");
     } catch (error) {
+      if (sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
@@ -185,42 +395,76 @@ export default function AgentSettingsPanel({
       setMessageKind("error");
       setMessage(errorMessage(error));
     } finally {
-      setBusy("");
+      if (sequence === refreshSequence.current) setBusy("");
     }
   }
 
   async function test(agent: ReviewAgent) {
     if (!settings) return;
+    const sequence = ++refreshSequence.current;
     setBusy("test-" + agent);
     setMessage("");
     setMessageAgent(agent);
     try {
-      apply(await api.testAgent(agent, settings.revision));
+      const response = await api.testAgent(
+        agent,
+        Math.max(settings.revision, parentRevisionRef.current ?? settings.revision),
+      );
+      if (sequence !== refreshSequence.current) return;
+      const applied = apply(response);
+      if (!applied) {
+        clearSettingsCache();
+        const refreshSequenceBefore = refreshSequence.current;
+        await refresh(undefined, true);
+        if (refreshSequence.current === refreshSequenceBefore + 1) setBusy("");
+        return;
+      }
       setMessageKind("success");
       setMessage(agentLabels[agent].title + "连接测试通过");
     } catch (error) {
+      if (sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
       }
       setMessageKind("error");
       setMessage(errorMessage(error));
+      clearSettingsCache();
+      const refreshSequenceBefore = refreshSequence.current;
       await refresh();
+      // refresh() 会为新快照占用一个序列号；只有它没有被其他操作抢占时，
+      // 才能结束本次测试的 busy 状态。
+      if (refreshSequence.current === refreshSequenceBefore + 1) setBusy("");
     } finally {
-      setBusy("");
+      if (sequence === refreshSequence.current) setBusy("");
     }
   }
 
   async function setEnabled(agent: ReviewAgent, enabled: boolean) {
     if (!settings) return;
+    const sequence = ++refreshSequence.current;
     setBusy("enabled-" + agent);
     setMessage("");
     setMessageAgent(agent);
     try {
-      apply(await api.setAgentEnabled(agent, enabled, settings.revision));
+      const response = await api.setAgentEnabled(
+        agent,
+        enabled,
+        Math.max(settings.revision, parentRevisionRef.current ?? settings.revision),
+      );
+      if (sequence !== refreshSequence.current) return;
+      const applied = apply(response);
+      if (!applied) {
+        clearSettingsCache();
+        const refreshSequenceBefore = refreshSequence.current;
+        await refresh(undefined, true);
+        if (refreshSequence.current === refreshSequenceBefore + 1) setBusy("");
+        return;
+      }
       setMessageKind("success");
       setMessage(agentLabels[agent].title + (enabled ? "已启用" : "已停用"));
     } catch (error) {
+      if (sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
@@ -228,13 +472,13 @@ export default function AgentSettingsPanel({
       setMessageKind("error");
       setMessage(errorMessage(error));
     } finally {
-      setBusy("");
+      if (sequence === refreshSequence.current) setBusy("");
     }
   }
 
   if (!settings) {
     return (
-      <section className="agent-settings-section">
+      <section ref={sectionRef} className="agent-settings-section">
         <div className="settings-section-heading"><div><span className="settings-eyebrow">固定审查 DAG</span><h2>独立 Agent 配置</h2></div></div>
         {message && <div className={"settings-message is-" + messageKind}>{message}</div>}
         {!message && <div className="settings-loading">正在读取 Agent 配置...</div>}
@@ -243,7 +487,7 @@ export default function AgentSettingsPanel({
   }
 
   return (
-    <section className="agent-settings-section">
+    <section ref={sectionRef} className="agent-settings-section">
       <div className="settings-section-heading">
         <div><span className="settings-eyebrow">固定审查 DAG</span><h2>独立 Agent 配置</h2><p>三路审查并行执行，汇总 Agent 单独使用自己的模型和密钥。</p></div>
         <span className="settings-summary-value">配置版本 r{settings.revision}</span>

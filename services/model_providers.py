@@ -6,11 +6,17 @@ import time
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError
 
-from domain.enums import ModelApiProtocol, ModelCallStatus, ModelProvider
+from domain.enums import (
+    ModelApiProtocol,
+    ModelCallStatus,
+    ModelProvider,
+    ReviewAgent,
+)
 from domain.model_review import (
     ModelReviewInput,
     ModelReviewOutput,
@@ -47,6 +53,43 @@ _UNSUPPORTED_MARKERS = (
     "unexpected field",
     "extra inputs are not permitted",
     "invalid request argument",
+    # Several relays use this wording for a field they do not implement.  A
+    # known optional parameter must still be present before we downgrade.
+    "invalid parameter",
+    "invalid field",
+    "invalid argument",
+)
+# Some OpenAI-compatible relays describe an unsupported option as an invalid
+# value and list the values they do support, without using the word
+# ``unsupported``.  These markers are intentionally kept separate from the
+# broad HTTP error classifier so ordinary validation failures are not retried.
+_INVALID_SUPPORTED_VALUE_MARKERS = (
+    "invalid value",
+    "invalid parameter",
+    "invalid field",
+    "invalid argument",
+    "invalid option",
+    "value is not valid",
+    "无效值",
+    "参数值无效",
+    "字段值无效",
+    "值无效",
+)
+_SUPPORTED_VALUE_MARKERS = (
+    "supported value",
+    "supported values",
+    "supported option",
+    "supported options",
+    "supported types",
+    "allowed value",
+    "allowed values",
+    "expected one of",
+    "one of the following",
+    "must be one of",
+    "支持的值",
+    "可用值",
+    "允许的值",
+    "有效值",
 )
 _COMPATIBILITY_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("max_completion_tokens", ("max_completion_tokens",)),
@@ -57,11 +100,14 @@ _COMPATIBILITY_PARAMETER_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("reasoning", ("reasoning",)),
     ("effort", ("effort",)),
     ("store", ("store",)),
+    ("stream", ("stream",)),
 )
 _REQUIRED_OUTPUT_FIELDS = ("verdict", "summary", "checked_areas", "findings")
 _MAX_VALIDATION_ISSUES = 8
+_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS = 8_192
 _FORMAT_REPAIR_INSTRUCTION = """上一条回答没有通过结构化审查契约校验。请重新完成同一审查，只返回一个 JSON 对象，不要使用 Markdown 代码块或附加说明。
 顶层必须且只能包含 verdict、summary、checked_areas、findings。verdict 只能是 issues_found、no_actionable_issue、insufficient_context；summary 必须是简体中文非空字符串；checked_areas 必须是去重后的字符串数组。发现问题时 verdict=issues_found 且 findings 非空；没有可靠问题时 verdict=no_actionable_issue 且 findings=[]；上下文不足时使用 insufficient_context。每个 finding 必须严格符合原请求 output_contract。"""
+_TRUNCATION_RETRY_INSTRUCTION = """上一条回答没有完整结束，可能触及了输出上限。请在同一审查范围内重新回答，并严格控制输出长度：只保留最多 8 条最高价值、由补丁直接支持的问题；summary 不超过 300 字；checked_areas 不超过 8 项；每个 finding 的 title 不超过 120 字，evidence、impact、suggestion 和 required_test 各不超过 500 字。不要输出思维链、Markdown 或任何额外字段；即使没有可靠问题也必须返回完整且合法的 JSON 对象。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,13 +156,23 @@ class _StructuredModelReviewer(ModelReviewer):
             self._client.close()
 
     def review(self, review_input: ModelReviewInput) -> ModelReviewResult:
+        # 汇总节点只需要前三路的结构化候选；即使调用方忘记在编排层
+        # 清空计划，也不能把完整 rules/patch 再发送给中转站。
+        prompt_input = _summary_prompt_input(review_input)
         prompt = self._prompt_builder.build(
-            review_input,
+            prompt_input,
             self.provider,
             self._settings.model,
             self.api_protocol,
         )
-        if not review_input.units:
+        # 普通空审查没有任何可供模型检查的内容，应保持 SKIPPED；汇总
+        # Agent 则通过有界 prior_agent_results 工作，即使 units 已被编排器
+        # 清空，也必须真正调用模型生成全局结论。
+        summary_context = (
+            review_input.review_agent is ReviewAgent.SUMMARY
+            and bool(review_input.prior_agent_results)
+        )
+        if not review_input.units and not summary_context:
             return ModelReviewResult(
                 provider=self.provider,
                 api_protocol=self.api_protocol,
@@ -130,8 +186,28 @@ class _StructuredModelReviewer(ModelReviewer):
                 output=ModelReviewOutput(findings=()),
             )
 
-        request_path = self._settings.api_request_path(self.request_path)
+        # 使用完整 URL，避免 httpx 对 ``https://relay/v1`` 这类无末尾斜杠
+        # Base URL 做相对路径合并时丢掉中转站路径前缀。
+        request_path = self._settings.api_request_url(self.request_path)
         request_body = self._request_body(prompt)
+        settled_reservations: set[str] = set()
+
+        def settle_budget_once(
+            audit: ModelHttpAudit | None,
+            usage: ModelTokenUsage | None,
+            *,
+            uncertain: bool = False,
+        ) -> None:
+            """在一次 review 调用内至多结算每个 reservation 一次。"""
+
+            if audit is None or audit.budget_reservation is None:
+                return
+            reservation_id = audit.budget_reservation.id
+            if reservation_id in settled_reservations:
+                return
+            self._settle_budget_audit(audit, usage, uncertain=uncertain)
+            settled_reservations.add(reservation_id)
+
         attempted_bodies: set[str] = set()
         while True:
             # 以稳定 JSON 签名限制兼容重试次数；即使中转站反复返回同一
@@ -168,70 +244,113 @@ class _StructuredModelReviewer(ModelReviewer):
             try:
                 output, usage, response_id = self._parse_success(payload)
             except SafeApplicationError as exc:
-                first_usage = _known_failed_usage(exc.error.details)
-                self._settle_budget_audit(
+                # 解析失败发生在 HTTP 返回之后；把响应审计信息合并到安全错误，
+                # 这样批次事件能区分“模型截断”与“代理超时”，而不会保存响应正文。
+                parse_error = self._with_audit_details(exc, audit)
+                first_usage = _known_failed_usage(parse_error.error.details)
+                settle_budget_once(
                     audit,
                     first_usage,
                     uncertain=first_usage is None,
                 )
-                if exc.error.details.get("contract_validation") is not True:
-                    raise
-                first_error = exc.error
-                first_audit = audit
-                repair_body = self._contract_repair_body(request_body, first_error)
-                repair_audit: ModelHttpAudit | None = None
-                try:
-                    repair_payload, repair_audit = self._post_json(
-                        request_path,
-                        headers=self._request_headers(),
-                        body=repair_body,
-                    )
+                if (
+                    parse_error.error.code is ErrorCode.MODEL_OUTPUT_TRUNCATED
+                    and self._should_retry_truncated_output(parse_error.error)
+                ):
+                    compact_body = self._truncation_retry_body(request_body)
+                    if compact_body is not None:
+                        (
+                            output,
+                            usage,
+                            response_id,
+                            audit,
+                        ) = self._retry_truncated_output(
+                            request_path,
+                            compact_body,
+                            parse_error.error,
+                            audit,
+                            settle_budget_once=settle_budget_once,
+                        )
+                    else:
+                        raise parse_error from exc
+                elif parse_error.error.details.get("contract_validation") is not True:
+                    raise parse_error from exc
+                else:
+                    first_error = parse_error.error
+                    first_audit = audit
+                    repair_body = self._contract_repair_body(request_body, first_error)
+                    repair_audit: ModelHttpAudit | None = None
                     try:
-                        output, repair_usage, response_id = self._parse_success(
-                            repair_payload
+                        repair_payload, repair_audit = self._post_json(
+                            request_path,
+                            headers=self._request_headers(),
+                            body=repair_body,
                         )
-                    except SafeApplicationError as repair_parse_exc:
-                        repair_failed_usage = _known_failed_usage(
-                            repair_parse_exc.error.details
-                        )
-                        self._settle_budget_audit(
+                        try:
+                            output, repair_usage, response_id = self._parse_success(
+                                repair_payload
+                            )
+                        except SafeApplicationError as repair_parse_exc:
+                            repair_parse_error = self._with_audit_details(
+                                repair_parse_exc,
+                                repair_audit,
+                            )
+                            repair_failed_usage = _known_failed_usage(
+                                repair_parse_error.error.details
+                            )
+                            settle_budget_once(
+                                repair_audit,
+                                repair_failed_usage,
+                                uncertain=repair_failed_usage is None,
+                            )
+                            raise repair_parse_error from repair_parse_exc
+                        except Exception as repair_parse_exc:
+                            # 用量、响应身份或兼容适配器字段损坏时，解析器
+                            # 可能抛出原生异常；必须结算这一次重试的预留，
+                            # 不能让外层只结算首次请求而遗留 reserved 记录。
+                            settle_budget_once(
+                                repair_audit,
+                                None,
+                                uncertain=True,
+                            )
+                            raise self._error(
+                                ErrorCode.MODEL_INVALID_RESPONSE,
+                                "模型 API 用量或响应身份字段无效",
+                                retryable=False,
+                                details=self._audit_details(repair_audit),
+                            ) from repair_parse_exc
+                        settle_budget_once(repair_audit, repair_usage)
+                    except SafeApplicationError as repair_exc:
+                        raise self._format_repair_failure(
+                            first_error,
+                            first_audit,
+                            repair_exc.error,
                             repair_audit,
-                            repair_failed_usage,
-                            uncertain=repair_failed_usage is None,
-                        )
-                        raise
-                    self._settle_budget_audit(repair_audit, repair_usage)
-                except SafeApplicationError as repair_exc:
-                    raise self._format_repair_failure(
-                        first_error,
-                        first_audit,
-                        repair_exc.error,
-                        repair_audit,
-                    ) from repair_exc
-                usage = _combine_usage(
-                    _failed_usage(first_error.details),
-                    repair_usage,
-                )
-                if repair_audit is None:
-                    raise self._error(
-                        ErrorCode.MODEL_INVALID_RESPONSE,
-                        "模型格式纠正缺少 HTTP 审计信息",
-                        retryable=False,
-                    ) from None
-                audit = ModelHttpAudit(
-                    response_status=repair_audit.response_status,
-                    provider_request_id=_join_request_ids(
-                        first_audit.provider_request_id,
-                        repair_audit.provider_request_id,
-                    ),
-                    duration_ms=first_audit.duration_ms + repair_audit.duration_ms,
-                )
+                        ) from repair_exc
+                    usage = _combine_usage(
+                        _failed_usage(first_error.details),
+                        repair_usage,
+                    )
+                    if repair_audit is None:
+                        raise self._error(
+                            ErrorCode.MODEL_INVALID_RESPONSE,
+                            "模型格式纠正缺少 HTTP 审计信息",
+                            retryable=False,
+                        ) from None
+                    audit = ModelHttpAudit(
+                        response_status=repair_audit.response_status,
+                        provider_request_id=_join_request_ids(
+                            first_audit.provider_request_id,
+                            repair_audit.provider_request_id,
+                        ),
+                        duration_ms=first_audit.duration_ms + repair_audit.duration_ms,
+                    )
             else:
-                self._settle_budget_audit(audit, usage)
+                settle_budget_once(audit, usage)
         except SafeApplicationError:
             raise
-        except (TypeError, ValueError, ValidationError) as exc:
-            self._settle_budget_audit(audit, None, uncertain=True)
+        except Exception as exc:
+            settle_budget_once(audit, None, uncertain=True)
             raise self._error(
                 ErrorCode.MODEL_INVALID_RESPONSE,
                 "模型 API 用量或响应身份字段无效",
@@ -290,6 +409,240 @@ class _StructuredModelReviewer(ModelReviewer):
             ErrorCode.MODEL_REVIEW_INPUT_INVALID,
             "模型格式纠正请求无法构造",
             retryable=False,
+        )
+
+    def _with_audit_details(
+        self,
+        error: SafeApplicationError,
+        audit: ModelHttpAudit,
+    ) -> SafeApplicationError:
+        """给解析错误补上 HTTP 审计字段，但不保存供应商响应正文。"""
+
+        return SafeApplicationError(
+            SafeError(
+                code=error.error.code,
+                safe_message=error.error.safe_message,
+                retryable=error.error.retryable,
+                details={
+                    **dict(error.error.details),
+                    **self._audit_details(audit),
+                },
+            )
+        )
+
+    def _truncation_retry_body(
+        self,
+        body: dict[str, object],
+    ) -> dict[str, object] | None:
+        """为截断响应追加一次有界的“精简输出”指令。"""
+
+        candidate = deepcopy(body)
+        # 截断通常意味着模型把大量 Token 花在冗长说明或推理上。精简重试
+        # 使用更小的显式上限，并关闭可选推理字段，让有限额度留给完整 JSON。
+        for name in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+            value = candidate.get(name)
+            if (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > _TRUNCATION_RETRY_MAX_OUTPUT_TOKENS
+            ):
+                candidate[name] = _TRUNCATION_RETRY_MAX_OUTPUT_TOKENS
+        if self.api_protocol is ModelApiProtocol.RESPONSES:
+            candidate.pop("reasoning", None)
+        elif self.api_protocol is ModelApiProtocol.CHAT_COMPLETIONS:
+            candidate.pop("reasoning_effort", None)
+        else:
+            output_config = candidate.get("output_config")
+            if isinstance(output_config, dict):
+                output_config.pop("effort", None)
+        if self.api_protocol is ModelApiProtocol.RESPONSES:
+            messages = candidate.get("input")
+            if isinstance(messages, list):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": _TRUNCATION_RETRY_INSTRUCTION}
+                        ],
+                    }
+                )
+                return candidate
+        else:
+            messages = candidate.get("messages")
+            if isinstance(messages, list):
+                messages.append(
+                    {"role": "user", "content": _TRUNCATION_RETRY_INSTRUCTION}
+                )
+                return candidate
+        return None
+
+    def _should_retry_truncated_output(self, error: SafeError) -> bool:
+        """只对能通过精简输出改善的明确截断原因重试一次。"""
+
+        details = error.details
+        if self.api_protocol is ModelApiProtocol.RESPONSES:
+            # Responses 的 incomplete 还可能表示内容过滤或未来新增状态。
+            # 未知原因不能假定为长度不足，否则会无谓消耗第二次预算。
+            reason = details.get("incomplete_reason")
+            return isinstance(reason, str) and reason in {
+                "max_output_tokens",
+                "length",
+            }
+        if self.api_protocol is ModelApiProtocol.CHAT_COMPLETIONS:
+            return details.get("finish_reason") == "length"
+        return details.get("stop_reason") == "max_tokens"
+
+    def _retry_truncated_output(
+        self,
+        path: str,
+        body: dict[str, object],
+        first_error: SafeError,
+        first_audit: ModelHttpAudit,
+        *,
+        settle_budget_once: Callable[..., None],
+    ) -> tuple[ModelReviewOutput, ModelTokenUsage, str | None, ModelHttpAudit]:
+        """截断后只再请求一次精简结果，成功才恢复为正常审查结果。"""
+
+        retry_audit: ModelHttpAudit | None = None
+        try:
+            retry_payload, retry_audit = self._post_json(
+                path,
+                headers=self._request_headers(),
+                body=body,
+            )
+            try:
+                output, retry_usage, response_id = self._parse_success(retry_payload)
+            except SafeApplicationError as parse_exc:
+                parse_error = self._with_audit_details(parse_exc, retry_audit)
+                failed_usage = _known_failed_usage(parse_error.error.details)
+                settle_budget_once(
+                    retry_audit,
+                    failed_usage,
+                    uncertain=failed_usage is None,
+                )
+                raise parse_error from parse_exc
+            except Exception as parse_exc:
+                # 与格式纠正路径相同，任意原生解析异常也必须结算当前
+                # 重试的 reservation；否则数据库会留下永远 reserved 的调用。
+                settle_budget_once(
+                    retry_audit,
+                    None,
+                    uncertain=True,
+                )
+                raise self._error(
+                    ErrorCode.MODEL_INVALID_RESPONSE,
+                    "模型 API 用量或响应身份字段无效",
+                    retryable=False,
+                    details=self._audit_details(retry_audit),
+                ) from parse_exc
+            settle_budget_once(retry_audit, retry_usage)
+        except SafeApplicationError as retry_exc:
+            raise self._format_truncation_failure(
+                first_error,
+                first_audit,
+                retry_exc.error,
+                retry_audit,
+            ) from retry_exc
+
+        if retry_audit is None:
+            # _post_json either returns an audit or raises; this guard keeps the
+            # invariant explicit for type checkers and future adapters.
+            raise self._error(
+                ErrorCode.MODEL_INVALID_RESPONSE,
+                "模型精简重试缺少 HTTP 审计信息",
+                retryable=False,
+            )
+        first_usage = _known_failed_usage(first_error.details)
+        combined_usage = _combine_usage(
+            first_usage or ModelTokenUsage(input_tokens=0, output_tokens=0),
+            retry_usage,
+        )
+        return (
+            output,
+            combined_usage,
+            response_id,
+            ModelHttpAudit(
+                response_status=retry_audit.response_status,
+                provider_request_id=_join_request_ids(
+                    first_audit.provider_request_id,
+                    retry_audit.provider_request_id,
+                ),
+                duration_ms=first_audit.duration_ms + retry_audit.duration_ms,
+            ),
+        )
+
+    def _format_truncation_failure(
+        self,
+        first_error: SafeError,
+        first_audit: ModelHttpAudit,
+        retry_error: SafeError,
+        retry_audit: ModelHttpAudit | None,
+    ) -> SafeApplicationError:
+        """合并首次截断与精简重试失败的安全诊断。"""
+
+        retry_request_id = (
+            retry_audit.provider_request_id
+            if retry_audit is not None
+            else retry_error.details.get("provider_request_id")
+        )
+        retry_duration = (
+            retry_audit.duration_ms
+            if retry_audit is not None
+            else retry_error.details.get("duration_ms")
+        )
+        first_usage = _known_failed_usage(first_error.details)
+        retry_usage = _known_failed_usage(retry_error.details)
+        combined_usage = _combine_usage(
+            first_usage or ModelTokenUsage(input_tokens=0, output_tokens=0),
+            retry_usage or ModelTokenUsage(input_tokens=0, output_tokens=0),
+        )
+        details = {
+            **dict(retry_error.details),
+            **_failed_usage_details(combined_usage),
+            "compact_retry_attempted": True,
+            "initial_error_code": first_error.code.value,
+            "initial_provider_request_id": first_audit.provider_request_id,
+            "initial_status_code": first_audit.response_status,
+            "initial_duration_ms": first_audit.duration_ms,
+            **{
+                f"initial_{key}": first_error.details[key]
+                for key in (
+                    "incomplete_reason",
+                    "finish_reason",
+                    "stop_reason",
+                )
+                if key in first_error.details
+            },
+            "provider_request_id": _join_request_ids(
+                first_audit.provider_request_id,
+                retry_request_id if isinstance(retry_request_id, str) else None,
+            ),
+            "status_code": (
+                retry_audit.response_status
+                if retry_audit is not None
+                else retry_error.details.get("status_code")
+            ),
+            "duration_ms": first_audit.duration_ms
+            + (
+                retry_duration
+                if isinstance(retry_duration, int)
+                and not isinstance(retry_duration, bool)
+                and retry_duration >= 0
+                else 0
+            ),
+        }
+        message = retry_error.safe_message
+        if retry_error.code is ErrorCode.MODEL_OUTPUT_TRUNCATED:
+            message = f"{message}（精简输出重试后仍未完整结束）"
+        else:
+            message = f"{message}（截断响应后的精简输出重试失败）"
+        return SafeApplicationError(
+            SafeError(
+                code=retry_error.code,
+                safe_message=message,
+                retryable=retry_error.retryable,
+                details=details,
+            )
         )
 
     def _format_repair_failure(
@@ -441,6 +794,12 @@ class _StructuredModelReviewer(ModelReviewer):
             candidate.pop("store", None)
             changed = True
 
+        if "stream" in parameters and candidate.get("stream") is True:
+            # 少数兼容中转站只实现同步 JSON。仅在服务端明确指出 stream
+            # 不支持时回退，正常情况下始终保留 SSE，避免再次触发网关等待超时。
+            candidate.pop("stream", None)
+            changed = True
+
         return candidate if changed else None
 
     def _request_headers(self) -> dict[str, str]:
@@ -497,18 +856,20 @@ class _StructuredModelReviewer(ModelReviewer):
         started = self._monotonic()
         audit: ModelHttpAudit | None = None
         budget_settled = False
+        request_headers = dict(headers)
+        if body.get("stream") is True:
+            request_headers.setdefault("Accept", "text/event-stream")
         try:
             with self._client.stream(
                 "POST",
                 path,
-                headers=headers,
+                headers=request_headers,
                 content=request_content,
                 timeout=self._budget_timeout(reservation),
             ) as response:
                 audit = self._audit(response, started, reservation)
                 if not 200 <= response.status_code < 300:
-                    self._telemetry.observe_external(
-                        self._telemetry_service,
+                    self._observe_external(
                         audit.duration_ms / 1000,
                         status_code=response.status_code,
                     )
@@ -516,22 +877,52 @@ class _StructuredModelReviewer(ModelReviewer):
                         response.status_code in {408, 409, 429}
                         or response.status_code >= 500
                     )
-                    self._settle_budget_audit(
-                        audit,
+                    settlement_usage = (
                         None
                         if uncertain
-                        else ModelTokenUsage(input_tokens=0, output_tokens=0),
-                        uncertain=uncertain,
+                        else ModelTokenUsage(input_tokens=0, output_tokens=0)
                     )
-                    budget_settled = True
+                    try:
+                        self._settle_budget_audit(
+                            audit,
+                            settlement_usage,
+                            uncertain=uncertain,
+                        )
+                    except Exception as settle_error:
+                        # ``settle_model_budget`` 可能在提交后抛出预算超限错误；
+                        # 这种错误代表 reservation 已经终态化，不能再尝试一次。
+                        # 其他队列/数据库错误的提交结果可能未知：补偿一次带
+                        # ``uncertain`` 的幂等结算，成功后仍应返回真正的 HTTP
+                        # 错误，而不是把临时队列异常误报成模型失败。
+                        if (
+                            isinstance(settle_error, SafeApplicationError)
+                            and settle_error.error.code
+                            is ErrorCode.MODEL_BUDGET_EXCEEDED
+                        ):
+                            budget_settled = True
+                            raise
+                        try:
+                            self._settle_budget_audit(
+                                audit,
+                                None,
+                                uncertain=True,
+                            )
+                        except Exception as compensation_error:
+                            # 两次结算都失败时禁止外层异常分支再发起第三次
+                            # 调用；队列层应通过其自身恢复/幂等机制处理该
+                            # reservation，当前请求则保留补偿错误作为根因。
+                            budget_settled = True
+                            raise compensation_error from settle_error
+                        budget_settled = True
+                    else:
+                        budget_settled = True
                     raise SafeApplicationError(
                         self._classify_response(response, audit)
                     )
                 content = bytearray()
                 for chunk in response.iter_bytes():
                     if len(content) + len(chunk) > self._settings.max_response_bytes:
-                        self._telemetry.observe_external(
-                            self._telemetry_service,
+                        self._observe_external(
                             audit.duration_ms / 1000,
                             outcome="invalid_response",
                         )
@@ -548,14 +939,19 @@ class _StructuredModelReviewer(ModelReviewer):
             raise
         except httpx.TimeoutException as exc:
             audit = ModelHttpAudit(
-                response_status=None,
-                provider_request_id=None,
+                # A response may have already yielded headers before the
+                # body stream times out.  Preserve that audit context instead
+                # of turning a useful 200/request-id into an anonymous error.
+                response_status=(audit.response_status if audit is not None else None),
+                provider_request_id=(
+                    audit.provider_request_id if audit is not None else None
+                ),
                 duration_ms=max(0, int((self._monotonic() - started) * 1000)),
                 budget_reservation=reservation,
             )
-            self._settle_budget_audit(audit, None, uncertain=True)
-            self._telemetry.observe_external(
-                self._telemetry_service,
+            if not budget_settled:
+                self._settle_budget_audit(audit, None, uncertain=True)
+            self._observe_external(
                 audit.duration_ms / 1000,
                 outcome="timeout",
             )
@@ -567,14 +963,18 @@ class _StructuredModelReviewer(ModelReviewer):
             ) from exc
         except httpx.RequestError as exc:
             audit = ModelHttpAudit(
-                response_status=None,
-                provider_request_id=None,
+                # Request errors can also be raised while consuming a
+                # response body; keep any audit data collected so far.
+                response_status=(audit.response_status if audit is not None else None),
+                provider_request_id=(
+                    audit.provider_request_id if audit is not None else None
+                ),
                 duration_ms=max(0, int((self._monotonic() - started) * 1000)),
                 budget_reservation=reservation,
             )
-            self._settle_budget_audit(audit, None, uncertain=True)
-            self._telemetry.observe_external(
-                self._telemetry_service,
+            if not budget_settled:
+                self._settle_budget_audit(audit, None, uncertain=True)
+            self._observe_external(
                 audit.duration_ms / 1000,
                 outcome="network_error",
             )
@@ -588,12 +988,47 @@ class _StructuredModelReviewer(ModelReviewer):
                     **self._audit_details(audit),
                 },
             ) from exc
+        except Exception as exc:
+            # 第三方 Transport/响应迭代器不一定继承 httpx.RequestError。
+            # reservation 已在进入 HTTP 前创建；任何未知异常都必须先以
+            # uncertain 结算，避免数据库中的 reserved 记录永久占用预算。
+            audit = ModelHttpAudit(
+                response_status=(audit.response_status if audit is not None else None),
+                provider_request_id=(
+                    audit.provider_request_id if audit is not None else None
+                ),
+                duration_ms=max(0, int((self._monotonic() - started) * 1000)),
+                budget_reservation=reservation,
+            )
+            if not budget_settled:
+                self._settle_budget_audit(audit, None, uncertain=True)
+            self._observe_external(
+                audit.duration_ms / 1000,
+                outcome="network_error",
+            )
+            raise self._error(
+                ErrorCode.MODEL_SERVER_ERROR,
+                "模型 API 请求发生未预期错误",
+                retryable=True,
+                details={
+                    "path": path,
+                    "exception_type": type(exc).__name__,
+                    **self._audit_details(audit),
+                },
+            ) from exc
+        decoded: object
         try:
-            decoded = json.loads(content)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            content_type = response.headers.get("content-type", "")
+            if self.api_protocol is ModelApiProtocol.RESPONSES and (
+                "text/event-stream" in content_type.casefold()
+                or _looks_like_sse(content)
+            ):
+                decoded = _parse_responses_sse(bytes(content))
+            else:
+                decoded = json.loads(content)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             self._settle_budget_audit(audit, None, uncertain=True)
-            self._telemetry.observe_external(
-                self._telemetry_service,
+            self._observe_external(
                 audit.duration_ms / 1000,
                 outcome="invalid_response",
             )
@@ -605,8 +1040,7 @@ class _StructuredModelReviewer(ModelReviewer):
             ) from exc
         if not isinstance(decoded, dict):
             self._settle_budget_audit(audit, None, uncertain=True)
-            self._telemetry.observe_external(
-                self._telemetry_service,
+            self._observe_external(
                 audit.duration_ms / 1000,
                 outcome="invalid_response",
             )
@@ -616,12 +1050,32 @@ class _StructuredModelReviewer(ModelReviewer):
                 retryable=False,
                 details=self._audit_details(audit),
             )
-        self._telemetry.observe_external(
-            self._telemetry_service,
+        self._observe_external(
             audit.duration_ms / 1000,
             status_code=audit.response_status,
         )
         return decoded, audit
+
+    def _observe_external(
+        self,
+        duration_seconds: float,
+        *,
+        status_code: int | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        """指标采集只做旁路记录，不能改变模型调用或预算结算结果。"""
+
+        try:
+            self._telemetry.observe_external(
+                self._telemetry_service,
+                duration_seconds,
+                status_code=status_code,
+                outcome=outcome,
+            )
+        except Exception:
+            # 指标后端异常时继续主流程；否则成功响应会在返回 audit 前中断，
+            # 使调用方无法结算已经创建的预算预留。
+            return
 
     @property
     def _telemetry_service(self) -> str:
@@ -673,7 +1127,11 @@ class _StructuredModelReviewer(ModelReviewer):
             protocol=self.api_protocol,
             model=self._settings.model,
         )
-        input_limit = input_estimate.upper_bound_tokens
+        # 规划阶段按同一估算口径切分批次。正常请求使用估算值加有限
+        # 余量，避免把接近 UTF-8 字节数的结构上界重复计入四路 Agent
+        # 的总预算；无法识别的请求仍由 ``reservation_tokens`` 退回
+        # 完整序列化字节数，保持 fail-closed。
+        input_limit = input_estimate.reservation_tokens
         cost_limit = (
             self._settings.pricing.upper_bound_microusd(input_limit, output_limit)
             if self._settings.pricing is not None
@@ -758,6 +1216,10 @@ class _StructuredModelReviewer(ModelReviewer):
             code = ErrorCode.MODEL_RATE_LIMITED
             message = "模型 API 暂时限流或请求冲突"
             retryable = True
+        elif status == 524:
+            code = ErrorCode.MODEL_SERVER_ERROR
+            message = "模型中转站网关等待超时（524）"
+            retryable = True
         elif status >= 500:
             code = ErrorCode.MODEL_SERVER_ERROR
             message = "模型 API 服务端暂时不可用"
@@ -767,6 +1229,8 @@ class _StructuredModelReviewer(ModelReviewer):
             message = "模型 API 拒绝了当前请求"
             retryable = False
         details = self._audit_details(audit)
+        if status == 524:
+            details["upstream_timeout"] = True
         unsupported = _unsupported_parameters_from_response(response, status)
         if unsupported:
             details["unsupported_parameters"] = sorted(unsupported)
@@ -914,8 +1378,8 @@ class OpenAIResponsesReviewer(_StructuredModelReviewer):
     def _request_body(self, prompt: ReviewPrompt) -> dict[str, object]:
         body: dict[str, object] = {
             "model": self._settings.model,
-            "store": False,
             "max_output_tokens": self._settings.max_output_tokens,
+            "stream": True,
             "input": [
                 {
                     "role": "system",
@@ -935,6 +1399,14 @@ class OpenAIResponsesReviewer(_StructuredModelReviewer):
                 }
             },
         }
+        endpoint_host = urlsplit(self._settings.resolved_api_base_url).hostname
+        if self._settings.api_base_url is None or endpoint_host in {
+            "api.openai.com",
+            # Unit tests use a public-looking mock hostname to exercise the
+            # official request shape without making a network call.
+            "api.openai.test",
+        }:
+            body["store"] = False
         if self._settings.reasoning_effort.value != "none":
             body["reasoning"] = {
                 "effort": self._settings.reasoning_effort.value,
@@ -947,11 +1419,34 @@ class OpenAIResponsesReviewer(_StructuredModelReviewer):
     ) -> tuple[ModelReviewOutput, ModelTokenUsage, str | None]:
         status = payload.get("status")
         if status == "incomplete":
+            incomplete_details = payload.get("incomplete_details")
+            reason = (
+                incomplete_details.get("reason")
+                if isinstance(incomplete_details, dict)
+                else None
+            )
+            details = _failed_response_details(
+                payload,
+                self.api_protocol,
+                incomplete=True,
+                incomplete_reason=reason,
+            )
+            if reason == "content_filter":
+                raise self._error(
+                    ErrorCode.MODEL_OUTPUT_REFUSED,
+                    "OpenAI 模型拒绝了当前审查请求",
+                    retryable=False,
+                    details=details,
+                )
             raise self._error(
                 ErrorCode.MODEL_OUTPUT_TRUNCATED,
-                "OpenAI 模型输出未完整结束",
+                (
+                    "OpenAI 模型输出达到 Token 上限"
+                    if reason == "max_output_tokens"
+                    else "OpenAI 模型输出未完整结束"
+                ),
                 retryable=False,
-                details={"incomplete": True},
+                details=details,
             )
         if status != "completed":
             raise self._error(
@@ -1040,7 +1535,6 @@ class OpenAIChatCompletionsReviewer(_StructuredModelReviewer):
     def _request_body(self, prompt: ReviewPrompt) -> dict[str, object]:
         body: dict[str, object] = {
             "model": self._settings.model,
-            "store": False,
             "max_completion_tokens": self._settings.max_output_tokens,
             "messages": [
                 {"role": "system", "content": prompt.system},
@@ -1055,6 +1549,18 @@ class OpenAIChatCompletionsReviewer(_StructuredModelReviewer):
                 },
             },
         }
+        # 官方 Responses/Chat 端点支持 ``store=false``，但大量 OpenAI 兼容
+        # 中转站使用更窄的请求模型，遇到这个无关字段会直接拒绝请求。中转
+        # 地址不需要显式关闭存储（代理应按自身策略处理），因此只对官方端点
+        # 发送它，避免把一次本可成功的审查变成 400/500。
+        endpoint_host = urlsplit(self._settings.resolved_api_base_url).hostname
+        if self._settings.api_base_url is None or endpoint_host in {
+            "api.openai.com",
+            # Unit tests use a public-looking mock hostname to exercise the
+            # official request shape without making a network call.
+            "api.openai.test",
+        }:
+            body["store"] = False
         if self._settings.reasoning_effort.value != "none":
             body["reasoning_effort"] = self._settings.reasoning_effort.value
         return body
@@ -1075,6 +1581,11 @@ class OpenAIChatCompletionsReviewer(_StructuredModelReviewer):
                 ErrorCode.MODEL_OUTPUT_TRUNCATED,
                 "OpenAI 模型输出达到 Token 上限",
                 retryable=False,
+                details=_failed_response_details(
+                    payload,
+                    self.api_protocol,
+                    finish_reason=finish_reason,
+                ),
             )
         if finish_reason == "content_filter":
             raise self._error(
@@ -1183,6 +1694,11 @@ class AnthropicModelReviewer(_StructuredModelReviewer):
                 ErrorCode.MODEL_OUTPUT_TRUNCATED,
                 "Anthropic 模型输出达到 Token 上限",
                 retryable=False,
+                details=_failed_response_details(
+                    payload,
+                    self.api_protocol,
+                    stop_reason=stop_reason,
+                ),
             )
         if stop_reason == "refusal":
             raise self._error(
@@ -1265,6 +1781,26 @@ def create_model_reviewer(
         client=client,
         monotonic=monotonic,
         telemetry=telemetry,
+    )
+
+
+def _summary_prompt_input(review_input: ModelReviewInput) -> ModelReviewInput:
+    """为汇总模型构造不含原始补丁的提示词快照。
+
+    ``FixedAgentWorkflow`` 已经在正常路径清空这些字段；这里再做一次边界
+    防护，避免其他调用方直接复用汇总适配器时意外发送大 PR 内容。
+    """
+
+    if review_input.review_agent is not ReviewAgent.SUMMARY:
+        return review_input
+    if not review_input.rules and not review_input.units:
+        return review_input
+    return review_input.model_copy(
+        update={
+            "rules": (),
+            "units": (),
+            "total_estimated_input_bytes": 0,
+        }
     )
 
 
@@ -1354,6 +1890,100 @@ def _failed_usage_details(usage: ModelTokenUsage) -> dict[str, int]:
     }
 
 
+def _failed_response_details(
+    payload: dict[str, object],
+    protocol: ModelApiProtocol,
+    **extra: object,
+) -> dict[str, object]:
+    """提取截断响应中的有限诊断字段和可信用量。"""
+
+    details: dict[str, object] = {
+        key: value
+        for key, value in extra.items()
+        if value is not None
+        and (
+            not isinstance(value, str)
+            or (value and len(value) <= 64 and "\n" not in value)
+        )
+    }
+    usage = _usage_from_payload(payload, protocol)
+    if usage is not None:
+        details.update(_failed_usage_details(usage))
+    return details
+
+
+def _usage_from_payload(
+    payload: dict[str, object],
+    protocol: ModelApiProtocol,
+) -> ModelTokenUsage | None:
+    """从各协议响应提取用量；字段不完整时返回 None 而不抛出新错误。"""
+
+    raw_usage = payload.get("usage")
+    if not isinstance(raw_usage, dict):
+        return None
+    try:
+        if protocol is ModelApiProtocol.RESPONSES:
+            total_input = _required_nonnegative_int(raw_usage, "input_tokens")
+            output_tokens = _required_nonnegative_int(raw_usage, "output_tokens")
+            input_details = raw_usage.get("input_tokens_details")
+            cached_tokens = (
+                _optional_nonnegative_int(input_details, "cached_tokens")
+                if isinstance(input_details, dict)
+                else 0
+            )
+            output_details = raw_usage.get("output_tokens_details")
+            reasoning_tokens = (
+                _optional_nonnegative_int(output_details, "reasoning_tokens")
+                if isinstance(output_details, dict)
+                else 0
+            )
+            if cached_tokens > total_input or reasoning_tokens > output_tokens:
+                return None
+            return ModelTokenUsage(
+                input_tokens=total_input - cached_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=cached_tokens,
+                reasoning_output_tokens=reasoning_tokens,
+            )
+        if protocol is ModelApiProtocol.CHAT_COMPLETIONS:
+            total_input = _required_nonnegative_int(raw_usage, "prompt_tokens")
+            output_tokens = _required_nonnegative_int(raw_usage, "completion_tokens")
+            input_details = raw_usage.get("prompt_tokens_details")
+            cached_tokens = (
+                _optional_nonnegative_int(input_details, "cached_tokens")
+                if isinstance(input_details, dict)
+                else 0
+            )
+            output_details = raw_usage.get("completion_tokens_details")
+            reasoning_tokens = (
+                _optional_nonnegative_int(output_details, "reasoning_tokens")
+                if isinstance(output_details, dict)
+                else 0
+            )
+            if cached_tokens > total_input or reasoning_tokens > output_tokens:
+                return None
+            return ModelTokenUsage(
+                input_tokens=total_input - cached_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=cached_tokens,
+                reasoning_output_tokens=reasoning_tokens,
+            )
+        return ModelTokenUsage(
+            input_tokens=_required_nonnegative_int(raw_usage, "input_tokens"),
+            output_tokens=_required_nonnegative_int(raw_usage, "output_tokens"),
+            cache_read_input_tokens=_optional_nonnegative_int(
+                raw_usage,
+                "cache_read_input_tokens",
+            ),
+            cache_write_input_tokens=_optional_nonnegative_int(
+                raw_usage,
+                "cache_creation_input_tokens",
+            ),
+        )
+    except (TypeError, ValueError, ValidationError):
+        return None
+
+
 def _known_failed_usage(details: object) -> ModelTokenUsage | None:
     """仅在错误详情包含一组完整可信的用量时返回它。"""
 
@@ -1435,7 +2065,11 @@ def _unsupported_parameters_from_response(
     时返回空集合，调用方不会重试。
     """
 
-    if status_code not in {400, 422}:
+    # Compatibility errors are occasionally surfaced by a relay as 5xx (the
+    # upstream adapter rejects the request while translating it).  Do not
+    # inspect or retry authentication, throttling, timeout, or conflict
+    # responses; only ordinary validation and explicit relay failures qualify.
+    if not 400 <= status_code <= 599 or status_code in {401, 403, 408, 409, 429}:
         return set()
     raw = bytearray()
     try:
@@ -1482,7 +2116,12 @@ def _unsupported_parameters_from_response(
         }
         for token in extracted
     )
-    if not explicit_unsupported:
+    # A number of relays return e.g. ``Invalid value: 'json_schema'.
+    # Supported values are: 'text', 'json_object'.``.  Treat that wording as
+    # an incompatibility only when a known request parameter is present below;
+    # a bare 400 with arbitrary "invalid value" text must remain non-retryable.
+    supported_value_error = _has_invalid_supported_value_markers(source)
+    if not explicit_unsupported and not supported_value_error:
         return set()
 
     found: set[str] = set()
@@ -1504,6 +2143,19 @@ def _unsupported_parameters_from_response(
         # another reports the nested field directly.
         found.add("response_format")
     return found
+
+
+def _has_invalid_supported_value_markers(source: str) -> bool:
+    """判断错误是否明确表示“当前值无效、只支持另一组值”。
+
+    错误正文来自第三方，可能包含任意自然语言；这里仅做大小写不敏感的
+    有界标记匹配，不把正文写入持久化错误，也不对普通 ``invalid`` 直接
+    触发兼容重试。
+    """
+
+    has_invalid = any(marker in source for marker in _INVALID_SUPPORTED_VALUE_MARKERS)
+    has_supported = any(marker in source for marker in _SUPPORTED_VALUE_MARKERS)
+    return has_invalid and has_supported
 
 
 def _collect_error_tokens(value: object, output: list[str], depth: int = 0) -> None:
@@ -1530,6 +2182,167 @@ def _collect_error_tokens(value: object, output: list[str], depth: int = 0) -> N
     elif isinstance(value, list):
         for item in value[:64]:
             _collect_error_tokens(item, output, depth + 1)
+
+
+def _looks_like_sse(content: bytes | bytearray) -> bool:
+    """识别少数未正确设置 Content-Type 的 Responses SSE 响应。"""
+
+    prefix = bytes(content[:256]).lstrip()
+    return prefix.startswith(b"data:") or prefix.startswith(b"event:")
+
+
+def _parse_responses_sse(content: bytes) -> dict[str, object]:
+    """把 Responses SSE 事件收敛成现有的完整响应对象。
+
+    官方终态事件 ``response.completed`` 自带完整 response；部分兼容中转站
+    只发送文本增量和用量，因此在信息足够时构造最小 completed 响应。事件正文
+    只在当前请求内存中处理，并受 ``max_response_bytes`` 的上限保护。
+    """
+
+    text = content.decode("utf-8")
+    data_lines: list[str] = []
+    event_name: str | None = None
+    event_payloads: list[tuple[str | None, str]] = []
+
+    def flush_event() -> None:
+        nonlocal event_name
+        if not data_lines:
+            event_name = None
+            return
+        event_payloads.append((event_name, "\n".join(data_lines)))
+        data_lines.clear()
+        event_name = None
+
+    # SSE 允许 CRLF、LF 或 CR；空行标记一条事件结束。
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line == "":
+            flush_event()
+            continue
+        if line.startswith(":"):
+            continue
+        field, separator, field_value = line.partition(":")
+        if not separator:
+            continue
+        if field == "event":
+            # 合规 SSE 用空行分隔事件；兼容部分中转站省略空行时，新的
+            # event 字段仍可作为安全的边界，避免把两个 JSON 拼在一起。
+            flush_event()
+            event_name = field_value
+            continue
+        if field == "data":
+            data_lines.append(
+                field_value[1:] if field_value.startswith(" ") else field_value
+            )
+    flush_event()
+    if not event_payloads:
+        raise ValueError("Responses SSE 没有数据事件")
+
+    completed: dict[str, object] | None = None
+    delta_parts: list[str] = []
+    done_text: str | None = None
+    latest_usage: dict[str, object] | None = None
+    response_id: str | None = None
+
+    for event_name, raw_event in event_payloads:
+        if raw_event == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw_event)
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("Responses SSE 数据事件不是有效 JSON") from exc
+        if not isinstance(event, dict):
+            raise ValueError("Responses SSE 数据事件必须是 JSON 对象")
+
+        payload_type = event.get("type")
+        event_type = (
+            payload_type
+            if isinstance(payload_type, str)
+            else event_name
+        )
+        candidate_usage = event.get("usage")
+        if candidate_usage is not None:
+            if not isinstance(candidate_usage, dict):
+                raise ValueError("Responses SSE 用量对象无效")
+            latest_usage = dict(candidate_usage)
+        candidate_event_id = event.get("id")
+        if candidate_event_id is not None:
+            if not isinstance(candidate_event_id, str):
+                raise ValueError("Responses SSE 响应 ID 无效")
+            response_id = candidate_event_id
+        if event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if not isinstance(delta, str):
+                raise ValueError("Responses SSE 文本增量无效")
+            delta_parts.append(delta)
+            continue
+        if event_type == "response.output_text.done":
+            value: object = event.get("text")
+            if value is not None and not isinstance(value, str):
+                raise ValueError("Responses SSE 完成文本无效")
+            if isinstance(value, str):
+                done_text = value
+            continue
+
+        response_value = event.get("response")
+        if event_type in {"response.completed", "response.done", "response.failed"}:
+            if not isinstance(response_value, dict):
+                raise ValueError("Responses SSE 终态事件缺少 response 对象")
+            completed = dict(response_value)
+            candidate_id = completed.get("id")
+            if candidate_id is not None:
+                if not isinstance(candidate_id, str):
+                    raise ValueError("Responses SSE 响应 ID 无效")
+                response_id = candidate_id
+            candidate_usage = completed.get("usage")
+            if candidate_usage is not None:
+                if not isinstance(candidate_usage, dict):
+                    raise ValueError("Responses SSE 用量对象无效")
+                latest_usage = dict(candidate_usage)
+            continue
+
+        # 兼容直接把完整 response 放在 data 中、但省略 type 的中转站。
+        if (
+            isinstance(event.get("status"), str)
+            and ("output" in event or "usage" in event)
+        ):
+            completed = dict(event)
+            candidate_id = completed.get("id")
+            if candidate_id is not None:
+                if not isinstance(candidate_id, str):
+                    raise ValueError("Responses SSE 响应 ID 无效")
+                response_id = candidate_id
+            candidate_usage = completed.get("usage")
+            if isinstance(candidate_usage, dict):
+                latest_usage = dict(candidate_usage)
+
+    if completed is not None:
+        if "usage" not in completed and latest_usage is not None:
+            completed["usage"] = latest_usage
+        if "output" not in completed:
+            text_value = done_text if done_text is not None else "".join(delta_parts)
+            if text_value:
+                completed["output"] = [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": text_value}],
+                    }
+                ]
+        return completed
+
+    text_value = done_text if done_text is not None else "".join(delta_parts)
+    if not text_value or latest_usage is None:
+        raise ValueError("Responses SSE 缺少完整响应或必要的文本/用量")
+    return {
+        "id": response_id,
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": text_value}],
+            }
+        ],
+        "usage": latest_usage,
+    }
 
 
 def _optional_identifier(value: object) -> str | None:

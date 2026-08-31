@@ -7,8 +7,15 @@ import {
   useState,
 } from "react";
 
-import { api, ApiError } from "./api";
+import {
+  api,
+  ApiError,
+  clearSettingsCache,
+  peekReadCache,
+  subscribeReadCache,
+} from "./api";
 import AgentSettingsPanel from "./AgentSettingsPanel";
+import { NumberField, SelectField } from "./SettingsFields";
 import {
   batchInputOptions,
   bytesToInput,
@@ -16,6 +23,8 @@ import {
   formatTokens,
   inputToBytes,
   KIB,
+  mergeProviderDrafts,
+  mergeReviewPolicyDraft,
   MIB,
   normalizeAiSettings,
   optionalDecimal,
@@ -53,17 +62,14 @@ const providerLabels: Record<AiProvider, string> = {
   openai: "OpenAI 兼容",
   anthropic: "Anthropic 兼容",
 };
-
 const providerShortLabels: Record<AiProvider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
 };
-
 const officialEndpoints: Record<AiProvider, string> = {
   openai: "https://api.openai.com",
   anthropic: "https://api.anthropic.com",
 };
-
 const modelPlaceholders: Record<AiProvider, string> = {
   openai: "例如 gpt-4.1-mini 或中转站提供的模型 ID",
   anthropic: "例如 claude-sonnet-4-5 或中转站提供的模型 ID",
@@ -145,67 +151,209 @@ export default function SettingsPage({
   onBack,
   onSignedOut,
 }: SettingsPageProps) {
-  const [settings, setSettings] = useState<AiSettings | null>(null);
-  const [policyDraft, setPolicyDraft] = useState<ReviewPolicyDraft | null>(null);
+  // 复用未过期快照，后台 refresh 校验最新版本，避免路由切换时整页 loading。
+  const cachedSettings = peekReadCache<AiSettings>("ai-settings");
+  const initialSettings = cachedSettings ? normalizeAiSettings(cachedSettings) : null;
+  const [settings, setSettings] = useState<AiSettings | null>(initialSettings);
+  const [policyDraft, setPolicyDraft] = useState<ReviewPolicyDraft | null>(
+    initialSettings ? reviewPolicyDraft(initialSettings) : null,
+  );
   const [policyMessage, setPolicyMessage] = useState("");
   const [policyMessageKind, setPolicyMessageKind] = useState<"success" | "error">("success");
   const [audits, setAudits] = useState<ConfigurationAudit[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<AiProvider>("openai");
-  const [drafts, setDrafts] = useState<Partial<Record<AiProvider, ProviderDraft>>>({});
+  const [auditsLoaded, setAuditsLoaded] = useState(false);
+  const [auditsLoading, setAuditsLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
+  const [auditExpanded, setAuditExpanded] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<AiProvider>(
+    initialSettings?.active_provider ?? "openai",
+  );
+  const [drafts, setDrafts] = useState<Partial<Record<AiProvider, ProviderDraft>>>(
+    initialSettings
+      ? Object.fromEntries(
+        initialSettings.providers.map((provider) => [provider.provider, providerDraft(provider)]),
+      ) as Record<AiProvider, ProviderDraft>
+      : {},
+  );
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialSettings === null);
   const [busyAction, setBusyAction] = useState("");
   const [agentRefreshRequest, setAgentRefreshRequest] = useState(0);
   const [showApiKey, setShowApiKey] = useState<Record<AiProvider, boolean>>({
     openai: false,
     anthropic: false,
   });
-  const providerInitialized = useRef(false);
+  const providerInitialized = useRef(Boolean(initialSettings));
+  const refreshSequence = useRef(0);
+  const auditRequestSequence = useRef(0);
+  const settingsRevisionRef = useRef<number | null>(initialSettings?.revision ?? null);
+  const appliedSettingsRef = useRef<AiSettings | null>(initialSettings);
+  // Agent 可能先返回新 revision；主配置落地前暂存它，避免旧快照被永久丢弃。
+  const pendingAgentRevisionRef = useRef<number | null>(null);
+  // 编辑时锁定服务端版本，让并发更新明确返回 409，避免静默覆盖远端修改。
+  const providerDraftRevisionRef = useRef<Partial<Record<AiProvider, number>>>({});
+  const policyDraftRevisionRef = useRef<number | null>(null);
 
-  const applySettings = useCallback((next: AiSettings) => {
+  const applySettings = useCallback((
+    next: AiSettings,
+    options: { resetProvider?: AiProvider; resetPolicy?: boolean } = {},
+  ): boolean => {
     const normalized = normalizeAiSettings(next);
-    setSettings(normalized);
-    setPolicyDraft(reviewPolicyDraft(normalized));
-    setDrafts(
-      Object.fromEntries(
-        normalized.providers.map((provider) => [provider.provider, providerDraft(provider)]),
-      ) as Record<AiProvider, ProviderDraft>,
+    // Agent 写操作也递增全局 revision，旧响应不能回退版本或重置主表单草稿。
+    const knownRevision = settingsRevisionRef.current;
+    if (knownRevision !== null && normalized.revision < knownRevision) return false;
+    settingsRevisionRef.current = Math.max(
+      knownRevision ?? normalized.revision,
+      normalized.revision,
     );
+    const previous = appliedSettingsRef.current;
+    appliedSettingsRef.current = normalized;
+    setSettings(normalized);
+    setDrafts((current) => {
+      const merged = mergeProviderDrafts(
+        previous,
+        current,
+        normalized,
+        options.resetProvider,
+      );
+      for (const item of normalized.providers) {
+        const localDraft = merged[item.provider];
+        const dirty = localDraft !== undefined
+          && providerHasChanges(item, localDraft);
+        if (item.provider === options.resetProvider || !dirty) {
+          delete providerDraftRevisionRef.current[item.provider];
+        } else if (providerDraftRevisionRef.current[item.provider] === undefined) {
+          providerDraftRevisionRef.current[item.provider] =
+            knownRevision ?? normalized.revision;
+        }
+      }
+      return merged;
+    });
+    setPolicyDraft((current) => {
+      const merged = mergeReviewPolicyDraft(
+        previous,
+        current,
+        normalized,
+        options.resetPolicy,
+      );
+      if (options.resetPolicy || !reviewPolicyHasChanges(normalized, merged)) {
+        policyDraftRevisionRef.current = null;
+      } else if (policyDraftRevisionRef.current === null) {
+        policyDraftRevisionRef.current = knownRevision ?? normalized.revision;
+      }
+      return merged;
+    });
     if (!providerInitialized.current) {
       setSelectedProvider(normalized.active_provider ?? "openai");
       providerInitialized.current = true;
     }
+    return true;
+  }, []);
+
+  // stale-while-revalidate 先渲染旧快照，再订阅 API 层后台写入的新快照。
+  useEffect(() => subscribeReadCache<AiSettings>("ai-settings", (next) => {
+    applySettings(next);
+  }), [applySettings]);
+
+  const handleAgentRevisionChange = useCallback((revision: number) => {
+    if (appliedSettingsRef.current === null) {
+      pendingAgentRevisionRef.current = Math.max(
+        pendingAgentRevisionRef.current ?? 0,
+        revision,
+      );
+      return;
+    }
+    const knownRevision = settingsRevisionRef.current;
+    if (knownRevision !== null && revision <= knownRevision) return;
+    settingsRevisionRef.current = revision;
+    if (appliedSettingsRef.current) {
+      appliedSettingsRef.current = { ...appliedSettingsRef.current, revision };
+    }
+    setSettings((current) => {
+      if (!current || revision <= current.revision) return current;
+      return { ...current, revision };
+    });
+  }, []);
+
+  const loadAudits = useCallback(async (force = false, signal?: AbortSignal) => {
+    if (auditsLoaded && !force) return;
+    const sequence = ++auditRequestSequence.current;
+    setAuditsLoading(true);
+    setAuditError("");
+    try {
+      const response = await api.configurationAudits(signal, force);
+      if (sequence !== auditRequestSequence.current || signal?.aborted) return;
+      setAudits(response.items);
+      setAuditsLoaded(true);
+    } catch (error) {
+      if (signal?.aborted || sequence !== auditRequestSequence.current) return;
+      if (error instanceof ApiError && error.status === 401) {
+        onSignedOut("登录状态已失效，请重新登录");
+        return;
+      }
+      setAuditError(errorMessage(error));
+    } finally {
+      if (sequence === auditRequestSequence.current && !signal?.aborted) {
+        setAuditsLoading(false);
+      }
+    }
+  }, [auditsLoaded, onSignedOut]);
+
+  const invalidateAudits = useCallback(() => {
+    auditRequestSequence.current += 1;
+    setAuditsLoaded(false);
+    setAudits([]);
+    setAuditError("");
+    setAuditsLoading(false);
   }, []);
 
   const refresh = useCallback(
-    async (showLoading = true, signal?: AbortSignal) => {
+    async (showLoading = true, signal?: AbortSignal, force = false) => {
+      const sequence = ++refreshSequence.current;
       if (showLoading) setLoading(true);
-      try {
-        const [nextSettings, auditResponse] = await Promise.all([
-          api.aiSettings(signal),
-          api.configurationAudits(signal),
-        ]);
-        applySettings(nextSettings);
-        setAudits(auditResponse.items);
-      } catch (error) {
-        if (signal?.aborted) return;
+      const reportError = (error: unknown) => {
+        if (signal?.aborted || sequence !== refreshSequence.current) return;
         if (error instanceof ApiError && error.status === 401) {
           onSignedOut("登录状态已失效，请重新登录");
           return;
         }
         setMessageKind("error");
         setMessage(errorMessage(error));
-      } finally {
-        if (showLoading && !signal?.aborted) setLoading(false);
-      }
+      };
+
+      // 审计记录默认折叠，首屏只请求主配置。
+      const settingsRequest = api.aiSettings(signal, force)
+        .then((next) => {
+          if (sequence === refreshSequence.current) applySettings(next);
+        })
+        .catch(reportError)
+        .finally(() => {
+          if (
+            showLoading
+            && sequence === refreshSequence.current
+            && !signal?.aborted
+          ) setLoading(false);
+        });
+      await settingsRequest;
     },
     [applySettings, onSignedOut],
   );
 
   useEffect(() => {
+    const pendingRevision = pendingAgentRevisionRef.current;
+    if (!settings || pendingRevision === null) return;
+    // 首个快照显示后，若 Agent 观察到更高版本，补一次有界强制读取并清标记。
+    pendingAgentRevisionRef.current = null;
+    if (pendingRevision <= settings.revision) return;
+    clearSettingsCache();
+    void refresh(false, undefined, true);
+  }, [refresh, settings]);
+
+  useEffect(() => {
     const controller = new AbortController();
-    void refresh(true, controller.signal);
+    // 未过期缓存直接复用；手动刷新或写入配置时才清缓存并绕过缓存。
+    void refresh(initialSettings === null, controller.signal);
     return () => controller.abort();
   }, [refresh]);
 
@@ -215,9 +363,12 @@ export default function SettingsPage({
     return () => window.clearTimeout(timer);
   }, [message, messageKind]);
 
-  function refreshAllSettings() {
+  async function refreshAllSettings() {
+    clearSettingsCache();
+    invalidateAudits();
     setAgentRefreshRequest((current) => current + 1);
-    return refresh();
+    await refresh();
+    if (auditExpanded) await loadAudits(true);
   }
 
   const selectedSettings = useMemo(
@@ -226,27 +377,53 @@ export default function SettingsPage({
   );
   const draft = drafts[selectedProvider];
 
+  function updateProviderDraft(
+    provider: AiProvider,
+    updater: (current: ProviderDraft) => ProviderDraft,
+  ) {
+    setDrafts((current) => {
+      const previousDraft = current[provider];
+      if (!previousDraft) return current;
+      const nextDraft = updater(previousDraft);
+      const saved = appliedSettingsRef.current?.providers.find(
+        (item) => item.provider === provider,
+      );
+      if (saved && providerHasChanges(saved, nextDraft)) {
+        if (providerDraftRevisionRef.current[provider] === undefined) {
+          providerDraftRevisionRef.current[provider] = expectedRevision();
+        }
+      } else {
+        delete providerDraftRevisionRef.current[provider];
+      }
+      return { ...current, [provider]: nextDraft };
+    });
+  }
+
   function updateDraft<K extends keyof ProviderDraft>(field: K, value: ProviderDraft[K]) {
-    setDrafts((current) => ({
+    updateProviderDraft(selectedProvider, (current) => ({
       ...current,
-      [selectedProvider]: { ...current[selectedProvider]!, [field]: value },
+      [field]: value,
     }));
   }
 
   function updateContextWindow(value: string) {
-    setDrafts((current) => {
-      const selected = current[selectedProvider]!;
+    updateProviderDraft(selectedProvider, (selected) => {
       const outputLimit = Math.max(256, Number(value) - 4_096);
       const currentOutput = Number(selected.maxOutputTokens);
       return {
-        ...current,
-        [selectedProvider]: {
-          ...selected,
-          contextWindowTokens: value,
-          maxOutputTokens: String(Math.min(currentOutput, outputLimit)),
-        },
+        ...selected,
+        contextWindowTokens: value,
+        maxOutputTokens: String(Math.min(currentOutput, outputLimit)),
       };
     });
+  }
+
+  // 主设置与 Agent 共用 revision；事件处理器优先取 ref 中已观察到的高版本。
+  function expectedRevision(): number {
+    return Math.max(
+      settings?.revision ?? 0,
+      settingsRevisionRef.current ?? 0,
+    );
   }
 
   function showSuccess(text: string) {
@@ -259,16 +436,36 @@ export default function SettingsPage({
     operation: () => Promise<AiSettings>,
     successText: string,
     refreshAfterError = false,
+    resetProvider?: AiProvider,
   ) {
+    // 让尚未完成的首屏 GET 失效，避免它在保存/测试返回后回填旧快照。
+    const sequence = ++refreshSequence.current;
     setBusyAction(action);
     setMessage("");
     try {
       const next = await operation();
-      applySettings(next);
-      const auditResponse = await api.configurationAudits();
-      setAudits(auditResponse.items);
+      if (sequence !== refreshSequence.current) return;
+      const applied = applySettings(next, { resetProvider });
+      if (!applied) {
+        // Agent 已推进 revision，当前响应是旧快照；强制读取完整配置。
+        clearSettingsCache();
+        invalidateAudits();
+        const refreshSequenceBefore = refreshSequence.current;
+        await refresh(false, undefined, true);
+        if (refreshSequence.current === refreshSequenceBefore + 1) {
+          setBusyAction("");
+        }
+        return;
+      }
+      if (auditExpanded) {
+        await loadAudits(true);
+        if (sequence !== refreshSequence.current) return;
+      } else {
+        invalidateAudits();
+      }
       showSuccess(successText);
     } catch (error) {
+      if (sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
@@ -276,10 +473,17 @@ export default function SettingsPage({
       setMessageKind("error");
       setMessage(errorMessage(error));
       if (refreshAfterError || (error instanceof ApiError && error.status === 409)) {
+        clearSettingsCache();
+        invalidateAudits();
+        const refreshSequenceBefore = refreshSequence.current;
         await refresh(false);
+        // refresh() 占用新序列号；没有更新操作抢占时，当前 action 才结束 busy 状态。
+        if (refreshSequence.current === refreshSequenceBefore + 1) {
+          setBusyAction("");
+        }
       }
     } finally {
-      setBusyAction("");
+      if (sequence === refreshSequence.current) setBusyAction("");
     }
   }
 
@@ -291,7 +495,8 @@ export default function SettingsPage({
         throw new Error("选择中转站后，请填写中转站提供的 API 地址");
       }
       const payload: AiProviderUpdate = {
-        expected_revision: settings.revision,
+        expected_revision: providerDraftRevisionRef.current[selectedProvider]
+          ?? expectedRevision(),
         model: draft.model.trim(),
         api_protocol: draft.apiProtocol,
         api_base_url: draft.useCustomEndpoint ? draft.apiBaseUrl.trim() : null,
@@ -316,6 +521,8 @@ export default function SettingsPage({
         `save-${selectedProvider}`,
         () => api.updateAiProvider(selectedProvider, payload),
         `${providerShortLabels[selectedProvider]} 配置已保存，下一步请测试连接`,
+        false,
+        selectedProvider,
       );
     } catch (error) {
       setMessageKind("error");
@@ -327,7 +534,7 @@ export default function SettingsPage({
     if (!settings) return;
     await handleAction(
       `test-${selectedProvider}`,
-      () => api.testAiProvider(selectedProvider, settings.revision),
+      () => api.testAiProvider(selectedProvider, expectedRevision()),
       `${providerShortLabels[selectedProvider]} 连接正常，现在可以启用`,
       true,
     );
@@ -337,7 +544,7 @@ export default function SettingsPage({
     if (!settings) return;
     await handleAction(
       `activate-${selectedProvider}`,
-      () => api.activateAiProvider(selectedProvider, settings.revision),
+      () => api.activateAiProvider(selectedProvider, expectedRevision()),
       `${providerShortLabels[selectedProvider]} 已启用，后续审查会使用这套配置`,
     );
   }
@@ -346,17 +553,28 @@ export default function SettingsPage({
     field: K,
     value: ReviewPolicyDraft[K],
   ) {
-    setPolicyDraft((current) => current ? { ...current, [field]: value } : current);
+    setPolicyDraft((current) => {
+      if (!current) return current;
+      const next = { ...current, [field]: value };
+      const saved = appliedSettingsRef.current;
+      if (saved && reviewPolicyHasChanges(saved, next)) {
+        policyDraftRevisionRef.current ??= expectedRevision();
+      } else {
+        policyDraftRevisionRef.current = null;
+      }
+      return next;
+    });
   }
 
   async function saveReviewPolicy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!settings || !policyDraft) return;
+    const sequence = ++refreshSequence.current;
     setBusyAction("save-policy");
     setPolicyMessage("");
     try {
       const payload: ReviewPolicyUpdate = {
-        expected_revision: settings.revision,
+        expected_revision: policyDraftRevisionRef.current ?? expectedRevision(),
         max_units: requiredInteger(policyDraft.maxUnits, "最多审查单元"),
         max_scope_depth: requiredInteger(policyDraft.maxScopeDepth, "规则目录深度"),
         max_unit_input_bytes: requiredInteger(
@@ -387,20 +605,46 @@ export default function SettingsPage({
           "模型总耗时上限",
         ),
       };
-      applySettings(await api.updateReviewPolicy(payload));
-      setAudits((await api.configurationAudits()).items);
+      const next = await api.updateReviewPolicy(payload);
+      if (sequence !== refreshSequence.current) return;
+      const applied = applySettings(next, { resetPolicy: true });
+      if (!applied) {
+        clearSettingsCache();
+        invalidateAudits();
+        const refreshSequenceBefore = refreshSequence.current;
+        await refresh(false, undefined, true);
+        if (refreshSequence.current === refreshSequenceBefore + 1) {
+          setBusyAction("");
+        }
+        return;
+      }
+      if (auditExpanded) {
+        await loadAudits(true);
+        if (sequence !== refreshSequence.current) return;
+      } else {
+        invalidateAudits();
+      }
       setPolicyMessageKind("success");
       setPolicyMessage("审查范围和单次任务硬预算已保存");
     } catch (error) {
+      if (sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
       }
       setPolicyMessageKind("error");
       setPolicyMessage(errorMessage(error));
-      if (error instanceof ApiError && error.status === 409) await refresh(false);
+      if (error instanceof ApiError && error.status === 409) {
+        clearSettingsCache();
+        invalidateAudits();
+        const refreshSequenceBefore = refreshSequence.current;
+        await refresh(false);
+        if (refreshSequence.current === refreshSequenceBefore + 1) {
+          setBusyAction("");
+        }
+      }
     } finally {
-      setBusyAction("");
+      if (sequence === refreshSequence.current) setBusyAction("");
     }
   }
 
@@ -721,67 +965,35 @@ export default function SettingsPage({
               </section>
             )}
 
-            <details className="settings-audit-section">
-              <summary><span><strong>配置变更记录</strong><small>最近 {audits.length} 条，不包含密钥内容</small></span><span>展开查看</span></summary>
+            <details
+              className="settings-audit-section"
+              onToggle={(event) => {
+                const open = event.currentTarget.open;
+                setAuditExpanded(open);
+                if (open) void loadAudits();
+              }}
+            >
+              <summary>
+                <span>
+                  <strong>配置变更记录</strong>
+                  <small>{auditsLoaded ? `最近 ${audits.length} 条，不包含密钥内容` : "展开后加载记录"}</small>
+                </span>
+                <span>{auditsLoading ? "正在加载" : "展开查看"}</span>
+              </summary>
               <div className="settings-audit-table-wrap">
+                {auditError && <div className="settings-message is-error" role="alert">{auditError}</div>}
                 <table className="settings-audit-table">
                   <thead><tr><th>版本</th><th>操作</th><th>变更内容</th><th>管理员</th><th>时间</th></tr></thead>
                   <tbody>{audits.map((audit) => <tr key={audit.revision}><td className="code-font">r{audit.revision}</td><td>{auditActionLabels[audit.action] ?? audit.action}</td><td>{audit.changed_fields.map((field) => fieldLabels[field] ?? field).join("、")}</td><td>{audit.actor}</td><td>{formatDate(audit.created_at)}</td></tr>)}</tbody>
                 </table>
-                {audits.length === 0 && <div className="settings-empty-audit">暂无配置变更</div>}
+                {auditsLoading && <div className="settings-loading">正在读取配置变更...</div>}
+                {!auditsLoading && auditsLoaded && audits.length === 0 && <div className="settings-empty-audit">暂无配置变更</div>}
               </div>
             </details>
           </>
         )}
-        <AgentSettingsPanel refreshRequest={agentRefreshRequest} onSignedOut={onSignedOut} />
+        <AgentSettingsPanel parentRevision={settings?.revision ?? null} refreshRequest={agentRefreshRequest} onRevisionChange={handleAgentRevisionChange} onSignedOut={onSignedOut} />
       </main>
     </div>
-  );
-}
-
-interface NumberFieldProps {
-  name: string;
-  label: string;
-  value: string;
-  min: string;
-  max: string;
-  step?: string;
-  suffix?: string;
-  required?: boolean;
-  onChange: (value: string) => void;
-}
-
-function NumberField({ name, label, value, min, max, step = "1", suffix, required = true, onChange }: NumberFieldProps) {
-  return (
-    <label>
-      <span>{label}</span>
-      <span className="settings-input-with-suffix">
-        <input id={`settings-${name}`} name={`settings-${name}`} type="number" value={value} min={min} max={max} step={step} required={required} onChange={(event) => onChange(event.target.value)} />
-        {suffix && <i>{suffix}</i>}
-      </span>
-    </label>
-  );
-}
-
-interface SelectFieldProps {
-  name: string;
-  label: string;
-  help?: string;
-  value: string;
-  options: Array<[string, string]>;
-  onChange: (value: string) => void;
-}
-
-function SelectField({ name, label, help, value, options, onChange }: SelectFieldProps) {
-  const knownValue = options.some(([option]) => option === value);
-  return (
-    <label>
-      <span>{label}</span>
-      <select id={`settings-${name}`} name={`settings-${name}`} value={value} onChange={(event) => onChange(event.target.value)}>
-        {!knownValue && <option value={value}>自定义（{value} Token）</option>}
-        {options.map(([option, text]) => <option key={option} value={option}>{text}</option>)}
-      </select>
-      {help && <small>{help}</small>}
-    </label>
   );
 }

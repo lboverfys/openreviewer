@@ -13,22 +13,35 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
+from threading import Event
 
-from domain.enums import ModelCallStatus, ReviewAgent
+from domain.enums import ModelCallStatus, ModelReviewVerdict, ReviewAgent
 from domain.model_review import (
     MAX_MODEL_FINDINGS,
     ModelFindingCandidate,
     ModelReviewInput,
     ModelReviewResult,
 )
-from domain.security import SafeError
+from domain.security import ErrorCode, SafeError
 from services.model_review import ModelReviewer, ModelServiceSettings
+from services.task_queue import TaskLeaseLostError
 
 PARALLEL_AGENTS: tuple[ReviewAgent, ...] = (
     ReviewAgent.SECURITY,
     ReviewAgent.CONVENTION,
     ReviewAgent.LOGIC,
 )
+
+# 汇总提示词中的每一路结果都必须是一个完整 JSON 字符串。限制按 UTF-8
+# 字节计算，避免中文字符让字符数预算与实际 HTTP 请求大小发生偏差。
+_MAX_EXECUTION_CONTEXT_BYTES = 2_000
+_MAX_CONTEXT_SUMMARY_CHARS = 128
+_MAX_CONTEXT_AREA_CHARS = 48
+_MAX_CONTEXT_FINDING_TEXT_CHARS = 64
+_MAX_CONTEXT_FINDING_TITLE_CHARS = 64
+_MAX_CONTEXT_FINDING_SYMBOL_CHARS = 64
+_MAX_CONTEXT_FINDING_FILE_CHARS = 160
+_MAX_CONTEXT_FINDING_RULE_CHARS = 160
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,8 +122,14 @@ class FixedAgentWorkflow:
         started_at = self._clock()
         refs = references or {}
         executions: dict[ReviewAgent, AgentExecution] = {}
+        # 当一个并行 Agent 发现租约已失效时，阻止尚未开始的 Future 再进入
+        # reviewer；ThreadPoolExecutor 只能取消排队任务，正在进行的 HTTP
+        # 请求仍由其自身超时/租约边界收敛。
+        lease_lost = Event()
 
         def invoke(agent: ReviewAgent) -> AgentExecution:
+            if lease_lost.is_set():
+                raise TaskLeaseLostError()
             reviewer = self._reviewers.get(agent)
             if reviewer is None:
                 return AgentExecution(
@@ -155,6 +174,11 @@ class FixedAgentWorkflow:
                 )
             except Exception as exc:
                 safe_error = SafeError.from_exception(exc)
+                # 租约丢失表示当前 Worker 已经失去写入权限，不能把它降级成
+                # 普通 Agent 失败；由外层运行时跳过回写并交给恢复流程接管。
+                if safe_error.code is ErrorCode.TASK_LEASE_LOST:
+                    lease_lost.set()
+                    raise
                 return AgentExecution(
                     agent,
                     "failed",
@@ -165,11 +189,32 @@ class FixedAgentWorkflow:
                     safe_error,
                 )
 
-        with ThreadPoolExecutor(max_workers=self._max_concurrency) as pool:
-            futures = {pool.submit(invoke, agent): agent for agent in PARALLEL_AGENTS}
-            for future in as_completed(futures):
-                execution = future.result()
-                executions[execution.agent] = execution
+        if self._max_concurrency == 1:
+            # 生产环境的保守配置不需要创建线程池。更重要的是，租约丢失时
+            # 能在首个 Agent 抛错的瞬间停止，不让已经排队的后续 Agent 继续
+            # 发起模型请求。
+            for agent in PARALLEL_AGENTS:
+                executions[agent] = invoke(agent)
+        else:
+            with ThreadPoolExecutor(max_workers=self._max_concurrency) as pool:
+                futures = {
+                    pool.submit(invoke, agent): agent
+                    for agent in PARALLEL_AGENTS
+                }
+                for future in as_completed(futures):
+                    try:
+                        execution = future.result()
+                    except Exception as exc:
+                        # 取消仍在队列中的任务，避免租约已经失效后继续
+                        # 调度模型请求；正在运行的任务会在其边界自行停止。
+                        safe_error = SafeError.from_exception(exc)
+                        if safe_error.code is ErrorCode.TASK_LEASE_LOST:
+                            lease_lost.set()
+                            for pending in futures:
+                                if pending is not future:
+                                    pending.cancel()
+                        raise
+                    executions[execution.agent] = execution
 
         ordered = tuple(executions[agent] for agent in PARALLEL_AGENTS)
         findings = _merge_findings(ordered)
@@ -196,8 +241,15 @@ class FixedAgentWorkflow:
             and review_input.units
         ):
             summary_started = time.monotonic()
+            # 前三路已经逐批检查过完整补丁。汇总阶段只需要读取它们的
+            # 结构化结论；再次携带所有 rules/patch 会把请求体放大数倍，
+            # 在 32K 中转站上很容易触发超时或 524。保留目标身份和有界
+            # prior_agent_results，明确告诉汇总模型没有新的代码单元可查。
             summary_input = review_input.model_copy(
                 update={
+                    "rules": (),
+                    "units": (),
+                    "total_estimated_input_bytes": 0,
                     "knowledge_references": refs.get(ReviewAgent.SUMMARY, ()),
                     "prior_agent_results": _execution_context(ordered),
                     "review_agent": ReviewAgent.SUMMARY,
@@ -206,7 +258,38 @@ class FixedAgentWorkflow:
             try:
                 summary_result = self._summary_reviewer.review(summary_input)
                 if summary_result.status is ModelCallStatus.SUCCEEDED:
-                    findings = _merge_candidates(findings, summary_result.output.findings)
+                    # 汇总请求为了控制体积不携带原始 review_units/rules；模型仍
+                    # 可能按 prior_agent_results 返回候选。只接受能在原始计划中
+                    # 由平台校验的身份，避免未知 unit/rule 让后续
+                    # ``materialize_findings`` 把整次审查判为失败。
+                    summary_findings = _filter_summary_candidates(
+                        review_input,
+                        summary_result.output.findings,
+                    )
+                    # 过滤结果必须回写到汇总执行对象。否则后续事件会读取模型
+                    # 原始 Finding 数量，前端看到的统计就会包含已丢弃的候选。
+                    if summary_findings != summary_result.output.findings:
+                        summary_output = summary_result.output.model_copy(
+                            update={
+                                "findings": summary_findings,
+                                # ``issues_found`` 要求至少有一条 Finding；
+                                # 全部候选被过滤时改成一致的结论，避免把无效
+                                # 模型输出继续传播到事件和持久化边界。
+                                "verdict": (
+                                    ModelReviewVerdict.NO_ACTIONABLE_ISSUE
+                                    if (
+                                        not summary_findings
+                                        and summary_result.output.verdict
+                                        is ModelReviewVerdict.ISSUES_FOUND
+                                    )
+                                    else summary_result.output.verdict
+                                ),
+                            }
+                        )
+                        summary_result = summary_result.model_copy(
+                            update={"output": summary_output}
+                        )
+                    findings = _merge_candidates(findings, summary_findings)
                     if summary_result.output.summary is not None:
                         summary = summary_result.output.summary
                     summary_execution = AgentExecution(
@@ -230,6 +313,10 @@ class FixedAgentWorkflow:
                     )
             except Exception as exc:
                 safe_error = SafeError.from_exception(exc)
+                # 汇总阶段同样不能吞掉租约失效，否则前三路结果可能被旧 Worker
+                # 继续写入，且会额外发起一次没有意义的模型请求。
+                if safe_error.code is ErrorCode.TASK_LEASE_LOST:
+                    raise
                 status = "failed"
                 summary = "汇总 Agent 调用失败，结果覆盖不完整"
                 summary_execution = AgentExecution(
@@ -297,6 +384,39 @@ def _merge_candidates(
     )
 
 
+def _filter_summary_candidates(
+    review_input: ModelReviewInput,
+    candidates: tuple[ModelFindingCandidate, ...],
+) -> tuple[ModelFindingCandidate, ...]:
+    """过滤汇总 Agent 无法直接验证的候选 Finding。
+
+    汇总阶段只看到前三路 Agent 的压缩 JSON，因此不能像普通审查批次那样
+    依赖模型输入中的 unit/rule 列表。这里复用 ``materialize_findings`` 的
+    身份前置约束：unit_key 必须属于当前计划，规则引用必须属于当前规则集，
+    有位置时文件也必须与该 unit 一致。行号是否位于 diff 由后续平台复核，不能
+    在此提前丢弃合法但未命中的候选。
+    """
+
+    units_by_key = {unit.unit_key: unit for unit in review_input.units}
+    known_rules = {rule.path for rule in review_input.rules}
+    filtered: list[ModelFindingCandidate] = []
+    for candidate in candidates:
+        unit = units_by_key.get(candidate.unit_key)
+        if unit is None:
+            continue
+        if candidate.rule_reference is not None and (
+            candidate.rule_reference not in known_rules
+        ):
+            continue
+        if (
+            candidate.location is not None
+            and candidate.location.file != unit.file
+        ):
+            continue
+        filtered.append(candidate)
+    return tuple(filtered)
+
+
 def _candidate_identity(candidate: ModelFindingCandidate) -> str:
     location = candidate.location
     payload = {
@@ -331,50 +451,135 @@ def _execution_context(executions: tuple[AgentExecution, ...]) -> tuple[str, ...
             if execution.result is not None
             else ()
         )
-        payload = {
+        output = execution.result.output if execution.result is not None else None
+        all_findings = tuple(findings[:MAX_MODEL_FINDINGS])
+        findings_payload: list[dict[str, object]] = []
+        payload: dict[str, object] = {
             "agent": execution.agent.value,
             "status": execution.status,
             "verdict": (
-                execution.result.output.verdict.value
-                if execution.result is not None
-                and execution.result.output.verdict is not None
+                output.verdict.value
+                if output is not None and output.verdict is not None
                 else None
             ),
             "summary": (
-                execution.result.output.summary
-                if execution.result is not None
+                _bounded_context_text(output.summary, _MAX_CONTEXT_SUMMARY_CHARS)
+                if output is not None and output.summary is not None
                 else None
             ),
             "checked_areas": (
-                list(execution.result.output.checked_areas)
-                if execution.result is not None
+                [
+                    _bounded_context_text(area, _MAX_CONTEXT_AREA_CHARS)
+                    for area in output.checked_areas[:8]
+                ]
+                if output is not None
                 else []
             ),
-            "findings": [
-                {
-                    "unit_key": item.unit_key,
-                    "severity": item.severity.value,
-                    "category": item.category.value,
-                    "location": (
-                        item.location.model_dump(mode="json")
-                        if item.location is not None
-                        else None
-                    ),
-                    "title": item.title,
-                    "evidence": item.evidence[:800],
-                    "impact": item.impact[:800],
-                    "suggestion": item.suggestion[:800],
-                    "confidence": item.confidence,
-                    "rule_reference": item.rule_reference,
-                }
-                for item in findings[:MAX_MODEL_FINDINGS]
-            ],
+            "finding_count": len(all_findings),
+            "findings": findings_payload,
         }
-        encoded = json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        context.append(encoded[:2_000])
+        # 逐条加入候选，始终在序列化后检查 UTF-8 大小。这样不会像直接
+        # ``encoded[:2000]`` 那样把 JSON 截断在字符串或转义序列中间。
+        for item in all_findings:
+            candidate: dict[str, object] = {
+                "unit_key": item.unit_key,
+                "severity": item.severity.value,
+                "category": item.category.value,
+                "location": _compact_context_location(item.location),
+                "title": _bounded_context_text(
+                    item.title,
+                    _MAX_CONTEXT_FINDING_TITLE_CHARS,
+                ),
+                "evidence": _bounded_context_text(
+                    item.evidence,
+                    _MAX_CONTEXT_FINDING_TEXT_CHARS,
+                ),
+                "impact": _bounded_context_text(
+                    item.impact,
+                    _MAX_CONTEXT_FINDING_TEXT_CHARS,
+                ),
+                "suggestion": _bounded_context_text(
+                    item.suggestion,
+                    _MAX_CONTEXT_FINDING_TEXT_CHARS,
+                ),
+                "confidence": item.confidence,
+                "rule_reference": (
+                    _bounded_context_text(
+                        item.rule_reference,
+                        _MAX_CONTEXT_FINDING_RULE_CHARS,
+                    )
+                    if item.rule_reference is not None
+                    else None
+                ),
+            }
+            findings_payload.append(candidate)
+            if len(_encode_context_payload(payload).encode("utf-8")) > (
+                _MAX_EXECUTION_CONTEXT_BYTES
+            ):
+                findings_payload.pop()
+                break
+        if len(findings_payload) < len(all_findings):
+            payload["findings_truncated"] = True
+        encoded = _encode_context_payload(payload)
+        # 标记字段本身也占少量空间；若它让边界超出，逐条回退即可，不能
+        # 直接清空全部候选。固定字段已设有上限，下面的兜底只处理异常输入。
+        while (
+            len(encoded.encode("utf-8")) > _MAX_EXECUTION_CONTEXT_BYTES
+            and findings_payload
+        ):
+            findings_payload.pop()
+            payload["findings_truncated"] = True
+            encoded = _encode_context_payload(payload)
+        if len(encoded.encode("utf-8")) > _MAX_EXECUTION_CONTEXT_BYTES:
+            payload["summary"] = _bounded_context_text(
+                output.summary if output is not None else None,
+                32,
+            )
+            payload["checked_areas"] = []
+            encoded = _encode_context_payload(payload)
+        context.append(encoded)
     return tuple(context)
+
+
+def _bounded_context_text(value: str | None, max_chars: int) -> str:
+    """按字符上限压缩内部候选文本；输入来自已校验的模型输出。"""
+
+    if value is None:
+        return ""
+    return value[:max_chars]
+
+
+def _compact_context_location(location: object) -> dict[str, object] | None:
+    """保留汇总去重所需的位置元数据，避免把长 symbol/file 带入上下文。"""
+
+    if location is None:
+        return None
+    file = getattr(location, "file", None)
+    start_line = getattr(location, "start_line", None)
+    end_line = getattr(location, "end_line", None)
+    side = getattr(location, "side", None)
+    symbol = getattr(location, "symbol", None)
+    return {
+        "file": _bounded_context_text(
+            file if isinstance(file, str) else None,
+            _MAX_CONTEXT_FINDING_FILE_CHARS,
+        ),
+        "start_line": start_line,
+        "end_line": end_line,
+        "side": getattr(side, "value", side),
+        "symbol": _bounded_context_text(
+            symbol if isinstance(symbol, str) else None,
+            _MAX_CONTEXT_FINDING_SYMBOL_CHARS,
+        )
+        if symbol is not None
+        else None,
+    }
+
+
+def _encode_context_payload(payload: Mapping[str, object]) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )

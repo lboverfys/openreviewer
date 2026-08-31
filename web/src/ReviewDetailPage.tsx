@@ -56,12 +56,12 @@ const actionLabels: Record<ReviewAction, string> = {
   start: "开始审查",
   pause: "暂停",
   resume: "继续",
-  retry_stage: "重试本阶段",
+  retry_stage: "按阶段重试",
   approve: "批准审查",
   reject: "驳回",
   publish: "发布到 GitHub",
   expedite: "立即唤醒",
-  retry: "重试本阶段",
+  retry: "重新排队重试",
   cancel: "取消任务",
   rerun: "重新审查",
 };
@@ -69,6 +69,16 @@ const actionLabels: Record<ReviewAction, string> = {
 type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
 type ReviewDetailTab = "overview" | "agents" | "findings" | "logs";
 type ReviewEventFilter = "all" | "model" | "workflow" | "errors";
+
+// 这些状态不会再产生后台事件。详情页仍可由用户手动刷新，
+// 但没有必要继续每隔几秒请求变更令牌。
+const terminalReviewStatuses = new Set([
+  "completed",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "superseded",
+]);
 
 const retryTargetOptions: ReadonlyArray<[RetryTargetStage, string]> = [
   ["ci", "CI 检查"],
@@ -190,25 +200,30 @@ function ReviewDetailPage({
   const [identitySyncBusy, setIdentitySyncBusy] = useState(false);
   const [identitySyncError, setIdentitySyncError] = useState("");
   const identitySyncAttempted = useRef<string | null>(null);
+  const detailsRequestSequence = useRef(0);
   const canAdjudicate = hasPermission(user, "findings:adjudicate");
   const canManageReviews = hasPermission(user, "reviews:manage");
 
   const loadDetails = useCallback(async (signal?: AbortSignal) => {
+    const sequence = ++detailsRequestSequence.current;
     try {
       const next = await api.reviewDetails(reviewRunId, undefined, 50, signal);
+      if (signal?.aborted || sequence !== detailsRequestSequence.current) return null;
       setDetails((current) => applyRefreshedFindingPage(current, next));
       setError("");
-      return true;
+      return next.change_token;
     } catch (reason) {
-      if (signal?.aborted) return false;
+      if (signal?.aborted) return null;
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
-        return false;
+        return null;
       }
       setError(errorMessage(reason));
-      return false;
+      return null;
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!signal?.aborted && sequence === detailsRequestSequence.current) {
+        setLoading(false);
+      }
     }
   }, [onSignedOut, reviewRunId]);
 
@@ -221,7 +236,7 @@ function ReviewDetailPage({
   }, [loadDetails]);
 
   useReviewAutoRefresh({
-    enabled: autoRefresh,
+    enabled: autoRefresh && !terminalReviewStatuses.has(details?.execution_status ?? ""),
     reviewRunId,
     changeToken: details?.change_token ?? null,
     onChanged: loadDetails,

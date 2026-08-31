@@ -19,12 +19,14 @@ function details(
   ids: string[],
   total: number,
   nextCursor: string | null,
+  updatedAt = "2026-08-28T00:00:00Z",
 ): ReviewDetails {
   return {
     review_run_id: "run-1",
     findings: ids.map((id) => finding(id)),
     finding_total_count: total,
     finding_next_cursor: nextCursor,
+    updated_at: updatedAt,
   } as ReviewDetails;
 }
 
@@ -48,6 +50,44 @@ describe("Finding 详情分页合并", () => {
     const merged = appendFindingPage(current, next);
 
     expect(merged.findings.map((item) => item.id)).toEqual(["1", "2", "3", "4"]);
+    expect(merged.finding_next_cursor).toBeNull();
+  });
+
+  it("不会让较旧的整体详情快照覆盖新状态", () => {
+    const current = details(
+      ["1"],
+      1,
+      null,
+      "2026-08-28T00:02:00Z",
+    );
+    const stale = details(
+      ["1"],
+      1,
+      null,
+      "2026-08-28T00:01:00Z",
+    );
+
+    expect(applyRefreshedFindingPage(current, stale)).toBe(current);
+  });
+
+  it("追加旧分页时保留最新任务元数据", () => {
+    const current = details(
+      ["1"],
+      2,
+      "after-1",
+      "2026-08-28T00:02:00Z",
+    );
+    const stalePage = details(
+      ["2"],
+      2,
+      null,
+      "2026-08-28T00:01:00Z",
+    );
+
+    const merged = appendFindingPage(current, stalePage);
+
+    expect(merged.updated_at).toBe("2026-08-28T00:02:00Z");
+    expect(merged.findings.map((item) => item.id)).toEqual(["1", "2"]);
     expect(merged.finding_next_cursor).toBeNull();
   });
 });
@@ -131,6 +171,11 @@ describe("审查详情事件解释", () => {
         model_attempt_count: 1,
         batch_count: 1,
       }),
+      event("started", "review.model.request_started", {
+        agent: "logic",
+        model_attempt_count: 1,
+        batch_number: 1,
+      }),
       event("failed", "review.model.batch_failed", {
         agent: "logic",
         model_attempt_count: 1,
@@ -143,6 +188,41 @@ describe("审查详情事件解释", () => {
     expect(progress.status).toBe("failed");
     expect(progress.errorCode).toBe("MODEL_TIMEOUT");
     expect(progress.errorMessage).toBe("模型请求超时");
+  });
+
+  it("同一批次的迟到完成事件覆盖先到的失败事件", () => {
+    const progress = agentProgress([
+      event("plan", "review.model.batches_planned", {
+        agent: "logic",
+        model_attempt_count: 1,
+        batch_count: 1,
+      }),
+      event("started", "review.model.request_started", {
+        agent: "logic",
+        model_attempt_count: 1,
+        batch_number: 1,
+      }),
+      event("failed", "review.model.batch_failed", {
+        agent: "logic",
+        model_attempt_count: 1,
+        batch_number: 1,
+        error_code: "MODEL_TIMEOUT",
+        error_message: "模型请求超时",
+      }),
+      event("completed", "review.model.batch_completed", {
+        agent: "logic",
+        model_attempt_count: 1,
+        batch_number: 1,
+        finding_count: 2,
+        input_tokens: 100,
+        output_tokens: 20,
+      }),
+    ], "logic");
+
+    expect(progress.status).toBe("running");
+    expect(progress.failedBatches).toHaveLength(0);
+    expect(progress.completedBatches).toHaveLength(1);
+    expect(progress.errorCode).toBeNull();
   });
 
   it("用固定当前时间生成稳定的重试提示", () => {
@@ -163,11 +243,13 @@ describe("审查详情事件解释", () => {
       status_code: 504,
       duration_ms: 1_500,
       error_code: "UPSTREAM_TIMEOUT",
+      unsupported_parameters: ["max_completion_tokens"],
       error_retryable: true,
     });
 
     expect(isErrorEvent(failed)).toBe(true);
     expect(eventDetail(failed)).toContain("HTTP 504");
+    expect(eventDetail(failed)).toContain("中转站不支持：max_completion_tokens");
     expect(eventDetail(failed)).toContain("可自动重试");
   });
 });

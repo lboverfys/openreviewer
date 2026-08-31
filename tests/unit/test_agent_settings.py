@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event
@@ -9,6 +10,7 @@ from persistence.database import Database
 from persistence.models import AiAgentSecretRecord, Base
 from services.agent_settings import AgentConfigDraft, AgentSettingsService
 from services.ai_settings import (
+    ActiveAiSettings,
     AiConnectionTestError,
     AiSecretCipher,
     AiSettingsService,
@@ -16,6 +18,7 @@ from services.ai_settings import (
     SqlAlchemyAiRuntimeProvider,
 )
 from services.model_review import ModelServiceSettings
+from services.review_planning import ReviewPlanningSettings
 
 
 @pytest.fixture
@@ -53,6 +56,7 @@ def test_agent_configuration_is_masked_tested_enabled_and_batch_loaded(
             api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
             api_base_url="https://relay.example.test/v1/",
             context_window_tokens=1_000_000,
+            max_output_tokens=32_768,
             max_batch_input_tokens=64_000,
         ),
         expected_revision=0,
@@ -77,7 +81,7 @@ def test_agent_configuration_is_masked_tested_enabled_and_batch_loaded(
     )
     assert tested_view.revision == 2
     assert tested_view.agents[0].test_status == "succeeded"
-    assert tested[0].max_output_tokens == 512
+    assert tested[0].max_output_tokens == 32_768
     assert tested[0].api_key == api_key
 
     enabled = service.set_enabled(
@@ -324,6 +328,8 @@ def test_runtime_requires_all_agents_and_preserves_concurrency_limit(
         AiSettingsService(database.sessions, cipher),
         agents,
         max_agent_concurrency=2,
+        # 本用例需要在写入后立即验证失效；生产默认 TTL 允许极短轮询合并。
+        revision_cache_ttl_seconds=0,
     )
 
     runtime = runtime_provider.current()
@@ -342,3 +348,212 @@ def test_runtime_requires_all_agents_and_preserves_concurrency_limit(
     )
     assert runtime_provider.current() is None
     assert all(reviewer.closed for reviewer in created)
+
+
+def test_runtime_revision_fast_path_skips_full_reads_until_revision_changes() -> None:
+    """相同 revision 只查轻量版本，不重复读取或解密完整配置。"""
+
+    class LegacyStub:
+        revision_value = 7
+        revision_calls = 0
+        active_calls = 0
+
+        def revision(self) -> int:
+            self.revision_calls += 1
+            return self.revision_value
+
+        def active_settings(self) -> None:
+            self.active_calls += 1
+            return None
+
+    class AgentStub:
+        get_calls = 0
+
+        def get(self) -> SimpleNamespace:
+            self.get_calls += 1
+            return SimpleNamespace(revision=legacy.revision_value, agents=())
+
+    legacy = LegacyStub()
+    agents = AgentStub()
+    provider = SqlAlchemyAiRuntimeProvider(
+        legacy,  # type: ignore[arg-type]
+        agents,  # type: ignore[arg-type]
+        revision_cache_ttl_seconds=0,
+    )
+
+    assert provider.current() is None
+    assert provider.current() is None
+    # 首次冷启动会在读取完整快照后再做一次尾部 revision 校验；第二次
+    # 调用只做轻量 revision 查询，不会重新读取配置或解密密钥。
+    assert legacy.revision_calls == 3
+    assert legacy.active_calls == 1
+    assert agents.get_calls == 1
+
+    legacy.revision_value = 8
+    assert provider.current() is None
+    assert legacy.active_calls == 2
+    assert agents.get_calls == 2
+
+
+def test_runtime_revision_ttl_can_skip_even_the_revision_query() -> None:
+    now = 0.0
+
+    class LegacyStub:
+        revision_calls = 0
+
+        def revision(self) -> int:
+            self.revision_calls += 1
+            return 0
+
+        def active_settings(self) -> None:
+            return None
+
+    legacy = LegacyStub()
+    provider = SqlAlchemyAiRuntimeProvider(
+        legacy,  # type: ignore[arg-type]
+        None,
+        revision_cache_ttl_seconds=5,
+        clock=lambda: now,
+    )
+
+    assert provider.current() is None
+    now = 1
+    assert provider.current() is None
+    assert legacy.revision_calls == 2
+    now = 5
+    assert provider.current() is None
+    assert legacy.revision_calls == 3
+
+
+def test_runtime_closes_reviewer_when_final_revision_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """尾部 revision 查询失败时，旧版 reviewer 不能泄漏。"""
+
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="test-model",
+        api_key="test-key",
+    )
+
+    class LegacyStub:
+        revision_calls = 0
+
+        def revision(self) -> int:
+            self.revision_calls += 1
+            if self.revision_calls == 3:
+                raise RuntimeError("revision unavailable")
+            return 1
+
+        def active_settings(self) -> ActiveAiSettings:
+            return ActiveAiSettings(1, settings, ReviewPlanningSettings())
+
+    class StubReviewer:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    reviewer = StubReviewer()
+    monkeypatch.setattr(
+        "services.ai_settings.create_model_reviewer",
+        lambda _settings: reviewer,
+    )
+    provider = SqlAlchemyAiRuntimeProvider(
+        LegacyStub(),
+        None,
+        revision_cache_ttl_seconds=0,
+    )
+
+    with pytest.raises(RuntimeError, match="revision unavailable"):
+        provider.current()
+
+    assert reviewer.closed is True
+    assert provider._cached is None
+
+
+def test_runtime_closes_agent_workflow_when_final_revision_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """尾部 revision 查询失败时，已创建的四路 Agent 客户端都要释放。"""
+
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="test-model",
+        api_key="test-key",
+    )
+
+    class LegacyStub:
+        revision_calls = 0
+
+        def revision(self) -> int:
+            self.revision_calls += 1
+            if self.revision_calls == 5:
+                raise RuntimeError("revision unavailable")
+            return 1
+
+        def active_settings(self) -> None:
+            return None
+
+        def get(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                max_units=100,
+                max_scope_depth=32,
+                max_unit_input_bytes=192 * 1024,
+                max_total_input_bytes=2 * 1024 * 1024,
+                max_model_http_calls=64,
+                max_model_input_tokens=2_000_000,
+                max_model_output_tokens=250_000,
+                max_model_cost_microusd=None,
+                max_model_duration_seconds=900,
+            )
+
+    class AgentStub:
+        def get(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                revision=1,
+                agents=tuple(
+                    SimpleNamespace(
+                        agent=agent,
+                        configured=True,
+                        enabled=True,
+                        test_status="succeeded",
+                        api_key_configured=True,
+                    )
+                    for agent in ReviewAgent
+                ),
+            )
+
+        def model_settings(self) -> dict[ReviewAgent, ModelServiceSettings]:
+            return {agent: settings for agent in ReviewAgent}
+
+    class StubReviewer:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    created: list[StubReviewer] = []
+
+    def create_reviewer(_settings: ModelServiceSettings) -> StubReviewer:
+        reviewer = StubReviewer()
+        created.append(reviewer)
+        return reviewer
+
+    monkeypatch.setattr(
+        "services.ai_settings.create_model_reviewer",
+        create_reviewer,
+    )
+    provider = SqlAlchemyAiRuntimeProvider(
+        LegacyStub(),
+        AgentStub(),  # type: ignore[arg-type]
+        revision_cache_ttl_seconds=0,
+    )
+
+    with pytest.raises(RuntimeError, match="revision unavailable"):
+        provider.current()
+
+    assert len(created) == len(ReviewAgent)
+    assert all(reviewer.closed for reviewer in created)
+    assert provider._cached is None

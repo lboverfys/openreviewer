@@ -1505,6 +1505,18 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         raise ReviewActionConflictError(
                             "该任务已经生成审查结果，请使用重新审查"
                         )
+                    if plan is not None:
+                        # 通用重试会把任务/模型尝试次数归零；旧批次若仍保留
+                        # FAILED/attempt_count，Worker 会在领取前直接判定达到
+                        # 单批上限，导致用户重试也永远无法恢复。保留不可变的
+                        # Review Plan，只清理模型阶段可重建的产物。
+                        self._prepare_stage_retry(
+                            session,
+                            run,
+                            task,
+                            plan,
+                            ExecutionStatus.AGENT_BATCHES,
+                        )
                     new_status = (
                         ExecutionStatus.READY_FOR_REVIEW
                         if plan is not None

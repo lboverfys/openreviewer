@@ -6,7 +6,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import delete, func, insert, literal, or_, select, update
+from sqlalchemy import and_, delete, func, insert, literal, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Load, Session, sessionmaker
@@ -65,6 +65,7 @@ from services.model_budget import ModelBudgetRequest, ModelBudgetReservation
 from services.model_review import MAX_MODEL_REVIEW_BATCHES, ModelReviewBatch
 from services.task_queue import (
     ModelBatchBusyError,
+    ModelBatchLease,
     ModelBudgetExceededError,
     ModelReviewConflictError,
     ModelReviewInputError,
@@ -295,7 +296,12 @@ class SqlAlchemyReviewTaskQueue:
                         )
                     )
                     if getattr(result, "rowcount", None) != 1:
-                        raise TaskQueueError("worker heartbeat ownership was lost")
+                        # 新进程接管同一稳定 Worker ID 后，旧进程的 token
+                        # 永远不会恢复；把它标记为租约丢失，让后台心跳线程
+                        # 立即退出，避免旧实例持续轮询数据库。
+                        raise TaskLeaseLostError(
+                            "worker heartbeat ownership was lost"
+                        )
                     session.commit()
                     return
                 heartbeat = session.get(WorkerHeartbeatRecord, worker_id)
@@ -311,7 +317,9 @@ class SqlAlchemyReviewTaskQueue:
                     session.add(heartbeat)
                 else:
                     if heartbeat.instance_id is not None:
-                        raise TaskQueueError("worker heartbeat ownership was lost")
+                        raise TaskLeaseLostError(
+                            "worker heartbeat ownership was lost"
+                        )
                     heartbeat.status = worker_status.value
                     heartbeat.current_task_id = current_task_id
                     heartbeat.last_seen_at = now
@@ -2108,7 +2116,12 @@ class SqlAlchemyReviewTaskQueue:
         *,
         agent: str = "default",
     ) -> tuple[StoredModelBatch, ...]:
-        """幂等保存模型批次定义；恢复时不会覆盖已完成结果。"""
+        """幂等保存模型批次定义；恢复时不会覆盖已完成结果。
+
+        如果同一 Review Plan 的自动重试使用了新的单批配置，且旧批次尚未
+        成功、也没有有效运行租约，则原子删除旧定义并重建；有成功结果或仍在
+        执行的批次时保守报告冲突，避免丢失可复用结果或制造重复请求。
+        """
 
         if not agent or len(agent) > 32:
             raise ValueError("model batch agent name is invalid")
@@ -2147,7 +2160,56 @@ class SqlAlchemyReviewTaskQueue:
                 )
                 if len(existing_rows) > MAX_MODEL_REVIEW_BATCHES:
                     raise ModelReviewConflictError("已保存的模型批次数量超过上限")
+                incoming = {
+                    batch.number: (
+                        batch.total,
+                        tuple(unit.unit_key for unit in batch.review_input.units),
+                        batch.estimated_input_tokens,
+                    )
+                    for batch in batches
+                }
                 existing = {row.batch_number: row for row in existing_rows}
+                definitions_match = set(existing) == set(incoming) and all(
+                    (
+                        row.batch_count,
+                        tuple(row.unit_keys),
+                        row.estimated_input_tokens,
+                    )
+                    == incoming[number]
+                    for number, row in existing.items()
+                )
+                if not definitions_match and existing_rows:
+                    # Agent 配置（尤其是 64K -> 32K 的单批上限）可以在一次
+                    # 失败后被管理员调整，导致同一计划重新规划出不同切片。旧
+                    # 的 FAILED/PENDING 定义已经没有可复用结果；只有在没有成功
+                    # 结果且没有有效运行租约时才允许整体重建，避免删除另一
+                    # Worker 正在执行或已经成功的批次。
+                    has_succeeded = any(
+                        row.status == ModelBatchStatus.SUCCEEDED.value
+                        for row in existing_rows
+                    )
+                    has_live_running = any(
+                        row.status == ModelBatchStatus.RUNNING.value
+                        and row.lease_expires_at is not None
+                        and _as_utc(row.lease_expires_at) > _as_utc(now)
+                        for row in existing_rows
+                    )
+                    if has_succeeded or has_live_running:
+                        raise ModelReviewConflictError(
+                            "模型批次定义与已保存结果不一致"
+                        )
+                    session.execute(
+                        delete(ModelReviewBatchRecord)
+                        .where(
+                            ModelReviewBatchRecord.review_plan_id
+                            == lease.review_plan_id,
+                            ModelReviewBatchRecord.agent == agent,
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
+                    session.flush()
+                    existing = {}
+
                 for batch in batches:
                     unit_keys = [unit.unit_key for unit in batch.review_input.units]
                     row = existing.get(batch.number)
@@ -2168,13 +2230,6 @@ class SqlAlchemyReviewTaskQueue:
                         )
                         session.add(row)
                         existing[batch.number] = row
-                    elif (
-                        row.batch_count != batch.total
-                        or tuple(row.unit_keys) != tuple(unit_keys)
-                        or row.estimated_input_tokens
-                        != batch.estimated_input_tokens
-                    ):
-                        raise ModelReviewConflictError("模型批次定义与已保存结果不一致")
                 self._add_event(
                     session,
                     None,
@@ -2239,9 +2294,18 @@ class SqlAlchemyReviewTaskQueue:
                     # 即使 Worker ID 相同，也可能是同名副本或一次重入。调用方
                     # 无法区分“自己已领取”和“另一个请求正在执行”，因此必须等待
                     # 租约过期或结果落库，绝不能再次调用外部模型。
-                    raise ModelBatchBusyError()
+                    expiry = _as_utc(row.lease_expires_at)
+                    raise ModelBatchBusyError(
+                        retry_at=expiry,
+                        lease_expires_at=expiry,
+                    )
                 if row.available_at is not None and _as_utc(row.available_at) > _as_utc(now):
-                    raise ModelBatchBusyError("模型批次尚未到重试时间")
+                    available_at = _as_utc(row.available_at)
+                    raise ModelBatchBusyError(
+                        "模型批次尚未到重试时间",
+                        retry_at=available_at,
+                        available_at=available_at,
+                    )
                 row.status = ModelBatchStatus.RUNNING.value
                 row.attempt_count += 1
                 row.lease_owner = lease.worker_id
@@ -2275,6 +2339,148 @@ class SqlAlchemyReviewTaskQueue:
                 session.rollback()
                 raise TaskQueueError("model batch could not be claimed") from exc
 
+    def renew_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        *,
+        agent: str = "default",
+        lease_duration: timedelta,
+    ) -> StoredModelBatch:
+        """延长当前 Worker 持有的模型批次租约。
+
+        批次租约与任务租约分开存储；模型请求可能长于一次心跳周期，因此必须
+        在同一任务所有权检查下单独续期。方法只更新批次行，不写进度事件，避免
+        长请求产生无界的审计记录。
+        """
+
+        if lease_duration.total_seconds() <= 0:
+            raise ValueError("model batch lease duration must be positive")
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        now = self._clock()
+        renewed_until = now + lease_duration
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                row = session.scalar(
+                    select(ModelReviewBatchRecord)
+                    .where(
+                        ModelReviewBatchRecord.review_plan_id == lease.review_plan_id,
+                        ModelReviewBatchRecord.agent == agent,
+                        ModelReviewBatchRecord.batch_number == batch_number,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise ModelReviewConflictError("模型批次不存在")
+                if row.status == ModelBatchStatus.SUCCEEDED.value:
+                    session.commit()
+                    return self._stored_model_batch(row)
+                if (
+                    row.status != ModelBatchStatus.RUNNING.value
+                    or row.lease_owner != lease.worker_id
+                    or row.lease_expires_at is None
+                    or _as_utc(row.lease_expires_at) <= _as_utc(now)
+                ):
+                    raise TaskLeaseLostError("模型批次租约已失效")
+                row.lease_expires_at = max(
+                    _as_utc(row.lease_expires_at),
+                    _as_utc(renewed_until),
+                )
+                row.updated_at = now
+                session.commit()
+                return self._stored_model_batch(row)
+            except (TaskLeaseLostError, ModelReviewConflictError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model batch lease could not be renewed") from exc
+
+    def renew_model_batches(
+        self,
+        lease: ReviewTaskLease,
+        batches: tuple[ModelBatchLease, ...],
+    ) -> tuple[StoredModelBatch, ...]:
+        """在一个事务中延长当前 Worker 持有的多个模型批次租约。
+
+        固定工作流最多同时运行三路 Agent；批次心跳必须用一次有界查询和一次
+        提交完成续租，不能在 Python 循环中逐批访问数据库形成 N+1。
+        """
+
+        if not batches:
+            return ()
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        for item in batches:
+            if not item.agent or len(item.agent) > 32:
+                raise ValueError("model batch agent name is invalid")
+            if item.batch_number <= 0:
+                raise ValueError("model batch number must be positive")
+            if item.lease_duration.total_seconds() <= 0:
+                raise ValueError("model batch lease duration must be positive")
+        keys = tuple((item.agent, item.batch_number) for item in batches)
+        if len(keys) != len(set(keys)):
+            raise ValueError("model batch identities must be unique")
+        now = self._clock()
+        renewed_until = {
+            (item.agent, item.batch_number): now + item.lease_duration
+            for item in batches
+        }
+        predicates = tuple(
+            and_(
+                ModelReviewBatchRecord.agent == agent,
+                ModelReviewBatchRecord.batch_number == batch_number,
+            )
+            for agent, batch_number in keys
+        )
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                rows = list(
+                    session.scalars(
+                        select(ModelReviewBatchRecord)
+                        .where(
+                            ModelReviewBatchRecord.review_plan_id
+                            == lease.review_plan_id,
+                            or_(*predicates),
+                        )
+                        .with_for_update()
+                    )
+                )
+                rows_by_key = {
+                    (row.agent, row.batch_number): row for row in rows
+                }
+                for key in keys:
+                    row = rows_by_key.get(key)
+                    if row is None:
+                        raise ModelReviewConflictError("模型批次不存在")
+                    if row.status == ModelBatchStatus.SUCCEEDED.value:
+                        continue
+                    if (
+                        row.status != ModelBatchStatus.RUNNING.value
+                        or row.lease_owner != lease.worker_id
+                        or row.lease_expires_at is None
+                        or _as_utc(row.lease_expires_at) <= _as_utc(now)
+                    ):
+                        raise TaskLeaseLostError("模型批次租约已失效")
+                    row.lease_expires_at = max(
+                        _as_utc(row.lease_expires_at),
+                        _as_utc(renewed_until[key]),
+                    )
+                    row.updated_at = now
+                session.commit()
+                return tuple(
+                    self._stored_model_batch(rows_by_key[key]) for key in keys
+                )
+            except (TaskLeaseLostError, ModelReviewConflictError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model batch leases could not be renewed") from exc
+
     def complete_model_batch(
         self,
         lease: ReviewTaskLease,
@@ -2282,8 +2488,13 @@ class SqlAlchemyReviewTaskQueue:
         result: ModelReviewResult,
         *,
         agent: str = "default",
+        expected_attempt_count: int | None = None,
     ) -> StoredModelBatch:
-        """保存一次成功结果，并清除批次租约。"""
+        """保存一次成功结果，并清除批次租约。
+
+        ``expected_attempt_count`` 是领取批次时返回的代次。旧 Worker 即使和
+        新 Worker 使用同一个稳定 ID，也不能在租约过期并重新领取后覆盖新结果。
+        """
 
         if lease.review_plan_id is None:
             raise ModelReviewConflictError("模型批次缺少 Review Plan")
@@ -2310,6 +2521,10 @@ class SqlAlchemyReviewTaskQueue:
                     or row.lease_owner != lease.worker_id
                     or row.lease_expires_at is None
                     or _as_utc(row.lease_expires_at) <= _as_utc(now)
+                    or (
+                        expected_attempt_count is not None
+                        and row.attempt_count != expected_attempt_count
+                    )
                 ):
                     raise TaskLeaseLostError("模型批次租约已失效")
                 row.status = ModelBatchStatus.SUCCEEDED.value
@@ -2359,13 +2574,20 @@ class SqlAlchemyReviewTaskQueue:
         *,
         agent: str = "default",
         retry_delay: timedelta | None = None,
+        expected_attempt_count: int | None = None,
     ) -> StoredModelBatch:
         """保存单批安全错误，供阶段级重试恢复。"""
 
         if lease.review_plan_id is None:
             raise ModelReviewConflictError("模型批次缺少 Review Plan")
         now = self._clock()
-        delay = retry_delay or timedelta(seconds=self._retry_base_seconds)
+        # 零秒是合法的立即重试退避；不能用 ``or`` 把 ``timedelta(0)``
+        # 误当成“未传参数”并替换成默认退避。
+        delay = (
+            retry_delay
+            if retry_delay is not None
+            else timedelta(seconds=self._retry_base_seconds)
+        )
         if delay.total_seconds() < 0:
             raise ValueError("model batch retry delay cannot be negative")
         with self._sessions() as session:
@@ -2390,7 +2612,15 @@ class SqlAlchemyReviewTaskQueue:
                     # 错误快照，避免重复写事件或缩短退避窗口。
                     session.commit()
                     return self._stored_model_batch(row)
-                if row.lease_owner not in {None, lease.worker_id}:
+                if (
+                    row.lease_owner != lease.worker_id
+                    or row.lease_expires_at is None
+                    or _as_utc(row.lease_expires_at) <= _as_utc(now)
+                    or (
+                        expected_attempt_count is not None
+                        and row.attempt_count != expected_attempt_count
+                    )
+                ):
                     raise TaskLeaseLostError("模型批次由其他 Worker 持有")
                 row.status = ModelBatchStatus.FAILED.value
                 row.lease_owner = None
@@ -3097,6 +3327,19 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
                 ReviewTaskRecord.claimed_from_status
                 == lease.claimed_from_status.value,
+                # 暂停是独立的人工门。即使旧数据在暂停时错误地保留了
+                # ``execution_status=running``，也不能让旧 Worker 继续写入
+                # 批次、预算或进度；与 _locked_owned_task 保持同一所有权条件。
+                or_(
+                    ReviewTaskRecord.workflow_status.is_(None),
+                    ReviewTaskRecord.workflow_status
+                    != ExecutionStatus.PAUSED.value,
+                ),
+                or_(
+                    ReviewRunRecord.workflow_status.is_(None),
+                    ReviewRunRecord.workflow_status
+                    != ExecutionStatus.PAUSED.value,
+                ),
                 ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
@@ -3398,6 +3641,16 @@ class SqlAlchemyReviewTaskQueue:
             claimed_from is ExecutionStatus.READY_FOR_REVIEW
             and task.model_attempt_count > 0
         )
+        batch_retry_managed = (
+            is_model_stage
+            and error.code is ErrorCode.MODEL_BATCH_BUSY
+            and error.details.get("batch_retry_managed") is True
+        )
+        if batch_retry_managed:
+            # 只有批次忙碌才表示本次领取没有发出模型请求。其他批次错误
+            # （超时、解析失败等）确实已经完成了一次模型尝试，不能回退
+            # model_attempt_count，否则会绕过任务级重试上限或改变后续阶段判断。
+            task.model_attempt_count = max(0, task.model_attempt_count - 1)
         active_attempt_count = (
             task.model_attempt_count if is_model_stage else task.attempt_count
         )
@@ -3409,10 +3662,6 @@ class SqlAlchemyReviewTaskQueue:
         task.lease_expires_at = None
         task.claimed_from_status = None
         task.updated_at = now
-        batch_retry_managed = (
-            is_model_stage
-            and error.details.get("batch_retry_managed") is True
-        )
         if not error.retryable or (
             active_attempt_count >= task.max_attempts
             and not batch_retry_managed
@@ -3436,7 +3685,15 @@ class SqlAlchemyReviewTaskQueue:
             )
             task.execution_status = retry_status.value
             run.execution_status = retry_status.value
-            task.available_at = now + self._retry_delay(active_attempt_count)
+            retry_at = self._batch_retry_at(error, now)
+            default_retry_at = now + self._retry_delay(active_attempt_count)
+            # 批次忙碌/退避时间来自数据库中的持久化状态，不能被普通任务的
+            # 5/10/20 秒退避提前覆盖；同时保留默认退避作为最小间隔，避免
+            # 已经过期或时钟轻微回拨时立即忙轮询。
+            task.available_at = max(
+                default_retry_at,
+                retry_at if retry_at is not None else default_retry_at,
+            )
             event_type = "review.task.retry_scheduled"
             event_key = f"retry:{event_suffix}"
             event_payload = {
@@ -3470,12 +3727,44 @@ class SqlAlchemyReviewTaskQueue:
         负数或零不会产生负延迟：指数使用 ``max(0, attempt_count - 1)``，便于
         数据修复或测试传入边界值时保持安全。
         """
-        exponent = max(0, attempt_count - 1)
+        # 先限制指数再做幂运算，避免损坏数据中的超大计数造成巨大整数。
+        exponent = min(8, max(0, attempt_count - 1))
         seconds = min(
             self._retry_cap_seconds,
             self._retry_base_seconds * (2**exponent),
         )
         return timedelta(seconds=seconds)
+
+    @staticmethod
+    def _batch_retry_at(
+        error: SafeError,
+        now: datetime,
+    ) -> datetime | None:
+        """读取批次级错误携带的下一次可尝试时间。
+
+        只有 ``MODEL_BATCH_BUSY`` 且明确标记为批次管理的错误才允许影响任务
+        调度；其他错误详情即使包含同名字段也不会把任务任意推迟。
+        """
+
+        if (
+            error.code is not ErrorCode.MODEL_BATCH_BUSY
+            or error.details.get("batch_retry_managed") is not True
+        ):
+            return None
+        raw_retry_at = error.details.get("retry_at")
+        if not isinstance(raw_retry_at, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw_retry_at)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        else:
+            parsed = parsed.astimezone(UTC)
+        if parsed <= _as_utc(now):
+            return None
+        return parsed
 
     def _add_event(
         self,

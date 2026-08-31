@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Literal
@@ -264,12 +264,9 @@ class AgentSettingsService:
             model_settings = self._to_model_settings(provider, draft, key)
             fingerprint = self._fingerprint(model_settings)
         try:
-            self._connection_tester(
-                replace(
-                    model_settings,
-                    max_output_tokens=min(model_settings.max_output_tokens, 512),
-                )
-            )
+            # 探测提示很短，实际消耗仍然很小；请求参数必须保持和正式 Agent
+            # 审查一致，才能发现中转站对 32K 上限或结构化格式的限制。
+            self._connection_tester(model_settings)
         except SafeApplicationError as exc:
             self._record_test(agent, expected_revision, actor, fingerprint, False)
             raise AiConnectionTestError(

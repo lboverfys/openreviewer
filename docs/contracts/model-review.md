@@ -15,14 +15,18 @@ Worker 通过统一 `ModelReviewer` 边界支持三种官方 HTTP 协议：
 | OpenAI Chat Completions | `POST /v1/chat/completions` | `response_format.type = json_schema`，并启用 `strict` |
 | Anthropic | `POST /v1/messages` | `output_config.format.type = json_schema` |
 
-两种 OpenAI 请求都设置 `store: false`。Responses 从 `output[].content[]` 的 `output_text`
+官方 OpenAI 端点的两种请求都设置 `store: false`；Responses 请求默认发送 `stream: true`，
+并按 `response.output_text.delta` 与 `response.completed` 事件在内存中聚合，避免中转站或 CDN
+在首字节前等待完整长输出而触发固定网关超时。若中转站明确返回不支持 `stream`，才回退一次
+普通 JSON 请求；不会因为任意 4xx 自动回退。自定义中转地址不发送 `store: false`，避免
+窄请求模型因未知字段拒绝请求。Responses 从 `output[].content[]` 的 `output_text`
 读取，并显式拒绝 `refusal` 和 `incomplete`；Chat Completions 从
 `choices[0].message.content` 读取，只接受 `finish_reason = stop`，并拒绝 `length`、
 `content_filter` 和 `message.refusal`。Anthropic 请求固定 `anthropic-version: 2023-06-01`，只接受
 `stop_reason = end_turn`，拒绝 `refusal`、`max_tokens` 和其他未知结束原因。
 
-中转站兼容降级只在 HTTP `400`/`422` 且安全截断后的错误明确同时指出“不支持”和已知可选
-字段时发生。允许的变化只有：移除推理参数、把 Chat Completions 的
+中转站兼容降级只在 HTTP `4xx`/`5xx`（排除鉴权、权限、超时、冲突和限流）且安全截断后的错误
+明确同时指出“不支持”或“当前值无效、支持其他值”，并命中已知可选字段时发生。允许的变化只有：移除 Responses 的 `stream`/推理参数、把 Chat Completions 的
 `max_completion_tokens` 改为 `max_tokens`，或把 JSON Schema 格式降为 JSON Object/移除旧
 Anthropic 格式字段。鉴权、权限、限流、普通校验错误和任意 4xx 都不会触发降级；重试体使用
 稳定签名防止死循环。降级后响应仍必须通过本地 Pydantic 严格校验，不会接受额外字段或不合法
@@ -53,7 +57,8 @@ Prompt 同时携带平台实际使用的完整 `output_contract`，避免中转�
 - 每批只携带本批引用的规则，Unit 通过 `rule_paths` 引用规则，避免同一批内重复上下文。
 - 没有 Review Unit 时不调用外部 API，保存一条 `skipped`、零 Token、零成本的完成审计。
 - Prompt 明确把仓库规则和 diff 视为不可信数据；模型不得执行代码、访问网络或改变输出协议。
-- 请求和响应都有字节上限、连接/读/写/连接池超时，HTTP 不在数据库事务中执行。
+- 请求和响应都有字节上限、连接/读/写/连接池超时；Responses SSE 事件也受同一响应字节
+  上限约束，缺少终态响应或用量时安全失败；HTTP 不在数据库事务中执行。
 - 每批规划、准备、请求发出、响应返回、完成或失败状态写入结构化 Outbox 事件，记录批次、
   文件、HTTP 状态、请求 ID、Token、耗时与可重试错误；不保存或伪造模型私密
   Chain-of-Thought。

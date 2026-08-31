@@ -1,8 +1,15 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, ApiError } from "./api";
+import { api, ApiError, DASHBOARD_CACHE_TTL_MS, peekReadCache, primeReadCache } from "./api";
 import { Brand } from "./Auth";
-import { appendReviewPage, applyLiveDashboardSnapshot } from "./dashboard";
+import {
+  appendReviewPage,
+  applyLiveDashboardSnapshot,
+  DASHBOARD_FALLBACK_REFRESH_MS,
+  DASHBOARD_INITIAL_FALLBACK_MS,
+  DASHBOARD_STATUS_ORDER,
+} from "./dashboard";
+import type { DashboardRefreshOptions, DashboardStreamState } from "./dashboard";
 import { hasPermission, roleLabels } from "./rbac";
 import type {
   AuthUser,
@@ -18,18 +25,6 @@ import {
   workerLabels,
   reviewDisplayLabel,
 } from "./utils";
-
-type StreamState = "connecting" | "live" | "reconnecting";
-
-const statusOrder: ExecutionStatus[] = [
-  "queued",
-  "running",
-  "waiting_for_ci",
-  "ready_for_review",
-  "completed",
-  "failed",
-];
-
 function StatusBadge({ status, label }: { status: ExecutionStatus; label?: string }) {
   return (
     <span className={`warm-status-pill status-${status}`}>
@@ -38,7 +33,6 @@ function StatusBadge({ status, label }: { status: ExecutionStatus; label?: strin
     </span>
   );
 }
-
 function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunId: string) => void }) {
   const hasBranchRoute = Boolean(review.head_ref || review.base_ref);
   const headRepository = review.head_repository ?? review.repository;
@@ -358,68 +352,173 @@ interface DashboardProps {
 }
 
 function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenReview }: DashboardProps) {
-  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
-  const [streamState, setStreamState] = useState<StreamState>("connecting");
+  const cachedSnapshot = peekReadCache<DashboardSnapshot>("dashboard:first:50");
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(cachedSnapshot ?? null);
+  const [streamState, setStreamState] = useState<DashboardStreamState>("connecting");
   const [pageMessage, setPageMessage] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cachedSnapshot === undefined);
   const [loadingMore, setLoadingMore] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const [searchKeyword, setSearchKeyword] = useState<string>("");
-
-  const refresh = useCallback(async (signal?: AbortSignal) => {
+  const refreshSequence = useRef(0);
+  const streamLiveRef = useRef(false);
+  const refresh = useCallback(async ({
+    signal,
+    force = false,
+    preserveLiveSnapshot = false,
+  }: DashboardRefreshOptions = {}) => {
+    const sequence = ++refreshSequence.current;
     try {
-      setSnapshot(await api.dashboard(undefined, 50, signal));
+      const next = await api.dashboard(undefined, 50, signal, force);
+      // SSE 首次事件可能比 HTTP 快；不要让较晚返回的旧快照覆盖实时数据。
+      if (signal?.aborted || sequence !== refreshSequence.current) return;
+      if (!preserveLiveSnapshot || !streamLiveRef.current) {
+        setSnapshot((current) => applyLiveDashboardSnapshot(current, next));
+      }
       setPageMessage("");
     } catch (error) {
-      if (signal?.aborted) return;
+      if (signal?.aborted || sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return;
       }
       setPageMessage("暂时无法读取仪表盘，系统正在自动重试连接");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted && sequence === refreshSequence.current) setLoading(false);
     }
   }, [onSignedOut]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal);
-    const source = new EventSource("/api/v1/reviews/stream");
-    source.onopen = () => {
-      setStreamState("live");
-    };
-    source.addEventListener("dashboard", (event) => {
-      try {
-        const incoming = JSON.parse(
-          (event as MessageEvent<string>).data,
-        ) as DashboardSnapshot;
-        setSnapshot((current) => applyLiveDashboardSnapshot(current, incoming));
-        setStreamState("live");
-        setLoading(false);
-      } catch {
-        setStreamState("reconnecting");
+    streamLiveRef.current = false;
+    let source: EventSource | null = null;
+    let disposed = false;
+    let initialSnapshotReceived = false;
+    let fallbackInFlight = false;
+    let fallbackTimer: number | undefined;
+
+    const clearFallback = () => {
+      if (fallbackTimer !== undefined) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = undefined;
       }
-    });
-    source.addEventListener("unavailable", () => {
-      setStreamState("reconnecting");
-    });
-    source.addEventListener("auth-expired", () => {
-      source.close();
-      onSignedOut("登录状态已失效，请重新登录");
-    });
-    source.onerror = () => {
-      setStreamState("reconnecting");
     };
+    const scheduleFallback = (delay = DASHBOARD_INITIAL_FALLBACK_MS) => {
+      if (
+        disposed
+        || initialSnapshotReceived
+        || fallbackInFlight
+        || fallbackTimer !== undefined
+        || document.visibilityState === "hidden"
+      ) return;
+      fallbackTimer = window.setTimeout(() => {
+        fallbackTimer = undefined;
+        if (
+          disposed
+          || initialSnapshotReceived
+          || fallbackInFlight
+          || document.visibilityState === "hidden"
+        ) return;
+        fallbackInFlight = true;
+        void refresh({
+          signal: controller.signal,
+          preserveLiveSnapshot: true,
+        }).finally(() => {
+          fallbackInFlight = false;
+          // SSE 不可用时继续用低频 HTTP 快照维持页面可用；一旦收到
+          // SSE 快照，事件处理器会置位并取消后续兜底请求。
+          if (!disposed && !initialSnapshotReceived) {
+            scheduleFallback(DASHBOARD_FALLBACK_REFRESH_MS);
+          }
+        });
+      }, delay);
+    };
+
+    const disconnect = () => {
+      source?.close();
+      source = null;
+    };
+    const connect = () => {
+      if (disposed || document.visibilityState === "hidden" || source) return;
+      const nextSource = new EventSource("/api/v1/reviews/stream");
+      source = nextSource;
+      nextSource.onopen = () => {
+        setStreamState("live");
+      };
+      nextSource.addEventListener("dashboard", (event) => {
+        if (disposed || controller.signal.aborted) return;
+        try {
+          const incoming = JSON.parse(
+            (event as MessageEvent<string>).data,
+          ) as DashboardSnapshot;
+          initialSnapshotReceived = true;
+          clearFallback();
+          streamLiveRef.current = true;
+          const cachedBeforeEvent = peekReadCache<DashboardSnapshot>("dashboard:first:50");
+          if (!cachedBeforeEvent || incoming.generated_at >= cachedBeforeEvent.generated_at) {
+            primeReadCache("dashboard:first:50", incoming, DASHBOARD_CACHE_TTL_MS);
+          }
+          setSnapshot((current) => applyLiveDashboardSnapshot(current, incoming));
+          setStreamState("live");
+          setLoading(false);
+        } catch {
+          setStreamState("reconnecting");
+        }
+      });
+      nextSource.addEventListener("unavailable", () => {
+        initialSnapshotReceived = false;
+        streamLiveRef.current = false;
+        setStreamState("reconnecting");
+        scheduleFallback(0);
+      });
+      nextSource.addEventListener("auth-expired", () => {
+        disconnect();
+        onSignedOut("登录状态已失效，请重新登录");
+      });
+      nextSource.onerror = () => {
+        // EventSource 会自行尝试重连；重连期间仍用低频 HTTP 快照保持
+        // 数据新鲜，不能因为此前收到过首帧就永久关闭兜底。
+        initialSnapshotReceived = false;
+        streamLiveRef.current = false;
+        setStreamState("reconnecting");
+        scheduleFallback(0);
+      };
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        disconnect();
+        clearFallback();
+        // 页面隐藏期间 EventSource 会被主动关闭。下次恢复时必须重新等待
+        // 首个实时快照；否则旧会话已经收到过快照，scheduleFallback(0)
+        // 会被 initialSnapshotReceived 拦截，SSE 重连失败时页面就会一直
+        // 停留在旧数据。
+        initialSnapshotReceived = false;
+        streamLiveRef.current = false;
+        setStreamState("reconnecting");
+      } else {
+        // 先重置首帧标记，再建立新 SSE。这样无论新连接最终成功还是
+        // 失败，首帧超时后的 HTTP 兜底都会重新生效。
+        initialSnapshotReceived = false;
+        streamLiveRef.current = false;
+        connect();
+        scheduleFallback(0);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    connect();
+    scheduleFallback();
     return () => {
+      disposed = true;
       controller.abort();
-      source.close();
+      clearFallback();
+      disconnect();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [refresh]);
 
   const statusCards = useMemo(
     () =>
-      statusOrder.map((status) => ({
+      DASHBOARD_STATUS_ORDER.map((status) => ({
         status,
         count: snapshot?.status_counts[status] ?? 0,
       })),
@@ -532,7 +631,7 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
           <button
             type="button"
             className="bento-refresh-icon-btn"
-            onClick={() => void refresh()}
+            onClick={() => void refresh({ force: true })}
             title="刷新数据快照"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
@@ -885,7 +984,7 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
             <CreateReviewForm
               onCreated={(message) => {
                 setPageMessage(message);
-                void refresh();
+                void refresh({ force: true });
               }}
               onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
             />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError } from "./api";
 import { LoadingScreen, Login } from "./Auth";
@@ -37,6 +37,28 @@ export function readAppView(hash = window.location.hash): AppView {
 export default function App() {
   const [session, setSession] = useState<SessionState>({ phase: "checking" });
   const [view, setView] = useState<AppView>(readAppView);
+
+  // 页面组件会把这些回调放进数据加载 effect 的依赖。保持引用稳定，
+  // 避免一次无关的 App 重渲染就重新建立 SSE 或重复读取页面数据。
+  const onSignedOut = useCallback((message?: string) => {
+    window.location.hash = "";
+    setSession({ phase: "guest", message });
+  }, []);
+  const onAuthenticated = useCallback((user: AuthUser) => {
+    setSession({ phase: "authenticated", user });
+  }, []);
+  const onBack = useCallback(() => {
+    window.location.hash = "";
+  }, []);
+  const onOpenSettings = useCallback(() => {
+    window.location.hash = "settings";
+  }, []);
+  const onOpenKnowledge = useCallback(() => {
+    window.location.hash = "knowledge";
+  }, []);
+  const onOpenReview = useCallback((reviewRunId: string) => {
+    window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;
+  }, []);
 
   useEffect(() => {
     function syncViewWithHash() {
@@ -83,7 +105,7 @@ export default function App() {
     return (
       <Login
         initialMessage={session.message}
-        onAuthenticated={(user) => setSession({ phase: "authenticated", user })}
+        onAuthenticated={onAuthenticated}
       />
     );
   }
@@ -91,13 +113,8 @@ export default function App() {
     return (
       <SettingsPage
         user={session.user}
-        onBack={() => {
-          window.location.hash = "";
-        }}
-        onSignedOut={(message) => {
-          window.location.hash = "";
-          setSession({ phase: "guest", message });
-        }}
+        onBack={onBack}
+        onSignedOut={onSignedOut}
       />
     );
   }
@@ -105,16 +122,9 @@ export default function App() {
     return (
       <KnowledgePage
         user={session.user}
-        onBack={() => {
-          window.location.hash = "";
-        }}
-        onOpenSettings={() => {
-          window.location.hash = "settings";
-        }}
-        onSignedOut={(message) => {
-          window.location.hash = "";
-          setSession({ phase: "guest", message });
-        }}
+        onBack={onBack}
+        onOpenSettings={onOpenSettings}
+        onSignedOut={onSignedOut}
       />
     );
   }
@@ -123,32 +133,19 @@ export default function App() {
       <ReviewDetailPage
         user={session.user}
         reviewRunId={view.reviewRunId}
-        onBack={() => {
-          window.location.hash = "";
-        }}
-        onOpenReview={(reviewRunId) => {
-          window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;
-        }}
-        onSignedOut={(message) => {
-          window.location.hash = "";
-          setSession({ phase: "guest", message });
-        }}
+        onBack={onBack}
+        onOpenReview={onOpenReview}
+        onSignedOut={onSignedOut}
       />
     );
   }
   return (
     <DashboardPage
       user={session.user}
-      onSignedOut={(message) => setSession({ phase: "guest", message })}
-      onOpenSettings={() => {
-        window.location.hash = "settings";
-      }}
-      onOpenKnowledge={() => {
-        window.location.hash = "knowledge";
-      }}
-      onOpenReview={(reviewRunId) => {
-        window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;
-      }}
+      onSignedOut={onSignedOut}
+      onOpenSettings={onOpenSettings}
+      onOpenKnowledge={onOpenKnowledge}
+      onOpenReview={onOpenReview}
     />
   );
 }

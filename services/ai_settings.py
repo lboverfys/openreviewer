@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import time
 from base64 import b64decode
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -52,7 +54,7 @@ from services.review_planning import (
 )
 
 if TYPE_CHECKING:
-    from services.agent_settings import AgentSettingsService
+    from services.agent_settings import AgentSettingsService, AgentSettingsView
     from services.agent_workflow import FixedAgentWorkflow
 
 
@@ -452,6 +454,25 @@ class AiSettingsService:
             except SQLAlchemyError as exc:
                 raise AiSettingsPersistenceError("AI 配置暂时无法读取") from exc
 
+    def revision(self) -> int:
+        """只读取全局配置修订号，供 Worker 的运行时快路径使用。
+
+        Worker 的常驻轮询不需要在每一轮都解密供应商密钥或组装完整配置。
+        修订号是所有供应商、审查策略和 Agent 写操作共用的单调版本，因此只查
+        这个单例主键即可判断缓存的运行时是否仍然有效。
+        """
+
+        with self._sessions() as session:
+            try:
+                value = session.scalar(
+                    select(AiSettingsRecord.revision).where(
+                        AiSettingsRecord.id == AI_SETTINGS_ID
+                    )
+                )
+                return int(value or 0)
+            except SQLAlchemyError as exc:
+                raise AiSettingsPersistenceError("AI 配置版本暂时无法读取") from exc
+
     def update_provider(
         self,
         provider: ModelProvider,
@@ -641,12 +662,10 @@ class AiSettingsService:
     ) -> AiSettingsView:
         prepared = self._prepare_provider_test(provider, expected_revision)
         try:
-            self._connection_tester(
-                replace(
-                    prepared.settings,
-                    max_output_tokens=min(prepared.settings.max_output_tokens, 512),
-                )
-            )
+            # 连接测试必须使用与正式审查相同的请求上限。只把提示词做得很小
+            # 可以控制实际用量，但不能偷偷改掉 max_output_tokens；否则中转站
+            # 可能在 512 Token 探测时通过、在真实 32K 请求时拒绝。
+            self._connection_tester(prepared.settings)
         except SafeApplicationError as exc:
             message = exc.error.safe_message
             retryable = exc.error.retryable
@@ -1294,7 +1313,14 @@ class AiSettingsService:
 
 
 class SqlAlchemyAiRuntimeProvider:
-    """按配置 revision 缓存旧版或固定多 Agent 模型运行时。"""
+    """按配置 revision 缓存旧版或固定多 Agent 模型运行时。
+
+    ``current`` 先走只读 revision 查询；只有版本变化时才读取完整配置、解密
+    密钥并重建 HTTP 客户端。短 TTL 用来合并极短时间内的空闲轮询，避免每次
+    轮询都触碰数据库；设置为 ``0`` 可关闭 TTL（测试或需要立即感知变更时）。
+    """
+
+    DEFAULT_REVISION_CACHE_TTL_SECONDS = 1.0
 
     def __init__(
         self,
@@ -1302,22 +1328,110 @@ class SqlAlchemyAiRuntimeProvider:
         agent_settings_service: AgentSettingsService | None = None,
         *,
         max_agent_concurrency: int = 3,
+        revision_cache_ttl_seconds: float = DEFAULT_REVISION_CACHE_TTL_SECONDS,
+        clock: Callable[[], float] | None = None,
     ) -> None:
-        if not 1 <= max_agent_concurrency <= 3:
+        if (
+            isinstance(max_agent_concurrency, bool)
+            or not isinstance(max_agent_concurrency, int)
+            or not 1 <= max_agent_concurrency <= 3
+        ):
             raise ValueError("Agent 并发上限必须在 1 到 3 之间")
+        try:
+            ttl_seconds = float(revision_cache_ttl_seconds)
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("运行时 revision 缓存 TTL 必须是有限的非负数") from exc
+        if (
+            isinstance(revision_cache_ttl_seconds, bool)
+            or not isinstance(revision_cache_ttl_seconds, (int, float))
+            or not math.isfinite(ttl_seconds)
+            or ttl_seconds < 0
+        ):
+            raise ValueError("运行时 revision 缓存 TTL 必须是有限的非负数")
         self._service = service
         self._agent_settings_service = agent_settings_service
         self._max_agent_concurrency = max_agent_concurrency
+        self._revision_cache_ttl_seconds = ttl_seconds
+        self._clock = clock or time.monotonic
         self._lock = RLock()
         self._cached: ActiveAiRuntime | None = None
+        self._cached_revision: int | None = None
+        self._cache_initialized = False
+        self._last_revision_check_at: float | None = None
+
+    def _read_consistent_inputs(
+        self,
+        observed_revision: int,
+    ) -> tuple[int, ActiveAiSettings | None, AgentSettingsView | None] | None:
+        """读取同一 revision 下的 AI 与 Agent 配置。
+
+        AI 配置和 Agent 配置分属不同服务、不同短事务；管理员恰好在两次读取
+        之间保存设置时，直接 ``max(revision)`` 只能给混合快照贴上新标签，不能
+        保证运行时真的来自同一版本。因此这里在读前后各取一次轻量 revision，
+        发现变化就丢弃本轮结果并重试；连续变化时交给下一次 Worker 轮询处理。
+        """
+
+        for _ in range(3):
+            settings = self._service.active_settings()
+            agent_view = (
+                self._agent_settings_service.get()
+                if self._agent_settings_service is not None
+                else None
+            )
+            latest_revision = self._service.revision()
+            loaded_revisions_match = (
+                (settings is None or settings.revision == observed_revision)
+                and (
+                    agent_view is None
+                    or agent_view.revision == observed_revision
+                )
+            )
+            if (
+                observed_revision == latest_revision
+                and loaded_revisions_match
+            ):
+                return observed_revision, settings, agent_view
+            observed_revision = latest_revision
+        return None
+
+    def _touch_revision_check(self, now: float) -> None:
+        """只向前移动缓存检查时间，避免旧并发调用覆盖新时间。"""
+
+        if self._last_revision_check_at is None:
+            self._last_revision_check_at = now
+        else:
+            self._last_revision_check_at = max(self._last_revision_check_at, now)
 
     def current(self) -> ActiveAiRuntime | None:
-        settings = self._service.active_settings()
-        agent_view = (
-            self._agent_settings_service.get()
-            if self._agent_settings_service is not None
-            else None
-        )
+        now = self._clock()
+        with self._lock:
+            if (
+                self._cache_initialized
+                and self._revision_cache_ttl_seconds > 0
+                and self._last_revision_check_at is not None
+                and now < self._last_revision_check_at + self._revision_cache_ttl_seconds
+            ):
+                return self._cached
+
+        # 这是唯一的常规轮询查询；完整配置和密钥只在版本变化时读取。
+        # 配置写入恰好跨过多个短事务时，辅助方法会丢弃混合快照并重试。
+        observed_revision = self._service.revision()
+        with self._lock:
+            if self._cache_initialized and self._cached_revision == observed_revision:
+                self._touch_revision_check(now)
+                return self._cached
+        configuration = self._read_consistent_inputs(observed_revision)
+        if configuration is None:
+            with self._lock:
+                # 快照不一致时不要刷新 TTL，否则持续写入期间可能无限复用
+                # 旧 runtime；下一轮应立即重新尝试读取一致版本。
+                self._last_revision_check_at = None
+                # 不在配置变动风暴中构造混合 runtime；已有 runtime 仍可安全
+                # 完成当前请求，下一轮再尝试读取最新版本。
+                return self._cached
+        observed_revision, settings, agent_view = configuration
+
+        # 只有 revision 变化（或首次调用）才进入这些较重的读取和解密路径。
         configured_agents = (
             tuple(item for item in agent_view.agents if item.configured)
             if agent_view is not None
@@ -1337,78 +1451,145 @@ class SqlAlchemyAiRuntimeProvider:
         )
         required_agents = set(ReviewAgent)
         revision = max(
+            observed_revision,
             settings.revision if settings is not None else 0,
             agent_view.revision if agent_view is not None else 0,
         )
         with self._lock:
+            # 并发调用可能先完成了更高版本的重建；旧调用不能把它覆盖回去。
+            if (
+                self._cache_initialized
+                and self._cached_revision is not None
+                and self._cached_revision >= revision
+            ):
+                # 另一个并发调用可能已经完成了同一 revision 的重建；丢弃本次
+                # 仅用于判断的读取结果，继续复用它，并刷新检查时间。
+                self._touch_revision_check(now)
+                return self._cached
             if settings is None and not configured_agents:
                 self._close_cached()
+                self._cached_revision = revision
+                self._cache_initialized = True
+                self._touch_revision_check(now)
                 return None
             # 一旦开始配置新版 Agent，就必须四个节点全部就绪。部分配置不能
             # 静默退回旧单模型，也不能让某个 Agent 代替缺失节点。
             if configured_agents and ready_agents != required_agents:
                 self._close_cached()
+                self._cached_revision = revision
+                self._cache_initialized = True
+                self._touch_revision_check(now)
                 return None
             if self._cached is not None and self._cached.revision == revision:
                 return self._cached
             use_agent_workflow = bool(configured_agents)
-            reviewer = (
-                create_model_reviewer(settings.model)
-                if settings is not None and not use_agent_workflow
-                else None
-            )
-            if settings is not None:
-                planning = settings.planning
-            else:
-                snapshot = self._service.get()
-                planning = ReviewPlanningSettings(
-                    max_units=snapshot.max_units,
-                    max_scope_depth=snapshot.max_scope_depth,
-                    max_unit_input_bytes=snapshot.max_unit_input_bytes,
-                    max_total_input_bytes=snapshot.max_total_input_bytes,
-                    model_budget=ModelBudgetPolicy(
-                        max_http_calls=snapshot.max_model_http_calls,
-                        max_input_tokens=snapshot.max_model_input_tokens,
-                        max_output_tokens=snapshot.max_model_output_tokens,
-                        max_estimated_cost_microusd=(
-                            snapshot.max_model_cost_microusd
+            reviewer: ModelReviewer | None = None
+            agent_workflow: FixedAgentWorkflow | None = None
+            try:
+                reviewer = (
+                    create_model_reviewer(settings.model)
+                    if settings is not None and not use_agent_workflow
+                    else None
+                )
+                if settings is not None:
+                    planning = settings.planning
+                else:
+                    snapshot = self._service.get()
+                    planning = ReviewPlanningSettings(
+                        max_units=snapshot.max_units,
+                        max_scope_depth=snapshot.max_scope_depth,
+                        max_unit_input_bytes=snapshot.max_unit_input_bytes,
+                        max_total_input_bytes=snapshot.max_total_input_bytes,
+                        model_budget=ModelBudgetPolicy(
+                            max_http_calls=snapshot.max_model_http_calls,
+                            max_input_tokens=snapshot.max_model_input_tokens,
+                            max_output_tokens=snapshot.max_model_output_tokens,
+                            max_estimated_cost_microusd=(
+                                snapshot.max_model_cost_microusd
+                            ),
+                            max_duration_seconds=snapshot.max_model_duration_seconds,
                         ),
-                        max_duration_seconds=snapshot.max_model_duration_seconds,
-                    ),
-                )
-            agent_workflow = None
-            if use_agent_workflow and self._agent_settings_service is not None:
-                from services.agent_workflow import FixedAgentWorkflow
+                    )
+                    if self._service.revision() != revision:
+                        if reviewer is not None:
+                            reviewer.close()
+                        self._last_revision_check_at = None
+                        return self._cached
+                if use_agent_workflow and self._agent_settings_service is not None:
+                    from services.agent_workflow import FixedAgentWorkflow
 
-                agent_settings = self._agent_settings_service.model_settings()
-                if set(agent_settings) != required_agents:
-                    self._close_cached()
-                    return None
-                reviewers = {
-                    agent: create_model_reviewer(model_settings)
-                    for agent, model_settings in agent_settings.items()
-                }
-
-                agent_workflow = FixedAgentWorkflow(
-                    reviewers,
-                    summary_reviewer=reviewers.get(ReviewAgent.SUMMARY),
-                    agent_settings=agent_settings,
-                    max_concurrency=self._max_agent_concurrency,
+                    agent_settings = self._agent_settings_service.model_settings()
+                    if set(agent_settings) != required_agents:
+                        self._close_cached()
+                        self._cached_revision = revision
+                        self._cache_initialized = True
+                        self._touch_revision_check(now)
+                        return None
+                    # model_settings() 解密的是另一组短事务中的行；再次确认
+                    # 全局版本，避免 Agent 密钥/启停状态与前面的规划快照混用。
+                    if self._service.revision() != revision:
+                        self._last_revision_check_at = None
+                        return self._cached
+                    reviewers: dict[ReviewAgent, ModelReviewer] = {}
+                    try:
+                        for agent, model_settings in agent_settings.items():
+                            reviewers[agent] = create_model_reviewer(model_settings)
+                        agent_workflow = FixedAgentWorkflow(
+                            reviewers,
+                            summary_reviewer=reviewers.get(ReviewAgent.SUMMARY),
+                            agent_settings=agent_settings,
+                            max_concurrency=self._max_agent_concurrency,
+                        )
+                    except Exception:
+                        # 字典推导式在中途失败时不会自动关闭已经创建的
+                        # HTTP 客户端；逐个释放，避免配置热更新反复泄漏连接。
+                        _close_model_reviewers(reviewers.values())
+                        raise
+                runtime = ActiveAiRuntime(
+                    revision=revision,
+                    reviewer=reviewer,
+                    planner=DeterministicReviewPlanner(planning),
+                    model_settings=settings.model if settings is not None else None,
+                    agent_workflow=agent_workflow,
                 )
-            runtime = ActiveAiRuntime(
-                revision=revision,
-                reviewer=reviewer,
-                planner=DeterministicReviewPlanner(planning),
-                model_settings=settings.model if settings is not None else None,
-                agent_workflow=agent_workflow,
-            )
+            except Exception:
+                if agent_workflow is not None:
+                    agent_workflow.close()
+                elif reviewer is not None:
+                    reviewer.close()
+                raise
+            # 最后一道检查覆盖“读取完配置并创建客户端后”的竞态。此时新
+            # runtime 尚未交给缓存，发现版本变化就释放它，下一轮再重建。
+            # revision 查询本身也可能失败；必须先释放未发布的客户端，避免
+            # 数据库短暂不可用时每轮重试都泄漏连接。
+            try:
+                latest_revision = self._service.revision()
+            except Exception:
+                if agent_workflow is not None:
+                    agent_workflow.close()
+                elif reviewer is not None:
+                    reviewer.close()
+                raise
+            if latest_revision != revision:
+                if agent_workflow is not None:
+                    agent_workflow.close()
+                elif reviewer is not None:
+                    reviewer.close()
+                self._last_revision_check_at = None
+                return self._cached
             self._close_cached()
             self._cached = runtime
+            self._cached_revision = revision
+            self._cache_initialized = True
+            self._touch_revision_check(now)
             return runtime
 
     def close(self) -> None:
         with self._lock:
             self._close_cached()
+            self._cached_revision = None
+            self._cache_initialized = False
+            self._last_revision_check_at = None
 
     def _close_cached(self) -> None:
         if self._cached is not None:
@@ -1417,6 +1598,21 @@ class SqlAlchemyAiRuntimeProvider:
             if self._cached.reviewer is not None:
                 self._cached.reviewer.close()
             self._cached = None
+
+
+def _close_model_reviewers(reviewers: Iterable[ModelReviewer]) -> None:
+    """在运行时构造失败时尽力释放已创建的模型客户端。"""
+
+    closed: set[int] = set()
+    for reviewer in reviewers:
+        if id(reviewer) in closed:
+            continue
+        closed.add(id(reviewer))
+        try:
+            reviewer.close()
+        except Exception:
+            # 保留最初的构造异常；清理失败只会留下日志，不能改变失败原因。
+            continue
 
 
 def _test_model_connection(settings: ModelServiceSettings) -> None:

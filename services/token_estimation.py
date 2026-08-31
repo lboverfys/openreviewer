@@ -7,6 +7,16 @@ from domain.enums import ModelApiProtocol, ModelProvider
 
 _MAX_SEMANTIC_NODES = 100_000
 _ESTIMATED_UTF8_BYTES_PER_TOKEN = 2
+# 规划阶段已经以 ``2 UTF-8 字节/Token`` 计算批次。发送前预算只需要一
+# 个有限余量来覆盖 HTTP 信封字段、协议差异和不同供应商 tokenizer 的小
+# 偏差；直接使用 UTF-8 字节数会让有效请求的预留接近翻倍，固定四路
+# Agent 在重试时很容易被错误地判定为耗尽输入预算。
+_RESERVATION_MARGIN_PERCENT = 5
+# Keep the send-time reservation aligned with the planner's documented
+# context safety margin.  A fixed floor matters for small requests where a
+# percentage-only margin would not cover protocol envelopes or tokenizer
+# variance.
+_MIN_RESERVATION_MARGIN_TOKENS = 4_096
 _PROTOCOL_BASE_TOKENS = {
     ModelApiProtocol.RESPONSES: 96,
     ModelApiProtocol.CHAT_COMPLETIONS: 80,
@@ -16,13 +26,41 @@ _PROTOCOL_BASE_TOKENS = {
 
 @dataclass(frozen=True, slots=True)
 class ModelInputTokenEstimate:
-    """同一请求的常规估算值和发送前硬预算上界。"""
+    """同一请求的常规估算值和发送前预算边界。"""
 
     estimated_tokens: int
     upper_bound_tokens: int
     semantic_bytes: int
     serialized_bytes: int
     used_fallback: bool = False
+
+    @property
+    def reservation_tokens(self) -> int:
+        """返回模型预算应预留的输入 Token 数。
+
+        对可识别的请求，规划和实际预留使用同一估算口径，并增加有限的
+        5%（至少 4096 Token）余量。``upper_bound_tokens`` 仍保留为结构化
+        诊断上界，但不再让正常请求的预留量接近原始 UTF-8 字节数。结构
+        无法识别时则必须使用完整序列化字节数这一保守退路，避免异常请求
+        绕过硬预算。
+        """
+
+        if self.used_fallback:
+            return self.upper_bound_tokens
+        margin = max(
+            _MIN_RESERVATION_MARGIN_TOKENS,
+            _ceil_div(
+                self.estimated_tokens * _RESERVATION_MARGIN_PERCENT,
+                100,
+            ),
+        )
+        return max(
+            self.estimated_tokens,
+            min(
+                self.upper_bound_tokens,
+                self.estimated_tokens + margin,
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)

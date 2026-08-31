@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -13,6 +14,7 @@ from domain.enums import (
     FindingCategory,
     LocationSide,
     ModelApiProtocol,
+    ModelBatchStatus,
     ModelCallStatus,
     ModelProvider,
     PatchState,
@@ -45,6 +47,7 @@ from persistence.models import (
     FindingLifecycleRecord,
     ModelCallRecord,
     ModelHttpCallRecord,
+    ModelReviewBatchRecord,
     OutboxEventRecord,
     PullRequestVersionRecord,
     ReviewFilePlanRecord,
@@ -60,12 +63,14 @@ from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.ai_settings import ActiveAiRuntime
 from services.model_budget import ModelBudgetRequest
-from services.model_review import ModelServiceSettings
+from services.model_review import ModelServiceSettings, plan_model_review_batches
 from services.review_management import ReviewAction
 from services.review_planning import DeterministicReviewPlanner, ReviewPlanningSettings
 from services.reviews import ReviewService
 from services.task_queue import (
+    ModelBatchBusyError,
     ModelBudgetExceededError,
+    ModelReviewConflictError,
     ReviewPlanConflictError,
     ReviewPlanInputError,
     ReviewTarget,
@@ -622,6 +627,402 @@ def test_model_review_is_loaded_and_saved_atomically(database: Database) -> None
             .select_from(OutboxEventRecord)
             .where(OutboxEventRecord.event_type == "review.model.completed")
         ) == 1
+
+
+def test_busy_model_batch_retry_uses_batch_availability_and_renews_lease(
+    database: Database,
+) -> None:
+    """批次被其他执行者占用时，任务应等待批次租约而非提前失败。"""
+
+    clock = MutableClock(datetime(2026, 8, 25, 10, 45, tzinfo=UTC))
+    queue, planning_lease, task_id, run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="model-batch-busy",
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    stored_plan = queue.store_review_plan(planning_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    assert stored_plan.plan_id is not None
+    model_input = queue.load_model_review_input(model_lease)
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="test-model",
+        api_key="test-key",
+    )
+    batches = plan_model_review_batches(model_input, settings)
+    assert len(batches) == 1
+    queue.ensure_model_batches(model_lease, batches, agent="security")
+
+    first = queue.claim_model_batch(
+        model_lease,
+        1,
+        agent="security",
+        lease_duration=timedelta(seconds=120),
+    )
+    assert first.attempt_count == 1
+    with pytest.raises(ModelBatchBusyError) as raised:
+        queue.claim_model_batch(
+            model_lease,
+            1,
+            agent="security",
+            lease_duration=timedelta(seconds=120),
+        )
+
+    busy_error = raised.value.error
+    assert busy_error.details["batch_retry_managed"] is True
+    assert busy_error.details["retry_at"]
+    # 原 Worker 仍在请求时，批次心跳可以延长租约。
+    renewed = queue.renew_model_batch(
+        model_lease,
+        1,
+        agent="security",
+        lease_duration=timedelta(seconds=240),
+    )
+    assert renewed.status.value == "running"
+    queue.retry_or_fail(model_lease, busy_error)
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, run_id)
+        assert task is not None
+        assert run is not None
+        assert task.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        assert run.execution_status == ExecutionStatus.READY_FOR_REVIEW.value
+        # 批次忙碌时没有发出模型请求；这次短暂领取不应消耗模型阶段尝试次数。
+        assert task.model_attempt_count == 0
+        # 批次租约（120 秒）长于普通任务退避（5 秒），应按批次时间调度。
+        assert task.available_at.replace(tzinfo=UTC) == clock.value + timedelta(
+            seconds=120
+        )
+
+
+def test_model_batch_definitions_rebuild_after_batch_limit_change(
+    database: Database,
+) -> None:
+    """失败批次在管理员调整单批上限后应按新切片继续，而不是永久冲突。"""
+
+    clock = MutableClock(datetime(2026, 8, 25, 11, 30, tzinfo=UTC))
+    queue, planning_lease, _task_id, _run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="model-batch-definition-change",
+        complete_context=True,
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(planning_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    model_input = queue.load_model_review_input(model_lease)
+
+    # 用同一计划身份构造一个大 Unit，使 64K 和 32K 规划产生不同批次数；
+    # 这正是管理员在一次失败后调低中转站上限时的恢复场景。
+    source_unit = model_input.units[0]
+    patch = "@@ -1 +1 @@\n-old\n+" + ("x" * 180_000) + "\n"
+    large_unit = source_unit.model_copy(
+        update={
+            "patch": patch,
+            "patch_sha256": sha256(patch.encode()).hexdigest(),
+            "estimated_input_bytes": len(patch.encode()),
+        }
+    )
+    large_input = model_input.model_copy(
+        update={
+            "units": (large_unit,),
+            "total_estimated_input_bytes": large_unit.estimated_input_bytes
+            + sum(rule.byte_size for rule in model_input.rules),
+        }
+    )
+    old_settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="relay-model",
+        api_key="test-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=128_000,
+        max_output_tokens=8_192,
+        max_batch_input_tokens=64_000,
+        max_request_bytes=8 * 1024 * 1024,
+    )
+    new_settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="relay-model",
+        api_key="test-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        max_batch_input_tokens=32_768,
+        max_request_bytes=8 * 1024 * 1024,
+    )
+    old_batches = plan_model_review_batches(large_input, old_settings)
+    new_batches = plan_model_review_batches(large_input, new_settings)
+    assert len(old_batches) < len(new_batches)
+
+    queue.ensure_model_batches(model_lease, old_batches, agent="security")
+    failure = SafeError(
+        code=ErrorCode.MODEL_SERVER_ERROR,
+        safe_message="中转站暂时不可用",
+        retryable=True,
+    )
+    for batch in old_batches:
+        claimed = queue.claim_model_batch(
+            model_lease,
+            batch.number,
+            agent="security",
+            lease_duration=timedelta(seconds=120),
+        )
+        queue.fail_model_batch(
+            model_lease,
+            batch.number,
+            failure,
+            agent="security",
+            expected_attempt_count=claimed.attempt_count,
+        )
+
+    rebuilt = queue.ensure_model_batches(
+        model_lease,
+        new_batches,
+        agent="security",
+    )
+    assert len(rebuilt) == len(new_batches)
+    assert all(item.status is ModelBatchStatus.PENDING for item in rebuilt)
+    assert all(item.attempt_count == 0 for item in rebuilt)
+    assert [item.unit_keys for item in rebuilt] == [
+        tuple(unit.unit_key for unit in batch.review_input.units)
+        for batch in new_batches
+    ]
+
+
+def test_model_batch_definition_change_keeps_live_or_successful_rows(
+    database: Database,
+) -> None:
+    """有成功结果或有效执行租约时，定义冲突必须保持保守失败。"""
+
+    clock = MutableClock(datetime(2026, 8, 25, 12, 0, tzinfo=UTC))
+    queue, planning_lease, _task_id, _run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="model-batch-definition-guard",
+        complete_context=True,
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(planning_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    model_input = queue.load_model_review_input(model_lease)
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="relay-model",
+        api_key="test-key",
+        api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        context_window_tokens=128_000,
+        max_output_tokens=8_192,
+        max_batch_input_tokens=64_000,
+        max_request_bytes=8 * 1024 * 1024,
+    )
+    first_batches = plan_model_review_batches(model_input, settings)
+    assert first_batches
+    queue.ensure_model_batches(model_lease, first_batches, agent="security")
+    claimed = queue.claim_model_batch(
+        model_lease,
+        1,
+        agent="security",
+        lease_duration=timedelta(seconds=120),
+    )
+    with pytest.raises(ModelReviewConflictError):
+        queue.ensure_model_batches(
+            model_lease,
+            (
+                replace(
+                    first_batches[0],
+                    estimated_input_tokens=(
+                        first_batches[0].estimated_input_tokens + 1
+                    ),
+                ),
+            ),
+            agent="security",
+        )
+    assert claimed.status is ModelBatchStatus.RUNNING
+
+
+def test_model_batch_zero_retry_delay_is_preserved(database: Database) -> None:
+    """显式零秒退避应立即可再次领取，而不是被默认 5 秒覆盖。"""
+
+    clock = MutableClock(datetime(2026, 8, 25, 12, 30, tzinfo=UTC))
+    queue, planning_lease, _task_id, _run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="model-batch-zero-retry-delay",
+        complete_context=True,
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(planning_lease, rules, plan)
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    model_input = queue.load_model_review_input(model_lease)
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="relay-model",
+        api_key="test-key",
+    )
+    batches = plan_model_review_batches(model_input, settings)
+    queue.ensure_model_batches(model_lease, batches, agent="security")
+    claimed = queue.claim_model_batch(
+        model_lease,
+        batches[0].number,
+        agent="security",
+        lease_duration=timedelta(seconds=120),
+    )
+    failed = queue.fail_model_batch(
+        model_lease,
+        batches[0].number,
+        SafeError(
+            code=ErrorCode.MODEL_TIMEOUT,
+            safe_message="模型请求超时",
+            retryable=True,
+        ),
+        agent="security",
+        retry_delay=timedelta(0),
+        expected_attempt_count=claimed.attempt_count,
+    )
+
+    assert failed.status is ModelBatchStatus.FAILED
+    with database.sessions() as session:
+        row = session.scalar(
+            select(ModelReviewBatchRecord).where(
+                ModelReviewBatchRecord.review_plan_id == model_lease.review_plan_id,
+                ModelReviewBatchRecord.agent == "security",
+                ModelReviewBatchRecord.batch_number == batches[0].number,
+            )
+        )
+        assert row is not None
+        assert row.available_at.replace(tzinfo=UTC) == clock.value
+
+
+def test_real_model_batch_failure_does_not_roll_back_model_attempt_count(
+    database: Database,
+) -> None:
+    """真实模型错误不能回退计数，也不能借批次标记绕过最大次数。"""
+
+    clock = MutableClock(datetime(2026, 8, 25, 11, 0, tzinfo=UTC))
+    queue, planning_lease, task_id, _run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="model-batch-failure-count",
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(planning_lease, rules, plan)
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        assert task is not None
+        task.max_attempts = 1
+        session.commit()
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    assert model_lease.model_attempt_count == 1
+
+    queue.retry_or_fail(
+        model_lease,
+        SafeError(
+            code=ErrorCode.MODEL_TIMEOUT,
+            safe_message="模型 API 请求超时",
+            retryable=True,
+            details={
+                # Worker 的所有批次错误都带此标记；只有 MODEL_BATCH_BUSY
+                # 才允许队列回退 model_attempt_count。
+                "batch_retry_managed": True,
+                "batch_number": 1,
+            },
+        ),
+    )
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, task.review_run_id if task else "")
+        assert task is not None
+        assert run is not None
+        assert task.model_attempt_count == 1
+        assert task.execution_status == ExecutionStatus.FAILED.value
+        assert run.execution_status == ExecutionStatus.FAILED.value
+
+
+def test_unmanaged_model_batch_busy_error_cannot_bypass_max_attempts(
+    database: Database,
+) -> None:
+    """只有明确由批次管理器发出的忙碌错误才允许不消耗任务尝试。"""
+
+    clock = MutableClock(datetime(2026, 8, 25, 11, 15, tzinfo=UTC))
+    queue, planning_lease, task_id, run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="unmanaged-model-batch-busy",
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(planning_lease, rules, plan)
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        assert task is not None
+        task.max_attempts = 1
+        session.commit()
+
+    model_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert model_lease is not None
+    assert model_lease.model_attempt_count == 1
+    queue.retry_or_fail(
+        model_lease,
+        SafeError(
+            code=ErrorCode.MODEL_BATCH_BUSY,
+            safe_message="模型批次暂时忙碌",
+            retryable=True,
+            details={"batch_retry_managed": False},
+        ),
+    )
+
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, run_id)
+        assert task is not None
+        assert run is not None
+        assert task.model_attempt_count == 1
+        assert task.execution_status == ExecutionStatus.FAILED.value
+        assert run.execution_status == ExecutionStatus.FAILED.value
+
 
 
 def test_complete_reviews_track_present_fixed_and_reintroduced_findings(

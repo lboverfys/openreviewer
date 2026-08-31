@@ -255,6 +255,13 @@ class MarkdownKnowledgeBase:
         token_counts = self._chunk_token_counts
         document_frequency = self._token_document_frequency
         document_count = max(1, len(selected_chunks))
+        # 平均文档长度与候选分片无关；提前计算，避免在候选循环中重复扫描
+        # 全部分片（知识库较大时会把检索退化为 O(n²)）。
+        average_length = max(
+            1.0,
+            sum(sum(item.values()) for item in token_counts)
+            / max(1, len(token_counts)),
+        )
         candidate_indices: set[int] = set()
         for token in query_tokens:
             candidate_indices.update(token_index.get(token, ()))
@@ -269,11 +276,6 @@ class MarkdownKnowledgeBase:
             document_length = max(1, sum(counts.values()))
             # BM25 的有界词法得分：相比简单 overlap，能降低高频通用词的影响，
             # 同时让同一术语在正文中多次出现的分片更靠前。
-            average_length = max(
-                1.0,
-                sum(sum(item.values()) for item in token_counts)
-                / max(1, len(token_counts)),
-            )
             score = 0.0
             for token in matched_tokens:
                 frequency = counts.get(token, 0)

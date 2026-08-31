@@ -1,7 +1,12 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
-import { api, ApiError } from "./api";
+import {
+  api,
+  ApiError,
+  peekReadCache,
+  subscribeReadCache,
+} from "./api";
 import type {
   AuthUser,
   KnowledgeCitation,
@@ -43,17 +48,47 @@ function documentDraft(document: KnowledgeDocument): DocumentDraft {
   };
 }
 
+function documentDraftIsDirty(
+  document: KnowledgeDocument | null,
+  draft: DocumentDraft,
+): boolean {
+  return Boolean(document && (
+    draft.source !== document.source
+    || draft.content !== document.content
+    || draft.enabled !== document.enabled
+  ));
+}
+
 export default function KnowledgePage({
   user,
   onBack,
   onOpenSettings,
   onSignedOut,
 }: KnowledgePageProps) {
-  const [library, setLibrary] = useState<KnowledgeLibrary | null>(null);
-  const [document, setDocument] = useState<KnowledgeDocument | null>(null);
-  const [draft, setDraft] = useState<DocumentDraft>(EMPTY_DRAFT);
-  const [creating, setCreating] = useState(false);
+  // 左侧列表是短时缓存数据；先同步绘制它，详情请求会在后台继续校验，
+  // 避免从设置页/仪表盘返回时知识库整栏先显示空状态。
   const [includeArchived, setIncludeArchived] = useState(false);
+  const cachedLibrary = peekReadCache<KnowledgeLibrary>(
+    `knowledge-documents:${includeArchived ? "archived" : "active"}`,
+  );
+  const cachedFirstDocumentId = cachedLibrary?.items[0]?.id;
+  const cachedFirstDocument = cachedFirstDocumentId
+    ? peekReadCache<KnowledgeDocument>(`knowledge-document:${cachedFirstDocumentId}`)
+    : undefined;
+  const [library, setLibrary] = useState<KnowledgeLibrary | null>(cachedLibrary ?? null);
+  const [document, setDocument] = useState<KnowledgeDocument | null>(cachedFirstDocument ?? null);
+  const [draft, setDraft] = useState<DocumentDraft>(
+    cachedFirstDocument ? documentDraft(cachedFirstDocument) : EMPTY_DRAFT,
+  );
+  // 订阅缓存更新时用 ref 读取最新文档/草稿，避免后台校验响应覆盖用户
+  // 尚未保存的编辑内容。
+  const documentRef = useRef<KnowledgeDocument | null>(cachedFirstDocument ?? null);
+  const draftRef = useRef<DocumentDraft>(
+    cachedFirstDocument ? documentDraft(cachedFirstDocument) : EMPTY_DRAFT,
+  );
+  documentRef.current = document;
+  draftRef.current = draft;
+  const [creating, setCreating] = useState(false);
   const [listQuery, setListQuery] = useState("");
   const [editorMode, setEditorMode] = useState<"edit" | "preview">("edit");
   const [busy, setBusy] = useState("");
@@ -72,6 +107,30 @@ export default function KnowledgePage({
       || draft.content !== document.content
       || draft.enabled !== document.enabled
     ));
+
+  useEffect(() => subscribeReadCache<KnowledgeLibrary>(
+    `knowledge-documents:${includeArchived ? "archived" : "active"}`,
+    (next) => {
+      setLibrary(next);
+    },
+  ), [includeArchived]);
+
+  useEffect(() => {
+    const documentId = document?.id;
+    if (!documentId) return undefined;
+    return subscribeReadCache<KnowledgeDocument>(
+      `knowledge-document:${documentId}`,
+      (next) => {
+        const current = documentRef.current;
+        if (!current || current.id !== next.id) return;
+        if (documentDraftIsDirty(current, draftRef.current)) return;
+        documentRef.current = next;
+        draftRef.current = documentDraft(next);
+        setDocument(next);
+        setDraft(documentDraft(next));
+      },
+    );
+  }, [document?.id]);
 
   const handleError = useCallback((reason: unknown) => {
     if (reason instanceof ApiError && reason.status === 401) {
@@ -105,11 +164,13 @@ export default function KnowledgePage({
   const refreshLibrary = useCallback(async (
     preferredId?: string,
     signal?: AbortSignal,
+    openTarget = true,
   ) => {
     setBusy((current) => current || "refresh");
     try {
       const next = await api.knowledgeDocuments(includeArchived, signal);
       setLibrary(next);
+      if (!openTarget) return;
       const target = preferredId
         ? next.items.find((item) => item.id === preferredId)
         : next.items.find((item) => item.id === document?.id) ?? next.items[0];
@@ -162,7 +223,9 @@ export default function KnowledgePage({
     setCreating(false);
     setMessageKind("success");
     setMessage(successMessage);
-    void refreshLibrary(result.document.id);
+    // 变更接口已经返回完整文档；这里只需刷新左侧列表统计，避免
+    // refreshLibrary 再为同一文档发起一次详情 GET。
+    void refreshLibrary(undefined, undefined, false);
   }
 
   async function saveDocument() {

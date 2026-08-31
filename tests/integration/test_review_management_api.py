@@ -1237,6 +1237,23 @@ def test_failed_planned_run_can_retry_and_rerun(database: Database) -> None:
         )
         session.add_all(
             [
+                ModelReviewBatchRecord(
+                    id="batch-retry-001",
+                    review_plan_id="plan-retry-001",
+                    agent="security",
+                    batch_number=1,
+                    batch_count=1,
+                    unit_keys=["d" * 64],
+                    estimated_input_tokens=128,
+                    status="failed",
+                    attempt_count=3,
+                    available_at=now,
+                    created_at=now,
+                    updated_at=now,
+                    error_code="model_server_error",
+                    error_message="模型服务暂时不可用",
+                    error_details={"batch_retry_managed": True},
+                ),
                 OutboxEventRecord(
                     id="event-old-model-running",
                     event_key=(
@@ -1280,6 +1297,13 @@ def test_failed_planned_run_can_retry_and_rerun(database: Database) -> None:
             assert retried.status_code == 200
             assert retried.json()["review_run_id"] == submission.review_run_id
             assert retried.json()["execution_status"] == "ready_for_review"
+
+            with database.sessions() as session:
+                assert session.scalars(
+                    select(ModelReviewBatchRecord).where(
+                        ModelReviewBatchRecord.review_plan_id == "plan-retry-001"
+                    )
+                ).all() == []
 
             queue = SqlAlchemyReviewTaskQueue(database.sessions)
             lease = queue.claim_next("retry-regression-worker", timedelta(minutes=5))

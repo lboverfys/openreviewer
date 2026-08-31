@@ -1020,6 +1020,9 @@ def test_model_settings_accept_relay_prefix_and_reject_unsafe_base_urls() -> Non
 
     assert settings.resolved_api_base_url == "https://relay.example/api/v1"
     assert settings.api_request_path("/v1/chat/completions") == "chat/completions"
+    assert settings.api_request_url("/v1/chat/completions") == (
+        "https://relay.example/api/v1/chat/completions"
+    )
 
     nested_settings = ModelServiceSettings(
         provider=ModelProvider.OPENAI,
@@ -1029,6 +1032,9 @@ def test_model_settings_accept_relay_prefix_and_reject_unsafe_base_urls() -> Non
         api_base_url="https://relay.example/v1/account/gateway/openai",
     )
     assert nested_settings.api_request_path("/v1/chat/completions") == "v1/chat/completions"
+    assert nested_settings.api_request_url("/v1/chat/completions") == (
+        "https://relay.example/v1/account/gateway/openai/v1/chat/completions"
+    )
 
     root_settings = ModelServiceSettings(
         provider=ModelProvider.OPENAI,
@@ -1038,6 +1044,9 @@ def test_model_settings_accept_relay_prefix_and_reject_unsafe_base_urls() -> Non
         api_base_url="https://relay.example/gateway",
     )
     assert root_settings.api_request_path("/v1/responses") == "v1/responses"
+    assert root_settings.api_request_url("/v1/responses") == (
+        "https://relay.example/gateway/v1/responses"
+    )
 
     for unsafe_url in (
         "http://relay.example/v1",

@@ -1,5 +1,6 @@
 import type {
   AiApiProtocol,
+  AiProvider,
   AiProviderSettings,
   AiReasoningEffort,
   AiSettings,
@@ -294,4 +295,52 @@ export function reviewPolicyHasChanges(
     || draft.maxModelCostUsd.trim() !== savedCostUsd
     || Number(draft.maxModelDurationSeconds) !== settings.max_model_duration_seconds
   );
+}
+
+/**
+ * 合并服务端新快照和本地 Provider 草稿。
+ *
+ * 完整配置响应会包含所有 Provider；保存其中一个时，其他 Provider 仍可能有
+ * 未保存输入。只重置明确保存的 Provider，其余脏草稿继续保留。
+ */
+export function mergeProviderDrafts(
+  previous: AiSettings | null,
+  current: Partial<Record<AiProvider, ProviderDraft>>,
+  next: AiSettings,
+  resetProvider?: AiProvider,
+): Record<AiProvider, ProviderDraft> {
+  const previousProviders = new Map(
+    previous?.providers.map((item) => [item.provider, item]) ?? [],
+  );
+  return Object.fromEntries(
+    next.providers.map((item) => {
+      const savedBefore = previousProviders.get(item.provider);
+      const localDraft = current[item.provider];
+      const keepLocal = (
+        item.provider !== resetProvider
+        && savedBefore !== undefined
+        && localDraft !== undefined
+        && providerHasChanges(savedBefore, localDraft)
+      );
+      return [item.provider, keepLocal ? localDraft : providerDraft(item)];
+    }),
+  ) as Record<AiProvider, ProviderDraft>;
+}
+
+/** 保留未保存的审查策略草稿；策略保存成功时由调用方显式重置。 */
+export function mergeReviewPolicyDraft(
+  previous: AiSettings | null,
+  current: ReviewPolicyDraft | null,
+  next: AiSettings,
+  reset = false,
+): ReviewPolicyDraft {
+  if (
+    !reset
+    && previous !== null
+    && current !== null
+    && reviewPolicyHasChanges(previous, current)
+  ) {
+    return current;
+  }
+  return reviewPolicyDraft(next);
 }

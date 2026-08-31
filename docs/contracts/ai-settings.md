@@ -7,6 +7,9 @@ Anthropic 供应商、模型 ID、API Key、可选 HTTPS API Base URL（支持�
 协议、上下文窗口、单批输入/输出 Token 上限、推理档位、HTTP 超时和重试次数。OpenAI 可选
 `responses` 或 `chat_completions`；Anthropic 固定使用 `messages`。
 
+Base URL 的路径前缀会原样保留：例如填写 `https://relay.example/api/v1`，请求会发送到
+`https://relay.example/api/v1/...`，不会因地址末尾没有斜杠而丢失 `/api/v1`。
+
 旧版供应商级设置暂时保留兼容：只有完全没有 Agent 配置时，Worker 才使用已激活的旧单模型。
 一旦任意 Agent 已配置，四个 Agent 必须全部保存密钥、通过当前配置指纹的连接测试并启用；部分
 配置不会静默回退旧模型，也不会让一个 Agent 代替缺失节点。

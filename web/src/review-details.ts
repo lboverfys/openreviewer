@@ -166,7 +166,15 @@ export function eventDetail(event: ReviewEvent): string | null {
     const total = payloadNumber(event, "batch_count");
     const status = payloadNumber(event, "status_code");
     const code = payloadString(event, "error_code");
-    return `第 ${number ?? "—"}/${total ?? "—"} 批失败 · HTTP ${status ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))} · 错误码 ${code ?? "—"}${event.payload.error_retryable === true ? " · 可自动重试" : event.payload.error_retryable === false ? " · 不可自动重试" : ""}`;
+    const unsupported = Array.isArray(event.payload.unsupported_parameters)
+      ? event.payload.unsupported_parameters.filter(
+        (item): item is string => typeof item === "string",
+      )
+      : [];
+    const unsupportedDetail = unsupported.length > 0
+      ? ` · 中转站不支持：${unsupported.join("、")}`
+      : "";
+    return `第 ${number ?? "—"}/${total ?? "—"} 批失败 · HTTP ${status ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))} · 错误码 ${code ?? "—"}${unsupportedDetail}${event.payload.error_retryable === true ? " · 可自动重试" : event.payload.error_retryable === false ? " · 不可自动重试" : ""}`;
   }
   if (event.event_type === "review.task.retry_scheduled") {
     return retryDetail(event);
@@ -233,7 +241,10 @@ function latestBatchEvents(events: ReviewEvent[]): Map<number, ReviewEvent> {
     const number = payloadNumber(event, "batch_number");
     if (number === null) continue;
     const current = result.get(number);
-    if (!current || lifecycleRank[event.event_type] > lifecycleRank[current.event_type]) {
+    // 同一批次可能先收到失败事件、随后收到迟到的完成事件（例如重试/并发
+    // 写入后的事件排序）。生命周期等级相等时也要让后出现的事件覆盖旧值，
+    // 否则 UI 会把已经完成的批次永久显示为失败。
+    if (!current || lifecycleRank[event.event_type] >= lifecycleRank[current.event_type]) {
       result.set(number, event);
     }
   }
@@ -325,8 +336,9 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
       .map((event) => payloadString(event, "provider_request_id"))
       .filter((value): value is string => Boolean(value)),
   )];
+  const latestBatchEventSet = new Set(batches.values());
   const errorEvent = [...scoped].reverse().find((event) => (
-    event.event_type === "review.model.batch_failed"
+    (event.event_type === "review.model.batch_failed" && latestBatchEventSet.has(event))
       || event.event_type === "review.model.agent_failed"
       || (event.event_type === "review.model.summary_completed" && terminalIsFailure)
   ));
@@ -385,6 +397,17 @@ export function applyRefreshedFindingPage(
   incoming: ReviewDetails,
 ): ReviewDetails {
   if (!current || current.review_run_id !== incoming.review_run_id) return incoming;
+  // 自动轮询、手动刷新和操作回读可能乱序返回。服务端 updated_at 是
+  // 单调的状态版本；较旧整体快照不能把新状态回填，只能继续保留当前页。
+  const currentUpdatedAt = Date.parse(current.updated_at);
+  const incomingUpdatedAt = Date.parse(incoming.updated_at);
+  if (
+    Number.isFinite(currentUpdatedAt)
+    && Number.isFinite(incomingUpdatedAt)
+    && incomingUpdatedAt < currentUpdatedAt
+  ) {
+    return current;
+  }
   const findings = uniqueFindings([incoming.findings, current.findings]);
   return {
     ...incoming,
@@ -401,8 +424,14 @@ export function appendFindingPage(
   incoming: ReviewDetails,
 ): ReviewDetails {
   if (current.review_run_id !== incoming.review_run_id) return incoming;
+  const currentUpdatedAt = Date.parse(current.updated_at);
+  const incomingUpdatedAt = Date.parse(incoming.updated_at);
+  const incomingIsOlder =
+    Number.isFinite(currentUpdatedAt)
+    && Number.isFinite(incomingUpdatedAt)
+    && incomingUpdatedAt < currentUpdatedAt;
   return {
-    ...incoming,
+    ...(incomingIsOlder ? current : incoming),
     findings: uniqueFindings([current.findings, incoming.findings]),
     finding_next_cursor: incoming.finding_next_cursor,
   };

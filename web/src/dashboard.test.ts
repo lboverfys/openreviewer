@@ -134,4 +134,17 @@ describe("dashboard pagination merging", () => {
 
     expect(merged.next_cursor).toBe("page-3");
   });
+
+  it("ignores an older live snapshot that arrives after a newer refresh", () => {
+    const current = {
+      ...dashboard([review("run-2", "running")], 2, "page-2"),
+      generated_at: "2026-08-28T00:00:02Z",
+    };
+    const incoming = {
+      ...dashboard([review("run-2", "queued")], 2, "page-2"),
+      generated_at: "2026-08-28T00:00:01Z",
+    };
+
+    expect(applyLiveDashboardSnapshot(current, incoming)).toBe(current);
+  });
 });

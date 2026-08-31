@@ -4,10 +4,11 @@ import logging
 import os
 import signal
 import time
+from collections.abc import Callable, Mapping
 from datetime import timedelta
 from hashlib import sha256
 from inspect import Parameter, signature
-from threading import Event, RLock, Thread
+from threading import Event, Lock, RLock, Thread
 from uuid import uuid4
 
 from apps.worker.settings import WorkerSettings
@@ -79,7 +80,14 @@ from services.operations import (
 )
 from services.rag import ManagedMarkdownKnowledgeBase, MarkdownKnowledgeBase
 from services.review_planning import ReviewPlanner
-from services.task_queue import ReviewTaskLease, ReviewTaskQueue, TaskQueueError
+from services.task_queue import (
+    ModelBatchBusyError,
+    ModelBatchLease,
+    ReviewTaskLease,
+    ReviewTaskQueue,
+    TaskLeaseLostError,
+    TaskQueueError,
+)
 from services.telemetry import TelemetryHttpServer
 
 LOGGER = logging.getLogger("openreviewer.worker")
@@ -146,16 +154,172 @@ class _LeaseCursor:
         duration: timedelta,
     ) -> None:
         self._queue = queue
-        self._duration = duration
+        # 一个任务可能先以普通租约领取，随后进入 GitHub/模型等更长的阶段。
+        # 心跳线程调用 ``renew()`` 时必须沿用当前阶段的最长租约，不能把
+        # 已升级的模型租约重新缩短为普通任务租约。
+        self._active_duration = duration
         self.lease = lease
         self._lock = RLock()
+        self._active_batches: dict[tuple[str, int], timedelta] = {}
+        self._lease_lost = Event()
 
     def renew(self, duration: timedelta | None = None) -> None:
+        # 心跳线程一旦确认所有权丢失，后续主线程不应再发起任何续租写入。
+        self.raise_if_lease_lost()
         with self._lock:
-            self.lease = self._queue.renew_lease(
-                self.lease,
-                duration or self._duration,
+            self.raise_if_lease_lost()
+            requested_duration = (
+                self._active_duration if duration is None else duration
             )
+            # 阶段租约只允许延长，不允许被并发心跳或旧调用路径缩短。
+            effective_duration = max(self._active_duration, requested_duration)
+            try:
+                self.lease = self._queue.renew_lease(
+                    self.lease,
+                    effective_duration,
+                )
+            except TaskQueueError as exc:
+                if (
+                    SafeError.from_exception(exc).code
+                    is ErrorCode.TASK_LEASE_LOST
+                ):
+                    self._lease_lost.set()
+                raise
+            self._active_duration = effective_duration
+
+    def register_model_batch(
+        self,
+        agent: str,
+        batch_number: int,
+        lease_duration: timedelta,
+    ) -> None:
+        """登记当前外部请求对应的批次，供后台心跳续租。"""
+
+        if lease_duration.total_seconds() <= 0:
+            raise ValueError("model batch lease duration must be positive")
+        with self._lock:
+            key = (agent, batch_number)
+            current = self._active_batches.get(key)
+            self._active_batches[key] = (
+                lease_duration if current is None else max(current, lease_duration)
+            )
+
+    def unregister_model_batch(self, agent: str, batch_number: int) -> None:
+        with self._lock:
+            self._active_batches.pop((agent, batch_number), None)
+
+    def renew_model_batches(self) -> None:
+        """续租所有正在请求的批次；旧队列实现没有该接口时兼容跳过。"""
+
+        self.raise_if_lease_lost()
+        with self._lock:
+            self.raise_if_lease_lost()
+            lease = self.lease
+            active = tuple(self._active_batches.items())
+        if not active:
+            return
+
+        bulk_renewer = getattr(self._queue, "renew_model_batches", None)
+        if callable(bulk_renewer):
+            try:
+                bulk_renewer(
+                    lease,
+                    tuple(
+                        ModelBatchLease(
+                            agent=agent,
+                            batch_number=batch_number,
+                            lease_duration=duration,
+                        )
+                        for (agent, batch_number), duration in active
+                    ),
+                )
+            except TaskQueueError as exc:
+                if (
+                    SafeError.from_exception(exc).code
+                    is ErrorCode.TASK_LEASE_LOST
+                ):
+                    self._lease_lost.set()
+                raise
+            return
+
+        # 旧队列实现只有单批接口时保留兼容路径；生产 SQL 队列始终使用上面的
+        # 批量事务，避免固定三路 Agent 产生 N+1 数据库续租请求。
+        renewer = getattr(self._queue, "renew_model_batch", None)
+        if not callable(renewer):
+            return
+        try:
+            parameters = signature(renewer).parameters.values()
+            supports_agent = any(
+                parameter.name == "agent"
+                or parameter.kind is Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            supports_agent = True
+        for (agent, batch_number), duration in active:
+            self.raise_if_lease_lost()
+            if supports_agent:
+                try:
+                    renewer(
+                        lease,
+                        batch_number,
+                        agent=agent,
+                        lease_duration=duration,
+                    )
+                except TaskQueueError as exc:
+                    if (
+                        SafeError.from_exception(exc).code
+                        is ErrorCode.TASK_LEASE_LOST
+                    ):
+                        self._lease_lost.set()
+                    raise
+            else:
+                try:
+                    renewer(
+                        lease,
+                        batch_number,
+                        lease_duration=duration,
+                    )
+                except TaskQueueError as exc:
+                    if (
+                        SafeError.from_exception(exc).code
+                        is ErrorCode.TASK_LEASE_LOST
+                    ):
+                        self._lease_lost.set()
+                    raise
+
+    def mark_lease_lost(self) -> None:
+        self._lease_lost.set()
+
+    @property
+    def is_lease_lost(self) -> bool:
+        """返回是否已经观察到任务或批次租约失效。"""
+
+        return self._lease_lost.is_set()
+
+    def raise_if_lease_lost(self) -> None:
+        if self._lease_lost.is_set():
+            raise TaskLeaseLostError()
+
+
+def _raise_if_lease_lost(cursor: _LeaseCursor) -> None:
+    """兼容旧测试/调用方传入的最小租约游标对象。"""
+
+    checker = getattr(cursor, "raise_if_lease_lost", None)
+    if callable(checker):
+        checker()
+
+
+def _propagate_task_lease_loss(cursor: object, error: BaseException) -> None:
+    """失败回写异常若表示租约丢失，必须保留该信号并停止旧 Worker。"""
+
+    safe_error = SafeError.from_exception(error)
+    if safe_error.code is not ErrorCode.TASK_LEASE_LOST:
+        return
+    marker = getattr(cursor, "mark_lease_lost", None)
+    if callable(marker):
+        marker()
+    raise error
 
 
 class _BusyHeartbeat:
@@ -169,18 +333,24 @@ class _BusyHeartbeat:
         instance_id: str,
         interval: timedelta,
         lease_cursor: _LeaseCursor | None = None,
+        on_worker_ownership_lost: Callable[[], None] | None = None,
     ) -> None:
         self._queue = queue
         self._worker_id = worker_id
         self._task_id = task_id
         self._instance_id = instance_id
         self._lease_cursor = lease_cursor
+        self._on_worker_ownership_lost = on_worker_ownership_lost
         # 健康检查默认允许 15 秒，最长 5 秒一次可以覆盖慢速外部请求。
         self._interval_seconds = min(
             5.0,
             max(0.5, interval.total_seconds()),
         )
         self._stop_event = Event()
+        # ``stop()`` 和一次正在进行的队列写入之间需要一个明确的边界。
+        # 否则主线程可能先把心跳写成 IDLE，后台线程随后才完成 BUSY 写入。
+        self._stop_requested = Event()
+        self._operation_lock = Lock()
         self._thread = Thread(
             target=self._run,
             name=f"openreviewer-heartbeat-{worker_id}",
@@ -192,26 +362,88 @@ class _BusyHeartbeat:
 
         self._thread.start()
 
-    def stop(self) -> None:
-        """停止并等待心跳线程退出，避免恢复 idle 时发生写入竞态。"""
+    def stop(self) -> bool:
+        """请求停止并报告线程是否已经退出。
 
+        数据库调用本身由队列连接/语句超时约束；这里仍保留有限等待，避免
+        数据库彻底失联时阻塞 Worker 关停。调用方在得到 ``False`` 时不能再
+        写入 ``IDLE``，以免迟到的后台 ``BUSY`` 覆盖它；下一轮应先等待线程
+        自然退出再继续领取任务。
+        """
+
+        self._stop_requested.set()
         self._stop_event.set()
+        if not self._thread.is_alive():
+            return True
+        # 让已经进入队列写入的这一轮先完成；之后 _run 会看到 stop_requested
+        # 并退出，不会再开始新的写入。
+        operation_acquired = self._operation_lock.acquire(
+            timeout=self._interval_seconds + 1.0,
+        )
+        if operation_acquired:
+            self._operation_lock.release()
         self._thread.join(timeout=self._interval_seconds + 1.0)
+        stopped = not self._thread.is_alive()
+        if not stopped:
+            LOGGER.warning(
+                "Worker %s 的忙碌心跳线程未及时退出，将等待其完成后再恢复 IDLE",
+                self._worker_id,
+            )
+        return stopped
+
+    def is_alive(self) -> bool:
+        """返回后台线程是否仍在执行最后一轮队列操作。"""
+
+        return self._thread.is_alive()
 
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval_seconds):
-            try:
-                _record_worker_heartbeat(
-                    self._queue,
-                    self._worker_id,
-                    WorkerStatus.BUSY,
-                    self._task_id,
-                    self._instance_id,
-                )
-                if self._lease_cursor is not None:
-                    self._lease_cursor.renew()
-            except TaskQueueError:
-                LOGGER.exception("Worker 忙碌心跳刷新失败")
+            if self._stop_requested.is_set():
+                return
+            # stop() 会先设置 stop_requested，再等待这把锁；因此一旦它
+            # 返回成功，后台线程不可能在主线程的 IDLE 写入之后追加 BUSY。
+            with self._operation_lock:
+                if self._stop_requested.is_set():
+                    return
+                try:
+                    _record_worker_heartbeat(
+                        self._queue,
+                        self._worker_id,
+                        WorkerStatus.BUSY,
+                        self._task_id,
+                        self._instance_id,
+                    )
+                except TaskQueueError as exc:
+                    queue_error = SafeError.from_exception(exc)
+                    if queue_error.code is ErrorCode.TASK_LEASE_LOST:
+                        if self._lease_cursor is not None:
+                            self._lease_cursor.mark_lease_lost()
+                        if self._on_worker_ownership_lost is not None:
+                            self._on_worker_ownership_lost()
+                        LOGGER.error("Worker 忙碌心跳发现进程所有权已丢失，停止刷新")
+                        return
+                    LOGGER.exception("Worker 忙碌心跳刷新失败")
+                    continue
+
+                try:
+                    if self._lease_cursor is not None:
+                        self._lease_cursor.renew()
+                        self._lease_cursor.renew_model_batches()
+                except TaskLeaseLostError:
+                    if self._lease_cursor is not None:
+                        self._lease_cursor.mark_lease_lost()
+                    LOGGER.exception("Worker 任务租约已丢失，当前模型请求不会再写入结果")
+                    # 继续循环只会反复写续租请求；主流程会在下一个外部请求
+                    # 边界观察标记，并由队列恢复机制接管任务。
+                    return
+                except TaskQueueError as exc:
+                    queue_error = SafeError.from_exception(exc)
+                    if queue_error.code is ErrorCode.TASK_LEASE_LOST:
+                        if self._lease_cursor is not None:
+                            self._lease_cursor.mark_lease_lost()
+                        LOGGER.error("Worker 任务租约已丢失，停止续租")
+                        return
+                    LOGGER.exception("Worker 模型租约续租失败")
 
 
 class _QueueModelBudgetAccountant(ModelBudgetAccountant):
@@ -228,11 +460,18 @@ class _QueueModelBudgetAccountant(ModelBudgetAccountant):
         self._agent = agent
 
     def reserve(self, request: ModelBudgetRequest) -> ModelBudgetReservation:
-        return self._queue.reserve_model_budget(
-            self._lease_cursor.lease,
-            request,
-            agent=self._agent,
-        )
+        # 预算预留本身会写数据库；租约丢失后必须在进入模型适配器前拦截。
+        self._lease_cursor.raise_if_lease_lost()
+        try:
+            return self._queue.reserve_model_budget(
+                self._lease_cursor.lease,
+                request,
+                agent=self._agent,
+            )
+        except TaskQueueError as exc:
+            if SafeError.from_exception(exc).code is ErrorCode.TASK_LEASE_LOST:
+                self._lease_cursor.mark_lease_lost()
+            raise
 
     def settle(
         self,
@@ -245,15 +484,20 @@ class _QueueModelBudgetAccountant(ModelBudgetAccountant):
         duration_ms: int,
         uncertain: bool = False,
     ) -> None:
-        self._queue.settle_model_budget(
-            reservation,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            estimated_cost_microusd=estimated_cost_microusd,
-            response_status=response_status,
-            duration_ms=duration_ms,
-            uncertain=uncertain,
-        )
+        try:
+            self._queue.settle_model_budget(
+                reservation,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_cost_microusd=estimated_cost_microusd,
+                response_status=response_status,
+                duration_ms=duration_ms,
+                uncertain=uncertain,
+            )
+        except TaskQueueError as exc:
+            if SafeError.from_exception(exc).code is ErrorCode.TASK_LEASE_LOST:
+                self._lease_cursor.mark_lease_lost()
+            raise
 
 
 def _model_budget_context(
@@ -292,14 +536,20 @@ class _PersistentBatchedReviewer:
         self._lease_duration = lease_duration
 
     def review(self, review_input: ModelReviewInput) -> ModelReviewResult:
+        _raise_if_lease_lost(self._lease_cursor)
         batches = plan_model_review_batches(review_input, self._settings)
         if not batches:
+            _raise_if_lease_lost(self._lease_cursor)
             with _model_budget_context(
                 self._queue,
                 self._lease_cursor,
                 self._agent.value,
             ):
+                # 预算预留和真正的 HTTP 请求之间仍可能收到心跳失效通知；
+                # 在最后一刻再检查一次，避免租约已丢失后调用模型。
+                _raise_if_lease_lost(self._lease_cursor)
                 return self._reviewer.review(review_input)
+        _raise_if_lease_lost(self._lease_cursor)
         self._queue.record_model_progress(
             self._lease_cursor.lease,
             "batches_planned",
@@ -318,6 +568,7 @@ class _PersistentBatchedReviewer:
             },
             agent=self._agent.value,
         )
+        _raise_if_lease_lost(self._lease_cursor)
         stored = self._queue.ensure_model_batches(
             self._lease_cursor.lease,
             batches,
@@ -326,6 +577,7 @@ class _PersistentBatchedReviewer:
         stored_by_number = {item.batch_number: item for item in stored}
         results: list[ModelReviewResult] = []
         for batch in batches:
+            _raise_if_lease_lost(self._lease_cursor)
             self._lease_cursor.renew(self._lease_duration)
             current_lease = self._lease_cursor.lease
             saved = stored_by_number.get(batch.number)
@@ -335,6 +587,7 @@ class _PersistentBatchedReviewer:
                 and saved.result is not None
             ):
                 result = saved.result
+                _raise_if_lease_lost(self._lease_cursor)
                 self._queue.record_model_progress(
                     current_lease,
                     "batch_completed",
@@ -371,12 +624,30 @@ class _PersistentBatchedReviewer:
                         },
                     )
                 )
-            claimed_batch = self._queue.claim_model_batch(
-                current_lease,
-                batch.number,
-                agent=self._agent.value,
-                lease_duration=self._lease_duration,
-            )
+            try:
+                _raise_if_lease_lost(self._lease_cursor)
+                claimed_batch = self._queue.claim_model_batch(
+                    current_lease,
+                    batch.number,
+                    agent=self._agent.value,
+                    lease_duration=self._lease_duration,
+                )
+            except ModelBatchBusyError as exc:
+                # 批次由另一个 Worker 执行时不能把它当成普通任务失败；保留
+                # 批次级标记和队列提供的 retry_at，让外层只重新排队等待。
+                source_error = SafeError.from_exception(exc)
+                safe_error = SafeError(
+                    code=source_error.code,
+                    safe_message=source_error.safe_message,
+                    retryable=True,
+                    details={
+                        **dict(source_error.details),
+                        "agent": self._agent.value,
+                        "batch_number": batch.number,
+                        "batch_retry_managed": True,
+                    },
+                )
+                raise SafeApplicationError(safe_error) from exc
             if (
                 claimed_batch.status.value == "succeeded"
                 and claimed_batch.result is not None
@@ -384,6 +655,7 @@ class _PersistentBatchedReviewer:
                 # 另一个 Worker 可能在本地快照之后完成了批次；读取其结果，
                 # 不再重复发起外部模型请求。
                 results.append(claimed_batch.result)
+                _raise_if_lease_lost(self._lease_cursor)
                 self._queue.record_model_progress(
                     current_lease,
                     "batch_completed",
@@ -403,6 +675,7 @@ class _PersistentBatchedReviewer:
                     agent=self._agent.value,
                 )
                 continue
+            _raise_if_lease_lost(self._lease_cursor)
             self._queue.record_model_progress(
                 current_lease,
                 "batch_started",
@@ -418,40 +691,55 @@ class _PersistentBatchedReviewer:
                 },
                 agent=self._agent.value,
             )
-            request_started = time.monotonic()
-            self._queue.record_model_progress(
-                current_lease,
-                "request_started",
-                {
-                    "agent": self._agent.value,
-                    "batch_number": batch.number,
-                    "batch_count": batch.total,
-                    "estimated_input_tokens": batch.estimated_input_tokens,
-                    "provider": self._settings.provider.value,
-                    "api_protocol": self._settings.resolved_api_protocol.value,
-                    "model": self._settings.model,
-                    "reasoning_effort": self._settings.reasoning_effort.value,
-                },
-                agent=self._agent.value,
+            self._lease_cursor.register_model_batch(
+                self._agent.value,
+                batch.number,
+                self._lease_duration,
             )
+            request_started = time.monotonic()
             try:
+                _raise_if_lease_lost(self._lease_cursor)
+                self._queue.record_model_progress(
+                    current_lease,
+                    "request_started",
+                    {
+                        "agent": self._agent.value,
+                        "batch_number": batch.number,
+                        "batch_count": batch.total,
+                        "estimated_input_tokens": batch.estimated_input_tokens,
+                        "provider": self._settings.provider.value,
+                        "api_protocol": self._settings.resolved_api_protocol.value,
+                        "model": self._settings.model,
+                        "reasoning_effort": self._settings.reasoning_effort.value,
+                    },
+                    agent=self._agent.value,
+                )
                 with _model_budget_context(
                     self._queue,
                     self._lease_cursor,
                     self._agent.value,
                 ):
+                    _raise_if_lease_lost(self._lease_cursor)
                     result = remap_model_review_result(
                         self._reviewer.review(batch.review_input),
                         batch,
                     )
+                _raise_if_lease_lost(self._lease_cursor)
                 self._queue.complete_model_batch(
                     self._lease_cursor.lease,
                     batch.number,
                     result,
                     agent=self._agent.value,
+                    expected_attempt_count=claimed_batch.attempt_count,
                 )
             except Exception as exc:
                 source_error = SafeError.from_exception(exc)
+                # 租约失效不是模型请求失败。此时旧 Worker 已经无权把批次
+                # 标记为失败或写入进度；直接向外传播，避免额外的数据库写入
+                # 和把租约错误伪装成普通 Agent 失败。
+                if source_error.code is ErrorCode.TASK_LEASE_LOST:
+                    self._lease_cursor.mark_lease_lost()
+                    raise
                 safe_error = SafeError(
                     code=source_error.code,
                     safe_message=source_error.safe_message,
@@ -495,23 +783,67 @@ class _PersistentBatchedReviewer:
                 ):
                     if safe_error.details.get(name) is not None:
                         failure_payload[name] = safe_error.details[name]
-                self._queue.fail_model_batch(
-                    self._lease_cursor.lease,
-                    batch.number,
-                    safe_error,
-                    agent=self._agent.value,
-                    retry_delay=_model_batch_retry_delay(
+                unsupported_parameters = _safe_unsupported_parameters_payload(
+                    safe_error.details
+                )
+                if unsupported_parameters is not None:
+                    failure_payload["unsupported_parameters"] = (
+                        unsupported_parameters
+                    )
+                # 心跳线程可能在模型异常返回前已经观察到任务/进程租约失效。
+                # 在失败状态写入前再次检查，避免稳定 worker_id 仍匹配时由旧
+                # 实例把批次改成 failed；队列本身只校验任务租约，不能替代这
+                # 个进程内的失效标记。
+                _raise_if_lease_lost(self._lease_cursor)
+                try:
+                    self._queue.fail_model_batch(
+                        self._lease_cursor.lease,
+                        batch.number,
                         safe_error,
-                        claimed_batch.attempt_count,
-                    ),
-                )
-                self._queue.record_model_progress(
-                    self._lease_cursor.lease,
-                    "batch_failed",
-                    failure_payload,
-                    agent=self._agent.value,
-                )
+                        agent=self._agent.value,
+                        expected_attempt_count=claimed_batch.attempt_count,
+                        retry_delay=_model_batch_retry_delay(
+                            safe_error,
+                            claimed_batch.attempt_count,
+                        ),
+                    )
+                except Exception as persistence_error:
+                    _propagate_task_lease_loss(
+                        self._lease_cursor,
+                        persistence_error,
+                    )
+                    # 持久化失败不能遮蔽原始模型错误；任务租约恢复流程会在
+                    # 后续扫描中接管仍处于 RUNNING 的批次。
+                    LOGGER.exception(
+                        "Agent %s 批次 %s 失败状态无法持久化",
+                        self._agent.value,
+                        batch.number,
+                    )
+                _raise_if_lease_lost(self._lease_cursor)
+                try:
+                    self._queue.record_model_progress(
+                        self._lease_cursor.lease,
+                        "batch_failed",
+                        failure_payload,
+                        agent=self._agent.value,
+                    )
+                except Exception as progress_error:
+                    _propagate_task_lease_loss(
+                        self._lease_cursor,
+                        progress_error,
+                    )
+                    LOGGER.exception(
+                        "Agent %s 批次 %s 失败进度无法持久化",
+                        self._agent.value,
+                        batch.number,
+                    )
                 raise SafeApplicationError(safe_error) from exc
+            finally:
+                self._lease_cursor.unregister_model_batch(
+                    self._agent.value,
+                    batch.number,
+                )
+            _raise_if_lease_lost(self._lease_cursor)
             self._queue.record_model_progress(
                 self._lease_cursor.lease,
                 "request_completed",
@@ -525,6 +857,7 @@ class _PersistentBatchedReviewer:
                 },
                 agent=self._agent.value,
             )
+            _raise_if_lease_lost(self._lease_cursor)
             self._queue.record_model_progress(
                 self._lease_cursor.lease,
                 "batch_completed",
@@ -562,8 +895,33 @@ def _model_batch_retry_delay(error: SafeError, attempt_count: int) -> timedelta:
         and retry_after >= 0
         else 0
     )
-    exponential_seconds = min(300, 5 * (2 ** max(0, attempt_count - 1)))
+    # 先限制指数再做幂运算，避免损坏数据中的超大 attempt_count 触发巨大
+    # Python 整数分配；最终退避仍保持不超过 300 秒。
+    exponent = min(8, max(0, attempt_count - 1))
+    exponential_seconds = min(300, 5 * (2**exponent))
     return timedelta(seconds=max(provider_seconds, exponential_seconds))
+
+
+def _safe_unsupported_parameters_payload(
+    details: object,
+) -> list[str] | None:
+    """提取可公开的中转站不兼容参数名，不传播任意错误详情。"""
+
+    if not isinstance(details, Mapping):
+        return None
+    raw = details.get("unsupported_parameters")
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return None
+    values = sorted(
+        {
+            item.strip()
+            for item in raw
+            if isinstance(item, str)
+            and 0 < len(item.strip()) <= 64
+            and all(ord(character) >= 32 for character in item)
+        }
+    )
+    return values[:16] or None
 
 
 def _workflow_result(
@@ -736,22 +1094,112 @@ class WorkerRuntime:
         self._maintenance = maintenance
         self._evidence_verifier = evidence_verifier
         self._stop_event = stop_event or Event()
+        # Worker 心跳 token 与任务租约是两层独立的所有权。进程 token 被新
+        # 实例接管后，旧实例不能再轮询或写入 ``idle/stopping``；普通任务
+        # 租约丢失则只影响当前任务，不能误停整个 Worker。
+        self._worker_ownership_lost = Event()
         self._instance_id = instance_id or uuid4().hex
         if not 1 <= len(self._instance_id) <= 64:
             raise ValueError("worker instance ID must contain 1 to 64 characters")
         self._heartbeat_started = False
+        # 极端情况下数据库调用可能超过 stop() 的有限等待窗口。保留这些
+        # 线程引用，下一轮先等它们彻底退出，避免旧 BUSY 写入覆盖新任务状态。
+        self._lingering_heartbeats: list[_BusyHeartbeat] = []
+
+    def _mark_worker_ownership_lost(self) -> None:
+        """锁存进程心跳所有权丢失，并请求主循环在安全边界退出。"""
+
+        if not self._worker_ownership_lost.is_set():
+            LOGGER.error(
+                "Worker %s 的进程心跳所有权已被新实例接管，将停止旧实例",
+                self._settings.worker_id,
+            )
+        self._worker_ownership_lost.set()
+        self._stop_event.set()
+
+    def _record_owned_heartbeat(
+        self,
+        status: WorkerStatus,
+        current_task_id: str | None,
+    ) -> None:
+        """写入当前实例心跳；token 失效时立即停止旧 Worker。"""
+
+        try:
+            _record_worker_heartbeat(
+                self._queue,
+                self._settings.worker_id,
+                status,
+                current_task_id,
+                self._instance_id,
+            )
+        except TaskQueueError as exc:
+            if SafeError.from_exception(exc).code is ErrorCode.TASK_LEASE_LOST:
+                self._mark_worker_ownership_lost()
+            raise
 
     def _ensure_heartbeat_started(self) -> None:
         """确保本进程先接管心跳，再执行任何任务或状态写入。"""
 
         if self._heartbeat_started:
             return
-        _start_worker_heartbeat(
-            self._queue,
-            self._settings.worker_id,
-            self._instance_id,
-        )
+        try:
+            _start_worker_heartbeat(
+                self._queue,
+                self._settings.worker_id,
+                self._instance_id,
+            )
+        except TaskQueueError as exc:
+            # 理论上 start_heartbeat 会先接管 token；兼容旧队列或并发实现
+            # 仍可能在这里报告所有权冲突，不能让旧实例继续轮询。
+            if SafeError.from_exception(exc).code is ErrorCode.TASK_LEASE_LOST:
+                self._mark_worker_ownership_lost()
+            raise
         self._heartbeat_started = True
+
+    def _drain_lingering_heartbeats(self) -> bool:
+        """确认上一轮超时的心跳线程已退出后再开始新的任务。"""
+
+        if not self._lingering_heartbeats:
+            return True
+        pending: list[_BusyHeartbeat] = []
+        for heartbeat in self._lingering_heartbeats:
+            if heartbeat.is_alive():
+                pending.append(heartbeat)
+                continue
+            if not self._worker_ownership_lost.is_set():
+                try:
+                    self._record_owned_heartbeat(WorkerStatus.IDLE, None)
+                except TaskQueueError:
+                    # 线程已结束，不会再产生迟到 BUSY；保留日志并让
+                    # 后续主循环/健康检查决定是否继续。
+                    LOGGER.exception(
+                        "Worker 上一轮忙碌心跳退出后的 IDLE 写入失败"
+                    )
+        self._lingering_heartbeats = pending
+        if self._worker_ownership_lost.is_set():
+            return False
+        if pending:
+            LOGGER.warning(
+                "Worker %s 仍有忙碌心跳线程未退出，本轮暂不领取新任务",
+                self._settings.worker_id,
+            )
+            return False
+        return True
+
+    def _stop_lingering_heartbeats_for_shutdown(self) -> bool:
+        """关停前等待迟到的 BUSY 写入结束，避免覆盖 STOPPING。"""
+
+        if not self._lingering_heartbeats:
+            return True
+        stopped = True
+        pending: list[_BusyHeartbeat] = []
+        for heartbeat in self._lingering_heartbeats:
+            if heartbeat.stop():
+                continue
+            stopped = False
+            pending.append(heartbeat)
+        self._lingering_heartbeats = pending
+        return stopped
 
     def _verify_findings(
         self,
@@ -771,7 +1219,10 @@ class WorkerRuntime:
                 installation_id=target.installation_id,
             )
             return apply_evidence_verification(findings, results)
-        except Exception:
+        except Exception as exc:
+            # 证据核验通常允许保守降级，但租约失效是所有权信号，不能被
+            # 当成普通核验故障吞掉，否则后续仍可能写入过期结果。
+            _propagate_task_lease_loss(cursor, exc)
             LOGGER.exception(
                 "任务 %s 的源码证据核验失败，将保守标记为未核验",
                 cursor.lease.task_id,
@@ -809,9 +1260,9 @@ class WorkerRuntime:
             交给进程管理器处理。
         """
         worker_id = self._settings.worker_id
-        self._ensure_heartbeat_started()
-        LOGGER.info("Worker 已启动，等待数据库任务")
         try:
+            self._ensure_heartbeat_started()
+            LOGGER.info("Worker 已启动，等待数据库任务")
             while not self._stop_event.is_set():
                 try:
                     self.run_once()
@@ -821,16 +1272,25 @@ class WorkerRuntime:
                     LOGGER.exception("Worker 本轮队列处理失败，将继续轮询")
                 self._stop_event.wait(self._settings.poll_interval.total_seconds())
         finally:
-            try:
-                _record_worker_heartbeat(
-                    self._queue,
+            # run_once() 的有限等待可能留下一个仍在数据库调用中的 BUSY
+            # 心跳线程。只有确认它已经退出后才能写 STOPPING，否则迟到的
+            # BUSY 会把终态覆盖回去，让 Dashboard 长时间显示假忙碌。
+            lingering_stopped = self._stop_lingering_heartbeats_for_shutdown()
+            if self._worker_ownership_lost.is_set():
+                LOGGER.info(
+                    "Worker %s 已失去进程心跳所有权，跳过 STOPPING 写入",
                     worker_id,
-                    WorkerStatus.STOPPING,
-                    None,
-                    self._instance_id,
                 )
-            except TaskQueueError:
-                LOGGER.exception("Worker 停止状态写入失败")
+            elif lingering_stopped:
+                try:
+                    self._record_owned_heartbeat(WorkerStatus.STOPPING, None)
+                except TaskQueueError:
+                    LOGGER.exception("Worker 停止状态写入失败")
+            else:
+                LOGGER.error(
+                    "Worker %s 仍有忙碌心跳线程未退出，跳过 STOPPING 写入以避免终态竞态",
+                    worker_id,
+                )
             LOGGER.info("Worker 已停止")
 
     def run_once(self) -> bool:
@@ -854,18 +1314,16 @@ class WorkerRuntime:
             重试/失败状态，若失败上报本身也失败则只记录日志并结束本轮。
         """
         worker_id = self._settings.worker_id
+        if self._worker_ownership_lost.is_set():
+            return False
         self._ensure_heartbeat_started()
+        if not self._drain_lingering_heartbeats():
+            return False
         recovered = self._queue.recover_expired_leases()
         if recovered:
             LOGGER.warning("已恢复 %s 个租约超时任务", recovered)
 
-        _record_worker_heartbeat(
-            self._queue,
-            worker_id,
-            WorkerStatus.IDLE,
-            None,
-            self._instance_id,
-        )
+        self._record_owned_heartbeat(WorkerStatus.IDLE, None)
         if self._maintenance is not None:
             try:
                 self._maintenance.run_once(worker_id)
@@ -880,6 +1338,10 @@ class WorkerRuntime:
             if self._ai_runtime_provider is not None
             else None
         )
+        # 配置读取本身可能阻塞；心跳线程或信号处理器可在此期间请求退出，
+        # 因此领取事务前必须再次检查所有权和停止信号。
+        if self._worker_ownership_lost.is_set() or self._stop_event.is_set():
+            return False
         lease = self._queue.claim_next(
             worker_id,
             self._settings.lease_duration,
@@ -892,13 +1354,12 @@ class WorkerRuntime:
         if lease is None:
             return False
 
-        _record_worker_heartbeat(
-            self._queue,
-            worker_id,
-            WorkerStatus.BUSY,
-            lease.task_id,
-            self._instance_id,
-        )
+        # 心跳线程可能在领取事务期间发现本进程已被新实例接管。此时任务
+        # 留给租约恢复流程，不再用旧 token 启动处理或写入状态。
+        if self._worker_ownership_lost.is_set():
+            return True
+
+        self._record_owned_heartbeat(WorkerStatus.BUSY, lease.task_id)
         cursor = _LeaseCursor(self._queue, lease, self._settings.lease_duration)
         busy_heartbeat = (
             _BusyHeartbeat(
@@ -908,6 +1369,7 @@ class WorkerRuntime:
                 self._instance_id,
                 self._settings.poll_interval,
                 cursor,
+                on_worker_ownership_lost=self._mark_worker_ownership_lost,
             )
             if (
                 self._context_loader is not None
@@ -917,9 +1379,11 @@ class WorkerRuntime:
             )
             else None
         )
-        if busy_heartbeat is not None:
-            busy_heartbeat.start()
         try:
+            # 线程启动也必须位于统一的异常边界内。极端情况下 start() 失败
+            # 时，任务仍已被领取；后续流程会把它安全重试/失败并释放心跳。
+            if busy_heartbeat is not None:
+                busy_heartbeat.start()
             next_status = self._advance_to_supported_boundary(cursor, ai_runtime)
             LOGGER.info(
                 "任务 %s 已进入 %s",
@@ -935,7 +1399,23 @@ class WorkerRuntime:
                 safe_error.safe_message,
             )
             try:
-                if safe_error.code is ErrorCode.MODEL_BUDGET_EXCEEDED:
+                lease_write_lost = (
+                    safe_error.code is ErrorCode.TASK_LEASE_LOST
+                    or self._worker_ownership_lost.is_set()
+                    or cursor.is_lease_lost
+                )
+                if lease_write_lost:
+                    # 租约丢失意味着另一 Worker 已接管，或恢复流程正在处理
+                    # 这条任务。再次调用 retry_or_fail 只会发起一次必然失败
+                    # 的所有权查询，并可能让数据库故障日志被重复放大；旧
+                    # Worker 不得对任务状态做任何写入。心跳线程可能只报告了
+                    # 进程 token 丢失而原始异常仍是普通模型错误，所以不能只看
+                    # safe_error.code。
+                    LOGGER.warning(
+                        "任务 %s 的租约已丢失，跳过失败上报并交由恢复流程接管",
+                        lease.task_id,
+                    )
+                elif safe_error.code is ErrorCode.MODEL_BUDGET_EXCEEDED:
                     self._queue.pause_for_model_budget(cursor.lease, safe_error)
                 else:
                     self._queue.retry_or_fail(cursor.lease, safe_error)
@@ -947,15 +1427,28 @@ class WorkerRuntime:
                     persisted_error.code.value,
                 )
         finally:
+            heartbeat_stopped = True
             if busy_heartbeat is not None:
-                busy_heartbeat.stop()
-            _record_worker_heartbeat(
-                self._queue,
-                worker_id,
-                WorkerStatus.IDLE,
-                None,
-                self._instance_id,
-            )
+                heartbeat_stopped = busy_heartbeat.stop()
+            if heartbeat_stopped and not self._worker_ownership_lost.is_set():
+                try:
+                    self._record_owned_heartbeat(WorkerStatus.IDLE, None)
+                except TaskQueueError:
+                    # 进程 token 可能恰好在 stop() 与收尾写之间被接管；
+                    # 此时旧实例没有资格重试写入，主循环也已被回调停止。
+                    LOGGER.exception(
+                        "Worker %s 收尾心跳写入失败，跳过旧实例状态更新",
+                        worker_id,
+                    )
+            else:
+                # 后台线程仍可能完成一轮 BUSY 写入；此时写 IDLE 反而会被
+                # 迟到结果覆盖。下一轮主循环会在安全边界再次确认线程已退出。
+                if busy_heartbeat is not None:
+                    self._lingering_heartbeats.append(busy_heartbeat)
+                LOGGER.warning(
+                    "Worker %s 暂不写入 IDLE，等待忙碌心跳线程退出",
+                    worker_id,
+                )
         return True
 
     def _advance_to_supported_boundary(
@@ -1047,6 +1540,7 @@ class WorkerRuntime:
                         item.batch_number: item for item in stored_batches
                     }
                     for batch in batches:
+                        _raise_if_lease_lost(cursor)
                         cursor.renew(self._settings.model_review_lease_duration)
                         files = batch.files
                         stored = stored_by_number.get(batch.number)
@@ -1079,13 +1573,91 @@ class WorkerRuntime:
                             batch_results.append(batch_result)
                             continue
 
-                        claim_batch = getattr(self._queue, "claim_model_batch", None)
-                        if callable(claim_batch):
-                            claimed_batch = claim_batch(
-                                cursor.lease,
-                                batch.number,
-                                lease_duration=self._settings.model_review_lease_duration,
+                        allowed_attempts = model_settings.max_retries + 1
+                        if (
+                            stored is not None
+                            and stored.attempt_count >= allowed_attempts
+                        ):
+                            raise SafeApplicationError(
+                                SafeError(
+                                    code=ErrorCode.MODEL_SERVER_ERROR,
+                                    safe_message="模型批次已达到最大重试次数",
+                                    retryable=False,
+                                    details={
+                                        "agent": "default",
+                                        "batch_number": batch.number,
+                                        "attempt_count": stored.attempt_count,
+                                        "max_retries": model_settings.max_retries,
+                                        "batch_retry_managed": True,
+                                    },
+                                )
                             )
+
+                        claim_batch = getattr(self._queue, "claim_model_batch", None)
+                        claimed_batch = None
+                        if callable(claim_batch):
+                            try:
+                                claim_parameters = signature(
+                                    claim_batch
+                                ).parameters.values()
+                                supports_agent = any(
+                                    parameter.name == "agent"
+                                    or parameter.kind is Parameter.VAR_KEYWORD
+                                    for parameter in claim_parameters
+                                )
+                            except (TypeError, ValueError):
+                                supports_agent = True
+                            try:
+                                claim_kwargs: dict[str, object] = {
+                                    "lease_duration": self._settings.model_review_lease_duration,
+                                }
+                                if supports_agent:
+                                    claim_kwargs["agent"] = "default"
+                                claimed_batch = claim_batch(
+                                    cursor.lease,
+                                    batch.number,
+                                    **claim_kwargs,
+                                )
+                            except TypeError as claim_error:
+                                if supports_agent or "agent" not in str(claim_error):
+                                    raise
+                                # 兼容尚未增加 ``agent`` 关键字的旧测试队列。
+                                try:
+                                    claimed_batch = claim_batch(
+                                        cursor.lease,
+                                        batch.number,
+                                        lease_duration=self._settings.model_review_lease_duration,
+                                    )
+                                except ModelBatchBusyError as exc:
+                                    source_error = SafeError.from_exception(exc)
+                                    raise SafeApplicationError(
+                                        SafeError(
+                                            code=source_error.code,
+                                            safe_message=source_error.safe_message,
+                                            retryable=True,
+                                            details={
+                                                **dict(source_error.details),
+                                                "agent": "default",
+                                                "batch_number": batch.number,
+                                                "batch_retry_managed": True,
+                                            },
+                                        )
+                                    ) from exc
+                            except ModelBatchBusyError as exc:
+                                source_error = SafeError.from_exception(exc)
+                                raise SafeApplicationError(
+                                    SafeError(
+                                        code=source_error.code,
+                                        safe_message=source_error.safe_message,
+                                        retryable=True,
+                                        details={
+                                            **dict(source_error.details),
+                                            "agent": "default",
+                                            "batch_number": batch.number,
+                                            "batch_retry_managed": True,
+                                        },
+                                    )
+                                ) from exc
                             if (
                                 claimed_batch.status.value == "succeeded"
                                 and claimed_batch.result is not None
@@ -1121,39 +1693,90 @@ class WorkerRuntime:
                                 "fragmented": batch.fragmented,
                             },
                         )
-                        request_started = time.monotonic()
-                        self._queue.record_model_progress(
-                            cursor.lease,
-                            "request_started",
-                            {
-                                "batch_number": batch.number,
-                                "batch_count": batch.total,
-                                "estimated_input_tokens": batch.estimated_input_tokens,
-                                "provider": model_settings.provider.value,
-                                "api_protocol": model_settings.resolved_api_protocol.value,
-                                "model": model_settings.model,
-                                "reasoning_effort": model_settings.reasoning_effort.value,
-                            },
+                        cursor.register_model_batch(
+                            "default",
+                            batch.number,
+                            self._settings.model_review_lease_duration,
                         )
+                        request_started = time.monotonic()
                         try:
+                            self._queue.record_model_progress(
+                                cursor.lease,
+                                "request_started",
+                                {
+                                    "batch_number": batch.number,
+                                    "batch_count": batch.total,
+                                    "estimated_input_tokens": batch.estimated_input_tokens,
+                                    "provider": model_settings.provider.value,
+                                    "api_protocol": model_settings.resolved_api_protocol.value,
+                                    "model": model_settings.model,
+                                    "reasoning_effort": model_settings.reasoning_effort.value,
+                                },
+                            )
+                            _raise_if_lease_lost(cursor)
                             with _model_budget_context(
                                 self._queue,
                                 cursor,
                                 "default",
                             ):
+                                _raise_if_lease_lost(cursor)
                                 batch_result = remap_model_review_result(
                                     model_reviewer.review(batch.review_input),
                                     batch,
                                 )
+                            _raise_if_lease_lost(cursor)
                             complete_batch = getattr(
                                 self._queue,
                                 "complete_model_batch",
                                 None,
                             )
                             if callable(complete_batch):
-                                complete_batch(cursor.lease, batch.number, batch_result)
+                                complete_kwargs: dict[str, object] = {}
+                                if claimed_batch is not None:
+                                    complete_kwargs["expected_attempt_count"] = (
+                                        claimed_batch.attempt_count
+                                    )
+                                try:
+                                    complete_batch(
+                                        cursor.lease,
+                                        batch.number,
+                                        batch_result,
+                                        **complete_kwargs,
+                                    )
+                                except TypeError:
+                                    # 兼容尚未增加批次代次参数的旧测试/适配器；
+                                    # 生产 SQL 队列支持该参数并会执行 CAS 校验。
+                                    if not complete_kwargs:
+                                        raise
+                                    complete_batch(
+                                        cursor.lease,
+                                        batch.number,
+                                        batch_result,
+                                    )
                         except Exception as exc:
-                            safe_error = SafeError.from_exception(exc)
+                            source_error = SafeError.from_exception(exc)
+                            # 旧 Worker 失去批次租约后不能再尝试失败回写；
+                            # 让 run_once 的租约恢复分支接管该任务。
+                            if source_error.code is ErrorCode.TASK_LEASE_LOST:
+                                cursor.mark_lease_lost()
+                                raise
+                            safe_error = SafeError(
+                                code=source_error.code,
+                                safe_message=source_error.safe_message,
+                                retryable=(
+                                    source_error.retryable
+                                    and (
+                                        claimed_batch is None
+                                        or claimed_batch.attempt_count < allowed_attempts
+                                    )
+                                ),
+                                details={
+                                    **dict(source_error.details),
+                                    "agent": "default",
+                                    "batch_number": batch.number,
+                                    "batch_retry_managed": True,
+                                },
+                            )
                             elapsed_ms = max(
                                 0,
                                 int((time.monotonic() - request_started) * 1000),
@@ -1185,21 +1808,92 @@ class WorkerRuntime:
                                 detail_value = safe_error.details.get(detail_name)
                                 if detail_value is not None:
                                     failure_payload[detail_name] = detail_value
+                            unsupported_parameters = _safe_unsupported_parameters_payload(
+                                safe_error.details
+                            )
+                            if unsupported_parameters is not None:
+                                failure_payload["unsupported_parameters"] = (
+                                    unsupported_parameters
+                                )
+                            # 进程心跳失效会同步锁存 cursor；即使模型本身只
+                            # 抛出普通异常，也不能让旧实例继续写批次失败状态。
+                            _raise_if_lease_lost(cursor)
                             try:
                                 fail_batch = getattr(self._queue, "fail_model_batch", None)
                                 if callable(fail_batch):
-                                    fail_batch(cursor.lease, batch.number, safe_error)
+                                    fail_kwargs: dict[str, object] = {
+                                        "agent": "default",
+                                        "retry_delay": _model_batch_retry_delay(
+                                            safe_error,
+                                            getattr(claimed_batch, "attempt_count", 1),
+                                        ),
+                                    }
+                                    if claimed_batch is not None:
+                                        fail_kwargs["expected_attempt_count"] = (
+                                            claimed_batch.attempt_count
+                                        )
+                                    try:
+                                        fail_batch(
+                                            cursor.lease,
+                                            batch.number,
+                                            safe_error,
+                                            **fail_kwargs,
+                                        )
+                                    except TypeError:
+                                        # 兼容旧队列签名；新 SQL 队列不会走此
+                                        # 分支，因此仍能阻止过期批次的旧回写。
+                                        if "expected_attempt_count" not in fail_kwargs:
+                                            raise
+                                        fail_kwargs.pop("expected_attempt_count", None)
+                                        fail_batch(
+                                            cursor.lease,
+                                            batch.number,
+                                            safe_error,
+                                            **fail_kwargs,
+                                        )
+                            except TypeError:
+                                # 兼容旧队列签名，同时保留原始模型错误。
+                                try:
+                                    fail_batch = getattr(self._queue, "fail_model_batch", None)
+                                    if callable(fail_batch):
+                                        fail_batch(cursor.lease, batch.number, safe_error)
+                                except Exception as fallback_error:
+                                    _propagate_task_lease_loss(
+                                        cursor,
+                                        fallback_error,
+                                    )
+                                    LOGGER.exception(
+                                        "任务 %s 的模型批次失败状态无法持久化",
+                                        cursor.lease.task_id,
+                                    )
+                            except Exception as persistence_error:
+                                _propagate_task_lease_loss(
+                                    cursor,
+                                    persistence_error,
+                                )
+                                LOGGER.exception(
+                                    "任务 %s 的模型批次失败状态无法持久化",
+                                    cursor.lease.task_id,
+                                )
+                            _raise_if_lease_lost(cursor)
+                            try:
                                 self._queue.record_model_progress(
                                     cursor.lease,
                                     "batch_failed",
                                     failure_payload,
                                 )
-                            except TaskQueueError:
+                            except Exception as progress_error:
+                                _propagate_task_lease_loss(
+                                    cursor,
+                                    progress_error,
+                                )
                                 LOGGER.exception(
                                     "任务 %s 的模型批次失败事件无法持久化",
                                     cursor.lease.task_id,
                                 )
-                            raise
+                            raise SafeApplicationError(safe_error) from exc
+                        finally:
+                            cursor.unregister_model_batch("default", batch.number)
                         batch_results.append(batch_result)
                         self._queue.record_model_progress(
                             cursor.lease,
@@ -1231,9 +1925,13 @@ class WorkerRuntime:
                         model_input,
                         tuple(batch_results),
                     )
+                    _raise_if_lease_lost(cursor)
                 else:
+                    _raise_if_lease_lost(cursor)
                     with _model_budget_context(self._queue, cursor, "default"):
+                        _raise_if_lease_lost(cursor)
                         model_result = model_reviewer.review(model_input)
+                _raise_if_lease_lost(cursor)
                 findings = materialize_findings(model_input, model_result.output)
                 findings = self._verify_findings(cursor, model_input, findings)
                 stored_model = self._queue.store_model_review(
@@ -1284,6 +1982,9 @@ class WorkerRuntime:
     ) -> ExecutionStatus:
         """执行三路独立 Agent 的可恢复批次并写入统一结果。"""
 
+        # 固定工作流在读取输入、构造引用和首个批次领取前可能耗时；先把
+        # 普通领取租约升级为模型阶段租约，避免忙碌心跳在这段窗口内续成短租约。
+        cursor.renew(self._settings.model_review_lease_duration)
         model_input = self._queue.load_model_review_input(cursor.lease)
         base_workflow = ai_runtime.agent_workflow
         if base_workflow is None:
@@ -1370,7 +2071,11 @@ class WorkerRuntime:
                 cursor.lease
             ),
         )
+        # 心跳线程可能在最后一个模型请求期间发现租约已被接管；即使编排器
+        # 返回了完整结果，也不能让旧 Worker 覆盖新 Worker 的持久化结果。
+        _raise_if_lease_lost(cursor)
         for item in execution.agents:
+            _raise_if_lease_lost(cursor)
             phase = (
                 "agent_completed"
                 if item.status == "completed"
@@ -1392,6 +2097,7 @@ class WorkerRuntime:
             )
         if execution.summary_execution is not None:
             item = execution.summary_execution
+            _raise_if_lease_lost(cursor)
             self._queue.record_model_progress(
                 cursor.lease,
                 "agent_completed" if item.status == "completed" else "agent_failed",
@@ -1407,6 +2113,7 @@ class WorkerRuntime:
                 agent=item.agent.value,
             )
         # 汇总事件只记录结构化计量和状态，不写模型思维链或完整响应。
+        _raise_if_lease_lost(cursor)
         self._queue.record_model_progress(
             cursor.lease,
             "summary_completed",
@@ -1437,6 +2144,7 @@ class WorkerRuntime:
         # FixedAgentWorkflow 的候选已做稳定去重；统一持久化接口仍负责 SHA、
         # blob 和 verification 状态补齐。
         combined = _workflow_result(model_input, execution)
+        _raise_if_lease_lost(cursor)
         findings = materialize_findings(model_input, combined.output)
         findings = self._verify_findings(cursor, model_input, findings)
         stored = self._queue.store_model_review(
@@ -1491,7 +2199,7 @@ def main() -> None:
             legacy_ai_settings,
             agent_settings,
             max_agent_concurrency=int(
-                os.environ.get("OPENREVIEWER_AGENT_MAX_CONCURRENCY", "3")
+                os.environ.get("OPENREVIEWER_AGENT_MAX_CONCURRENCY", "1")
             ),
         )
         operations_settings = OperationsSettings.from_environment()

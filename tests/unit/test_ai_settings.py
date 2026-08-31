@@ -115,6 +115,7 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
             model="gpt-5",
             api_protocol=ModelApiProtocol.RESPONSES,
             api_base_url="https://relay.example.test/v1/",
+            max_output_tokens=32_768,
             input_usd_per_million=Decimal("1.25"),
             output_usd_per_million=Decimal("10.00"),
         ),
@@ -147,7 +148,7 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
     assert tested[0].resolved_api_base_url == "https://relay.example.test/v1"
     assert tested[0].api_request_path("/v1/responses") == "responses"
     assert tested[0].api_key == "sk-test-secret-5678"
-    assert tested[0].max_output_tokens == 512
+    assert tested[0].max_output_tokens == 32_768
     assert tested[0].reasoning_effort is ModelReasoningEffort.NONE
     assert tested[0].max_batch_input_tokens == 64_000
 

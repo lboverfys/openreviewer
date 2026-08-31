@@ -63,6 +63,37 @@ def test_supported_protocols_return_dual_token_estimates(
     assert 0 < result.estimated_tokens <= result.upper_bound_tokens
     assert result.serialized_bytes == len(serialized)
     assert not result.used_fallback
+    assert result.estimated_tokens <= result.reservation_tokens
+
+
+def test_valid_request_reservation_uses_estimate_with_bounded_margin() -> None:
+    """正常请求不能按原始 UTF-8 字节数重复占用总预算。"""
+
+    body = {
+        "model": "gateway-model",
+        "messages": [
+            {"role": "system", "content": "规则" * 2_000},
+            {"role": "user", "content": "补丁" * 2_000},
+        ],
+    }
+    serialized = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+
+    result = estimate_model_request_tokens(
+        body,
+        serialized,
+        provider=ModelProvider.OPENAI,
+        protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+        model="gateway-model",
+    )
+
+    expected_margin = max(4_096, (result.estimated_tokens * 5 + 99) // 100)
+    assert result.reservation_tokens == min(
+        result.upper_bound_tokens,
+        result.estimated_tokens + expected_margin,
+    )
+    assert result.reservation_tokens < result.upper_bound_tokens
+    # 这里的差距接近两倍；预留应保持在估算值附近，而不是回到字节上界。
+    assert result.reservation_tokens < result.upper_bound_tokens * 3 // 4
 
 
 def test_escape_dense_json_does_not_charge_escape_bytes_as_prompt_tokens() -> None:
@@ -102,6 +133,7 @@ def test_malformed_request_falls_back_to_serialized_byte_count() -> None:
 
     assert result.estimated_tokens == len(serialized)
     assert result.upper_bound_tokens == len(serialized)
+    assert result.reservation_tokens == len(serialized)
     assert result.used_fallback
 
 
