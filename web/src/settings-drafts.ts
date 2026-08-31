@@ -281,18 +281,13 @@ export function reviewPolicyHasChanges(
   settings: AiSettings,
   draft: ReviewPolicyDraft,
 ): boolean {
-  const savedCostUsd = settings.max_model_cost_microusd === null
-    ? ""
-    : String(settings.max_model_cost_microusd / 1_000_000);
+  // 任务级请求/Token/费用字段仅为兼容旧快照而保留，当前页面不再允许
+  // 编辑它们；不可编辑字段不应让用户看到永远无法消除的“待保存”状态。
   return (
     Number(draft.maxUnits) !== settings.max_units
     || Number(draft.maxScopeDepth) !== settings.max_scope_depth
     || Number(inputToBytes(draft.maxUnitInputKib, KIB)) !== settings.max_unit_input_bytes
     || Number(inputToBytes(draft.maxTotalInputMib, MIB)) !== settings.max_total_input_bytes
-    || Number(draft.maxModelHttpCalls) !== settings.max_model_http_calls
-    || Number(draft.maxModelInputTokens) !== settings.max_model_input_tokens
-    || Number(draft.maxModelOutputTokens) !== settings.max_model_output_tokens
-    || draft.maxModelCostUsd.trim() !== savedCostUsd
     || Number(draft.maxModelDurationSeconds) !== settings.max_model_duration_seconds
   );
 }

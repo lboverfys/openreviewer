@@ -36,13 +36,13 @@ class ModelInputTokenEstimate:
 
     @property
     def reservation_tokens(self) -> int:
-        """返回模型预算应预留的输入 Token 数。
+        """返回资源统计或兼容硬限制所需的输入 Token 上界。
 
         对可识别的请求，规划和实际预留使用同一估算口径，并增加有限的
         5%（至少 4096 Token）余量。``upper_bound_tokens`` 仍保留为结构化
         诊断上界，但不再让正常请求的预留量接近原始 UTF-8 字节数。结构
         无法识别时则必须使用完整序列化字节数这一保守退路，避免异常请求
-        绕过硬预算。
+        绕过累计资源阈值。
         """
 
         if self.used_fallback:

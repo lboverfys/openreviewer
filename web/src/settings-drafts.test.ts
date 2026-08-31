@@ -10,6 +10,7 @@ import {
   providerDraft,
   providerHasChanges,
   requiredInteger,
+  reviewPolicyHasChanges,
   reviewPolicyDraft,
 } from "./settings-drafts";
 import type { AiProviderSettings, AiSettings } from "./types";
@@ -137,5 +138,27 @@ describe("设置快照与本地草稿合并", () => {
 
     expect(mergeReviewPolicyDraft(previous, local, next).maxUnits).toBe("15");
     expect(mergeReviewPolicyDraft(previous, local, next, true).maxUnits).toBe("20");
+  });
+
+  it("忽略仅为兼容保留的隐藏预算字段", () => {
+    const settings = {
+      max_units: 10,
+      max_scope_depth: 2,
+      max_unit_input_bytes: 1024,
+      max_total_input_bytes: 2048,
+      max_model_http_calls: 4,
+      max_model_input_tokens: 1000,
+      max_model_output_tokens: 500,
+      max_model_cost_microusd: null,
+      max_model_duration_seconds: 60,
+    } as AiSettings;
+    const draft = reviewPolicyDraft(settings);
+    draft.maxModelHttpCalls = "999";
+    draft.maxModelInputTokens = "999999";
+    draft.maxModelOutputTokens = "999999";
+    draft.maxModelCostUsd = "42";
+
+    // 这些字段不再出现在表单中，服务端变化不应制造假脏状态。
+    expect(reviewPolicyHasChanges(settings, draft)).toBe(false);
   });
 });

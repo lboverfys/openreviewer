@@ -43,6 +43,7 @@ from persistence.models import (
 from services.model_providers import create_model_reviewer
 from services.model_review import (
     DEFAULT_MAX_BATCH_INPUT_TOKENS,
+    DEFAULT_MAX_RESPONSE_BYTES,
     ModelPricing,
     ModelReviewer,
     ModelServiceSettings,
@@ -68,7 +69,7 @@ DEFAULT_MAX_MODEL_HTTP_CALLS = 64
 DEFAULT_MAX_MODEL_INPUT_TOKENS = 2_000_000
 DEFAULT_MAX_MODEL_OUTPUT_TOKENS = 250_000
 DEFAULT_MAX_MODEL_COST_MICROUSD: int | None = None
-DEFAULT_MAX_MODEL_DURATION_SECONDS = 900
+DEFAULT_MAX_MODEL_DURATION_SECONDS = 3_600
 _MAX_KEY_FILE_BYTES = 4096
 
 
@@ -321,7 +322,7 @@ class AiProviderDraft:
     write_timeout_seconds: float = 30.0
     pool_timeout_seconds: float = 5.0
     max_request_bytes: int = 4 * 1024 * 1024
-    max_response_bytes: int = 2 * 1024 * 1024
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
     input_usd_per_million: Decimal | None = None
     output_usd_per_million: Decimal | None = None
     cache_read_usd_per_million: Decimal | None = None
@@ -1008,7 +1009,7 @@ class AiSettingsService:
             write_timeout_seconds=30.0,
             pool_timeout_seconds=5.0,
             max_request_bytes=4 * 1024 * 1024,
-            max_response_bytes=2 * 1024 * 1024,
+            max_response_bytes=DEFAULT_MAX_RESPONSE_BYTES,
             input_usd_per_million=None,
             output_usd_per_million=None,
             cache_read_usd_per_million=None,

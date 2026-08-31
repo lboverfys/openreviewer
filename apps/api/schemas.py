@@ -865,7 +865,7 @@ class AiProviderUpdateRequest(BaseModel):
     write_timeout_seconds: float = Field(gt=0, le=3600)
     pool_timeout_seconds: float = Field(gt=0, le=3600)
     max_request_bytes: int = Field(ge=65_536, le=10 * 1024 * 1024)
-    max_response_bytes: int = Field(ge=65_536, le=10 * 1024 * 1024)
+    max_response_bytes: int = Field(ge=65_536, le=16 * 1024 * 1024)
     input_usd_per_million: Decimal | None = Field(
         default=None, ge=0, le=1_000_000, decimal_places=6
     )

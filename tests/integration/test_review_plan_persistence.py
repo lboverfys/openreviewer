@@ -1288,6 +1288,7 @@ def test_model_budget_settlement_releases_unused_reservation(
         clock,
         key="budget-settlement",
         policy=ModelBudgetPolicy(
+            enforcement="enforce",
             max_http_calls=2,
             max_input_tokens=1_000,
             max_output_tokens=256,
@@ -1332,6 +1333,120 @@ def test_model_budget_settlement_releases_unused_reservation(
         assert call.actual_cost_microusd == 125
 
 
+def test_model_budget_observe_mode_records_overrun_without_blocking(
+    database: Database,
+) -> None:
+    """观测模式允许继续请求，并保留累计指标与越限事件。"""
+
+    clock = MutableClock(datetime(2026, 8, 28, 8, 3, tzinfo=UTC))
+    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
+        database,
+        clock,
+        key="budget-observe",
+        policy=ModelBudgetPolicy(
+            max_http_calls=1,
+            max_input_tokens=1_000,
+            max_output_tokens=256,
+            max_estimated_cost_microusd=1_000,
+            max_duration_seconds=30,
+        ),
+    )
+    request = ModelBudgetRequest(
+        provider="openai",
+        api_protocol="responses",
+        model="test-model",
+        request_bytes=200,
+        input_token_upper_bound=400,
+        output_token_upper_bound=100,
+        cost_upper_bound_microusd=500,
+    )
+    first = queue.reserve_model_budget(lease, request)
+    queue.settle_model_budget(
+        first,
+        input_tokens=150,
+        output_tokens=30,
+        estimated_cost_microusd=125,
+        response_status=200,
+        duration_ms=250,
+    )
+
+    second = queue.reserve_model_budget(lease, request)
+
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        assert plan is not None
+        assert second.sequence == 2
+        assert plan.model_budget_mode == "observe"
+        assert plan.model_http_calls == 2
+        assert plan.model_budget_exhausted_reason is None
+        observed = session.scalar(
+            select(OutboxEventRecord)
+            .where(OutboxEventRecord.event_type == "review.model.budget_observed")
+            .order_by(OutboxEventRecord.occurred_at.desc())
+        )
+        assert observed is not None
+        assert observed.payload["budget_reason"] == "http_calls"
+
+
+def test_legacy_null_model_budget_mode_defaults_to_observe(
+    database: Database,
+) -> None:
+    """迁移尚未回填的旧计划行也不能恢复预算硬阻断。"""
+
+    clock = MutableClock(datetime(2026, 8, 28, 8, 4, tzinfo=UTC))
+    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
+        database,
+        clock,
+        key="budget-legacy-null-mode",
+        policy=ModelBudgetPolicy(
+            max_http_calls=1,
+            max_input_tokens=1_000,
+            max_output_tokens=256,
+            max_estimated_cost_microusd=1_000,
+            max_duration_seconds=30,
+        ),
+    )
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        assert plan is not None
+        # 模拟 0040 迁移前创建、但尚未被回填的历史行。
+        plan.model_budget_mode = None
+        session.commit()
+
+    request = ModelBudgetRequest(
+        provider="openai",
+        api_protocol="responses",
+        model="test-model",
+        request_bytes=200,
+        input_token_upper_bound=400,
+        output_token_upper_bound=100,
+        cost_upper_bound_microusd=500,
+    )
+    first = queue.reserve_model_budget(lease, request)
+    queue.settle_model_budget(
+        first,
+        input_tokens=150,
+        output_tokens=30,
+        estimated_cost_microusd=125,
+        response_status=200,
+        duration_ms=250,
+    )
+    second = queue.reserve_model_budget(lease, request)
+
+    with database.sessions() as session:
+        plan = session.get(ReviewPlanRecord, plan_id)
+        assert plan is not None
+        assert second.sequence == 2
+        assert plan.model_budget_exhausted_reason is None
+        observed = session.scalar(
+            select(OutboxEventRecord)
+            .where(OutboxEventRecord.event_type == "review.model.budget_observed")
+            .order_by(OutboxEventRecord.occurred_at.desc())
+        )
+        assert observed is not None
+        assert observed.payload["model_budget_mode"] == "observe"
+
+
 def test_model_budget_settlement_rejects_a_response_after_the_hard_deadline(
     database: Database,
 ) -> None:
@@ -1343,6 +1458,7 @@ def test_model_budget_settlement_rejects_a_response_after_the_hard_deadline(
         clock,
         key="budget-deadline",
         policy=ModelBudgetPolicy(
+            enforcement="enforce",
             max_http_calls=2,
             max_input_tokens=1_000,
             max_output_tokens=256,
@@ -1402,6 +1518,7 @@ def test_uncertain_model_budget_settlement_is_conservative_and_idempotent(
         clock,
         key="budget-uncertain",
         policy=ModelBudgetPolicy(
+            enforcement="enforce",
             max_http_calls=2,
             max_input_tokens=1_000,
             max_output_tokens=256,
@@ -1463,6 +1580,7 @@ def test_cost_cap_rejects_request_when_model_pricing_is_unknown(
         clock,
         key="budget-pricing-unknown",
         policy=ModelBudgetPolicy(
+            enforcement="enforce",
             max_http_calls=2,
             max_input_tokens=1_000,
             max_output_tokens=256,
@@ -1505,6 +1623,7 @@ def test_budget_pause_resume_grants_an_audited_additional_window(
         clock,
         key="budget-resume-grant",
         policy=ModelBudgetPolicy(
+            enforcement="enforce",
             max_http_calls=1,
             max_input_tokens=1_000,
             max_output_tokens=256,

@@ -145,7 +145,7 @@ class ModelBatchBusyError(TaskQueueError):
 
 
 class ModelBudgetExceededError(TaskQueueError):
-    """本 Review Plan 的模型硬预算不足，必须转人工处理。"""
+    """旧版硬预算计划超限，必须转人工处理。"""
 
     def __init__(
         self,
@@ -465,7 +465,7 @@ class ReviewTaskQueue(Protocol):
         *,
         agent: str = "default",
     ) -> ModelBudgetReservation:
-        """在真实 HTTP 请求前原子预留计划级预算。"""
+        """在真实 HTTP 请求前原子预留计划级用量并执行兼容阈值策略。"""
         ...
 
     def settle_model_budget(
@@ -487,7 +487,7 @@ class ReviewTaskQueue(Protocol):
         lease: ReviewTaskLease,
         error: SafeError,
     ) -> None:
-        """预算超限时撤销租约，并进入可人工重新审查的暂停状态。"""
+        """旧版硬预算超限时撤销租约并进入可人工重新审查的暂停状态。"""
         ...
 
     def store_model_review(

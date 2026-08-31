@@ -61,6 +61,8 @@ _FRAGMENT_PROMPT_OVERHEAD_BYTES = 512
 DEFAULT_MAX_BATCH_INPUT_TOKENS = 64_000
 MIN_MAX_BATCH_INPUT_TOKENS = 4_096
 MAX_MODEL_REVIEW_BATCHES = 3_000
+DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _HUNK_HEADER = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
 )
@@ -279,7 +281,7 @@ class ModelServiceSettings:
     write_timeout_seconds: float = 30.0
     pool_timeout_seconds: float = 5.0
     max_request_bytes: int = 4 * 1024 * 1024
-    max_response_bytes: int = 2 * 1024 * 1024
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
     api_base_url: str | None = None
 
     def __post_init__(self) -> None:
@@ -346,8 +348,8 @@ class ModelServiceSettings:
             raise ValueError("model API timeouts must be positive")
         if not 64 * 1024 <= self.max_request_bytes <= 10 * 1024 * 1024:
             raise ValueError("model request limit must be between 64 KiB and 10 MiB")
-        if not 64 * 1024 <= self.max_response_bytes <= 10 * 1024 * 1024:
-            raise ValueError("model response limit must be between 64 KiB and 10 MiB")
+        if not 64 * 1024 <= self.max_response_bytes <= MAX_MAX_RESPONSE_BYTES:
+            raise ValueError("model response limit must be between 64 KiB and 16 MiB")
         normalize_api_base_url(self.api_base_url)
 
     @property
@@ -506,7 +508,7 @@ class ModelServiceSettings:
             max_response_bytes=_environment_int(
                 values,
                 "OPENREVIEWER_MODEL_MAX_RESPONSE_BYTES",
-                2 * 1024 * 1024,
+                DEFAULT_MAX_RESPONSE_BYTES,
             ),
         )
 

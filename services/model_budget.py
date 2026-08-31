@@ -1,4 +1,4 @@
-"""模型 HTTP 调用预算的进程内作用域与持久化接口。"""
+"""模型 HTTP 调用资源统计的进程内作用域与持久化接口。"""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -15,8 +15,8 @@ class ModelBudgetRequest:
     request_bytes: int
     input_token_upper_bound: int
     output_token_upper_bound: int
-    # 没有完整价格表时无法给出可信的最坏费用；持久层会在启用费用上限时
-    # 拒绝这种请求，避免把“未知”误当成 0 美元。
+    # 没有完整价格表时无法给出可信的最坏费用；硬限制模式会拒绝这种请求，
+    # 观测模式仍会记录请求并把费用标记为未知。
     cost_upper_bound_microusd: int | None
 
 

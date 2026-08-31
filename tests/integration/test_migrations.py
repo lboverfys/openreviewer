@@ -737,3 +737,293 @@ def test_protocol_migration_backfills_existing_provider_configs(
         assert batch_limits == {"openai": 64_000, "anthropic": 64_000}
     finally:
         engine.dispose()
+
+
+def test_response_limit_migration_invalidates_old_provider_tests(
+    tmp_path: Path,
+) -> None:
+    """放宽响应上限后，旧连接测试指纹必须重新验证。"""
+
+    database_path = (tmp_path / "response-limit.sqlite3").as_posix()
+    database_url = f"sqlite:///{database_path}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "20260831_0040")
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO ai_provider_configs ("
+                    "provider, model, api_protocol, context_window_tokens, "
+                    "reasoning_effort, "
+                    "max_output_tokens, max_batch_input_tokens, "
+                    "connect_timeout_seconds, read_timeout_seconds, "
+                    "write_timeout_seconds, pool_timeout_seconds, "
+                    "max_request_bytes, max_response_bytes, "
+                    "tested_configuration_fingerprint, test_status, tested_at, "
+                    "updated_by, updated_at"
+                    ") VALUES ("
+                    "'openai', 'test-model', 'responses', 128000, 'none', 8192, 64000, "
+                    "5, 180, 30, 5, 4194304, 2097152, "
+                    "printf('%064d', 0), 'succeeded', "
+                    "'2026-08-31 00:00:00', 'migration-test', "
+                    "'2026-08-31 00:00:00'"
+                    ")"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(configuration, "head")
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT max_response_bytes, tested_configuration_fingerprint, "
+                    "test_status, tested_at FROM ai_provider_configs "
+                    "WHERE provider = 'openai'"
+                )
+            ).one()
+        assert row.max_response_bytes == 16 * 1024 * 1024
+        assert row.tested_configuration_fingerprint is None
+        assert row.test_status is None
+        assert row.tested_at is None
+    finally:
+        engine.dispose()
+
+
+def test_model_budget_mode_migration_backfills_legacy_plans(
+    tmp_path: Path,
+) -> None:
+    """预算改为观测模式后，历史计划不能因 NULL 继续硬阻断。"""
+
+    database_path = (tmp_path / "model-budget-mode.sqlite3").as_posix()
+    database_url = f"sqlite:///{database_path}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "20260830_0039")
+
+    # 在 0040 之前创建一条最小但完整的旧计划快照。外键默认未开启的
+    # SQLite 迁移测试只需满足 review_plans 自身的非空/检查约束；真实
+    # PostgreSQL 上 0040 的 UPDATE 语义相同，并按主键逐行回填 NULL。
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO review_plans ("
+                    "id, review_run_id, pull_request_version_id, "
+                    "review_version_key, head_sha, plan_fingerprint, "
+                    "planner_version, rules_complete, incomplete_files, "
+                    "rule_issues, candidate_count, requested_candidate_count, "
+                    "rule_count, unit_count, file_count, "
+                    "total_estimated_input_bytes, max_model_http_calls, "
+                    "max_model_input_tokens, max_model_output_tokens, "
+                    "max_model_cost_microusd, max_model_duration_seconds, "
+                    "model_http_calls, model_input_tokens, model_output_tokens, "
+                    "model_estimated_cost_microusd, model_budget_resume_count"
+                    ") VALUES ("
+                    "'legacy-plan', 'legacy-run', 'legacy-version', "
+                    "'42:48:cccccccccccccccccccccccccccccccccccccccc', "
+                    "'cccccccccccccccccccccccccccccccccccccccc', "
+                    "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', "
+                    "'review-planner-v3', 1, '[]', '[]', 0, 0, 0, 0, 0, 0, "
+                    "64, 2000000, 250000, NULL, 900, 0, 0, 0, 0, 0"
+                    ")"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(configuration, "20260831_0040")
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT model_budget_mode, plan_fingerprint FROM review_plans "
+                    "WHERE id = 'legacy-plan'"
+                )
+            ).one()
+        assert row.model_budget_mode == "observe"
+        # 模式回填改变执行策略，不改变已经持久化并被批次/结果引用的计划身份。
+        assert row.plan_fingerprint == "a" * 64
+    finally:
+        engine.dispose()
+
+
+def test_runtime_guard_migration_upgrades_legacy_defaults(
+    tmp_path: Path,
+) -> None:
+    """运行保护迁移提升旧默认，同时保留其他显式时限。"""
+
+    database_path = (tmp_path / "runtime-guard-default.sqlite3").as_posix()
+    database_url = f"sqlite:///{database_path}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "20260831_0041")
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO ai_settings ("
+                    "id, revision, max_units, max_scope_depth, "
+                    "max_unit_input_bytes, max_total_input_bytes, "
+                    "max_model_http_calls, max_model_input_tokens, "
+                    "max_model_output_tokens, max_model_cost_microusd, "
+                    "max_model_duration_seconds, updated_at"
+                    ") VALUES ("
+                    "1, 0, 100, 32, 196608, 2097152, 64, 2000000, "
+                    "250000, NULL, 900, '2026-08-31 00:00:00'"
+                    ")"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO review_plans ("
+                    "id, review_run_id, pull_request_version_id, "
+                    "review_version_key, head_sha, plan_fingerprint, "
+                    "planner_version, rules_complete, incomplete_files, "
+                    "rule_issues, candidate_count, requested_candidate_count, "
+                    "rule_count, unit_count, file_count, "
+                    "total_estimated_input_bytes, max_model_http_calls, "
+                    "max_model_input_tokens, max_model_output_tokens, "
+                    "max_model_cost_microusd, max_model_duration_seconds, "
+                    "model_http_calls, model_input_tokens, model_output_tokens, "
+                    "model_estimated_cost_microusd, model_budget_resume_count, "
+                    "model_budget_mode"
+                    ") VALUES ("
+                    ":id, :run_id, :version_id, :version_key, :head_sha, "
+                    ":fingerprint, 'review-planner-v3', 1, '[]', '[]', "
+                    "0, 0, 0, 0, 0, 0, 64, 2000000, 250000, NULL, "
+                    ":duration, 0, 0, 0, 0, 0, :mode"
+                    ")"
+                ),
+                [
+                    {
+                        "id": "legacy-runtime-plan",
+                        "run_id": "legacy-runtime-run",
+                        "version_id": "legacy-runtime-version",
+                        "version_key": "42:49:" + "d" * 40,
+                        "head_sha": "d" * 40,
+                        "fingerprint": "b" * 64,
+                        "duration": 900,
+                        "mode": "observe",
+                    },
+                    {
+                        "id": "custom-runtime-plan",
+                        "run_id": "custom-runtime-run",
+                        "version_id": "custom-runtime-version",
+                        "version_key": "42:50:" + "e" * 40,
+                        "head_sha": "e" * 40,
+                        "fingerprint": "c" * 64,
+                        "duration": 1200,
+                        "mode": "observe",
+                    },
+                    {
+                        "id": "enforced-runtime-plan",
+                        "run_id": "enforced-runtime-run",
+                        "version_id": "enforced-runtime-version",
+                        "version_key": "42:51:" + "f" * 40,
+                        "head_sha": "f" * 40,
+                        "fingerprint": "d" * 64,
+                        "duration": 900,
+                        "mode": "enforce",
+                    },
+                ],
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(configuration, "head")
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        ai_settings_duration = next(
+            column
+            for column in inspector.get_columns("ai_settings")
+            if column["name"] == "max_model_duration_seconds"
+        )
+        review_plan_duration = next(
+            column
+            for column in inspector.get_columns("review_plans")
+            if column["name"] == "max_model_duration_seconds"
+        )
+        with engine.connect() as connection:
+            current_value = connection.scalar(
+                text(
+                    "SELECT max_model_duration_seconds FROM ai_settings "
+                    "WHERE id = 1"
+                )
+            )
+            plan_values = dict(
+                connection.execute(
+                    text(
+                        "SELECT id, max_model_duration_seconds FROM review_plans "
+                        "WHERE id IN ('legacy-runtime-plan', 'custom-runtime-plan', "
+                        "'enforced-runtime-plan')"
+                    )
+                ).all()
+            )
+        assert current_value == 3600
+        assert plan_values == {
+            "legacy-runtime-plan": 3600,
+            "custom-runtime-plan": 1200,
+            "enforced-runtime-plan": 900,
+        }
+        assert str(ai_settings_duration["default"]).strip("()'") == "3600"
+        assert str(review_plan_duration["default"]).strip("()'") == "3600"
+    finally:
+        engine.dispose()
+
+    command.downgrade(configuration, "20260831_0041")
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        defaults = {
+            table: str(
+                next(
+                    column
+                    for column in inspector.get_columns(table)
+                    if column["name"] == "max_model_duration_seconds"
+                )["default"]
+            ).strip("()'")
+            for table in ("ai_settings", "review_plans")
+        }
+        with engine.begin() as connection:
+            persisted_value = connection.scalar(
+                text(
+                    "SELECT max_model_duration_seconds FROM ai_settings "
+                    "WHERE id = 1"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE ai_settings SET max_model_duration_seconds = 1200 "
+                    "WHERE id = 1"
+                )
+            )
+        assert defaults == {"ai_settings": "900", "review_plans": "900"}
+        assert persisted_value == 3600
+    finally:
+        engine.dispose()
+
+    # 再次升级时，自定义为 1200 秒的全局配置不能被当成历史默认覆盖。
+    command.upgrade(configuration, "head")
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            custom_setting = connection.scalar(
+                text(
+                    "SELECT max_model_duration_seconds FROM ai_settings "
+                    "WHERE id = 1"
+                )
+            )
+        assert custom_setting == 1200
+    finally:
+        engine.dispose()

@@ -17,7 +17,11 @@ from services.model_budget import (
     ModelBudgetReservation,
     model_budget_scope,
 )
-from services.model_providers import create_model_reviewer
+from services.model_providers import (
+    _ResponsesSseAccumulator,
+    _SseResponseTooLarge,
+    create_model_reviewer,
+)
 from services.model_review import ModelPricing, ModelServiceSettings
 from services.task_queue import ModelBudgetExceededError, TaskQueueError
 from services.telemetry import TelemetryRegistry
@@ -276,6 +280,7 @@ def test_openai_responses_streaming_sse_uses_completed_response() -> None:
             content=content.encode("utf-8"),
         )
 
+    ticks = iter((10.0, 12.5))
     client = httpx.Client(
         base_url="https://api.openai.test",
         transport=httpx.MockTransport(handler),
@@ -283,6 +288,7 @@ def test_openai_responses_streaming_sse_uses_completed_response() -> None:
     reviewer = create_model_reviewer(
         _settings(ModelProvider.OPENAI),
         client=client,
+        monotonic=lambda: next(ticks),
     )
 
     result = reviewer.review(make_model_input())
@@ -291,8 +297,50 @@ def test_openai_responses_streaming_sse_uses_completed_response() -> None:
     assert result.status is ModelCallStatus.SUCCEEDED
     assert result.provider_response_id == "resp_stream_1"
     assert result.provider_request_id == "relay-stream-1"
+    assert result.duration_ms == 2_500
     assert result.usage.input_tokens == 120
     assert result.usage.output_tokens == 40
+    assert result.output == make_output()
+    client.close()
+
+
+def test_openai_responses_sse_probe_skips_large_relay_preamble() -> None:
+    """未声明 Content-Type 的中转站可带较长空白/注释前导。"""
+
+    output_text = make_output().model_dump_json()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        delta_event = json.dumps(
+            {
+                "type": "response.output_text.delta",
+                "delta": output_text,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        content = (
+            b" " * (128 * 1024)
+            + b": relay keep-alive\r\r"
+            + b"event: response.output_text.delta\r"
+            + b"data: "
+            + delta_event
+            + b"\r\r"
+            + b"event: response.completed\r"
+            + b'data: {"type":"response.completed","response":{"id":"resp-preamble",'
+            + b'"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\r\r'
+            + b"data: [DONE]\r\r"
+        )
+        return httpx.Response(200, content=content)
+
+    client = httpx.Client(
+        base_url="https://api.openai.test",
+        transport=httpx.MockTransport(handler),
+    )
+    reviewer = create_model_reviewer(_settings(ModelProvider.OPENAI), client=client)
+
+    result = reviewer.review(make_model_input())
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert result.provider_response_id == "resp-preamble"
     assert result.output == make_output()
     client.close()
 
@@ -325,6 +373,101 @@ def test_openai_responses_streaming_sse_without_terminal_response_is_rejected() 
     assert captured.value.error.code is ErrorCode.MODEL_INVALID_RESPONSE
     assert captured.value.error.details["status_code"] == 200
     client.close()
+
+
+def test_responses_sse_accumulator_handles_arbitrary_chunk_boundaries() -> None:
+    output_text = make_output().model_dump_json()
+    events = (
+        "event: response.output_text.delta\r\n"
+        + "data: "
+        + json.dumps(
+            {
+                "type": "response.output_text.delta",
+                "delta": output_text,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\r\n\r\n"
+        "event: response.completed\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-chunked\",\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n"
+    ).encode("utf-8")
+
+    parser = _ResponsesSseAccumulator(max_response_bytes=64 * 1024)
+    for byte in events:
+        parser.feed(bytes((byte,)))
+
+    payload = parser.finish()
+    assert payload["id"] == "resp-chunked"
+    assert payload["status"] == "completed"
+    assert payload["usage"] == {"input_tokens": 3, "output_tokens": 4}
+    output = payload["output"]
+    assert isinstance(output, list)
+    assert output[0]["content"][0]["text"] == output_text
+
+
+def test_responses_sse_accumulator_preserves_event_name_across_split_crlf() -> None:
+    """CRLF 拆在两个 HTTP 分块时，不能丢失依赖 event 字段的事件类型。"""
+
+    chunks = (
+        b"event: response.output_text.delta\r",
+        b'\ndata: {"delta":"{}"}\r',
+        b"\n\r",
+        b"\nevent: response.completed\r\n",
+        b'data: {"response":{"id":"resp-crlf","status":"completed",'
+        b'"usage":{"input_tokens":1,"output_tokens":1}}}\r\n\r\n',
+        b"data: [DONE]\r\n\r\n",
+    )
+
+    parser = _ResponsesSseAccumulator(max_response_bytes=64 * 1024)
+    for chunk in chunks:
+        parser.feed(chunk)
+
+    payload = parser.finish()
+    assert payload["id"] == "resp-crlf"
+    assert payload["status"] == "completed"
+    output = payload["output"]
+    assert isinstance(output, list)
+    assert output[0]["content"][0]["text"] == "{}"
+
+
+def test_responses_sse_accumulator_separates_raw_and_final_text_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.model_providers as model_providers
+
+    monkeypatch.setattr(model_providers, "_MAX_SSE_RAW_RESPONSE_BYTES", 8)
+    parser = _ResponsesSseAccumulator()
+    with pytest.raises(_SseResponseTooLarge):
+        parser.feed(b"data: {}\n\n")
+
+    parser = _ResponsesSseAccumulator(max_response_bytes=4)
+    event = json.dumps(
+        {"type": "response.output_text.delta", "delta": "12345"},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    with pytest.raises(_SseResponseTooLarge):
+        parser.feed(b"data: " + event + b"\n\n")
+
+
+def test_responses_sse_metadata_can_exceed_final_text_limit() -> None:
+    """中转站事件开销不能被误算成最终模型文本。"""
+
+    parser = _ResponsesSseAccumulator(max_response_bytes=128)
+    parser.feed(b": relay-metadata " + b"x" * 1024 + b"\n\n")
+    parser.feed(
+        b'data: {"type":"response.output_text.delta","delta":"{}"}\n\n'
+        b'data: {"type":"response.completed","response":{"id":"resp-metadata",'
+        b'"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n'
+    )
+
+    payload = parser.finish()
+
+    assert payload["id"] == "resp-metadata"
+    output = payload["output"]
+    assert isinstance(output, list)
+    assert output[0]["content"][0]["text"] == "{}"
 
 
 def test_openai_responses_streaming_falls_back_when_relay_rejects_stream() -> None:
@@ -2237,9 +2380,9 @@ def test_timeout_response_iterator_preserves_http_audit() -> None:
             return None
 
     accountant = RecordingBudgetAccountant()
-    # _post_json samples the clock at request start, when headers are audited,
-    # and once more when the body read raises.
-    ticks = iter((10.0, 10.5, 12.5))
+    # _post_json samples the clock at request start and when the body read
+    # raises; the latter is the complete elapsed duration.
+    ticks = iter((10.0, 12.5))
     reviewer = create_model_reviewer(
         _settings(ModelProvider.OPENAI),
         client=TimeoutClient(),  # type: ignore[arg-type]
@@ -2317,6 +2460,8 @@ def test_http_classification_iterator_exception_does_not_settle_twice() -> None:
 
 def test_invalid_json_keeps_the_full_budget_reservation_once() -> None:
     accountant = RecordingBudgetAccountant()
+    telemetry = TelemetryRegistry()
+    ticks = iter((10.0, 13.0))
     client = httpx.Client(
         base_url="https://api.openai.test",
         transport=httpx.MockTransport(
@@ -2326,16 +2471,25 @@ def test_invalid_json_keeps_the_full_budget_reservation_once() -> None:
     reviewer = create_model_reviewer(
         _settings(ModelProvider.OPENAI),
         client=client,
+        monotonic=lambda: next(ticks),
+        telemetry=telemetry,
     )
 
     with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
         reviewer.review(make_model_input())
 
     assert captured.value.error.code is ErrorCode.MODEL_INVALID_RESPONSE
+    assert captured.value.error.details["duration_ms"] == 3_000
     assert len(accountant.requests) == 1
     assert len(accountant.settlements) == 1
     assert accountant.settlements[0]["uncertain"] is True
     assert accountant.settlements[0]["input_tokens"] is None
+    assert accountant.settlements[0]["duration_ms"] == 3_000
+    assert (
+        'openreviewer_external_http_request_duration_seconds_sum{'
+        'service="model_openai",outcome="invalid_response"} 3.000000'
+        in telemetry.render()
+    )
     client.close()
 
 

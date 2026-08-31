@@ -980,6 +980,7 @@ def test_model_settings_support_secret_file_and_reject_dual_secret_sources(
     assert settings.provider is ModelProvider.ANTHROPIC
     assert settings.resolved_api_protocol is ModelApiProtocol.MESSAGES
     assert settings.api_key == "test-only-model-key"
+    assert settings.max_response_bytes == 16 * 1024 * 1024
     assert "test-only-model-key" not in repr(settings)
     with pytest.raises(ValueError, match="only one"):
         ModelServiceSettings.from_environment(

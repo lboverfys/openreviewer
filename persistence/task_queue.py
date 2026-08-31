@@ -1221,6 +1221,7 @@ class SqlAlchemyReviewTaskQueue:
                         max_model_duration_seconds=(
                             plan.model_budget.max_duration_seconds
                         ),
+                        model_budget_mode=plan.model_budget.enforcement,
                         model_http_calls=0,
                         model_input_tokens=0,
                         model_output_tokens=0,
@@ -2720,7 +2721,12 @@ class SqlAlchemyReviewTaskQueue:
         *,
         agent: str = "default",
     ) -> ModelBudgetReservation:
-        """在发送 HTTP 前锁定计划并预留最坏情况用量。"""
+        """在发送 HTTP 前锁定计划并预留最坏情况用量。
+
+        新计划和升级后的历史计划都使用 ``observe`` 模式；显式保存
+        ``enforce`` 的计划仍保留旧版硬预算行为。对极少数尚未完成迁移、
+        模式仍为 NULL 的历史行，运行时也按 observe 兜底，避免预算再次阻断。
+        """
 
         if lease.review_plan_id is None:
             raise ModelReviewConflictError("模型预算缺少 Review Plan")
@@ -2751,6 +2757,15 @@ class SqlAlchemyReviewTaskQueue:
                 )
                 if plan is None:
                     raise ModelReviewConflictError("模型预算关联的计划不存在")
+                # 0040 迁移会把历史 NULL 回填为 observe。运行时仍以 observe
+                # 兜底，防止迁移尚未完成或人工导入的旧行重新启用硬阻断；只有
+                # 明确保存 enforce 的计划才执行旧版硬预算。
+                budget_mode = plan.model_budget_mode or "observe"
+                if budget_mode not in {"observe", "enforce"}:
+                    raise TaskQueueError("模型预算处理模式无效")
+                enforce_budget = budget_mode == "enforce"
+                # 资源累计指标在 observe 模式只记录；墙上时钟仍是任务级
+                # 运行保护，避免异常中转站让一个任务无限占用 Worker。
                 started_at = plan.model_budget_started_at or now
                 elapsed_ms = max(
                     0,
@@ -2780,7 +2795,7 @@ class SqlAlchemyReviewTaskQueue:
                         + reserved_cost_microusd
                     ),
                 }
-                reason = plan.model_budget_exhausted_reason
+                reason = plan.model_budget_exhausted_reason if enforce_budget else None
                 if reason is None and elapsed_ms >= max_duration_ms:
                     reason = "duration"
                 if (
@@ -2808,7 +2823,7 @@ class SqlAlchemyReviewTaskQueue:
                     > max_estimated_cost_microusd
                 ):
                     reason = "estimated_cost"
-                if reason is not None:
+                if reason is not None and (enforce_budget or reason == "duration"):
                     plan.model_budget_started_at = started_at
                     plan.model_budget_exhausted_at = (
                         plan.model_budget_exhausted_at or now
@@ -2852,6 +2867,40 @@ class SqlAlchemyReviewTaskQueue:
                     )
                     session.commit()
                     raise error
+
+                if reason is not None:
+                    # observe 模式只留下可审计事件，不设置 exhausted_reason，
+                    # 避免管理界面把观测到的超限误判成需要人工恢复的暂停。
+                    self._add_event(
+                        session,
+                        task,
+                        "review.model.budget_observed",
+                        f"{plan.id}:{reason}:{projections['http_calls']}",
+                        now,
+                        extra_payload={
+                            "review_plan_id": plan.id,
+                            "model_budget_mode": budget_mode,
+                            "budget_reason": reason,
+                            "http_calls": projections["http_calls"],
+                            "max_http_calls": max_http_calls,
+                            "input_tokens": projections["input_tokens"],
+                            "max_input_tokens": max_input_tokens,
+                            "output_tokens": projections["output_tokens"],
+                            "max_output_tokens": max_output_tokens,
+                            "estimated_cost_microusd": projections[
+                                "estimated_cost_microusd"
+                            ],
+                            "max_estimated_cost_microusd": (
+                                max_estimated_cost_microusd
+                            ),
+                            "pricing_configured": (
+                                request.cost_upper_bound_microusd is not None
+                            ),
+                            "budget_resume_count": plan.model_budget_resume_count,
+                            "elapsed_ms": elapsed_ms,
+                            "max_duration_ms": max_duration_ms,
+                        },
+                    )
 
                 call_id = str(self._uuid_factory())
                 sequence = projections["http_calls"]
@@ -2942,6 +2991,12 @@ class SqlAlchemyReviewTaskQueue:
                 )
                 if plan is None:
                     raise ModelReviewConflictError("模型预算关联的计划不存在")
+                # 与 reserve_model_budget 保持一致：NULL 只按 observe 兜底，
+                # 显式 enforce 才会让结算超限中断模型结果。
+                budget_mode = plan.model_budget_mode or "observe"
+                if budget_mode not in {"observe", "enforce"}:
+                    raise TaskQueueError("模型预算处理模式无效")
+                enforce_budget = budget_mode == "enforce"
                 started_at = plan.model_budget_started_at or row.started_at or now
                 elapsed_ms = max(
                     0,
@@ -2951,7 +3006,9 @@ class SqlAlchemyReviewTaskQueue:
                 row.response_status = response_status
                 row.duration_ms = duration_ms
                 row.completed_at = now
-                overrun_reason = plan.model_budget_exhausted_reason
+                overrun_reason = (
+                    plan.model_budget_exhausted_reason if enforce_budget else None
+                )
                 if uncertain:
                     row.status = "uncertain"
                 else:
@@ -2999,21 +3056,65 @@ class SqlAlchemyReviewTaskQueue:
                         > plan.max_model_cost_microusd * budget_multiplier
                     ):
                         overrun_reason = "estimated_cost"
-                # 结算时再次检查墙上时钟。HTTP 层的 timeout 只是尽力而为，
-                # 最后一个响应可能在截止线之后才返回；这种结果不能绕过硬预算。
+                # 结算时再次检查墙上时钟。硬预算模式下越过截止线会暂停任务；
+                # observe 模式仅记录这次观测，不影响已经收到的模型结果。
                 if overrun_reason is None and elapsed_ms >= max_duration_ms:
                     overrun_reason = "duration"
                 if overrun_reason is not None:
-                    newly_exhausted = plan.model_budget_exhausted_reason is None
-                    plan.model_budget_exhausted_at = (
-                        plan.model_budget_exhausted_at or now
-                    )
-                    plan.model_budget_exhausted_reason = overrun_reason
-                    if newly_exhausted:
-                        error = ModelBudgetExceededError(
-                            overrun_reason,
-                            details={
+                    if enforce_budget or overrun_reason == "duration":
+                        newly_exhausted = plan.model_budget_exhausted_reason is None
+                        plan.model_budget_exhausted_at = (
+                            plan.model_budget_exhausted_at or now
+                        )
+                        plan.model_budget_exhausted_reason = overrun_reason
+                        if newly_exhausted:
+                            error = ModelBudgetExceededError(
+                                overrun_reason,
+                                details={
+                                    "review_plan_id": plan.id,
+                                    "model_http_calls": plan.model_http_calls,
+                                    "model_input_tokens": plan.model_input_tokens,
+                                    "model_output_tokens": plan.model_output_tokens,
+                                    "model_estimated_cost_microusd": (
+                                        plan.model_estimated_cost_microusd
+                                    ),
+                                    "budget_resume_count": plan.model_budget_resume_count,
+                                    "elapsed_ms": elapsed_ms,
+                                    "max_duration_ms": max_duration_ms,
+                                    "settled_after_deadline": (
+                                        overrun_reason == "duration"
+                                    ),
+                                },
+                            )
+                            self._add_event(
+                                session,
+                                None,
+                                "review.model.budget_exhausted",
+                                f"{plan.id}:{overrun_reason}:{reservation.sequence}",
+                                now,
+                                error=error.error,
+                                aggregate_id=plan.review_run_id,
+                                extra_payload={
+                                    "review_plan_id": plan.id,
+                                    "budget_reason": overrun_reason,
+                                    "settled_after_deadline": (
+                                        overrun_reason == "duration"
+                                    ),
+                                },
+                            )
+                            budget_error = error
+                    else:
+                        self._add_event(
+                            session,
+                            None,
+                            "review.model.budget_observed",
+                            f"{plan.id}:{overrun_reason}:{reservation.sequence}",
+                            now,
+                            aggregate_id=plan.review_run_id,
+                            extra_payload={
                                 "review_plan_id": plan.id,
+                                "model_budget_mode": budget_mode,
+                                "budget_reason": overrun_reason,
                                 "model_http_calls": plan.model_http_calls,
                                 "model_input_tokens": plan.model_input_tokens,
                                 "model_output_tokens": plan.model_output_tokens,
@@ -3028,23 +3129,6 @@ class SqlAlchemyReviewTaskQueue:
                                 ),
                             },
                         )
-                        self._add_event(
-                            session,
-                            None,
-                            "review.model.budget_exhausted",
-                            f"{plan.id}:{overrun_reason}:{reservation.sequence}",
-                            now,
-                            error=error.error,
-                            aggregate_id=plan.review_run_id,
-                            extra_payload={
-                                "review_plan_id": plan.id,
-                                "budget_reason": overrun_reason,
-                                "settled_after_deadline": (
-                                    overrun_reason == "duration"
-                                ),
-                            },
-                        )
-                        budget_error = error
                 session.commit()
             except ModelReviewConflictError:
                 session.rollback()
@@ -3060,7 +3144,7 @@ class SqlAlchemyReviewTaskQueue:
         lease: ReviewTaskLease,
         error: SafeError,
     ) -> None:
-        """把预算超限任务转为人工暂停，并保留原工作流节点。"""
+        """把旧版硬预算超限任务转为人工暂停，并保留原工作流节点。"""
 
         if error.code is not ErrorCode.MODEL_BUDGET_EXCEEDED:
             raise ValueError("only model budget errors can pause this workflow")

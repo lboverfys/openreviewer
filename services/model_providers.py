@@ -5,7 +5,7 @@ import re
 import time
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 import httpx
@@ -42,6 +42,15 @@ from services.telemetry import GLOBAL_TELEMETRY, TelemetryRegistry
 from services.token_estimation import estimate_model_request_tokens
 
 _COMPATIBILITY_ERROR_BODY_LIMIT = 16 * 1024
+_MAX_SSE_RAW_RESPONSE_BYTES = 32 * 1024 * 1024
+_MAX_SSE_LINE_BYTES = _MAX_SSE_RAW_RESPONSE_BYTES
+_SSE_DETECTION_PREFIX_BYTES = 64 * 1024
+# ``^`` with ``re.MULTILINE`` only recognizes LF line boundaries.  SSE also
+# permits a bare CR, so include both separators explicitly while probing relay
+# chunks that omit ``Content-Type``.
+_SSE_FIELD_RE = re.compile(
+    rb"(?:^|[\r\n])[ \t]*(?::|(?:data|event|id|retry):)"
+)
 _UNSUPPORTED_MARKERS = (
     "unsupported",
     "not supported",
@@ -856,6 +865,19 @@ class _StructuredModelReviewer(ModelReviewer):
         started = self._monotonic()
         audit: ModelHttpAudit | None = None
         budget_settled = False
+        audit_finalized = False
+
+        def finalize_audit() -> ModelHttpAudit:
+            """只在需要时采样一次完整请求耗时，供所有退出路径复用。"""
+
+            nonlocal audit, audit_finalized
+            if audit is None:
+                raise RuntimeError("model response audit is missing")
+            if not audit_finalized:
+                audit = self._finalize_audit(audit, started)
+                audit_finalized = True
+            return audit
+
         request_headers = dict(headers)
         if body.get("stream") is True:
             request_headers.setdefault("Accept", "text/event-stream")
@@ -869,8 +891,61 @@ class _StructuredModelReviewer(ModelReviewer):
             ) as response:
                 audit = self._audit(response, started, reservation)
                 if not 200 <= response.status_code < 300:
+                    # 兼容参数探测会读取一小段错误正文；先完成分类，再以
+                    # 整个响应生命周期刷新耗时，避免审计只记录响应头时间。
+                    try:
+                        classified_error = self._classify_response(response, audit)
+                    except Exception:
+                        # 即使错误正文读取失败，HTTP 状态码本身仍然已知；先
+                        # 以确定的非 5xx/非限流结果结算一次，再交给外层把
+                        # 分类迭代异常转换为安全的网络错误，避免重复结算。
+                        current_audit = finalize_audit()
+                        uncertain = (
+                            response.status_code in {408, 409, 429}
+                            or response.status_code >= 500
+                        )
+                        settlement_usage = (
+                            None
+                            if uncertain
+                            else ModelTokenUsage(input_tokens=0, output_tokens=0)
+                        )
+                        try:
+                            self._settle_budget_audit(
+                                current_audit,
+                                settlement_usage,
+                                uncertain=uncertain,
+                            )
+                        except SafeApplicationError as settle_error:
+                            # 预算结算可能在提交后报告硬预算错误；该
+                            # reservation 已经终态化，禁止外层重复结算。
+                            budget_settled = True
+                            raise settle_error
+                        except Exception as settle_error:
+                            try:
+                                self._settle_budget_audit(
+                                    current_audit,
+                                    None,
+                                    uncertain=True,
+                                )
+                            except Exception as compensation_error:
+                                budget_settled = True
+                                raise compensation_error from settle_error
+                            budget_settled = True
+                        else:
+                            budget_settled = True
+                        raise
+                    current_audit = finalize_audit()
+                    classified_error = SafeError(
+                        code=classified_error.code,
+                        safe_message=classified_error.safe_message,
+                        retryable=classified_error.retryable,
+                        details={
+                            **dict(classified_error.details),
+                            **self._audit_details(current_audit),
+                        },
+                    )
                     self._observe_external(
-                        audit.duration_ms / 1000,
+                        current_audit.duration_ms / 1000,
                         status_code=response.status_code,
                     )
                     uncertain = (
@@ -884,7 +959,7 @@ class _StructuredModelReviewer(ModelReviewer):
                     )
                     try:
                         self._settle_budget_audit(
-                            audit,
+                            current_audit,
                             settlement_usage,
                             uncertain=uncertain,
                         )
@@ -903,7 +978,7 @@ class _StructuredModelReviewer(ModelReviewer):
                             raise
                         try:
                             self._settle_budget_audit(
-                                audit,
+                                current_audit,
                                 None,
                                 uncertain=True,
                             )
@@ -916,24 +991,162 @@ class _StructuredModelReviewer(ModelReviewer):
                         budget_settled = True
                     else:
                         budget_settled = True
-                    raise SafeApplicationError(
-                        self._classify_response(response, audit)
-                    )
+                    raise SafeApplicationError(classified_error)
+                # Responses SSE 可能包含大量推理事件和重复元数据。增量解析
+                # 时只保留当前事件和最终输出，避免把整个原始流复制到内存中。
                 content = bytearray()
+                sse_parser: _ResponsesSseAccumulator | None = None
+                content_type = response.headers.get("content-type", "")
+                if self.api_protocol is ModelApiProtocol.RESPONSES and (
+                    "text/event-stream" in content_type.casefold()
+                ):
+                    sse_parser = _ResponsesSseAccumulator(
+                        max_response_bytes=self._settings.max_response_bytes,
+                    )
+                decoded: object | None = None
                 for chunk in response.iter_bytes():
-                    if len(content) + len(chunk) > self._settings.max_response_bytes:
+                    # Some relays omit Content-Type.  Detect their usual
+                    # ``event:``/``data:`` prefix before falling back to JSON.
+                    # Keep a small prefix in ``content`` while the protocol is
+                    # unknown so whitespace or a split first event is not lost.
+                    if (
+                        sse_parser is None
+                        and self.api_protocol is ModelApiProtocol.RESPONSES
+                    ):
+                        # Do not stop probing merely because a relay sent a
+                        # long whitespace/comment preamble in its first HTTP
+                        # chunk. Probe the current chunk independently and a
+                        # small tail of the previous bytes for split fields;
+                        # this stays bounded even when a JSON response is large.
+                        previous_tail = bytes(
+                            content[-_SSE_DETECTION_PREFIX_BYTES:]
+                        )
+                        current_chunk = bytes(chunk)
+                        current_prefix = current_chunk[:_SSE_DETECTION_PREFIX_BYTES]
+                        if _looks_like_sse(current_chunk) or _looks_like_sse(
+                            previous_tail + current_prefix
+                        ):
+                            sse_parser = _ResponsesSseAccumulator(
+                                max_response_bytes=self._settings.max_response_bytes,
+                            )
+                            try:
+                                if content:
+                                    sse_parser.feed(content)
+                                sse_parser.feed(current_chunk)
+                            except _SseResponseTooLarge as exc:
+                                current_audit = finalize_audit()
+                                self._observe_external(
+                                    current_audit.duration_ms / 1000,
+                                    outcome="invalid_response",
+                                )
+                                raise self._error(
+                                    ErrorCode.MODEL_RESPONSE_TOO_LARGE,
+                                    "模型 API 响应超过允许大小",
+                                    retryable=False,
+                                    details=self._audit_details(current_audit),
+                                ) from exc
+                            except (UnicodeDecodeError, ValueError) as exc:
+                                current_audit = finalize_audit()
+                                self._observe_external(
+                                    current_audit.duration_ms / 1000,
+                                    outcome="invalid_response",
+                                )
+                                raise self._error(
+                                    ErrorCode.MODEL_INVALID_RESPONSE,
+                                    "模型 API 返回了无法解析的 JSON",
+                                    retryable=False,
+                                    details=self._audit_details(current_audit),
+                                ) from exc
+                            content.clear()
+                            continue
+                    if sse_parser is not None:
+                        try:
+                            sse_parser.feed(chunk)
+                        except _SseResponseTooLarge as exc:
+                            current_audit = finalize_audit()
+                            self._observe_external(
+                                current_audit.duration_ms / 1000,
+                                outcome="invalid_response",
+                            )
+                            raise self._error(
+                                ErrorCode.MODEL_RESPONSE_TOO_LARGE,
+                                "模型 API 响应超过允许大小",
+                                retryable=False,
+                                details=self._audit_details(current_audit),
+                            ) from exc
+                        except (UnicodeDecodeError, ValueError) as exc:
+                            current_audit = finalize_audit()
+                            self._observe_external(
+                                current_audit.duration_ms / 1000,
+                                outcome="invalid_response",
+                            )
+                            raise self._error(
+                                ErrorCode.MODEL_INVALID_RESPONSE,
+                                "模型 API 返回了无法解析的 JSON",
+                                retryable=False,
+                                details=self._audit_details(current_audit),
+                            ) from exc
+                        continue
+                    # 未声明 Content-Type 的 Responses 先允许探测缓冲达到
+                    # SSE 原始流上限；其他协议仍立即遵守配置的响应上限。
+                    buffer_limit = (
+                        _MAX_SSE_RAW_RESPONSE_BYTES
+                        if self.api_protocol is ModelApiProtocol.RESPONSES
+                        else self._settings.max_response_bytes
+                    )
+                    if len(content) + len(chunk) > buffer_limit:
+                        current_audit = finalize_audit()
                         self._observe_external(
-                            audit.duration_ms / 1000,
+                            current_audit.duration_ms / 1000,
                             outcome="invalid_response",
                         )
                         raise self._error(
                             ErrorCode.MODEL_RESPONSE_TOO_LARGE,
                             "模型 API 响应超过允许大小",
                             retryable=False,
-                            details=self._audit_details(audit),
+                            details=self._audit_details(current_audit),
                         )
                     content.extend(chunk)
+                current_audit = finalize_audit()
+                if sse_parser is None and len(content) > self._settings.max_response_bytes:
+                    self._observe_external(
+                        current_audit.duration_ms / 1000,
+                        outcome="invalid_response",
+                    )
+                    raise self._error(
+                        ErrorCode.MODEL_RESPONSE_TOO_LARGE,
+                        "模型 API 响应超过允许大小",
+                        retryable=False,
+                        details=self._audit_details(current_audit),
+                    )
+                if sse_parser is not None:
+                    try:
+                        decoded = sse_parser.finish()
+                    except _SseResponseTooLarge as exc:
+                        self._observe_external(
+                            current_audit.duration_ms / 1000,
+                            outcome="invalid_response",
+                        )
+                        raise self._error(
+                            ErrorCode.MODEL_RESPONSE_TOO_LARGE,
+                            "模型 API 响应超过允许大小",
+                            retryable=False,
+                            details=self._audit_details(current_audit),
+                        ) from exc
+                    except (UnicodeDecodeError, ValueError) as exc:
+                        self._observe_external(
+                            current_audit.duration_ms / 1000,
+                            outcome="invalid_response",
+                        )
+                        raise self._error(
+                            ErrorCode.MODEL_INVALID_RESPONSE,
+                            "模型 API 返回了无法解析的 JSON",
+                            retryable=False,
+                            details=self._audit_details(current_audit),
+                        ) from exc
         except SafeApplicationError:
+            if audit is not None:
+                audit = finalize_audit()
             if audit is not None and not budget_settled:
                 self._settle_budget_audit(audit, None, uncertain=True)
             raise
@@ -1016,28 +1229,21 @@ class _StructuredModelReviewer(ModelReviewer):
                     **self._audit_details(audit),
                 },
             ) from exc
-        decoded: object
-        try:
-            content_type = response.headers.get("content-type", "")
-            if self.api_protocol is ModelApiProtocol.RESPONSES and (
-                "text/event-stream" in content_type.casefold()
-                or _looks_like_sse(content)
-            ):
-                decoded = _parse_responses_sse(bytes(content))
-            else:
+        if decoded is None:
+            try:
                 decoded = json.loads(content)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            self._settle_budget_audit(audit, None, uncertain=True)
-            self._observe_external(
-                audit.duration_ms / 1000,
-                outcome="invalid_response",
-            )
-            raise self._error(
-                ErrorCode.MODEL_INVALID_RESPONSE,
-                "模型 API 返回了无法解析的 JSON",
-                retryable=False,
-                details=self._audit_details(audit),
-            ) from exc
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                self._settle_budget_audit(audit, None, uncertain=True)
+                self._observe_external(
+                    audit.duration_ms / 1000,
+                    outcome="invalid_response",
+                )
+                raise self._error(
+                    ErrorCode.MODEL_INVALID_RESPONSE,
+                    "模型 API 返回了无法解析的 JSON",
+                    retryable=False,
+                    details=self._audit_details(audit),
+                ) from exc
         if not isinstance(decoded, dict):
             self._settle_budget_audit(audit, None, uncertain=True)
             self._observe_external(
@@ -1086,9 +1292,11 @@ class _StructuredModelReviewer(ModelReviewer):
     def _audit(
         self,
         response: httpx.Response,
-        started: float,
+        _started: float,
         reservation: ModelBudgetReservation | None = None,
     ) -> ModelHttpAudit:
+        """记录响应头信息；耗时在响应体消费完成后由 ``_finalize_audit`` 补齐。"""
+
         request_id = (
             response.headers.get("x-request-id")
             or response.headers.get("request-id")
@@ -1098,8 +1306,20 @@ class _StructuredModelReviewer(ModelReviewer):
         return ModelHttpAudit(
             response_status=response.status_code,
             provider_request_id=request_id,
-            duration_ms=max(0, int((self._monotonic() - started) * 1000)),
+            duration_ms=0,
             budget_reservation=reservation,
+        )
+
+    def _finalize_audit(
+        self,
+        audit: ModelHttpAudit,
+        started: float,
+    ) -> ModelHttpAudit:
+        """把从请求开始到响应体消费结束的完整耗时写入审计。"""
+
+        return replace(
+            audit,
+            duration_ms=max(0, int((self._monotonic() - started) * 1000)),
         )
 
     def _reserve_budget(
@@ -2187,65 +2407,163 @@ def _collect_error_tokens(value: object, output: list[str], depth: int = 0) -> N
 def _looks_like_sse(content: bytes | bytearray) -> bool:
     """识别少数未正确设置 Content-Type 的 Responses SSE 响应。"""
 
-    prefix = bytes(content[:256]).lstrip()
-    return prefix.startswith(b"data:") or prefix.startswith(b"event:")
+    # SSE relays may prepend comments, keep-alives, or a sizeable whitespace
+    # preamble. Scan the complete current HTTP chunk so a marker after the
+    # first 64 KiB is still recognized; callers only combine a bounded tail
+    # when a field is split across chunk boundaries. JSON payloads encode line
+    # breaks inside strings, so a real field line is not mistaken for JSON.
+    return _SSE_FIELD_RE.search(bytes(content)) is not None
 
 
-def _parse_responses_sse(content: bytes) -> dict[str, object]:
-    """把 Responses SSE 事件收敛成现有的完整响应对象。
+class _SseResponseTooLarge(ValueError):
+    """SSE 原始流或最终文本超过了对应的有界保护。"""
 
-    官方终态事件 ``response.completed`` 自带完整 response；部分兼容中转站
-    只发送文本增量和用量，因此在信息足够时构造最小 completed 响应。事件正文
-    只在当前请求内存中处理，并受 ``max_response_bytes`` 的上限保护。
+
+class _ResponsesSseAccumulator:
+    """按事件增量解析 Responses SSE，只保留完成响应所需的数据。
+
+    原始流的总字节数受独立的 32 MiB 上限保护（给 16 MiB 最终文本预留事件
+    元数据和协议开销）；``max_response_bytes`` 只
+    约束最终模型文本，避免 SSE 事件中的重复元数据把正常输出误判为过大。
     """
 
-    text = content.decode("utf-8")
-    data_lines: list[str] = []
-    event_name: str | None = None
-    event_payloads: list[tuple[str | None, str]] = []
+    def __init__(self, *, max_response_bytes: int | None = None) -> None:
+        self._max_response_bytes = max_response_bytes
+        self._raw_bytes = 0
+        self._line_buffer = bytearray()
+        self._data_lines: list[str] = []
+        self._event_name: str | None = None
+        self._saw_data_event = False
+        self._completed: dict[str, object] | None = None
+        # Keep deltas in one contiguous UTF-8 buffer. A relay may split a
+        # response into thousands of tiny events; retaining one Python string
+        # object per event would otherwise dwarf the bounded response itself.
+        self._delta_text = bytearray()
+        self._delta_bytes = 0
+        self._done_text: str | None = None
+        self._latest_usage: dict[str, object] | None = None
+        self._response_id: str | None = None
 
-    def flush_event() -> None:
-        nonlocal event_name
-        if not data_lines:
-            event_name = None
-            return
-        event_payloads.append((event_name, "\n".join(data_lines)))
-        data_lines.clear()
-        event_name = None
+    def feed(self, chunk: bytes | bytearray | memoryview) -> None:
+        """消费一个 HTTP 分块；分块边界不要求与 SSE 行边界一致。"""
 
-    # SSE 允许 CRLF、LF 或 CR；空行标记一条事件结束。
-    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise TypeError("Responses SSE 分块必须是字节")
+        chunk_bytes = bytes(chunk)
+        self._raw_bytes += len(chunk_bytes)
+        if self._raw_bytes > _MAX_SSE_RAW_RESPONSE_BYTES:
+            raise _SseResponseTooLarge("Responses SSE 原始流超过允许大小")
+        self._line_buffer.extend(chunk_bytes)
+        self._drain_lines()
+        if len(self._line_buffer) > _MAX_SSE_LINE_BYTES:
+            raise _SseResponseTooLarge("Responses SSE 单行超过允许大小")
+
+    def finish(self) -> dict[str, object]:
+        """处理末尾未带换行的行并返回规范化 Responses 响应。"""
+
+        # ``\r\n`` 可能恰好跨越两个 HTTP chunk；最后一个 chunk 到达后，
+        # 把暂存的 ``\r`` 当作行结束符处理，再处理没有换行的尾行。
+        self._drain_lines(final=True)
+        if self._line_buffer:
+            line = bytes(self._line_buffer)
+            self._line_buffer.clear()
+            self._handle_line(line.decode("utf-8"))
+        self._flush_event()
+        if not self._saw_data_event:
+            raise ValueError("Responses SSE 没有数据事件")
+
+        if self._completed is not None:
+            completed = self._completed
+            if "usage" not in completed and self._latest_usage is not None:
+                completed["usage"] = self._latest_usage
+            if "output" not in completed:
+                text_value = self._text_value()
+                if text_value:
+                    completed["output"] = [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": text_value}
+                            ],
+                        }
+                    ]
+            self._validate_completed_text(completed)
+            return completed
+
+        text_value = self._text_value()
+        self._check_text_size(text_value)
+        if not text_value or self._latest_usage is None:
+            raise ValueError("Responses SSE 缺少完整响应或必要的文本/用量")
+        return {
+            "id": self._response_id,
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": text_value}],
+                }
+            ],
+            "usage": self._latest_usage,
+        }
+
+    def _drain_lines(self, *, final: bool = False) -> None:
+        # SSE 允许 LF、CRLF 和单独 CR。使用游标扫描，最后一次性删除已
+        # 消费前缀，避免大量小事件触发 bytearray 头部反复搬移。
+        cursor = 0
+        buffer = self._line_buffer
+        buffer_length = len(buffer)
+        while cursor < buffer_length:
+            lf = buffer.find(b"\n", cursor)
+            cr = buffer.find(b"\r", cursor)
+            positions = [position for position in (lf, cr) if position >= 0]
+            if not positions:
+                break
+            end = min(positions)
+            terminator = buffer[end]
+            # 先不要消费分块末尾的 CR。下一块若以 LF 开始，它们必须作为
+            # 一个 CRLF 处理；否则 LF 会被误认为空行并清掉当前 event 名。
+            if terminator == 13 and end == buffer_length - 1 and not final:
+                break
+            line = bytes(buffer[cursor:end])
+            cursor = end + 1
+            if terminator == 13 and cursor < buffer_length and buffer[cursor] == 10:
+                cursor += 1
+            self._handle_line(line.decode("utf-8"))
+        if cursor:
+            del buffer[:cursor]
+
+    def _handle_line(self, line: str) -> None:
         if line == "":
-            flush_event()
-            continue
+            self._flush_event()
+            return
         if line.startswith(":"):
-            continue
+            return
         field, separator, field_value = line.partition(":")
         if not separator:
-            continue
+            return
+        if field_value.startswith(" "):
+            field_value = field_value[1:]
         if field == "event":
-            # 合规 SSE 用空行分隔事件；兼容部分中转站省略空行时，新的
-            # event 字段仍可作为安全的边界，避免把两个 JSON 拼在一起。
-            flush_event()
-            event_name = field_value
-            continue
-        if field == "data":
-            data_lines.append(
-                field_value[1:] if field_value.startswith(" ") else field_value
-            )
-    flush_event()
-    if not event_payloads:
-        raise ValueError("Responses SSE 没有数据事件")
+            # 部分中转站省略事件之间的空行；新的 event 字段仍可作为边界。
+            self._flush_event()
+            self._event_name = field_value
+        elif field == "data":
+            self._data_lines.append(field_value)
 
-    completed: dict[str, object] | None = None
-    delta_parts: list[str] = []
-    done_text: str | None = None
-    latest_usage: dict[str, object] | None = None
-    response_id: str | None = None
+    def _flush_event(self) -> None:
+        if not self._data_lines:
+            self._event_name = None
+            return
+        raw_event = "\n".join(self._data_lines)
+        event_name = self._event_name
+        self._data_lines.clear()
+        self._event_name = None
+        self._saw_data_event = True
+        self._handle_event(event_name, raw_event)
 
-    for event_name, raw_event in event_payloads:
+    def _handle_event(self, event_name: str | None, raw_event: str) -> None:
         if raw_event == "[DONE]":
-            continue
+            return
         try:
             event = json.loads(raw_event)
         except (TypeError, ValueError, UnicodeDecodeError) as exc:
@@ -2254,95 +2572,117 @@ def _parse_responses_sse(content: bytes) -> dict[str, object]:
             raise ValueError("Responses SSE 数据事件必须是 JSON 对象")
 
         payload_type = event.get("type")
-        event_type = (
-            payload_type
-            if isinstance(payload_type, str)
-            else event_name
-        )
+        event_type = payload_type if isinstance(payload_type, str) else event_name
         candidate_usage = event.get("usage")
         if candidate_usage is not None:
             if not isinstance(candidate_usage, dict):
                 raise ValueError("Responses SSE 用量对象无效")
-            latest_usage = dict(candidate_usage)
+            self._latest_usage = dict(candidate_usage)
         candidate_event_id = event.get("id")
         if candidate_event_id is not None:
             if not isinstance(candidate_event_id, str):
                 raise ValueError("Responses SSE 响应 ID 无效")
-            response_id = candidate_event_id
+            self._response_id = candidate_event_id
         if event_type == "response.output_text.delta":
             delta = event.get("delta")
             if not isinstance(delta, str):
                 raise ValueError("Responses SSE 文本增量无效")
-            delta_parts.append(delta)
-            continue
+            encoded_delta = delta.encode("utf-8")
+            self._delta_bytes += len(encoded_delta)
+            if (
+                self._max_response_bytes is not None
+                and self._delta_bytes > self._max_response_bytes
+            ):
+                raise _SseResponseTooLarge("Responses SSE 最终文本超过允许大小")
+            self._delta_text.extend(encoded_delta)
+            return
         if event_type == "response.output_text.done":
             value: object = event.get("text")
             if value is not None and not isinstance(value, str):
                 raise ValueError("Responses SSE 完成文本无效")
             if isinstance(value, str):
-                done_text = value
-            continue
+                self._check_text_size(value)
+                self._done_text = value
+            return
 
         response_value = event.get("response")
         if event_type in {"response.completed", "response.done", "response.failed"}:
             if not isinstance(response_value, dict):
                 raise ValueError("Responses SSE 终态事件缺少 response 对象")
-            completed = dict(response_value)
-            candidate_id = completed.get("id")
+            self._completed = dict(response_value)
+            candidate_id = self._completed.get("id")
             if candidate_id is not None:
                 if not isinstance(candidate_id, str):
                     raise ValueError("Responses SSE 响应 ID 无效")
-                response_id = candidate_id
-            candidate_usage = completed.get("usage")
+                self._response_id = candidate_id
+            candidate_usage = self._completed.get("usage")
             if candidate_usage is not None:
                 if not isinstance(candidate_usage, dict):
                     raise ValueError("Responses SSE 用量对象无效")
-                latest_usage = dict(candidate_usage)
-            continue
+                self._latest_usage = dict(candidate_usage)
+            return
 
         # 兼容直接把完整 response 放在 data 中、但省略 type 的中转站。
-        if (
-            isinstance(event.get("status"), str)
-            and ("output" in event or "usage" in event)
+        if isinstance(event.get("status"), str) and (
+            "output" in event or "usage" in event
         ):
-            completed = dict(event)
-            candidate_id = completed.get("id")
+            self._completed = dict(event)
+            candidate_id = self._completed.get("id")
             if candidate_id is not None:
                 if not isinstance(candidate_id, str):
                     raise ValueError("Responses SSE 响应 ID 无效")
-                response_id = candidate_id
-            candidate_usage = completed.get("usage")
+                self._response_id = candidate_id
+            candidate_usage = self._completed.get("usage")
             if isinstance(candidate_usage, dict):
-                latest_usage = dict(candidate_usage)
+                self._latest_usage = dict(candidate_usage)
 
-    if completed is not None:
-        if "usage" not in completed and latest_usage is not None:
-            completed["usage"] = latest_usage
-        if "output" not in completed:
-            text_value = done_text if done_text is not None else "".join(delta_parts)
-            if text_value:
-                completed["output"] = [
-                    {
-                        "type": "message",
-                        "content": [{"type": "output_text", "text": text_value}],
-                    }
-                ]
-        return completed
+    def _check_text_size(self, text: str) -> None:
+        if (
+            self._max_response_bytes is not None
+            and len(text.encode("utf-8")) > self._max_response_bytes
+        ):
+            raise _SseResponseTooLarge("Responses SSE 最终文本超过允许大小")
 
-    text_value = done_text if done_text is not None else "".join(delta_parts)
-    if not text_value or latest_usage is None:
-        raise ValueError("Responses SSE 缺少完整响应或必要的文本/用量")
-    return {
-        "id": response_id,
-        "status": "completed",
-        "output": [
-            {
-                "type": "message",
-                "content": [{"type": "output_text", "text": text_value}],
-            }
-        ],
-        "usage": latest_usage,
-    }
+    def _text_value(self) -> str:
+        if self._done_text is not None:
+            return self._done_text
+        return bytes(self._delta_text).decode("utf-8")
+
+    def _validate_completed_text(self, completed: dict[str, object]) -> None:
+        if self._max_response_bytes is None:
+            return
+        output = completed.get("output")
+        if not isinstance(output, list):
+            return
+        text_bytes = 0
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                text = block.get("text")
+                if isinstance(text, str):
+                    text_bytes += len(text.encode("utf-8"))
+                    if text_bytes > self._max_response_bytes:
+                        raise _SseResponseTooLarge(
+                            "Responses SSE 最终文本超过允许大小"
+                        )
+
+
+def _parse_responses_sse(
+    content: bytes,
+    *,
+    max_response_bytes: int | None = None,
+) -> dict[str, object]:
+    """把完整 SSE 字节串交给增量解析器，保留测试和兼容调用入口。"""
+
+    parser = _ResponsesSseAccumulator(max_response_bytes=max_response_bytes)
+    parser.feed(content)
+    return parser.finish()
 
 
 def _optional_identifier(value: object) -> str | None:

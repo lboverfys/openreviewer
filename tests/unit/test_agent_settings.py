@@ -82,6 +82,7 @@ def test_agent_configuration_is_masked_tested_enabled_and_batch_loaded(
     assert tested_view.revision == 2
     assert tested_view.agents[0].test_status == "succeeded"
     assert tested[0].max_output_tokens == 32_768
+    assert tested[0].max_response_bytes == 16 * 1024 * 1024
     assert tested[0].api_key == api_key
 
     enabled = service.set_enabled(
@@ -114,6 +115,7 @@ def test_agent_configuration_is_masked_tested_enabled_and_batch_loaded(
 
     assert set(settings) == {ReviewAgent.SECURITY}
     assert settings[ReviewAgent.SECURITY].api_key == api_key
+    assert settings[ReviewAgent.SECURITY].max_response_bytes == 16 * 1024 * 1024
     assert len(selects) == 2
 
 
@@ -505,7 +507,7 @@ def test_runtime_closes_agent_workflow_when_final_revision_check_fails(
                 max_model_input_tokens=2_000_000,
                 max_model_output_tokens=250_000,
                 max_model_cost_microusd=None,
-                max_model_duration_seconds=900,
+                max_model_duration_seconds=3_600,
             )
 
     class AgentStub:

@@ -108,6 +108,7 @@ def test_provider_must_be_tested_before_activation_and_worker_reads_revision(
     initial = service.get()
     assert initial.revision == 0
     assert initial.active_provider is None
+    assert initial.max_model_duration_seconds == 3_600
 
     saved = service.update_provider(
         ModelProvider.OPENAI,

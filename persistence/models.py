@@ -551,7 +551,7 @@ class AiSettingsRecord(Base):
     )
     max_model_cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
     max_model_duration_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=900
+        Integer, nullable=False, default=3_600
     )
     updated_by: Mapped[str | None] = mapped_column(String(100))
     updated_at: Mapped[datetime] = mapped_column(
@@ -604,7 +604,7 @@ class AiProviderConfigRecord(Base):
             name="max_request_bytes_range",
         ),
         CheckConstraint(
-            "max_response_bytes BETWEEN 65536 AND 10485760",
+            "max_response_bytes BETWEEN 65536 AND 16777216",
             name="max_response_bytes_range",
         ),
         CheckConstraint(
@@ -657,7 +657,7 @@ class AiProviderConfigRecord(Base):
         Integer, nullable=False, default=4 * 1024 * 1024
     )
     max_response_bytes: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=2 * 1024 * 1024
+        Integer, nullable=False, default=16 * 1024 * 1024
     )
     input_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     output_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
@@ -1081,6 +1081,10 @@ class ReviewPlanRecord(Base):
             "model_budget_resume_count >= 0",
             name="model_budget_resume_count_nonnegative",
         ),
+        CheckConstraint(
+            "model_budget_mode IS NULL OR model_budget_mode IN ('observe', 'enforce')",
+            name="model_budget_mode_value",
+        ),
         UniqueConstraint("review_run_id"),
         Index(
             "ix_review_plans_version_fingerprint",
@@ -1135,7 +1139,7 @@ class ReviewPlanRecord(Base):
     )
     max_model_cost_microusd: Mapped[int | None] = mapped_column(BigInteger)
     max_model_duration_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=900
+        Integer, nullable=False, default=3_600
     )
     model_http_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     model_input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
@@ -1153,6 +1157,10 @@ class ReviewPlanRecord(Base):
         DateTime(timezone=True)
     )
     model_budget_exhausted_reason: Mapped[str | None] = mapped_column(String(50))
+    # 0040 迁移会把历史 NULL 回填为 ``observe``；保留可空是为了兼容尚未
+    # 完成迁移或人工导入的旧行，运行时同样按 observe 兜底。新计划显式写入
+    # ``observe`` 或 ``enforce``。
+    model_budget_mode: Mapped[str | None] = mapped_column(String(16))
     model_review_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )

@@ -142,7 +142,8 @@ const eventLabels: Record<string, string> = {
   "review.model.agent_failed": "审查 Agent 失败",
   "review.model.aggregating_started": "开始汇总审查结果",
   "review.model.summary_completed": "汇总 Agent 已完成",
-  "review.model.budget_exhausted": "模型硬预算已耗尽",
+  "review.model.budget_exhausted": "模型资源保护已触发",
+  "review.model.budget_observed": "模型资源用量已记录",
   "review.model.completed": "AI 分析完成",
   "review.model.batches_persisted": "批次已保存",
   "review.workflow.approve": "审查已批准，等待发布",
@@ -306,7 +307,7 @@ function ReviewDetailPage({
     if (
       action === "resume"
       && details.last_error_code === "model_budget_exceeded"
-      && !window.confirm("本任务已耗尽模型预算。继续会追加一个同等预算窗口，并记录到审计日志；确定继续吗？")
+      && !window.confirm("本任务因模型资源保护暂停。继续会从当前阶段恢复处理；确定继续吗？")
     ) return;
     setActionBusy(action);
     try {
@@ -415,7 +416,7 @@ function ReviewDetailPage({
 
   const availableActions = allowedReviewActions(user, details.available_actions);
   const hasActions = availableActions.length > 0;
-  const budgetPaused = details.last_error_code === "model_budget_exceeded";
+  const modelGuardPaused = details.last_error_code === "model_budget_exceeded";
   const latestBatchPlan = latestBatchPlanEvent(details.events);
   const currentModelFailure = latestEvent(
     details.events,
@@ -640,7 +641,7 @@ function ReviewDetailPage({
                 disabled={actionBusy !== null}
                 onClick={() => void runAction(action)}
               >
-                <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "resume" && budgetPaused ? "追加预算并继续" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
+                <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "resume" && modelGuardPaused ? "继续当前阶段" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
               </button>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
           </div>

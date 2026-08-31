@@ -28,7 +28,6 @@ import {
   MIB,
   normalizeAiSettings,
   optionalDecimal,
-  optionalUsdToMicrousd,
   outputTokenOptions,
   providerDraft,
   providerHasChanges,
@@ -585,24 +584,9 @@ export default function SettingsPage({
           inputToBytes(policyDraft.maxTotalInputMib, MIB),
           "总输入上限",
         ),
-        max_model_http_calls: requiredInteger(
-          policyDraft.maxModelHttpCalls,
-          "模型请求次数",
-        ),
-        max_model_input_tokens: requiredInteger(
-          policyDraft.maxModelInputTokens,
-          "模型输入 Token 上限",
-        ),
-        max_model_output_tokens: requiredInteger(
-          policyDraft.maxModelOutputTokens,
-          "模型输出 Token 上限",
-        ),
-        max_model_cost_microusd: optionalUsdToMicrousd(
-          policyDraft.maxModelCostUsd,
-        ),
         max_model_duration_seconds: requiredInteger(
           policyDraft.maxModelDurationSeconds,
-          "模型总耗时上限",
+          "任务运行保护时限",
         ),
       };
       const next = await api.updateReviewPolicy(payload);
@@ -625,7 +609,7 @@ export default function SettingsPage({
         invalidateAudits();
       }
       setPolicyMessageKind("success");
-      setPolicyMessage("审查范围和单次任务硬预算已保存");
+      setPolicyMessage("审查范围和运行保护已保存");
     } catch (error) {
       if (sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
@@ -870,7 +854,7 @@ export default function SettingsPage({
                         <summary>传输与网络高级设置</summary>
                         <div className="settings-form-grid settings-form-grid-compact">
                           <NumberField name="max-request-mib" label="请求保护上限" value={bytesToInput(draft.maxRequestBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxRequestBytes", inputToBytes(value, MIB))} />
-                          <NumberField name="max-response-mib" label="响应保护上限" value={bytesToInput(draft.maxResponseBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxResponseBytes", inputToBytes(value, MIB))} />
+                          <NumberField name="max-response-mib" label="响应保护上限" value={bytesToInput(draft.maxResponseBytes, MIB)} min="0.0625" max="16" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxResponseBytes", inputToBytes(value, MIB))} />
                           <NumberField name="connect-timeout-seconds" label="建立连接" value={draft.connectTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("connectTimeoutSeconds", value)} />
                           <NumberField name="write-timeout-seconds" label="发送请求" value={draft.writeTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("writeTimeoutSeconds", value)} />
                           <NumberField name="pool-timeout-seconds" label="等待空闲连接" value={draft.poolTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("poolTimeoutSeconds", value)} />
@@ -919,8 +903,8 @@ export default function SettingsPage({
                 <div className="settings-section-heading settings-policy-heading">
                   <div>
                     <span className="settings-eyebrow">REVIEW GUARDRAILS</span>
-                    <h2>审查范围与硬预算</h2>
-                    <p>这些上限会固化到新任务，重试不能绕过；已有任务保持原配置。</p>
+                    <h2>审查范围与资源统计</h2>
+                    <p>任务级请求次数、Token 和费用只记录，不会因为累计用量暂停新审查。</p>
                   </div>
                   {policyDirty && <span className="settings-unsaved-badge">有修改待保存</span>}
                 </div>
@@ -939,19 +923,15 @@ export default function SettingsPage({
                   </div>
                   <div className="settings-policy-group">
                     <div className="settings-inline-heading">
-                      <strong>每个审查任务的模型预算</strong>
-                      <small>模型请求发送前按最坏情况预留，响应后再按可确认的实际用量结算。</small>
+                      <strong>任务级资源统计</strong>
+                      <small>以下指标用于审计和排查，不作为新任务的阻断条件。</small>
                     </div>
                     <div className="settings-form-grid settings-policy-grid">
-                      <NumberField name="policy-http-calls" label="HTTP 请求次数" value={policyDraft.maxModelHttpCalls} min="1" max="10000" onChange={(value) => updatePolicyDraft("maxModelHttpCalls", value)} />
-                      <NumberField name="policy-input-tokens" label="输入 Token" value={policyDraft.maxModelInputTokens} min="1000" max="1000000000" onChange={(value) => updatePolicyDraft("maxModelInputTokens", value)} />
-                      <NumberField name="policy-output-tokens" label="输出 Token" value={policyDraft.maxModelOutputTokens} min="256" max="100000000" onChange={(value) => updatePolicyDraft("maxModelOutputTokens", value)} />
-                      <NumberField name="policy-duration" label="总耗时" value={policyDraft.maxModelDurationSeconds} min="30" max="86400" suffix="秒" onChange={(value) => updatePolicyDraft("maxModelDurationSeconds", value)} />
-                      <NumberField name="policy-cost-usd" label="预估费用上限" value={policyDraft.maxModelCostUsd} min="0.000001" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updatePolicyDraft("maxModelCostUsd", value)} />
+                      <NumberField name="policy-duration" label="任务运行保护时限" value={policyDraft.maxModelDurationSeconds} min="30" max="86400" suffix="秒" onChange={(value) => updatePolicyDraft("maxModelDurationSeconds", value)} />
                     </div>
                     <div className="settings-info-band">
-                      <strong>{policyDraft.maxModelCostUsd ? "费用硬上限已启用" : "费用硬上限未启用"}</strong>
-                      <span>{policyDraft.maxModelCostUsd ? "启用后，当前模型必须填写完整价格，否则任务会在调用前暂停。" : "留空时仍会强制限制请求次数、Token 和总耗时。"}</span>
+                      <strong>资源统计模式已启用</strong>
+                      <span>HTTP 请求、输入/输出 Token 和费用会写入审查记录；单次请求仍受大小、超时和重试保护。</span>
                     </div>
                   </div>
                 </fieldset>

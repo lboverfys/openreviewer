@@ -501,6 +501,7 @@ def _prepare_postgres_budget_lease(database: Database):
     plan = DeterministicReviewPlanner(
         ReviewPlanningSettings(
             model_budget=ModelBudgetPolicy(
+                enforcement="enforce",
                 max_http_calls=1,
                 max_input_tokens=1_000,
                 max_output_tokens=256,
