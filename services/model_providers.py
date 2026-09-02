@@ -242,6 +242,11 @@ class _StructuredModelReviewer(ModelReviewer):
                 )
                 break
             except SafeApplicationError as exc:
+                # 连接测试只验证用户选择的当前协议是否能完成一次基本请求。
+                # 不进行参数降级、协议探测或第二次请求，避免测试按钮产生
+                # 隐蔽的多次计费和误导性的能力结论。
+                if prompt_input.connection_test:
+                    raise
                 fallback = self._compatibility_fallback_body(
                     request_body,
                     exc.error,
@@ -264,6 +269,8 @@ class _StructuredModelReviewer(ModelReviewer):
                 )
                 if (
                     parse_error.error.code is ErrorCode.MODEL_OUTPUT_TRUNCATED
+                    and prompt_input.allow_truncation_retry
+                    and not prompt_input.connection_test
                     and self._should_retry_truncated_output(parse_error.error)
                 ):
                     compact_body = self._truncation_retry_body(request_body)
@@ -282,7 +289,10 @@ class _StructuredModelReviewer(ModelReviewer):
                         )
                     else:
                         raise parse_error from exc
-                elif parse_error.error.details.get("contract_validation") is not True:
+                elif (
+                    prompt_input.connection_test
+                    or parse_error.error.details.get("contract_validation") is not True
+                ):
                     raise parse_error from exc
                 else:
                     first_error = parse_error.error

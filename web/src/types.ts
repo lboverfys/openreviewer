@@ -33,6 +33,7 @@ export type AiSettings = Schemas["AiSettingsResponse"];
 export type ReviewAgent = Schemas["ReviewAgent"];
 export type AiAgentSettings = Schemas["AiAgentResponse"];
 export type AiAgentSettingsResponse = Schemas["AiAgentSettingsResponse"];
+export type AiAgentUpdate = Schemas["AiAgentUpdateRequest"];
 export type AiProviderUpdate = Schemas["AiProviderUpdateRequest"];
 export type ReviewPolicyUpdate = Schemas["ReviewPolicyUpdateRequest"];
 export type ConfigurationAudit = Schemas["ConfigurationAuditResponse"];

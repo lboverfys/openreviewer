@@ -12,6 +12,7 @@ from services.agent_settings import AgentConfigDraft, AgentSettingsService
 from services.ai_settings import (
     ActiveAiSettings,
     AiConnectionTestError,
+    AiProviderDraft,
     AiSecretCipher,
     AiSettingsService,
     AiSettingsValidationError,
@@ -267,7 +268,177 @@ def test_agent_api_base_url_change_requires_replacing_bound_secret(
         )
 
 
-def test_runtime_requires_all_agents_and_preserves_concurrency_limit(
+def test_shared_connection_uses_active_provider_without_duplicate_agent_secret(
+    database: Database,
+) -> None:
+    """共享模式读取全局激活连接，并允许每个 Agent 只覆盖模型名。"""
+
+    tested: list[ModelServiceSettings] = []
+    cipher = AiSecretCipher(b"s" * 32)
+    provider_service = AiSettingsService(
+        database.sessions,
+        cipher,
+        connection_tester=tested.append,
+    )
+    agent_service = AgentSettingsService(
+        database.sessions,
+        cipher,
+        connection_tester=tested.append,
+    )
+
+    provider_view = provider_service.update_provider(
+        ModelProvider.OPENAI,
+        AiProviderDraft(
+            model="shared-default-model",
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://shared.example.test/v1",
+        ),
+        expected_revision=0,
+        actor="administrator",
+        api_key="shared-secret-1234",
+    )
+    provider_view = provider_service.test_provider(
+        ModelProvider.OPENAI,
+        expected_revision=provider_view.revision,
+        actor="administrator",
+    )
+    provider_view = provider_service.activate_provider(
+        ModelProvider.OPENAI,
+        expected_revision=provider_view.revision,
+        actor="administrator",
+    )
+
+    saved = agent_service.update(
+        ReviewAgent.LOGIC,
+        AgentConfigDraft(
+            provider=ModelProvider.OPENAI,
+            model="legacy-placeholder",
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            use_shared_connection=True,
+            model_override="logic-special-model",
+        ),
+        expected_revision=provider_view.revision,
+        actor="administrator",
+    )
+    logic = next(item for item in saved.agents if item.agent is ReviewAgent.LOGIC)
+    assert logic.use_shared_connection is True
+    assert logic.model == "logic-special-model"
+    assert logic.provider.value == "openai"
+    assert logic.shared_connection_configured is True
+    assert logic.shared_connection_ready is False
+
+    tested_view = agent_service.test(
+        ReviewAgent.LOGIC,
+        expected_revision=saved.revision,
+        actor="administrator",
+    )
+    logic = next(item for item in tested_view.agents if item.agent is ReviewAgent.LOGIC)
+    assert logic.shared_connection_ready is True
+    assert logic.api_key_mask == "****1234"
+    assert tested[-1].model == "logic-special-model"
+    assert tested[-1].api_key == "shared-secret-1234"
+    assert tested[-1].api_base_url == "https://shared.example.test/v1"
+
+    enabled = agent_service.set_enabled(
+        ReviewAgent.LOGIC,
+        True,
+        expected_revision=tested_view.revision,
+        actor="administrator",
+    )
+    assert next(item for item in enabled.agents if item.agent is ReviewAgent.LOGIC).enabled
+    runtime_settings = agent_service.model_settings()
+    assert runtime_settings[ReviewAgent.LOGIC].model == "logic-special-model"
+    assert runtime_settings[ReviewAgent.LOGIC].api_key == "shared-secret-1234"
+    with database.sessions() as session:
+        assert session.get(AiAgentSecretRecord, ReviewAgent.LOGIC.value) is None
+
+
+def test_shared_agent_cannot_be_enabled_after_provider_test_fails(
+    database: Database,
+) -> None:
+    """公共供应商失效后，不能沿用 Agent 旧测试结果重新启用。"""
+
+    should_fail = False
+
+    def test_provider_connection(_settings: ModelServiceSettings) -> None:
+        if should_fail:
+            raise SafeApplicationError(
+                SafeError(
+                    code=ErrorCode.MODEL_TIMEOUT,
+                    safe_message="公共连接测试超时",
+                    retryable=True,
+                )
+            )
+
+    cipher = AiSecretCipher(b"s" * 32)
+    provider_service = AiSettingsService(
+        database.sessions,
+        cipher,
+        connection_tester=test_provider_connection,
+    )
+    agent_service = AgentSettingsService(
+        database.sessions,
+        cipher,
+        connection_tester=lambda _settings: None,
+    )
+
+    provider_view = provider_service.update_provider(
+        ModelProvider.OPENAI,
+        AiProviderDraft(
+            model="shared-default-model",
+            api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
+            api_base_url="https://shared.example.test/v1",
+        ),
+        expected_revision=0,
+        actor="administrator",
+        api_key="shared-secret-1234",
+    )
+    provider_view = provider_service.test_provider(
+        ModelProvider.OPENAI,
+        expected_revision=provider_view.revision,
+        actor="administrator",
+    )
+    provider_view = provider_service.activate_provider(
+        ModelProvider.OPENAI,
+        expected_revision=provider_view.revision,
+        actor="administrator",
+    )
+    agent_view = agent_service.update(
+        ReviewAgent.LOGIC,
+        AgentConfigDraft(
+            provider=ModelProvider.OPENAI,
+            model="legacy-placeholder",
+            use_shared_connection=True,
+            model_override="logic-special-model",
+        ),
+        expected_revision=provider_view.revision,
+        actor="administrator",
+    )
+    agent_view = agent_service.test(
+        ReviewAgent.LOGIC,
+        expected_revision=agent_view.revision,
+        actor="administrator",
+    )
+
+    should_fail = True
+    with pytest.raises(AiConnectionTestError, match="公共连接测试超时"):
+        provider_service.test_provider(
+            ModelProvider.OPENAI,
+            expected_revision=agent_view.revision,
+            actor="administrator",
+        )
+    failed_provider = provider_service.get()
+
+    with pytest.raises(AiSettingsValidationError, match="公共连接必须先通过连接测试"):
+        agent_service.set_enabled(
+            ReviewAgent.LOGIC,
+            True,
+            expected_revision=failed_provider.revision,
+            actor="administrator",
+        )
+
+
+def test_runtime_builds_all_agents_and_preserves_concurrency_limit(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -348,8 +519,101 @@ def test_runtime_requires_all_agents_and_preserves_concurrency_limit(
         expected_revision=revision,
         actor="administrator",
     )
-    assert runtime_provider.current() is None
-    assert all(reviewer.closed for reviewer in created)
+    partial_runtime = runtime_provider.current()
+    assert partial_runtime is not None
+    assert partial_runtime.agent_workflow is not None
+    assert set(partial_runtime.agent_workflow.agent_settings) == {
+        ReviewAgent.SECURITY,
+        ReviewAgent.CONVENTION,
+        ReviewAgent.LOGIC,
+    }
+    assert len(created) == 7
+    assert all(reviewer.closed for reviewer in created[:4])
+
+
+def test_runtime_keeps_ready_agents_when_configuration_is_partial(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """只启用部分 Agent 时仍构造工作流，缺失节点由编排器标记 disabled。"""
+
+    cipher = AiSecretCipher(b"p" * 32)
+    agents = AgentSettingsService(
+        database.sessions,
+        cipher,
+        connection_tester=lambda _settings: None,
+    )
+    revision = 0
+    for agent in (ReviewAgent.SECURITY, ReviewAgent.CONVENTION):
+        view = agents.update(
+            agent,
+            AgentConfigDraft(
+                provider=ModelProvider.OPENAI,
+                model=f"{agent.value}-model",
+            ),
+            expected_revision=revision,
+            actor="administrator",
+            api_key=f"{agent.value}-secret",
+        )
+        revision = view.revision
+        view = agents.test(agent, expected_revision=revision, actor="administrator")
+        revision = view.revision
+        view = agents.set_enabled(
+            agent,
+            True,
+            expected_revision=revision,
+            actor="administrator",
+        )
+        revision = view.revision
+
+    class StubReviewer:
+        def __init__(self, settings: ModelServiceSettings) -> None:
+            self.settings = settings
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    created: list[StubReviewer] = []
+
+    def create_reviewer(settings: ModelServiceSettings) -> StubReviewer:
+        reviewer = StubReviewer(settings)
+        created.append(reviewer)
+        return reviewer
+
+    monkeypatch.setattr("services.ai_settings.create_model_reviewer", create_reviewer)
+    provider = SqlAlchemyAiRuntimeProvider(
+        AiSettingsService(database.sessions, cipher),
+        agents,
+        max_agent_concurrency=2,
+        revision_cache_ttl_seconds=0,
+    )
+
+    runtime = provider.current()
+    assert runtime is not None
+    assert runtime.agent_workflow is not None
+    assert set(runtime.agent_workflow.reviewers) == {
+        ReviewAgent.SECURITY,
+        ReviewAgent.CONVENTION,
+    }
+    assert set(runtime.agent_workflow.agent_settings) == {
+        ReviewAgent.SECURITY,
+        ReviewAgent.CONVENTION,
+    }
+    assert len(created) == 2
+
+    # 停用其中一路不会让仍可用的 Agent 一起失效，也不会回退到旧单模型。
+    view = agents.set_enabled(
+        ReviewAgent.CONVENTION,
+        False,
+        expected_revision=revision,
+        actor="administrator",
+    )
+    runtime = provider.current()
+    assert runtime is not None
+    assert runtime.agent_workflow is not None
+    assert set(runtime.agent_workflow.reviewers) == {ReviewAgent.SECURITY}
+    assert view.revision > revision
 
 
 def test_runtime_revision_fast_path_skips_full_reads_until_revision_changes() -> None:

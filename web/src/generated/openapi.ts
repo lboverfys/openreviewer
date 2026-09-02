@@ -686,12 +686,18 @@ export interface components {
             max_retries: number;
             /** Model */
             model: string;
+            /** Model Override */
+            model_override: string | null;
             /** Pool Timeout Seconds */
             pool_timeout_seconds: number;
             provider: components["schemas"]["ModelProvider"];
             /** Read Timeout Seconds */
             read_timeout_seconds: number;
             reasoning_effort: components["schemas"]["ModelReasoningEffort"];
+            /** Shared Connection Configured */
+            shared_connection_configured: boolean;
+            /** Shared Connection Ready */
+            shared_connection_ready: boolean;
             /**
              * Test Status
              * @enum {string}
@@ -701,6 +707,8 @@ export interface components {
             tested_at: string | null;
             /** Updated At */
             updated_at: string | null;
+            /** Use Shared Connection */
+            use_shared_connection: boolean;
             /** Write Timeout Seconds */
             write_timeout_seconds: number;
         };
@@ -753,6 +761,8 @@ export interface components {
             max_retries: number;
             /** Model */
             model: string;
+            /** Model Override */
+            model_override?: string | null;
             /**
              * Pool Timeout Seconds
              * @default 5
@@ -766,6 +776,11 @@ export interface components {
             read_timeout_seconds: number;
             /** @default none */
             reasoning_effort: components["schemas"]["ModelReasoningEffort"];
+            /**
+             * Use Shared Connection
+             * @default false
+             */
+            use_shared_connection: boolean;
             /**
              * Write Timeout Seconds
              * @default 30
@@ -1212,10 +1227,19 @@ export interface components {
          * ReviewAction
          * @enum {string}
          */
-        ReviewAction: "start" | "pause" | "resume" | "retry_stage" | "approve" | "reject" | "publish" | "expedite" | "retry" | "cancel" | "rerun";
+        ReviewAction: "start" | "pause" | "resume" | "retry_stage" | "approve" | "reject" | "publish" | "expedite" | "retry" | "cancel" | "rerun" | "retry_failed_node" | "new_review";
         /** ReviewActionRequest */
         ReviewActionRequest: {
             action: components["schemas"]["ReviewAction"];
+            agent?: components["schemas"]["ReviewAgent"] | null;
+            /** Batch Number */
+            batch_number?: number | null;
+            /** Head Sha */
+            head_sha?: string | null;
+            /** Retry Scope */
+            retry_scope?: ("failed_node" | "stage" | "new_review") | null;
+            /** State Version */
+            state_version?: string | null;
             target_stage?: components["schemas"]["ExecutionStatus"] | null;
         };
         /** ReviewActionResponse */
@@ -1257,6 +1281,21 @@ export interface components {
         };
         /** ReviewDetailsResponse */
         ReviewDetailsResponse: {
+            /** Agent Statuses */
+            agent_statuses?: {
+                [key: string]: string;
+            };
+            /** Agent Summaries */
+            agent_summaries?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /**
+             * Aggregation Status
+             * @default not_started
+             */
+            aggregation_status: string;
             /** Attempt Count */
             attempt_count: number;
             /** Available Actions */
@@ -1306,6 +1345,18 @@ export interface components {
             /** Events */
             events: components["schemas"]["ReviewEventResponse"][];
             execution_status: components["schemas"]["ExecutionStatus"];
+            /**
+             * Failed Agents
+             * @default []
+             */
+            failed_agents: string[];
+            /**
+             * Failed Batches
+             * @default []
+             */
+            failed_batches: {
+                [key: string]: unknown;
+            }[];
             /** False Positive Finding Count */
             false_positive_finding_count: number;
             /** Files Complete */
@@ -1390,6 +1441,11 @@ export interface components {
             new_finding_count: number;
             /** Out Of Scope Finding Count */
             out_of_scope_finding_count: number;
+            /**
+             * Partial Result
+             * @default false
+             */
+            partial_result: boolean;
             /** Phase */
             phase: string;
             /** Plan Created At */
@@ -1442,6 +1498,11 @@ export interface components {
             stages: components["schemas"]["ReviewStageResponse"][];
             /** Still Present Finding Count */
             still_present_finding_count: number;
+            /**
+             * Summary Status
+             * @default not_executed
+             */
+            summary_status: string;
             /** Unreviewed Finding Count */
             unreviewed_finding_count: number;
             /**

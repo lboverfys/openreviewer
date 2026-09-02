@@ -211,6 +211,62 @@ def test_detail_is_readable_and_cancel_is_audited(database: Database) -> None:
     asyncio.run(exercise())
 
 
+def test_superseded_review_only_offers_new_review(database: Database) -> None:
+    """已被新提交替代的旧任务不能重新排队，只能创建新审查。"""
+
+    submission = ReviewService(
+        SqlAlchemyReviewRepository(database.sessions)
+    ).submit(
+        ReviewRequest(
+            installation_id=10,
+            repository_id=42,
+            repository="lboverfys/NiuMa",
+            pull_request_number=129,
+            head_sha="b" * 40,
+        ),
+        "superseded-action-source",
+    )
+    with database.sessions() as session:
+        run = session.get(ReviewRunRecord, submission.review_run_id)
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        assert run is not None and task is not None
+        run.execution_status = ExecutionStatus.SUPERSEDED.value
+        run.workflow_status = ExecutionStatus.SUPERSEDED.value
+        run.coverage_status = "stale"
+        task.execution_status = ExecutionStatus.SUPERSEDED.value
+        task.workflow_status = ExecutionStatus.SUPERSEDED.value
+        session.commit()
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application_for(database))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            response = await client.get(
+                f"/api/v1/reviews/{submission.review_run_id}"
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["available_actions"] == ["new_review"]
+            created = await client.post(
+                f"/api/v1/reviews/{submission.review_run_id}/actions",
+                headers={"Idempotency-Key": "superseded-new-review-001"},
+                json={
+                    "action": "new_review",
+                    "retry_scope": "new_review",
+                    "head_sha": "c" * 40,
+                    "state_version": body["change_token"],
+                },
+            )
+            assert created.status_code == 200
+            assert created.json()["review_run_id"] != submission.review_run_id
+            assert created.json()["execution_status"] == "queued"
+
+    asyncio.run(exercise())
+
+
 def test_action_idempotency_is_rechecked_after_target_lock(database: Database) -> None:
     """并发请求在锁等待后发现事件时，不应撞唯一键并返回 503。"""
 
@@ -1179,6 +1235,69 @@ def test_rerun_creates_a_new_queued_run(database: Database) -> None:
                 long_rerun_a.json()["review_run_id"]
                 != long_rerun_b.json()["review_run_id"]
             )
+
+    asyncio.run(exercise())
+
+
+def test_action_retry_scope_and_new_review_head_are_strictly_validated(
+    database: Database,
+) -> None:
+    """不同动作不能混用重试范围，新建最新提交必须绑定 SHA。"""
+
+    application = application_for(database)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await login(client)
+            created = await client.post(
+                "/api/v1/reviews",
+                headers={"Idempotency-Key": "strict-action-source"},
+                json={
+                    "installation_id": 10,
+                    "repository_id": 42,
+                    "repository": "lboverfys/NiuMa",
+                    "pull_request_number": 129,
+                    "head_sha": "a" * 40,
+                },
+            )
+            assert created.status_code == 202
+            run_id = created.json()["review_run_id"]
+            invalid_requests = (
+                {"action": "retry", "retry_scope": "stage"},
+                {"action": "rerun", "retry_scope": "stage"},
+                {"action": "cancel", "retry_scope": "failed_node"},
+                {
+                    "action": "retry_failed_node",
+                    "retry_scope": "failed_node",
+                    "batch_number": 1,
+                },
+                {"action": "new_review"},
+                {"action": "rerun", "retry_scope": "new_review"},
+            )
+            for index, payload in enumerate(invalid_requests, start=1):
+                response = await client.post(
+                    f"/api/v1/reviews/{run_id}/actions",
+                    headers={"Idempotency-Key": f"strict-action-invalid-{index}"},
+                    json=payload,
+                )
+                assert response.status_code == 409, response.text
+
+            valid = await client.post(
+                f"/api/v1/reviews/{run_id}/actions",
+                headers={"Idempotency-Key": "strict-action-valid"},
+                json={
+                    "action": "new_review",
+                    "retry_scope": "new_review",
+                    "head_sha": "b" * 40,
+                },
+            )
+            assert valid.status_code == 200, valid.text
+            assert valid.json()["review_run_id"] != run_id
+            assert valid.json()["execution_status"] == "queued"
 
     asyncio.run(exercise())
 

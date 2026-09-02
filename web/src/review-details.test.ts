@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  actionKey,
   agentProgress,
   appendFindingPage,
   applyRefreshedFindingPage,
@@ -106,6 +107,35 @@ function event(
 }
 
 describe("审查详情事件解释", () => {
+  it("同一状态重试复用幂等键，不同 Agent 或批次使用不同键", () => {
+    const first = actionKey("retry_failed_node", "run-1", {
+      agent: "security",
+      batchNumber: 1,
+      stateVersion: "version-a",
+    });
+
+    expect(actionKey("retry_failed_node", "run-1", {
+      agent: "security",
+      batchNumber: 1,
+      stateVersion: "version-a",
+    })).toBe(first);
+    expect(actionKey("retry_failed_node", "run-1", {
+      agent: "security",
+      batchNumber: 2,
+      stateVersion: "version-a",
+    })).not.toBe(first);
+    expect(actionKey("retry_failed_node", "run-1", {
+      agent: "logic",
+      batchNumber: 1,
+      stateVersion: "version-a",
+    })).not.toBe(first);
+    expect(actionKey("retry_failed_node", "run-1", {
+      agent: "security",
+      batchNumber: 1,
+      stateVersion: "version-b",
+    })).not.toBe(first);
+  });
+
   it("选择模型尝试次数最大的批次计划", () => {
     const oldPlan = event("old", "review.model.batches_planned", {
       model_attempt_count: 1,
@@ -164,6 +194,41 @@ describe("审查详情事件解释", () => {
     expect(progress.events.some((item) => item.id === "old")).toBe(false);
   });
 
+  it("检测到新代次后忽略没有代次字段的历史事件", () => {
+    const progress = agentProgress([
+      event("legacy", "review.model.agent_completed", {
+        agent: "security",
+        finding_count: 88,
+      }),
+      event("retry", "review.model.retry_started", {
+        agent: "workflow",
+        model_attempt_count: 2,
+      }),
+      event("current", "review.model.agent_failed", {
+        agent: "security",
+        model_attempt_count: 2,
+        status: "failed",
+      }),
+    ], "security");
+
+    expect(progress.status).toBe("failed");
+    expect(progress.findingCount).toBe(0);
+    expect(progress.events.some((item) => item.id === "legacy")).toBe(false);
+  });
+
+  it("把职责范围为空的 Agent 标记为不适用", () => {
+    const progress = agentProgress([
+      event("not-applicable", "review.model.agent_not_applicable", {
+        agent: "security",
+        model_attempt_count: 1,
+        status: "not_applicable",
+      }),
+    ], "security");
+
+    expect(progress.status).toBe("not_applicable");
+    expect(progress.errorMessage).toBeNull();
+  });
+
   it("以批次失败终态标记 Agent，并保留可展示的错误信息", () => {
     const progress = agentProgress([
       event("plan", "review.model.batches_planned", {
@@ -188,6 +253,19 @@ describe("审查详情事件解释", () => {
     expect(progress.status).toBe("failed");
     expect(progress.errorCode).toBe("MODEL_TIMEOUT");
     expect(progress.errorMessage).toBe("模型请求超时");
+  });
+
+  it("把禁用 Agent 显示为不适用且不当作失败", () => {
+    const progress = agentProgress([
+      event("disabled", "review.model.agent_failed", {
+        agent: "security",
+        status: "disabled",
+      }),
+    ], "security");
+
+    expect(progress.status).toBe("disabled");
+    expect(progress.failedBatches).toHaveLength(0);
+    expect(progress.errorMessage).toBeNull();
   });
 
   it("同一批次的迟到完成事件覆盖先到的失败事件", () => {

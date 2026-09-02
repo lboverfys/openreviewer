@@ -98,6 +98,17 @@
             "title": "Model",
             "type": "string"
           },
+          "model_override": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Override"
+          },
           "pool_timeout_seconds": {
             "title": "Pool Timeout Seconds",
             "type": "number"
@@ -111,6 +122,14 @@
           },
           "reasoning_effort": {
             "$ref": "#/components/schemas/ModelReasoningEffort"
+          },
+          "shared_connection_configured": {
+            "title": "Shared Connection Configured",
+            "type": "boolean"
+          },
+          "shared_connection_ready": {
+            "title": "Shared Connection Ready",
+            "type": "boolean"
           },
           "test_status": {
             "enum": [
@@ -145,6 +164,10 @@
             ],
             "title": "Updated At"
           },
+          "use_shared_connection": {
+            "title": "Use Shared Connection",
+            "type": "boolean"
+          },
           "write_timeout_seconds": {
             "title": "Write Timeout Seconds",
             "type": "number"
@@ -154,6 +177,10 @@
           "agent",
           "configured",
           "enabled",
+          "use_shared_connection",
+          "model_override",
+          "shared_connection_configured",
+          "shared_connection_ready",
           "provider",
           "model",
           "api_protocol",
@@ -280,6 +307,18 @@
             "title": "Model",
             "type": "string"
           },
+          "model_override": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Override"
+          },
           "pool_timeout_seconds": {
             "default": 5.0,
             "exclusiveMinimum": 0.0,
@@ -300,6 +339,11 @@
           "reasoning_effort": {
             "$ref": "#/components/schemas/ModelReasoningEffort",
             "default": "none"
+          },
+          "use_shared_connection": {
+            "default": false,
+            "title": "Use Shared Connection",
+            "type": "boolean"
           },
           "write_timeout_seconds": {
             "default": 30.0,
@@ -1546,7 +1590,9 @@
           "expedite",
           "retry",
           "cancel",
-          "rerun"
+          "rerun",
+          "retry_failed_node",
+          "new_review"
         ],
         "title": "ReviewAction",
         "type": "string"
@@ -1556,6 +1602,71 @@
         "properties": {
           "action": {
             "$ref": "#/components/schemas/ReviewAction"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewAgent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "batch_number": {
+            "anyOf": [
+              {
+                "maximum": 3000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Number"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "retry_scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "failed_node",
+                  "stage",
+                  "new_review"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Scope"
+          },
+          "state_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Version"
           },
           "target_stage": {
             "anyOf": [
@@ -1677,6 +1788,26 @@
       },
       "ReviewDetailsResponse": {
         "properties": {
+          "agent_statuses": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Agent Statuses",
+            "type": "object"
+          },
+          "agent_summaries": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Agent Summaries",
+            "type": "object"
+          },
+          "aggregation_status": {
+            "default": "not_started",
+            "title": "Aggregation Status",
+            "type": "string"
+          },
           "attempt_count": {
             "title": "Attempt Count",
             "type": "integer"
@@ -1842,6 +1973,23 @@
           },
           "execution_status": {
             "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "failed_agents": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed Agents",
+            "type": "array"
+          },
+          "failed_batches": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Failed Batches",
+            "type": "array"
           },
           "false_positive_finding_count": {
             "title": "False Positive Finding Count",
@@ -2204,6 +2352,11 @@
             "title": "Out Of Scope Finding Count",
             "type": "integer"
           },
+          "partial_result": {
+            "default": false,
+            "title": "Partial Result",
+            "type": "boolean"
+          },
           "phase": {
             "title": "Phase",
             "type": "string"
@@ -2401,6 +2554,11 @@
           "still_present_finding_count": {
             "title": "Still Present Finding Count",
             "type": "integer"
+          },
+          "summary_status": {
+            "default": "not_executed",
+            "title": "Summary Status",
+            "type": "string"
           },
           "unreviewed_finding_count": {
             "title": "Unreviewed Finding Count",

@@ -23,6 +23,8 @@ import { errorMessage } from "./utils";
 interface AgentDraft {
   provider: AiAgentSettings["provider"];
   model: string;
+  useSharedConnection: boolean;
+  modelOverride: string;
   apiProtocol: AiAgentSettings["api_protocol"];
   apiBaseUrl: string;
   apiKey: string;
@@ -50,6 +52,8 @@ function agentDraft(settings: AiAgentSettings): AgentDraft {
   return {
     provider: settings.provider,
     model: settings.model,
+    useSharedConnection: Boolean(settings.use_shared_connection),
+    modelOverride: settings.model_override ?? "",
     apiProtocol: settings.api_protocol,
     apiBaseUrl: settings.api_base_url ?? "",
     apiKey: "",
@@ -71,6 +75,8 @@ function agentDraftDirty(settings: AiAgentSettings, draft: AgentDraft): boolean 
   return (
     draft.provider !== saved.provider
     || draft.model !== saved.model
+    || draft.useSharedConnection !== saved.useSharedConnection
+    || draft.modelOverride !== saved.modelOverride
     || draft.apiProtocol !== saved.apiProtocol
     || draft.apiBaseUrl !== saved.apiBaseUrl
     || draft.apiKey.trim() !== ""
@@ -361,6 +367,8 @@ export default function AgentSettingsPanel({
         expected_revision: revision,
         provider: draft.provider,
         model: draft.model.trim(),
+        use_shared_connection: draft.useSharedConnection,
+        model_override: draft.modelOverride.trim() || null,
         api_protocol: draft.apiProtocol,
         api_base_url: draft.apiBaseUrl.trim() || null,
         api_key: draft.apiKey.trim() || null,
@@ -489,7 +497,7 @@ export default function AgentSettingsPanel({
   return (
     <section ref={sectionRef} className="agent-settings-section">
       <div className="settings-section-heading">
-        <div><span className="settings-eyebrow">固定审查 DAG</span><h2>独立 Agent 配置</h2><p>三路审查并行执行，汇总 Agent 单独使用自己的模型和密钥。</p></div>
+        <div><span className="settings-eyebrow">固定审查 DAG</span><h2>Agent 配置</h2><p>三路审查并行执行，可分别配置，也可共用 AI 设置页当前启用的公共连接。</p></div>
         <span className="settings-summary-value">配置版本 r{settings.revision}</span>
       </div>
       {message && messageAgent === null && <div className={"settings-message is-" + messageKind}>{message}</div>}
@@ -499,6 +507,7 @@ export default function AgentSettingsPanel({
           const draft = drafts[agent];
           if (!item || !draft) return null;
           const dirty = agentDraftDirty(item, draft);
+          const sharedConnection = draft.useSharedConnection;
           const protocolOptions = draft.provider === "anthropic"
             ? [["messages", "Anthropic Messages"]] as Array<[string, string]>
             : [["chat_completions", "通用兼容 / Chat Completions"], ["responses", "OpenAI Responses"]] as Array<[string, string]>;
@@ -514,29 +523,39 @@ export default function AgentSettingsPanel({
               <div className="agent-settings-status">
                 <span>{item.api_key_configured ? "密钥 " + item.api_key_mask : "未保存密钥"}</span>
                 <span>{item.enabled ? "运行已启用" : "已停用"}</span>
+                <span>{sharedConnection ? (item.shared_connection_ready ? "公共连接已就绪" : "公共连接待配置或测试") : "独立连接"}</span>
+                <span>模型上下文：自动</span>
+                <span>代码分批：自动</span>
+                <span>截断恢复：自动拆批</span>
               </div>
               <div className="agent-settings-fields">
-                <label><span>提供商</span><select value={draft.provider} onChange={(event) => {
+                <label className="agent-settings-shared-toggle"><input type="checkbox" checked={sharedConnection} onChange={(event) => {
+                  updateDraft(agent, "useSharedConnection", event.target.checked);
+                  if (event.target.checked) updateDraft(agent, "apiKey", "");
+                }} /><span>使用公共连接配置</span><small>{item.shared_connection_configured ? "使用 AI 设置页当前已启用的提供商、地址、协议和密钥" : "请先在 AI 设置页保存、测试并启用公共连接"}</small></label>
+                <label><span>提供商</span><select value={draft.provider} disabled={sharedConnection} onChange={(event) => {
                   const provider = event.target.value as AiAgentSettings["provider"];
                   updateDraft(agent, "provider", provider);
                   updateDraft(agent, "apiProtocol", provider === "anthropic" ? "messages" : "chat_completions");
                 }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic 兼容</option></select></label>
-                <label><span>模型 ID</span><input value={draft.model} maxLength={200} onChange={(event) => updateDraft(agent, "model", event.target.value)} placeholder="例如 gpt-4.1-mini" /></label>
-                <label><span>Base URL（可选）</span><input value={draft.apiBaseUrl} maxLength={500} onChange={(event) => updateDraft(agent, "apiBaseUrl", event.target.value)} placeholder="留空使用官方地址" /></label>
-                <label><span>中转协议</span><select value={draft.apiProtocol} onChange={(event) => updateDraft(agent, "apiProtocol", event.target.value)}>{protocolOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                <label className="agent-settings-key"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(event) => updateDraft(agent, "apiKey", event.target.value)} placeholder={item.api_key_configured ? item.api_key_mask ?? "已保存密钥" : "粘贴 API Key"} autoComplete="new-password" disabled={draft.clearApiKey} /><small>留空保留原密钥；只显示掩码。</small></label>
-                <label className="agent-settings-check"><input type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft(agent, "clearApiKey", event.target.checked)} disabled={!item.api_key_configured} /><span>保存时删除密钥</span></label>
-                <label><span>总上下文窗口</span><select value={draft.contextWindowTokens} onChange={(event) => updateDraft(agent, "contextWindowTokens", event.target.value)}>{contextWindowOptions(draft.contextWindowTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>模型总容量，与每批输入分别设置。</small></label>
-                <label><span>每批输入上限</span><select value={draft.maxBatchInputTokens} onChange={(event) => updateDraft(agent, "maxBatchInputTokens", event.target.value)}>{batchInputOptions(draft.contextWindowTokens, draft.maxBatchInputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>推荐 64K，过大提交会自动分批。</small></label>
-                <label><span>回答上限</span><select value={draft.maxOutputTokens} onChange={(event) => updateDraft(agent, "maxOutputTokens", event.target.value)}>{outputTokenOptions(draft.contextWindowTokens, draft.maxOutputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                <label><span>推理档位</span><select value={draft.reasoningEffort} onChange={(event) => updateDraft(agent, "reasoningEffort", event.target.value)}><option value="none">自动</option><option value="low">轻量</option><option value="medium">标准</option><option value="high">深入</option><option value="max">极致</option></select></label>
+                {sharedConnection
+                  ? <label><span>模型覆盖（可选）</span><input value={draft.modelOverride} maxLength={200} onChange={(event) => updateDraft(agent, "modelOverride", event.target.value)} placeholder="留空使用公共默认模型" /></label>
+                  : <label><span>模型 ID</span><input value={draft.model} maxLength={200} onChange={(event) => updateDraft(agent, "model", event.target.value)} placeholder="例如 gpt-4.1-mini" /></label>}
+                <label><span>Base URL（可选）</span><input value={draft.apiBaseUrl} maxLength={500} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "apiBaseUrl", event.target.value)} placeholder="留空使用官方地址" /></label>
+                <label><span>中转协议</span><select value={draft.apiProtocol} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "apiProtocol", event.target.value)}>{protocolOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label className="agent-settings-key"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(event) => updateDraft(agent, "apiKey", event.target.value)} placeholder={item.api_key_configured ? item.api_key_mask ?? "已保存密钥" : "粘贴 API Key"} autoComplete="new-password" disabled={sharedConnection || draft.clearApiKey} /><small>{sharedConnection ? "由公共连接统一提供；不会在此重复保存。" : "留空保留原密钥；只显示掩码。"}</small></label>
+                {!sharedConnection && <label className="agent-settings-check"><input type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft(agent, "clearApiKey", event.target.checked)} disabled={!item.api_key_configured} /><span>保存时删除密钥</span></label>}
                 <details className="agent-settings-advanced">
-                  <summary>超时与重试</summary>
+                  <summary>高级设置（系统默认自动管理）</summary>
                   <div>
-                    <label><span>连接超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.connectTimeoutSeconds} onChange={(event) => updateDraft(agent, "connectTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>回答超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.readTimeoutSeconds} onChange={(event) => updateDraft(agent, "readTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>发送超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.writeTimeoutSeconds} onChange={(event) => updateDraft(agent, "writeTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>连接排队超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.poolTimeoutSeconds} onChange={(event) => updateDraft(agent, "poolTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>总上下文窗口</span><select value={draft.contextWindowTokens} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "contextWindowTokens", event.target.value)}>{contextWindowOptions(draft.contextWindowTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>模型总容量，留空时使用自动策略。</small></label>
+                    <label><span>每批输入上限</span><select value={draft.maxBatchInputTokens} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "maxBatchInputTokens", event.target.value)}>{batchInputOptions(draft.contextWindowTokens, draft.maxBatchInputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                    <label><span>回答上限</span><select value={draft.maxOutputTokens} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "maxOutputTokens", event.target.value)}>{outputTokenOptions(draft.contextWindowTokens, draft.maxOutputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                    <label><span>推理档位</span><select value={draft.reasoningEffort} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "reasoningEffort", event.target.value)}><option value="none">自动</option><option value="low">轻量</option><option value="medium">标准</option><option value="high">深入</option><option value="max">极致</option></select></label>
+                    <label><span>连接超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.connectTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "connectTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>回答超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.readTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "readTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>发送超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.writeTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "writeTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>连接排队超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.poolTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "poolTimeoutSeconds", event.target.value)} /></label>
                     <label><span>最多重试次数</span><input type="number" min={0} max={10} step={1} value={draft.maxRetries} onChange={(event) => updateDraft(agent, "maxRetries", event.target.value)} /></label>
                   </div>
                 </details>

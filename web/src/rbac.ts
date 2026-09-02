@@ -24,6 +24,8 @@ const actionPermissions: Record<ReviewAction, Permission> = {
   retry: "reviews:manage",
   cancel: "reviews:manage",
   rerun: "reviews:manage",
+  retry_failed_node: "reviews:manage",
+  new_review: "reviews:manage",
 };
 
 export function hasPermission(user: AuthUser, permission: Permission): boolean {

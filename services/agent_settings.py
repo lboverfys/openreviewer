@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Literal
@@ -23,6 +23,8 @@ from domain.security import SafeApplicationError
 from persistence.models import (
     AiAgentConfigRecord,
     AiAgentSecretRecord,
+    AiProviderConfigRecord,
+    AiProviderSecretRecord,
     AiSettingsRecord,
 )
 from services.ai_settings import (
@@ -37,6 +39,7 @@ from services.ai_settings import (
 from services.model_providers import create_model_reviewer
 from services.model_review import (
     DEFAULT_MAX_BATCH_INPUT_TOKENS,
+    ModelPricing,
     ModelReviewer,
     ModelServiceSettings,
     normalize_api_base_url,
@@ -75,6 +78,9 @@ class AgentConfigDraft:
     write_timeout_seconds: float = 30.0
     pool_timeout_seconds: float = 5.0
     max_retries: int = 2
+    # 放在原有字段之后，保持旧版位置参数调用的兼容性。
+    use_shared_connection: bool = False
+    model_override: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +106,10 @@ class AgentConfigView:
     test_status: Literal["untested", "succeeded", "failed"]
     tested_at: datetime | None
     updated_at: datetime | None
+    use_shared_connection: bool = False
+    model_override: str | None = None
+    shared_connection_configured: bool = False
+    shared_connection_ready: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,8 +118,18 @@ class AgentSettingsView:
     agents: tuple[AgentConfigView, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _SharedConnection:
+    """当前 AiSettingsRecord 激活的公共连接及其已解密密钥。"""
+
+    provider: ModelProvider
+    config: AiProviderConfigRecord
+    secret: AiProviderSecretRecord | None
+    api_key: str | None
+
+
 class AgentSettingsService:
-    """每个 Agent 独立保存、测试和启停，密钥只保存加密结果。"""
+    """管理 Agent 的独立配置或当前激活的公共连接，密钥只保存加密结果。"""
 
     def __init__(
         self,
@@ -127,42 +147,35 @@ class AgentSettingsService:
     def get(self) -> AgentSettingsView:
         with self._sessions() as session:
             try:
-                settings = session.get(AiSettingsRecord, AI_SETTINGS_ID)
-                rows = list(
-                    session.scalars(
-                        select(AiAgentConfigRecord)
-                        .where(
-                            AiAgentConfigRecord.agent.in_(
-                                tuple(item.value for item in AGENT_KEYS)
-                            )
-                        )
-                        .order_by(AiAgentConfigRecord.agent.asc())
-                        .limit(len(AGENT_KEYS))
+                settings, shared = self._load_settings_and_shared(session)
+                agent_rows = session.execute(
+                    select(AiAgentConfigRecord, AiAgentSecretRecord)
+                    .outerjoin(
+                        AiAgentSecretRecord,
+                        AiAgentSecretRecord.agent == AiAgentConfigRecord.agent,
                     )
-                )
-                secrets = {
-                    row.agent: row
-                    for row in session.scalars(
-                        select(AiAgentSecretRecord)
-                        .where(
-                            AiAgentSecretRecord.agent.in_(
-                                tuple(item.value for item in AGENT_KEYS)
-                            )
+                    .where(
+                        AiAgentConfigRecord.agent.in_(
+                            tuple(item.value for item in AGENT_KEYS)
                         )
-                        .limit(len(AGENT_KEYS))
                     )
-                }
-                by_agent = {row.agent: row for row in rows}
+                    .order_by(AiAgentConfigRecord.agent.asc())
+                    .limit(len(AGENT_KEYS))
+                ).all()
+                by_agent = {row.agent: (row, secret) for row, secret in agent_rows}
+
+                def view_agent(agent: ReviewAgent) -> AgentConfigView:
+                    pair = by_agent.get(agent.value)
+                    return self._view(
+                        agent,
+                        pair[0] if pair is not None else None,
+                        pair[1] if pair is not None else None,
+                        shared,
+                    )
+
                 return AgentSettingsView(
                     revision=settings.revision if settings is not None else 0,
-                    agents=tuple(
-                        self._view(
-                            agent,
-                            by_agent.get(agent.value),
-                            secrets.get(agent.value),
-                        )
-                        for agent in AGENT_KEYS
-                    ),
+                    agents=tuple(view_agent(agent) for agent in AGENT_KEYS),
                 )
             except (AiSettingsValidationError, AiSettingsPersistenceError):
                 raise
@@ -181,6 +194,10 @@ class AgentSettingsService:
     ) -> AgentSettingsView:
         if api_key is not None and clear_api_key:
             raise AiSettingsValidationError("不能同时设置并清除 API Key")
+        if draft.use_shared_connection and api_key is not None:
+            raise AiSettingsValidationError(
+                "使用公共连接配置时不能同时保存 Agent 独立 API Key"
+            )
         self._validate(agent, draft, api_key or "validation-key")
         now = self._clock()
         with self._sessions() as session:
@@ -206,6 +223,7 @@ class AgentSettingsService:
                         or normalize_api_base_url(row.api_base_url)
                         != normalize_api_base_url(draft.api_base_url)
                     )
+                    and not draft.use_shared_connection
                     and api_key is None
                     and secret is not None
                     and not clear_api_key
@@ -214,7 +232,12 @@ class AgentSettingsService:
                         "切换供应商或 API 地址时必须同时提供新的 API Key"
                     )
                 self._apply(row, draft, actor, now)
-                if api_key is not None:
+                if draft.use_shared_connection:
+                    # 共享模式不再保留一份容易过期的重复密钥；切回独立模式
+                    # 时管理员需要重新提供该 Agent 的密钥。
+                    if secret is not None:
+                        session.delete(secret)
+                elif api_key is not None:
                     encrypted = self._cipher.encrypt(draft.provider, api_key)
                     if secret is None:
                         session.add(
@@ -253,15 +276,13 @@ class AgentSettingsService:
 
     def test(self, agent: ReviewAgent, *, expected_revision: int, actor: str) -> AgentSettingsView:
         with self._sessions() as session:
-            self._lock_settings(session, expected_revision, self._clock())
+            settings = self._lock_settings(session, expected_revision, self._clock())
             row = session.get(AiAgentConfigRecord, agent.value)
             secret = session.get(AiAgentSecretRecord, agent.value)
-            if row is None or secret is None:
-                raise AiSettingsValidationError("请先保存 Agent 参数和 API Key")
-            provider = ModelProvider(row.provider)
-            key = self._cipher.decrypt(provider, secret.ciphertext, secret.nonce, secret.key_version)
-            draft = self._draft(row)
-            model_settings = self._to_model_settings(provider, draft, key)
+            if row is None:
+                raise AiSettingsValidationError("请先保存 Agent 参数")
+            shared = self._load_shared_connection(session, settings)
+            model_settings = self._effective_model_settings(row, secret, shared)
             fingerprint = self._fingerprint(model_settings)
         try:
             # 探测提示很短，实际消耗仍然很小；请求参数必须保持和正式 Agent
@@ -299,18 +320,11 @@ class AgentSettingsService:
                     raise AiSettingsValidationError("请先保存 Agent 配置")
                 if enabled:
                     secret = session.get(AiAgentSecretRecord, agent.value)
-                    if secret is None or row.test_status != "succeeded":
+                    shared = self._load_shared_connection(session, settings)
+                    if row.test_status != "succeeded":
                         raise AiSettingsValidationError("启用前必须先通过连接测试")
-                    provider = ModelProvider(row.provider)
-                    key = self._cipher.decrypt(
-                        provider,
-                        secret.ciphertext,
-                        secret.nonce,
-                        secret.key_version,
-                    )
-                    fingerprint = self._fingerprint(
-                        self._to_model_settings(provider, self._draft(row), key)
-                    )
+                    effective = self._effective_model_settings(row, secret, shared)
+                    fingerprint = self._fingerprint(effective)
                     if row.tested_configuration_fingerprint != fingerprint:
                         raise AiSettingsValidationError("Agent 配置已变化，请重新测试连接")
                 row.enabled = enabled
@@ -331,45 +345,38 @@ class AgentSettingsService:
 
         with self._sessions() as session:
             try:
-                rows = list(
-                    session.scalars(
-                        select(AiAgentConfigRecord)
-                        .where(
-                            AiAgentConfigRecord.enabled.is_(True),
-                            AiAgentConfigRecord.test_status == "succeeded",
-                        )
-                        .order_by(AiAgentConfigRecord.agent.asc())
-                        .limit(len(AGENT_KEYS))
+                agent_rows = session.execute(
+                    select(AiAgentConfigRecord, AiAgentSecretRecord)
+                    .outerjoin(
+                        AiAgentSecretRecord,
+                        AiAgentSecretRecord.agent == AiAgentConfigRecord.agent,
                     )
-                )
-                if not rows:
+                    .where(
+                        AiAgentConfigRecord.enabled.is_(True),
+                        AiAgentConfigRecord.test_status == "succeeded",
+                    )
+                    .order_by(AiAgentConfigRecord.agent.asc())
+                    .limit(len(AGENT_KEYS))
+                ).all()
+                if not agent_rows:
                     return {}
-                secrets = {
-                    row.agent: row
-                    for row in session.scalars(
-                        select(AiAgentSecretRecord).where(
-                            AiAgentSecretRecord.agent.in_(
-                                [row.agent for row in rows]
-                            )
-                        ).limit(len(AGENT_KEYS))
-                    )
-                }
+                settings, shared = self._load_settings_and_shared(session)
+                # ``settings`` 只用于装载公共连接；即使旧数据库没有单例行，
+                # 独立 Agent 仍可按原配置返回。
+                _ = settings
                 result: dict[ReviewAgent, ModelServiceSettings] = {}
-                for row in rows:
-                    secret = secrets.get(row.agent)
-                    if secret is None:
+                for row, secret in agent_rows:
+                    try:
+                        result[ReviewAgent(row.agent)] = self._effective_model_settings(
+                            row,
+                            secret,
+                            shared,
+                        )
+                    except AiSettingsValidationError:
+                        # 共享连接尚未配置/测试时，保留其他已就绪 Agent；
+                        # runtime provider 会把该节点报告为 disabled，而不是
+                        # 因一个缺失密钥让整个固定 DAG 无法启动。
                         continue
-                    provider = ModelProvider(row.provider)
-                    result[ReviewAgent(row.agent)] = self._to_model_settings(
-                        provider,
-                        self._draft(row),
-                        self._cipher.decrypt(
-                            provider,
-                            secret.ciphertext,
-                            secret.nonce,
-                            secret.key_version,
-                        ),
-                    )
                 return result
             except (AiSettingsValidationError, AiSettingsConfigurationError):
                 raise
@@ -398,19 +405,10 @@ class AgentSettingsService:
                 settings = self._lock_settings(session, expected_revision, now)
                 row = session.get(AiAgentConfigRecord, agent.value)
                 secret = session.get(AiAgentSecretRecord, agent.value)
-                if row is None or secret is None:
+                if row is None:
                     raise AiSettingsConflictError("测试期间配置已发生变化")
-                provider = ModelProvider(row.provider)
-                current = self._to_model_settings(
-                    provider,
-                    self._draft(row),
-                    self._cipher.decrypt(
-                        provider,
-                        secret.ciphertext,
-                        secret.nonce,
-                        secret.key_version,
-                    ),
-                )
+                shared = self._load_shared_connection(session, settings)
+                current = self._effective_model_settings(row, secret, shared)
                 if self._fingerprint(current) != fingerprint:
                     raise AiSettingsConflictError("测试期间配置已发生变化")
                 row.test_status = "succeeded" if succeeded else "failed"
@@ -476,6 +474,12 @@ class AgentSettingsService:
 
     @staticmethod
     def _apply(row: AiAgentConfigRecord, draft: AgentConfigDraft, actor: str, now: datetime) -> None:
+        row.use_shared_connection = draft.use_shared_connection
+        row.model_override = (
+            draft.model_override.strip() or None
+            if draft.use_shared_connection and draft.model_override
+            else None
+        )
         row.provider = draft.provider.value
         row.model = draft.model
         row.api_protocol = draft.api_protocol.value
@@ -497,6 +501,8 @@ class AgentSettingsService:
         return AgentConfigDraft(
             provider=ModelProvider(row.provider),
             model=row.model,
+            use_shared_connection=bool(row.use_shared_connection),
+            model_override=row.model_override,
             api_protocol=ModelApiProtocol(row.api_protocol),
             api_base_url=row.api_base_url,
             reasoning_effort=ModelReasoningEffort(row.reasoning_effort),
@@ -538,18 +544,193 @@ class AgentSettingsService:
         if not 0 <= draft.max_retries <= 10:
             raise AiSettingsValidationError("重试次数必须在 0 到 10 之间")
         self._to_model_settings(draft.provider, draft, key)
+        if draft.use_shared_connection and draft.model_override:
+            override = draft.model_override.strip()
+            if not override:
+                return
+            self._to_model_settings(
+                draft.provider,
+                replace(draft, model=override),
+                key,
+            )
+
+    def _load_settings_and_shared(
+        self,
+        session: Session,
+    ) -> tuple[AiSettingsRecord | None, _SharedConnection | None]:
+        """一次 JOIN 同时读取全局 revision 和当前公共连接。"""
+
+        row = session.execute(
+            select(
+                AiSettingsRecord,
+                AiProviderConfigRecord,
+                AiProviderSecretRecord,
+            )
+            .outerjoin(
+                AiProviderConfigRecord,
+                AiProviderConfigRecord.provider == AiSettingsRecord.active_provider,
+            )
+            .outerjoin(
+                AiProviderSecretRecord,
+                AiProviderSecretRecord.provider == AiProviderConfigRecord.provider,
+            )
+            .where(AiSettingsRecord.id == AI_SETTINGS_ID)
+            .limit(1)
+        ).one_or_none()
+        if row is None:
+            return None, None
+        settings, config, secret = row
+        if config is None:
+            return settings, None
+        provider = ModelProvider(config.provider)
+        key = (
+            self._cipher.decrypt(
+                provider,
+                secret.ciphertext,
+                secret.nonce,
+                secret.key_version,
+            )
+            if secret is not None
+            else None
+        )
+        return settings, _SharedConnection(provider, config, secret, key)
+
+    def _load_shared_connection(
+        self,
+        session: Session,
+        settings: AiSettingsRecord | None,
+    ) -> _SharedConnection | None:
+        """读取公共连接；配置行最多一条，避免循环内查询。"""
+
+        if settings is None or not settings.active_provider:
+            return None
+        row = session.execute(
+            select(AiProviderConfigRecord, AiProviderSecretRecord)
+            .outerjoin(
+                AiProviderSecretRecord,
+                AiProviderSecretRecord.provider == AiProviderConfigRecord.provider,
+            )
+            .where(AiProviderConfigRecord.provider == settings.active_provider)
+            .limit(1)
+        ).one_or_none()
+        if row is None:
+            return None
+        config, secret = row
+        provider = ModelProvider(config.provider)
+        key = (
+            self._cipher.decrypt(
+                provider,
+                secret.ciphertext,
+                secret.nonce,
+                secret.key_version,
+            )
+            if secret is not None
+            else None
+        )
+        return _SharedConnection(provider, config, secret, key)
+
+    def _effective_model_settings(
+        self,
+        row: AiAgentConfigRecord,
+        secret: AiAgentSecretRecord | None,
+        shared: _SharedConnection | None,
+    ) -> ModelServiceSettings:
+        """将 Agent 行解析为实际请求配置。"""
+
+        if row.use_shared_connection:
+            if shared is None or shared.secret is None or shared.api_key is None:
+                raise AiSettingsValidationError(
+                    "请先在 AI 设置中保存、测试并启用公共连接配置"
+                )
+            if shared.config.test_status != "succeeded":
+                raise AiSettingsValidationError("公共连接必须先通过连接测试")
+            model = row.model_override or shared.config.model
+            return self._shared_model_settings(
+                shared.provider,
+                shared.config,
+                shared.api_key,
+                model=model,
+                max_retries=row.max_retries,
+            )
+        if secret is None:
+            raise AiSettingsValidationError("请先保存 Agent 参数和 API Key")
+        provider = ModelProvider(row.provider)
+        key = self._cipher.decrypt(
+            provider,
+            secret.ciphertext,
+            secret.nonce,
+            secret.key_version,
+        )
+        return self._to_model_settings(provider, self._draft(row), key)
+
+    @staticmethod
+    def _shared_model_settings(
+        provider: ModelProvider,
+        config: AiProviderConfigRecord,
+        api_key: str,
+        *,
+        model: str,
+        max_retries: int,
+    ) -> ModelServiceSettings:
+        """用全局供应商参数组装一份 Agent 可执行配置。"""
+
+        try:
+            prices = (
+                config.input_usd_per_million,
+                config.output_usd_per_million,
+                config.cache_read_usd_per_million,
+                config.cache_write_usd_per_million,
+            )
+            if (prices[0] is None) != (prices[1] is None):
+                raise ValueError("输入和输出 Token 单价必须同时填写")
+            pricing = (
+                ModelPricing(
+                    input_usd_per_million=prices[0],
+                    output_usd_per_million=prices[1],
+                    cache_read_usd_per_million=prices[2],
+                    cache_write_usd_per_million=prices[3],
+                )
+                if prices[0] is not None and prices[1] is not None
+                else None
+            )
+            return ModelServiceSettings(
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                api_protocol=ModelApiProtocol(config.api_protocol),
+                reasoning_effort=ModelReasoningEffort(config.reasoning_effort),
+                pricing=pricing,
+                context_window_tokens=config.context_window_tokens,
+                max_output_tokens=config.max_output_tokens,
+                max_batch_input_tokens=config.max_batch_input_tokens,
+                max_retries=max_retries,
+                connect_timeout_seconds=config.connect_timeout_seconds,
+                read_timeout_seconds=config.read_timeout_seconds,
+                write_timeout_seconds=config.write_timeout_seconds,
+                pool_timeout_seconds=config.pool_timeout_seconds,
+                max_request_bytes=config.max_request_bytes,
+                max_response_bytes=config.max_response_bytes,
+                api_base_url=normalize_api_base_url(config.api_base_url),
+            )
+        except (TypeError, ValueError) as exc:
+            raise AiSettingsValidationError(str(exc)) from exc
 
     def _view(
         self,
         agent: ReviewAgent,
         row: AiAgentConfigRecord | None,
         secret: AiAgentSecretRecord | None,
+        shared: _SharedConnection | None,
     ) -> AgentConfigView:
         if row is None:
             return AgentConfigView(
                 agent=agent,
                 configured=False,
                 enabled=False,
+                use_shared_connection=False,
+                model_override=None,
+                shared_connection_configured=shared is not None and shared.secret is not None,
+                shared_connection_ready=False,
                 provider=ModelProvider.OPENAI,
                 model="",
                 api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
@@ -569,30 +750,89 @@ class AgentSettingsService:
                 tested_at=None,
                 updated_at=None,
             )
-        key = None
-        if secret is not None:
-            provider = ModelProvider(row.provider)
-            key = self._cipher.decrypt(provider, secret.ciphertext, secret.nonce, secret.key_version)
+        source_shared = bool(row.use_shared_connection)
+        provider = ModelProvider(row.provider)
+        model = row.model
+        api_protocol = ModelApiProtocol(row.api_protocol)
+        api_base_url = row.api_base_url
+        reasoning_effort = ModelReasoningEffort(row.reasoning_effort)
+        context_window_tokens = row.context_window_tokens
+        max_output_tokens = row.max_output_tokens
+        max_batch_input_tokens = row.max_batch_input_tokens
+        connect_timeout_seconds = row.connect_timeout_seconds
+        read_timeout_seconds = row.read_timeout_seconds
+        write_timeout_seconds = row.write_timeout_seconds
+        pool_timeout_seconds = row.pool_timeout_seconds
+        key: str | None = None
+        shared_configured = False
+        shared_ready = False
+        test_status = _normalized_test_status(row.test_status)
+        if source_shared and shared is not None:
+            shared_configured = shared.secret is not None and shared.api_key is not None
+            provider = shared.provider
+            model = row.model_override or shared.config.model
+            api_protocol = ModelApiProtocol(shared.config.api_protocol)
+            api_base_url = shared.config.api_base_url
+            reasoning_effort = ModelReasoningEffort(shared.config.reasoning_effort)
+            context_window_tokens = shared.config.context_window_tokens
+            max_output_tokens = shared.config.max_output_tokens
+            max_batch_input_tokens = shared.config.max_batch_input_tokens
+            connect_timeout_seconds = shared.config.connect_timeout_seconds
+            read_timeout_seconds = shared.config.read_timeout_seconds
+            write_timeout_seconds = shared.config.write_timeout_seconds
+            pool_timeout_seconds = shared.config.pool_timeout_seconds
+            key = shared.api_key
+            try:
+                effective = self._shared_model_settings(
+                    provider,
+                    shared.config,
+                    key or "validation-key",
+                    model=model,
+                    max_retries=row.max_retries,
+                )
+                shared_ready = bool(
+                    shared_configured
+                    and shared.config.test_status == "succeeded"
+                    and row.test_status == "succeeded"
+                    and row.tested_configuration_fingerprint == self._fingerprint(effective)
+                )
+            except AiSettingsValidationError:
+                shared_ready = False
+            if not shared_ready and test_status == "succeeded":
+                test_status = "untested"
+            if shared.config.test_status == "failed":
+                test_status = "failed"
+        elif secret is not None:
+            key = self._cipher.decrypt(
+                provider,
+                secret.ciphertext,
+                secret.nonce,
+                secret.key_version,
+            )
         return AgentConfigView(
             agent=agent,
             configured=True,
             enabled=row.enabled,
-            provider=ModelProvider(row.provider),
-            model=row.model,
-            api_protocol=ModelApiProtocol(row.api_protocol),
-            api_base_url=row.api_base_url,
-            reasoning_effort=ModelReasoningEffort(row.reasoning_effort),
-            api_key_configured=secret is not None,
+            use_shared_connection=source_shared,
+            model_override=row.model_override,
+            shared_connection_configured=shared_configured,
+            shared_connection_ready=shared_ready,
+            provider=provider,
+            model=model,
+            api_protocol=api_protocol,
+            api_base_url=api_base_url,
+            reasoning_effort=reasoning_effort,
+            api_key_configured=shared_configured if source_shared else secret is not None,
             api_key_mask=f"****{key[-4:]}" if key else None,
-            context_window_tokens=row.context_window_tokens,
-            max_output_tokens=row.max_output_tokens,
-            max_batch_input_tokens=row.max_batch_input_tokens,
-            connect_timeout_seconds=row.connect_timeout_seconds,
-            read_timeout_seconds=row.read_timeout_seconds,
-            write_timeout_seconds=row.write_timeout_seconds,
-            pool_timeout_seconds=row.pool_timeout_seconds,
+            context_window_tokens=context_window_tokens,
+            max_output_tokens=max_output_tokens,
+            max_batch_input_tokens=max_batch_input_tokens,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            write_timeout_seconds=write_timeout_seconds,
+            pool_timeout_seconds=pool_timeout_seconds,
             max_retries=row.max_retries,
-            test_status=_normalized_test_status(row.test_status),
+            test_status=test_status,
             tested_at=row.tested_at,
             updated_at=row.updated_at,
         )

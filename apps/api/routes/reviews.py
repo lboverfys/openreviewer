@@ -221,6 +221,11 @@ def register_review_routes(
                     if request_body.target_stage is not None
                     else None
                 ),
+                retry_scope=request_body.retry_scope,
+                agent=(request_body.agent.value if request_body.agent is not None else None),
+                batch_number=request_body.batch_number,
+                state_version=request_body.state_version,
+                head_sha=request_body.head_sha,
                 scope=principal.resource_scope,
             )
             # ``execution_status`` 是旧队列兼容字段；人工节点（尤其批准后）

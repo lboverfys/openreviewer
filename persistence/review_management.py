@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
-from sqlalchemy import and_, case, delete, func, or_, select, union_all
+from sqlalchemy import and_, case, delete, func, or_, select, union_all, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -14,6 +14,7 @@ from domain.enums import (
     FindingAdjudicationStatus,
     FindingCategory,
     FindingEvaluationVerdict,
+    ModelBatchStatus,
     ReviewAgent,
     Severity,
 )
@@ -23,6 +24,7 @@ from domain.evaluation import (
     evaluate_inline_gate,
 )
 from domain.github import PullRequestSnapshot
+from domain.identifiers import build_review_version_key, normalize_sha
 from domain.security import ErrorCode, redact_sensitive
 from domain.workflow import (
     WorkflowAction,
@@ -113,6 +115,176 @@ def _safe_payload(value: object) -> object:
     """递归脱敏事件 JSON，保证日志面板不会回显凭据。"""
 
     return redact_sensitive(value)
+
+
+def _latest_summary_failed(session: Session, review_run_id: str) -> bool:
+    """读取最近一次汇总终态，判断汇总节点是否仍可人工重试。"""
+
+    row = session.execute(
+        select(OutboxEventRecord.event_type, OutboxEventRecord.payload)
+        .where(
+            OutboxEventRecord.aggregate_type == "review_run",
+            OutboxEventRecord.aggregate_id == review_run_id,
+            OutboxEventRecord.event_type.in_(
+                (
+                    "review.model.summary_completed",
+                    "review.model.summary_skipped",
+                )
+            ),
+        )
+        .order_by(
+            OutboxEventRecord.occurred_at.desc(),
+            OutboxEventRecord.id.desc(),
+        )
+        .limit(1)
+    ).one_or_none()
+    if row is None:
+        return False
+    event_type, payload = row
+    return (
+        event_type == "review.model.summary_completed"
+        and isinstance(payload, dict)
+        and payload.get("agent_status") == "failed"
+    )
+
+
+def _project_agent_progress(
+    events: tuple[StoredReviewEvent, ...],
+    *,
+    coverage_status: str,
+    model_completed: bool,
+) -> tuple[
+    dict[str, str],
+    dict[str, dict[str, object]],
+    str,
+    str,
+    bool,
+    tuple[str, ...],
+    tuple[dict[str, object], ...],
+]:
+    """从已加载事件在内存中投影固定 Agent 的可公开状态。
+
+    详情读取只额外扫描一次有界事件列表，不在 Agent/批次循环中查询数据库；
+    因此查询次数仍为 O(1)，而投影成本为 O(事件数)。
+    """
+
+    statuses: dict[str, str] = {
+        "security": "waiting",
+        "convention": "waiting",
+        "logic": "waiting",
+        "summary": "not_executed",
+    }
+    summaries: dict[str, dict[str, object]] = {}
+    failed_batches: dict[tuple[str, int], dict[str, object]] = {}
+    aggregation_status = "not_started"
+    summary_status = "not_executed"
+    partial_result = coverage_status == "partial"
+    failed_agents: set[str] = set()
+    # 新版事件会把模型代次写入 payload；旧版事件可能没有该字段。只要
+    # 事件集中出现了任一明确代次，就把缺少代次的旧事件视为历史数据并
+    # 忽略，避免第一次重试时旧的 completed/failed 状态覆盖当前代次。
+    # 只有整组事件都没有代次信息时，才按旧版兼容策略全部纳入。
+    attempts = [
+        value
+        for event in events
+        for value in (event.payload.get("model_attempt_count"),)
+        if isinstance(value, int) and not isinstance(value, bool)
+    ]
+    latest_attempt = max(attempts) if attempts else None
+    for event in events:
+        if not event.event_type.startswith("review.model."):
+            continue
+        payload = event.payload
+        event_attempt = payload.get("model_attempt_count")
+        if latest_attempt is not None:
+            if not isinstance(event_attempt, int) or isinstance(event_attempt, bool):
+                continue
+            if event_attempt != latest_attempt:
+                continue
+        raw_agent = payload.get("agent")
+        agent = raw_agent if isinstance(raw_agent, str) else None
+        if event.event_type.endswith("workflow_partial"):
+            partial_result = True
+            values = payload.get("failed_agents")
+            if isinstance(values, list):
+                failed_agents.update(
+                    value for value in values if isinstance(value, str)
+                )
+            continue
+        if event.event_type.endswith("aggregation_completed"):
+            aggregation_status = str(payload.get("aggregation_status") or "completed")
+            continue
+        if event.event_type.endswith("summary_skipped"):
+            summary_status = "skipped"
+            statuses["summary"] = "not_executed"
+            continue
+        if event.event_type.endswith("summary_completed"):
+            raw_status = payload.get("agent_status")
+            summary_status = (
+                "completed" if raw_status == "completed" else "failed"
+            )
+            statuses["summary"] = summary_status
+            if summary_status == "failed":
+                failed_agents.add("summary")
+            summaries["summary"] = {
+                key: payload[key]
+                for key in ("verdict", "summary", "checked_areas", "finding_count")
+                if key in payload
+            }
+            continue
+        if agent is None or agent == "summary":
+            continue
+        if event.event_type.endswith("agent_completed"):
+            statuses[agent] = (
+                "not_applicable"
+                if payload.get("status") == "not_applicable"
+                else "completed"
+            )
+            summaries[agent] = {
+                key: payload[ key ]
+                for key in ("verdict", "summary", "checked_areas", "finding_count")
+                if key in payload
+            }
+        elif event.event_type.endswith("agent_not_applicable"):
+            statuses[agent] = "not_applicable"
+            failed_agents.discard(agent)
+        elif event.event_type.endswith("agent_failed"):
+            if payload.get("status") == "disabled":
+                statuses[agent] = "disabled"
+                failed_agents.discard(agent)
+            else:
+                statuses[agent] = "failed"
+                failed_agents.add(agent)
+        elif event.event_type.endswith("batch_failed"):
+            statuses[agent] = "partial"
+            failed_agents.add(agent)
+            number = payload.get("batch_number")
+            if isinstance(number, int):
+                failed_batches[(agent, number)] = {
+                    "agent": agent,
+                    "batch_number": number,
+                    "error_code": payload.get("error_code"),
+                    "error_message": payload.get("error_message"),
+                    "retryable": payload.get("error_retryable"),
+                }
+        elif event.event_type.endswith("request_started") or event.event_type.endswith(
+            "batch_started"
+        ):
+            if statuses.get(agent) not in {"completed", "failed"}:
+                statuses[agent] = "running"
+    if summary_status == "not_executed" and model_completed:
+        summary_status = "skipped"
+    if aggregation_status == "not_started" and model_completed:
+        aggregation_status = "completed"
+    return (
+        statuses,
+        summaries,
+        aggregation_status,
+        summary_status,
+        partial_result,
+        tuple(sorted(failed_agents)),
+        tuple(failed_batches[key] for key in sorted(failed_batches)),
+    )
 
 
 class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
@@ -350,6 +522,19 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 safe_error = redact_sensitive(row["last_error"])
                 safe_code = redact_sensitive(row["last_error_code"])
                 safe_details = _safe_payload(row["last_error_details"])
+                (
+                    agent_statuses,
+                    agent_summaries,
+                    aggregation_status,
+                    summary_status,
+                    partial_result,
+                    failed_agents,
+                    failed_batches,
+                ) = _project_agent_progress(
+                    events,
+                    coverage_status=row["coverage_status"],
+                    model_completed=row["model_review_completed_at"] is not None,
+                )
                 return StoredReviewDetails(
                     review_run_id=row["review_run_id"],
                     review_task_id=row["review_task_id"],
@@ -446,6 +631,13 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     findings=findings,
                     ci_checks=ci_checks,
                     events=events,
+                    agent_statuses=agent_statuses,
+                    agent_summaries=agent_summaries,
+                    aggregation_status=aggregation_status,
+                    summary_status=summary_status,
+                    partial_result=partial_result,
+                    failed_agents=failed_agents,
+                    failed_batches=failed_batches,
                 )
             except ReviewNotFoundError:
                 raise
@@ -1090,6 +1282,11 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         actor: str,
         request_id: str,
         target_stage: str | None = None,
+        retry_scope: str | None = None,
+        agent: str | None = None,
+        batch_number: int | None = None,
+        state_version: str | None = None,
+        head_sha: str | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """在一个短事务内执行加速、重试、取消或重新审查。"""
@@ -1097,11 +1294,50 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         normalized_request_id = request_id.strip()
         if not normalized_request_id:
             raise ReviewActionConflictError("操作幂等键不能为空")
+        allowed_retry_scopes = {"failed_node", "stage", "new_review"}
+        if retry_scope is not None and retry_scope not in allowed_retry_scopes:
+            raise ReviewActionConflictError("重试范围无效")
+        if batch_number is not None and batch_number < 1:
+            raise ReviewActionConflictError("批次号必须为正数")
+        if agent is not None and agent not in {
+            ReviewAgent.SECURITY.value,
+            ReviewAgent.CONVENTION.value,
+            ReviewAgent.LOGIC.value,
+            ReviewAgent.SUMMARY.value,
+        }:
+            raise ReviewActionConflictError("Agent 标识无效")
+        # ``retry_scope`` 是动作的子语义，不能被任意动作静默忽略。保留
+        # RETRY/RERUN 的无范围形式兼容旧客户端，同时拒绝把阶段重试或新建
+        # 审查误路由到另一条处理分支。
+        retry_scope_by_action: dict[ReviewAction, frozenset[str | None]] = {
+            ReviewAction.RETRY_FAILED_NODE: frozenset({None, "failed_node"}),
+            ReviewAction.RETRY: frozenset({None, "failed_node"}),
+            ReviewAction.RETRY_STAGE: frozenset({None, "stage"}),
+            ReviewAction.NEW_REVIEW: frozenset({None, "new_review"}),
+            ReviewAction.RERUN: frozenset({None, "new_review"}),
+        }
+        allowed_scopes = retry_scope_by_action.get(action, frozenset({None}))
+        if retry_scope not in allowed_scopes:
+            raise ReviewActionConflictError("重试范围与当前操作不匹配")
+        failed_node_action = action is ReviewAction.RETRY_FAILED_NODE or (
+            action is ReviewAction.RETRY and retry_scope == "failed_node"
+        )
+        new_review_action = action is ReviewAction.NEW_REVIEW or (
+            action is ReviewAction.RERUN and retry_scope == "new_review"
+        )
         if target_stage is not None and action not in {
             ReviewAction.RESUME,
             ReviewAction.RETRY_STAGE,
         }:
             raise ReviewActionConflictError("当前操作不接受目标阶段")
+        if (agent is not None or batch_number is not None) and not failed_node_action:
+            raise ReviewActionConflictError("Agent 和批次号只适用于失败节点重试")
+        if batch_number is not None and agent is None:
+            raise ReviewActionConflictError("指定批次时必须同时提供 Agent")
+        if new_review_action and head_sha is None:
+            raise ReviewActionConflictError(
+                "新建最新提交审查必须提供当前 head_sha"
+            )
         action_key = sha256(
             f"{review_run_id}:{action.value}:{normalized_request_id}".encode()
         ).hexdigest()
@@ -1114,6 +1350,9 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     action,
                     event_key=event_key,
                     target_stage=target_stage,
+                    retry_scope=retry_scope,
+                    agent=agent,
+                    batch_number=batch_number,
                     scope=scope,
                 )
                 if idempotent_result is not None:
@@ -1150,10 +1389,46 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     action,
                     event_key=event_key,
                     target_stage=target_stage,
+                    retry_scope=retry_scope,
+                    agent=agent,
+                    batch_number=batch_number,
                     scope=scope,
                 )
                 if idempotent_result is not None:
                     return idempotent_result
+                if head_sha is not None:
+                    try:
+                        normalized_head_sha = normalize_sha(head_sha)
+                    except ValueError as exc:
+                        raise ReviewActionConflictError("head_sha 格式无效") from exc
+                    if normalized_head_sha != run.head_sha:
+                        # 新建最新提交审查允许传入新的 SHA；其他动作必须
+                        # 绑定详情页读取时的当前版本，防止旧页面覆盖新结果。
+                        if not new_review_action:
+                            raise ReviewActionConflictError(
+                                "审查版本已变化，请刷新后重试"
+                            )
+                else:
+                    normalized_head_sha = run.head_sha
+                if state_version is not None:
+                    latest_event_id = session.scalar(
+                        select(OutboxEventRecord.id)
+                        .where(OutboxEventRecord.aggregate_id == review_run_id)
+                        .order_by(
+                            OutboxEventRecord.occurred_at.desc(),
+                            OutboxEventRecord.id.desc(),
+                        )
+                        .limit(1)
+                    )
+                    current_version = _review_change_token(
+                        run.updated_at,
+                        task.updated_at,
+                        latest_event_id,
+                    )
+                    if state_version != current_version:
+                        raise ReviewActionConflictError(
+                            "审查状态已变化，请刷新后重试"
+                        )
                 plan = session.scalar(
                     select(ReviewPlanRecord)
                     .where(ReviewPlanRecord.review_run_id == review_run_id)
@@ -1164,6 +1439,67 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 workflow_current = ExecutionStatus(
                     run.workflow_status or run.execution_status
                 )
+
+                if failed_node_action:
+                    self._prepare_failed_node_retry(
+                        session,
+                        run,
+                        task,
+                        plan,
+                        agent=agent,
+                        batch_number=batch_number,
+                        now=now,
+                    )
+                    # 人工请求和任务重置必须在同一事务留下模型语义事件。
+                    # Worker 尚未重新领取前，详情页也能明确区分“已请求”与
+                    # “已经开始”，并可按目标 Agent/批次展示准确的重试范围。
+                    session.add(
+                        OutboxEventRecord(
+                            id=str(self._uuid_factory()),
+                            event_key=f"{event_key}:model",
+                            aggregate_type="review_run",
+                            aggregate_id=review_run_id,
+                            event_type="review.model.retry_requested",
+                            payload={
+                                "action": action.value,
+                                "retry_scope": "failed_node",
+                                "actor": actor,
+                                "agent": agent,
+                                "batch_number": batch_number,
+                                "head_sha": run.head_sha,
+                                "previous_status": current.value,
+                                "new_status": ExecutionStatus.READY_FOR_REVIEW.value,
+                                # 模型代次在下一次 claim 时才原子递增；这里
+                                # 提前记录目标代次，便于事件流按代次归组。
+                                "model_attempt_count": task.model_attempt_count + 1,
+                            },
+                            occurred_at=now,
+                            publish_attempts=0,
+                        )
+                    )
+                    session.add(
+                        OutboxEventRecord(
+                            id=str(self._uuid_factory()),
+                            event_key=event_key,
+                            aggregate_type="review_run",
+                            aggregate_id=review_run_id,
+                            event_type="review.manual.retry_failed_node",
+                            payload={
+                                "action": action.value,
+                                "retry_scope": "failed_node",
+                                "actor": actor,
+                                "agent": agent,
+                                "batch_number": batch_number,
+                                "head_sha": run.head_sha,
+                                "previous_status": current.value,
+                                "new_status": ExecutionStatus.READY_FOR_REVIEW.value,
+                            },
+                            occurred_at=now,
+                            publish_attempts=0,
+                        )
+                    )
+                    session.commit()
+                    return run.id, task.id, ExecutionStatus.READY_FOR_REVIEW
 
                 # 新版固定 DAG 的人工节点独立保存在 workflow_status，旧队列
                 # 仍按 execution_status 领取任务，因此升级期间两套状态可以并行。
@@ -1201,6 +1537,10 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     final_workflow_status = result.after
                     automatic_occurred_at: datetime | None = None
                     if action is ReviewAction.APPROVE:
+                        if run.coverage_status in {"partial", "stale"}:
+                            raise ReviewActionConflictError(
+                                "当前审查覆盖不完整，完成失败节点后才能批准"
+                            )
                         unreviewed_count = int(
                             session.scalar(
                                 select(func.count())
@@ -1331,6 +1671,9 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                                 "previous_status": workflow_current.value,
                                 "new_status": result.after.value,
                                 "target_stage": target_stage,
+                                "retry_scope": retry_scope,
+                                "agent": agent,
+                                "batch_number": batch_number,
                                 "paused_from": (
                                     workflow_current.value
                                     if action is ReviewAction.PAUSE
@@ -1365,11 +1708,16 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     session.commit()
                     return run.id, task.id, execution_status
 
-                if action is ReviewAction.RERUN:
+                if action is ReviewAction.RERUN or new_review_action:
                     if current is ExecutionStatus.RUNNING:
                         raise ReviewActionConflictError("任务正在处理中，暂时不能重新审查")
                     new_run_id = str(self._uuid_factory())
                     new_task_id = str(self._uuid_factory())
+                    new_review_version_key = build_review_version_key(
+                        run.repository_id,
+                        run.pull_request_number,
+                        normalized_head_sha,
+                    )
                     # 幂等键可能达到 API 允许的 200 字符；直接拼接后截断会让
                     # 只在尾部不同的两个键发生碰撞。新记录使用固定长度摘要，
                     # 同时回读旧版明文键，保证发布新版后重试仍然幂等。
@@ -1402,18 +1750,20 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         [
                             ReviewRunRecord(
                                 id=new_run_id,
-                                review_version_key=run.review_version_key,
+                                review_version_key=new_review_version_key,
                                 installation_id=run.installation_id,
                                 repository_id=run.repository_id,
                                 repository=run.repository,
                                 pull_request_number=run.pull_request_number,
-                                head_sha=run.head_sha,
+                                head_sha=normalized_head_sha,
                                 execution_status=ExecutionStatus.QUEUED.value,
                                 workflow_status=ExecutionStatus.QUEUED.value,
                                 review_conclusion=None,
                                 coverage_status="unknown",
                                 idempotency_key=rerun_key,
-                                request_fingerprint=run.request_fingerprint,
+                                request_fingerprint=sha256(
+                                    f"{run.request_fingerprint}:{normalized_head_sha}".encode()
+                                ).hexdigest(),
                                 created_at=now,
                                 updated_at=now,
                             ),
@@ -1439,7 +1789,8 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                                 payload={
                                     "review_run_id": new_run_id,
                                     "review_task_id": new_task_id,
-                                    "review_version_key": run.review_version_key,
+                                    "review_version_key": new_review_version_key,
+                                    "head_sha": normalized_head_sha,
                                     "source_review_run_id": review_run_id,
                                     "trigger": "manual_rerun",
                                 },
@@ -1454,12 +1805,22 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                             event_key=event_key,
                             aggregate_type="review_run",
                             aggregate_id=review_run_id,
-                            event_type="review.manual.rerun_requested",
+                            event_type=(
+                                "review.manual.new_review_requested"
+                                if new_review_action
+                                else "review.manual.rerun_requested"
+                            ),
                             payload={
                                 "action": action.value,
                                 "actor": actor,
                                 "new_review_run_id": new_run_id,
                                 "new_review_task_id": new_task_id,
+                                "head_sha": normalized_head_sha,
+                                "retry_scope": (
+                                    "new_review" if new_review_action else retry_scope
+                                ),
+                                "agent": agent,
+                                "batch_number": batch_number,
                             },
                             occurred_at=now,
                             publish_attempts=0,
@@ -1588,6 +1949,9 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         *,
         event_key: str,
         target_stage: str | None,
+        retry_scope: str | None = None,
+        agent: str | None = None,
+        batch_number: int | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus] | None:
         """读取已提交的人工动作，供加锁前后两次幂等检查复用。"""
@@ -1621,8 +1985,15 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
             or existing_event.get("target_stage") != target_stage
         ):
             raise ReviewActionConflictError("同一幂等键不能用于不同的目标阶段")
+        for key, expected in (
+            ("retry_scope", retry_scope),
+            ("agent", agent),
+            ("batch_number", batch_number),
+        ):
+            if existing_event.get(key) != expected:
+                raise ReviewActionConflictError("同一幂等键不能用于不同的重试目标")
         if (
-            action is ReviewAction.RERUN
+            action in {ReviewAction.RERUN, ReviewAction.NEW_REVIEW}
             and isinstance(existing_event, dict)
             and isinstance(existing_event.get("new_review_run_id"), str)
             and isinstance(existing_event.get("new_review_task_id"), str)
@@ -1744,6 +2115,135 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
             task.ci_deadline_at = None
 
     @staticmethod
+    def _prepare_failed_node_retry(
+        session: Session,
+        run: ReviewRunRecord,
+        task: ReviewTaskRecord,
+        plan: ReviewPlanRecord | None,
+        *,
+        agent: str | None,
+        batch_number: int | None,
+        now: datetime,
+    ) -> None:
+        """只恢复失败/未完成批次，保留所有成功批次和 Finding。
+
+        失败节点重试必须与阶段重试区分：阶段重试会清理后续产物，而这里仅
+        对目标 Agent/批次做一次有界读取和一次批量 UPDATE。没有已持久化批次
+        时也允许继续，让 Worker 首次规划该 Agent；这覆盖了请求在批次表写入
+        前失败的情况。
+        """
+
+        if plan is None:
+            raise ReviewActionConflictError("失败节点重试需要已有审查计划")
+        if run.coverage_status == "stale":
+            raise ReviewActionConflictError("该任务已被新提交替代")
+        summary_retry = agent == ReviewAgent.SUMMARY.value and batch_number is None
+        summary_failed = _latest_summary_failed(session, run.id)
+        if agent == ReviewAgent.SUMMARY.value and batch_number is not None:
+            raise ReviewActionConflictError("汇总 Agent 不支持批次号")
+        if summary_retry and not summary_failed:
+            raise ReviewActionConflictError("汇总 Agent 当前没有可重试的失败节点")
+        rows = list(
+            session.scalars(
+                select(ModelReviewBatchRecord)
+                .where(ModelReviewBatchRecord.review_plan_id == plan.id)
+                .order_by(
+                    ModelReviewBatchRecord.agent.asc(),
+                    ModelReviewBatchRecord.batch_number.asc(),
+                )
+                .limit(3001)
+                .with_for_update()
+            )
+        )
+        if len(rows) > 3000:
+            raise ReviewActionConflictError("模型批次数量超过安全上限")
+        selected = [
+            row
+            for row in rows
+            if (agent is None or row.agent == agent)
+            and (batch_number is None or row.batch_number == batch_number)
+            and row.status != ModelBatchStatus.SUCCEEDED.value
+        ]
+        if batch_number is not None and not any(
+            row.batch_number == batch_number
+            and (agent is None or row.agent == agent)
+            for row in rows
+        ):
+            raise ReviewActionConflictError("指定模型批次不存在")
+        # 汇总 Agent 不建立普通批次行；它的失败状态由 summary_completed
+        # 事件表达。只有明确存在该失败事件时，才允许在没有可更新批次的
+        # 情况下继续，并把计划重新打开给 Worker 执行强制汇总。
+        summary_only_retry = (
+            summary_failed
+            and batch_number is None
+            and (agent is None or agent == ReviewAgent.SUMMARY.value)
+            and not selected
+        )
+        if not selected and rows and not summary_only_retry:
+            raise ReviewActionConflictError("指定节点没有可重试的失败批次")
+        live_running = []
+        now_utc = _as_utc(now)
+        for row in selected:
+            lease_expires_at = row.lease_expires_at
+            normalized_expires_at = (
+                _as_utc(lease_expires_at) if lease_expires_at is not None else None
+            )
+            if (
+                row.status == ModelBatchStatus.RUNNING.value
+                and normalized_expires_at is not None
+                and now_utc is not None
+                and normalized_expires_at > now_utc
+            ):
+                live_running.append(row)
+        if live_running:
+            raise ReviewActionConflictError("指定批次正在执行，请等待其完成")
+        selected_ids = tuple(row.id for row in selected)
+        if selected_ids:
+            session.execute(
+                update(ModelReviewBatchRecord)
+                .where(ModelReviewBatchRecord.id.in_(selected_ids))
+                .values(
+                    status=ModelBatchStatus.PENDING.value,
+                    # 人工重试是一次新的批次尝试窗口。若保留自动重试已
+                    # 累积的计数，Worker 会在重新领取前立即判定“达到上限”，
+                    # 用户点击重试却仍然不会发出请求。截断拆分检查点位于
+                    # error_details 中，未被清除，因此成功子批次仍可复用。
+                    attempt_count=0,
+                    available_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    error_code=None,
+                    error_message=None,
+                    response_status=None,
+                    duration_ms=None,
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+        if summary_only_retry:
+            plan.model_review_completed_at = None
+        task.execution_status = ExecutionStatus.READY_FOR_REVIEW.value
+        task.workflow_status = ExecutionStatus.AGENT_BATCHES.value
+        task.workflow_paused_from = None
+        task.available_at = now
+        task.last_error = None
+        task.last_error_code = None
+        task.last_error_retryable = None
+        task.last_error_details = None
+        task.lease_owner = None
+        task.lease_expires_at = None
+        task.claimed_from_status = None
+        task.updated_at = now
+        run.execution_status = ExecutionStatus.READY_FOR_REVIEW.value
+        run.workflow_status = ExecutionStatus.AGENT_BATCHES.value
+        run.workflow_paused_from = None
+        run.review_conclusion = None
+        # 汇总失败不代表三路审查覆盖不完整；重试期间保留完整覆盖标记，
+        # 只有确实存在失败/未完成批次时才显示部分覆盖。
+        run.coverage_status = "complete" if summary_only_retry else "partial"
+        run.updated_at = now
+
+    @staticmethod
     def _paused_execution_status(
         workflow_status: ExecutionStatus,
         current_execution: str,
@@ -1802,6 +2302,8 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         *,
         actor: str,
         request_id: str,
+        state_version: str | None = None,
+        head_sha: str | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """批准后才允许的人工发布；外部 GitHub 调用永远在事务之外。"""
@@ -1834,8 +2336,38 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
                 run, task = row
+                if head_sha is not None:
+                    try:
+                        if normalize_sha(head_sha) != run.head_sha:
+                            raise ReviewActionConflictError(
+                                "审查版本已变化，请刷新后重试"
+                            )
+                    except ValueError as exc:
+                        raise ReviewActionConflictError("head_sha 格式无效") from exc
+                if state_version is not None:
+                    latest_event_id = session.scalar(
+                        select(OutboxEventRecord.id)
+                        .where(OutboxEventRecord.aggregate_id == review_run_id)
+                        .order_by(
+                            OutboxEventRecord.occurred_at.desc(),
+                            OutboxEventRecord.id.desc(),
+                        )
+                        .limit(1)
+                    )
+                    if state_version != _review_change_token(
+                        run.updated_at,
+                        task.updated_at,
+                        latest_event_id,
+                    ):
+                        raise ReviewActionConflictError(
+                            "审查状态已变化，请刷新后重试"
+                        )
                 if self._publisher is None:
                     raise ReviewPublishUnavailableError("GitHub 人工发布器尚未配置")
+                if run.coverage_status in {"partial", "stale"}:
+                    raise ReviewActionConflictError(
+                        "当前审查覆盖不完整，完成失败节点后才能发布"
+                    )
                 existing_started = session.execute(
                     select(OutboxEventRecord.payload).where(
                         OutboxEventRecord.event_key == event_key

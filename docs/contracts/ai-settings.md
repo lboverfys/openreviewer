@@ -2,17 +2,19 @@
 
 ## 1. 配置边界
 
-管理员可以分别维护安全、规范、逻辑和汇总四个 Agent。每个 Agent 都有独立的 OpenAI 或
-Anthropic 供应商、模型 ID、API Key、可选 HTTPS API Base URL（支持中转站 `/v1` 前缀）、
-协议、上下文窗口、单批输入/输出 Token 上限、推理档位、HTTP 超时和重试次数。OpenAI 可选
-`responses` 或 `chat_completions`；Anthropic 固定使用 `messages`。
+管理员可以分别维护安全、规范、逻辑和汇总四个 Agent。每个 Agent 默认可使用独立的 OpenAI
+或 Anthropic 供应商、模型 ID、API Key、可选 HTTPS API Base URL（支持中转站 `/v1` 前缀）、
+协议、上下文窗口、单批输入/输出 Token 上限、推理档位、HTTP 超时和重试次数。也可以勾选
+“使用公共连接配置”，让 Agent 共用 AI 设置页当前激活供应商的地址、协议、API Key 和默认
+模型，并只保留可选的模型覆盖。OpenAI 可选 `responses` 或 `chat_completions`；Anthropic
+固定使用 `messages`。
 
 Base URL 的路径前缀会原样保留：例如填写 `https://relay.example/api/v1`，请求会发送到
 `https://relay.example/api/v1/...`，不会因地址末尾没有斜杠而丢失 `/api/v1`。
 
-旧版供应商级设置暂时保留兼容：只有完全没有 Agent 配置时，Worker 才使用已激活的旧单模型。
-一旦任意 Agent 已配置，四个 Agent 必须全部保存密钥、通过当前配置指纹的连接测试并启用；部分
-配置不会静默回退旧模型，也不会让一个 Agent 代替缺失节点。
+旧版供应商级设置同时作为公共连接配置保留：只有勾选共享连接并且该供应商已保存、测试、
+激活时，Agent 才会读取它。完全没有 Agent 配置时，Worker 仍可使用已激活的旧单模型；一旦
+进入固定 DAG，未配置或未启用的节点会明确显示为 disabled，不会静默让其他 Agent 代替它。
 
 数据库连接、管理员会话密钥、AI 配置加密主密钥、GitHub App 私钥、TLS、端口和镜像仍是进程
 启动配置，不能通过管理页面修改。
@@ -22,9 +24,10 @@ Base URL 的路径前缀会原样保留：例如填写 `https://relay.example/ap
 `OPENREVIEWER_AI_CONFIG_KEY` 或 `OPENREVIEWER_AI_CONFIG_KEY_FILE` 必须提供 32 个随机字节的
 URL-safe Base64。API 与 Worker 使用相同主密钥和正整数 key version。
 
-Agent API Key 使用 AES-256-GCM 加密，12 字节 nonce 每次随机生成，附加认证数据绑定供应商和
-key version，并按 Agent 分行保存到 `ai_agent_secrets`。旧兼容密钥仍在
-`ai_provider_secrets`。数据库只保存 ciphertext、nonce 和 key version。管理 API 从不返回
+Agent 独立模式的 API Key 使用 AES-256-GCM 加密，12 字节 nonce 每次随机生成，附加认证数据
+绑定供应商和 key version，并按 Agent 分行保存到 `ai_agent_secrets`。公共模式直接复用旧兼容
+密钥表 `ai_provider_secrets`，不会复制一份 Agent 密钥。数据库只保存 ciphertext、nonce 和
+key version。管理 API 从不返回
 明文或密文，只返回 `api_key_configured` 与末四位掩码。审计只记录 `api_key` 字段发生变更。
 
 ## 3. 保存、测试与激活
@@ -59,8 +62,8 @@ key version，并按 Agent 分行保存到 `ai_agent_secrets`。旧兼容密钥�
 
 ## 5. Worker 生效语义
 
-Worker 每轮先读取旧兼容设置，再用两次带 `IN` 和 `LIMIT 4` 的批量查询读取 Agent 配置与密钥，
-查询次数固定为 `O(1)`，没有逐 Agent 查询。revision 不变时复用四个模型 HTTP Client；revision
+Worker 每轮先读取旧兼容设置，再用两次带 `JOIN`、`IN` 和 `LIMIT 4` 的批量查询读取 Agent、
+公共连接和密钥，查询次数固定为 `O(1)`，没有逐 Agent 查询。revision 不变时复用四个模型 HTTP Client；revision
 变化时创建新快照并关闭旧 Client。
 
 没有可用的完整四 Agent 配置或旧激活供应商时，队列仍可领取 GitHub 上下文和 CI 阶段，但

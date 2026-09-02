@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 
+import sqlalchemy as sa
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -750,6 +751,12 @@ class AiAgentConfigRecord(Base):
     )
 
     agent: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # 开启后连接参数来自 AiSettingsRecord 当前激活的公共供应商；保留本行
+    # 的独立字段用于兼容旧客户端和切回独立模式时的草稿。
+    use_shared_connection: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa.false()
+    )
+    model_override: Mapped[str | None] = mapped_column(String(200))
     provider: Mapped[str] = mapped_column(String(20), nullable=False)
     model: Mapped[str] = mapped_column(String(200), nullable=False)
     api_protocol: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -1253,6 +1260,8 @@ class ReviewUnitRecord(Base):
     patch: Mapped[str] = mapped_column(Text, nullable=False)
     patch_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     rule_paths: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    # 新版计划保存 Unit 的职责范围；历史迁移会回填全部三路。
+    review_domains: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     estimated_input_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     planner_version: Mapped[str] = mapped_column(String(50), nullable=False)
 

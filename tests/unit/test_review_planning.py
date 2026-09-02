@@ -6,6 +6,7 @@ from domain.enums import (
     ChangedFileStatus,
     PatchState,
     RepositoryRuleIssueKind,
+    ReviewAgent,
     ReviewFileDecision,
 )
 from domain.github import PullRequestFile
@@ -225,3 +226,28 @@ def test_planner_independently_rejects_unbounded_scope_depth() -> None:
 
     assert plan.units == ()
     assert plan.files[0].decision is ReviewFileDecision.RULES_INCOMPLETE
+
+
+def test_planner_marks_review_domains_deterministically() -> None:
+    files = (
+        _file("docs/README.md", patch="# usage\n"),
+        _file("src/orders.py", patch="@@ -1 +1 @@\n-old\n+new\n"),
+        _file(
+            "src/auth.py",
+            patch="@@ -1 +1 @@\n-password = input()\n+token = password\n",
+        ),
+    )
+
+    plan = DeterministicReviewPlanner().plan(_target(), files, _snapshot())
+    domains = {unit.file: unit.review_domains for unit in plan.units}
+
+    assert domains["docs/README.md"] == (ReviewAgent.CONVENTION,)
+    assert domains["src/orders.py"] == (
+        ReviewAgent.CONVENTION,
+        ReviewAgent.LOGIC,
+    )
+    assert domains["src/auth.py"] == (
+        ReviewAgent.SECURITY,
+        ReviewAgent.CONVENTION,
+        ReviewAgent.LOGIC,
+    )

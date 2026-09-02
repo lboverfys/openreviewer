@@ -3,6 +3,7 @@ import type {
   AiProvider,
   AiProviderUpdate,
   AiAgentSettingsResponse,
+  AiAgentUpdate,
   ReviewAgent,
   AiSettings,
   ConfigurationAuditList,
@@ -665,6 +666,13 @@ export const api = {
     action: ReviewAction,
     idempotencyKey: string,
     targetStage?: string,
+    options?: {
+      retryScope?: "failed_node" | "stage" | "new_review";
+      agent?: string;
+      batchNumber?: number;
+      stateVersion?: string;
+      headSha?: string;
+    },
   ) =>
     mutation(() => request<{
       action: ReviewAction;
@@ -675,7 +683,15 @@ export const api = {
     }>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/actions`, {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ action, ...(targetStage ? { target_stage: targetStage } : {}) }),
+      body: JSON.stringify({
+        action,
+        ...(targetStage ? { target_stage: targetStage } : {}),
+        ...(options?.retryScope ? { retry_scope: options.retryScope } : {}),
+        ...(options?.agent ? { agent: options.agent } : {}),
+        ...(options?.batchNumber ? { batch_number: options.batchNumber } : {}),
+        ...(options?.stateVersion ? { state_version: options.stateVersion } : {}),
+        ...(options?.headSha ? { head_sha: options.headSha } : {}),
+      }),
     })),
   decideFinding: (
     reviewRunId: string,
@@ -757,7 +773,7 @@ export const api = {
       SETTINGS_CACHE_TTL_MS,
       force,
     ),
-  updateAgent: (agent: ReviewAgent, payload: Record<string, unknown>) =>
+  updateAgent: (agent: ReviewAgent, payload: AiAgentUpdate) =>
     mutation(() => request<AiAgentSettingsResponse>(
       `/api/v1/settings/ai/agents/${agent}`,
       {

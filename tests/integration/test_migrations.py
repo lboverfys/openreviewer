@@ -196,6 +196,9 @@ def test_initial_migration_creates_durable_review_task_schema(
         assert "group_key" in {
             column["name"] for column in inspector.get_columns("review_units")
         }
+        assert "review_domains" in {
+            column["name"] for column in inspector.get_columns("review_units")
+        }
         assert {
             constraint["name"]
             for constraint in inspector.get_unique_constraints("model_calls")
@@ -259,6 +262,8 @@ def test_initial_migration_creates_durable_review_task_schema(
             "agent",
             "provider",
             "model",
+            "use_shared_connection",
+            "model_override",
             "api_protocol",
             "max_batch_input_tokens",
             "enabled",

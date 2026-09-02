@@ -578,6 +578,9 @@ class StructuredReviewPromptBuilder:
                     "file": unit.file,
                     "language": unit.language,
                     "rule_paths": list(unit.rule_paths),
+                    "review_domains": [
+                        agent.value for agent in unit.review_domains
+                    ],
                     **(
                         {
                             "fragment": {
@@ -1180,6 +1183,8 @@ def _copy_model_input(
         knowledge_references=source.knowledge_references,
         prior_agent_results=source.prior_agent_results,
         review_agent=source.review_agent,
+        connection_test=source.connection_test,
+        allow_truncation_retry=source.allow_truncation_retry,
     )
 
 

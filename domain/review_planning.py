@@ -1,15 +1,125 @@
 """仓库规则快照与模型调用前 Review Plan 的严格领域契约。"""
 
+import re
 from hashlib import sha256
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
-from domain.enums import RepositoryRuleIssueKind, ReviewFileDecision
+from domain.enums import RepositoryRuleIssueKind, ReviewAgent, ReviewFileDecision
 from domain.github import MAX_PATCH_BYTES
 from domain.identifiers import build_review_version_key, normalize_sha
 from domain.model_budget import ModelBudgetPolicy
 from domain.paths import normalize_repository_path
+
+REVIEW_AGENTS: tuple[ReviewAgent, ...] = (
+    ReviewAgent.SECURITY,
+    ReviewAgent.CONVENTION,
+    ReviewAgent.LOGIC,
+)
+DEFAULT_REVIEW_DOMAINS: tuple[ReviewAgent, ...] = REVIEW_AGENTS
+
+# 这些词只用于规划阶段的确定性范围缩小，不代表模型结论。命中安全词时
+# 追加 security；普通源代码默认交给 convention + logic，文档类变更只交给
+# convention。模糊文件仍保留至少一个 Agent，避免启发式误删审查范围。
+_SECURITY_RESPONSIBILITY_MARKERS = (
+    "auth",
+    "authorize",
+    "authorization",
+    "authentication",
+    "permission",
+    "privilege",
+    "acl",
+    "access_token",
+    "token",
+    "jwt",
+    "oauth",
+    "csrf",
+    "secret",
+    "password",
+    "credential",
+    "sensitive",
+    "pii",
+    "encrypt",
+    "decrypt",
+    "crypto",
+    "injection",
+    "xss",
+    "sandbox",
+    "webhook",
+    "signature",
+    "cookie",
+    "session",
+)
+_CONVENTION_RESPONSIBILITY_MARKERS = (
+    "api",
+    "endpoint",
+    "route",
+    "controller",
+    "handler",
+    "dto",
+    "schema",
+    "interface",
+    "protocol",
+    "public",
+    "export",
+    "config",
+    "settings",
+    "migration",
+    "readme",
+    "test",
+    "spec",
+    "lint",
+    "format",
+    "style",
+    "naming",
+)
+_DOCUMENT_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}
+_MARKER_SPLIT = re.compile(r"[^a-z0-9_]+")
+
+
+def infer_review_domains(
+    file_path: str,
+    patch: str,
+    rule_paths: tuple[str, ...] = (),
+) -> tuple[ReviewAgent, ...]:
+    """根据稳定的路径和补丁词法推断一个 Unit 的审查职责。
+
+    这是减少重复输入的保守启发式：普通代码至少保留规范和逻辑审查，
+    命中安全相关词时再加入安全审查；无法判断的文件不会被全部丢弃。
+    返回顺序固定，便于计划指纹和批次复用保持稳定。
+    """
+
+    normalized_path = normalize_repository_path(file_path)
+    haystack = " ".join((normalized_path, patch, *rule_paths)).casefold()
+    tokens = {token for token in _MARKER_SPLIT.split(haystack) if token}
+
+    def marker_hit(markers: tuple[str, ...]) -> bool:
+        return any(marker in haystack or marker in tokens for marker in markers)
+    suffix = normalized_path.casefold().rsplit(".", 1)
+    is_document = (
+        len(suffix) == 2 and f".{suffix[-1]}" in _DOCUMENT_SUFFIXES
+    ) or normalized_path.casefold().endswith(("/readme", "/readme.md"))
+    if is_document:
+        return (ReviewAgent.CONVENTION,)
+
+    domains: list[ReviewAgent] = []
+    if marker_hit(_SECURITY_RESPONSIBILITY_MARKERS):
+        domains.append(ReviewAgent.SECURITY)
+    # Convention and logic are intentionally broad. A file whose name does not
+    # contain an explicit convention marker still needs maintainability and
+    # behavior checks; narrowing it further would make the planner brittle.
+    domains.extend((ReviewAgent.CONVENTION, ReviewAgent.LOGIC))
+    # De-duplicate while retaining the fixed enum order if a future marker list
+    # overlaps with the defaults.
+    return tuple(agent for agent in REVIEW_AGENTS if agent in domains)
 
 
 def repository_rule_candidate_paths(
@@ -166,6 +276,18 @@ class ReviewUnit(PlanningContractModel):
     patch: str = Field(min_length=1, max_length=MAX_PATCH_BYTES)
     patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     rule_paths: tuple[str, ...] = Field(max_length=128)
+    # 规划阶段确定的职责范围。旧版计划没有该列，读取时会回填全部三路，
+    # 因而历史任务仍能完整重放；新计划使用它减少明显无关的重复输入。
+    review_domains: tuple[ReviewAgent, ...] = Field(
+        default=DEFAULT_REVIEW_DOMAINS,
+        min_length=1,
+        max_length=len(REVIEW_AGENTS),
+        validation_alias=AliasChoices(
+            "review_domains",
+            "review_agents",
+            "responsibilities",
+        ),
+    )
     estimated_input_bytes: int = Field(gt=0, le=10 * 1024 * 1024)
     planner_version: str = Field(min_length=1, max_length=50)
     # 这些字段只用于一次模型请求中的临时分片，不参与计划身份或数据库快照。
@@ -192,6 +314,21 @@ class ReviewUnit(PlanningContractModel):
     def validate_rule_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(normalize_repository_path(value) for value in values)
 
+    @field_validator("review_domains")
+    @classmethod
+    def validate_review_domains(
+        cls,
+        values: tuple[ReviewAgent, ...],
+    ) -> tuple[ReviewAgent, ...]:
+        if any(agent is ReviewAgent.SUMMARY for agent in values):
+            raise ValueError("review units cannot target the summary Agent")
+        if len(values) != len(set(values)):
+            raise ValueError("review unit domains must be unique")
+        expected_order = tuple(agent for agent in REVIEW_AGENTS if agent in values)
+        if values != expected_order:
+            raise ValueError("review unit domains must use the fixed Agent order")
+        return values
+
     @model_validator(mode="after")
     def validate_input_identity(self) -> Self:
         if self.patch_sha256 != sha256(self.patch.encode("utf-8")).hexdigest():
@@ -210,6 +347,18 @@ class ReviewUnit(PlanningContractModel):
         if self.planner_version == "review-planner-v3" and self.group_key is None:
             raise ValueError("review planner v3 units must include a related-file group")
         return self
+
+    @property
+    def review_agents(self) -> tuple[ReviewAgent, ...]:
+        """兼容调用方使用的职责别名。"""
+
+        return self.review_domains
+
+    @property
+    def responsibilities(self) -> tuple[ReviewAgent, ...]:
+        """兼容旧客户端的职责别名。"""
+
+        return self.review_domains
 
 
 class ReviewFilePlan(PlanningContractModel):

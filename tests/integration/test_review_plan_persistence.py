@@ -19,6 +19,7 @@ from domain.enums import (
     ModelProvider,
     PatchState,
     PullRequestState,
+    ReviewAgent,
     ReviewFileDecision,
     Severity,
 )
@@ -627,6 +628,163 @@ def test_model_review_is_loaded_and_saved_atomically(database: Database) -> None
             .select_from(OutboxEventRecord)
             .where(OutboxEventRecord.event_type == "review.model.completed")
         ) == 1
+
+
+def test_repeated_partial_snapshot_releases_the_new_worker_lease(
+    database: Database,
+) -> None:
+    """相同 partial 指纹重入时也必须收口当前 RUNNING 任务。"""
+
+    clock = MutableClock(datetime(2026, 8, 26, 10, 0, tzinfo=UTC))
+    queue, planning_lease, task_id, run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="partial-reentry",
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    queue.store_review_plan(planning_lease, rules, plan)
+    first_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert first_lease is not None
+    model_input = queue.load_model_review_input(first_lease)
+    result = StaticModelReviewer().review(model_input).model_copy(
+        update={"output": ModelReviewOutput(findings=())}
+    )
+    first = queue.store_model_review(
+        first_lease,
+        model_input,
+        result,
+        (),
+        partial=True,
+    )
+    assert first.partial is True
+    assert first.execution_status is ExecutionStatus.FAILED
+
+    management = SqlAlchemyReviewManagementRepository(
+        database.sessions,
+        clock=clock,
+    )
+    management.apply_action(
+        run_id,
+        ReviewAction.RETRY_FAILED_NODE,
+        actor="test-user",
+        request_id="partial-reentry-retry",
+        retry_scope="failed_node",
+    )
+    second_lease = queue.claim_next("worker-1", timedelta(seconds=30))
+    assert second_lease is not None
+    repeated = queue.store_model_review(
+        second_lease,
+        model_input,
+        result,
+        (),
+        partial=True,
+    )
+    assert repeated.created is False
+    assert repeated.partial is True
+    with database.sessions() as session:
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, run_id)
+        assert task is not None
+        assert run is not None
+        assert task.execution_status == ExecutionStatus.FAILED.value
+        assert task.lease_owner is None
+        assert task.lease_expires_at is None
+        assert run.execution_status == ExecutionStatus.FAILED.value
+
+
+def test_manual_failed_node_retry_resets_batch_attempt_window(
+    database: Database,
+) -> None:
+    """自动重试耗尽后，人工节点重试必须真的允许再次领取批次。"""
+
+    clock = MutableClock(datetime(2026, 8, 26, 11, 0, tzinfo=UTC))
+    queue, planning_lease, _task_id, run_id = _prepare_planning_lease(
+        database,
+        clock,
+        key="manual-batch-retry",
+    )
+    planning_input = queue.load_planning_input(planning_lease)
+    rules = _rules(planning_input.target)
+    plan = DeterministicReviewPlanner().plan(
+        planning_input.target,
+        planning_input.files,
+        rules,
+    )
+    stored_plan = queue.store_review_plan(planning_lease, rules, plan)
+    assert stored_plan.plan_id is not None
+
+    with database.sessions() as session:
+        session.add(
+            ModelReviewBatchRecord(
+                id="manual-batch-retry-1",
+                review_plan_id=stored_plan.plan_id,
+                agent=ReviewAgent.SECURITY.value,
+                batch_number=1,
+                batch_count=1,
+                unit_keys=["u" * 64],
+                estimated_input_tokens=128,
+                status=ModelBatchStatus.FAILED.value,
+                attempt_count=3,
+                available_at=clock.value,
+                error_code=ErrorCode.MODEL_SERVER_ERROR.value,
+                error_message="自动重试已耗尽",
+                error_details={
+                    "truncation_checkpoint": {"root_key": "u" * 64},
+                },
+                created_at=clock.value,
+                updated_at=clock.value,
+            )
+        )
+        session.commit()
+
+    management = SqlAlchemyReviewManagementRepository(
+        database.sessions,
+        clock=clock,
+    )
+    management.apply_action(
+        run_id,
+        ReviewAction.RETRY_FAILED_NODE,
+        actor="test-user",
+        request_id="manual-batch-retry-action",
+        retry_scope="failed_node",
+        agent=ReviewAgent.SECURITY.value,
+        batch_number=1,
+    )
+
+    with database.sessions() as session:
+        row = session.get(ModelReviewBatchRecord, "manual-batch-retry-1")
+        assert row is not None
+        assert row.status == ModelBatchStatus.PENDING.value
+        assert row.attempt_count == 0
+        assert isinstance(row.error_details, dict)
+        assert "truncation_checkpoint" in row.error_details
+        retry_requested = session.scalar(
+            select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == run_id,
+                OutboxEventRecord.event_type == "review.model.retry_requested",
+            )
+        )
+        assert retry_requested is not None
+        assert retry_requested.payload["agent"] == ReviewAgent.SECURITY.value
+        assert retry_requested.payload["batch_number"] == 1
+        assert retry_requested.payload["model_attempt_count"] == 1
+
+    lease = queue.claim_next("manual-retry-worker", timedelta(seconds=30))
+    assert lease is not None
+    claimed = queue.claim_model_batch(
+        lease,
+        1,
+        agent=ReviewAgent.SECURITY.value,
+        lease_duration=timedelta(seconds=30),
+    )
+    assert claimed.attempt_count == 1
+    assert claimed.status is ModelBatchStatus.RUNNING
 
 
 def test_busy_model_batch_retry_uses_batch_availability_and_renews_lease(

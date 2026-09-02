@@ -356,6 +356,14 @@ class ReviewDetailsResponse(BaseModel):
     findings: tuple[ReviewFindingResponse, ...]
     ci_checks: tuple[ReviewCiCheckResponse, ...]
     events: tuple[ReviewEventResponse, ...]
+    # 每次响应都创建独立字典，避免不同请求之间共享可变状态。
+    agent_statuses: dict[str, str] = Field(default_factory=dict)
+    agent_summaries: dict[str, dict[str, object]] = Field(default_factory=dict)
+    aggregation_status: str = "not_started"
+    summary_status: str = "not_executed"
+    partial_result: bool = False
+    failed_agents: tuple[str, ...] = ()
+    failed_batches: tuple[dict[str, object], ...] = ()
 
     @classmethod
     def from_details(cls, details: ReviewDetails) -> "ReviewDetailsResponse":
@@ -433,6 +441,11 @@ class ReviewActionRequest(BaseModel):
 
     action: ReviewAction
     target_stage: ExecutionStatus | None = None
+    retry_scope: Literal["failed_node", "stage", "new_review"] | None = None
+    agent: ReviewAgent | None = None
+    batch_number: int | None = Field(default=None, ge=1, le=3000)
+    state_version: str | None = Field(default=None, min_length=1, max_length=128)
+    head_sha: str | None = Field(default=None, min_length=40, max_length=64)
 
 
 class ReviewChangeTokenResponse(BaseModel):
@@ -626,6 +639,10 @@ class AiAgentResponse(BaseModel):
     agent: ReviewAgent
     configured: bool
     enabled: bool
+    use_shared_connection: bool
+    model_override: str | None
+    shared_connection_configured: bool
+    shared_connection_ready: bool
     provider: ModelProvider
     model: str
     api_protocol: ModelApiProtocol
@@ -674,6 +691,8 @@ class AiAgentUpdateRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     provider: ModelProvider
     model: str = Field(min_length=1, max_length=200)
+    use_shared_connection: bool = False
+    model_override: str | None = Field(default=None, max_length=200)
     api_protocol: ModelApiProtocol = ModelApiProtocol.CHAT_COMPLETIONS
     api_base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, min_length=1, max_length=65_536)

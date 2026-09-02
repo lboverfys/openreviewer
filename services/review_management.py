@@ -4,7 +4,7 @@ import base64
 import binascii
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
@@ -61,6 +61,9 @@ class ReviewAction(StrEnum):
     RETRY = "retry"
     CANCEL = "cancel"
     RERUN = "rerun"
+    # 新版交互动作；保留 RETRY/RERUN 供旧客户端继续工作。
+    RETRY_FAILED_NODE = "retry_failed_node"
+    NEW_REVIEW = "new_review"
 
 
 class FindingDecision(StrEnum):
@@ -308,6 +311,13 @@ class StoredReviewDetails:
     base_repository: str | None = None
     base_ref: str | None = None
     identity_fetched_at: datetime | None = None
+    agent_statuses: Mapping[str, str] = field(default_factory=dict)
+    agent_summaries: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    aggregation_status: str = "not_started"
+    summary_status: str = "not_executed"
+    partial_result: bool = False
+    failed_agents: tuple[str, ...] = ()
+    failed_batches: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +410,11 @@ class ReviewManagementRepository(Protocol):
         actor: str,
         request_id: str,
         target_stage: str | None = None,
+        retry_scope: str | None = None,
+        agent: str | None = None,
+        batch_number: int | None = None,
+        state_version: str | None = None,
+        head_sha: str | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """幂等执行任务控制动作并返回运行、任务和新状态。"""
@@ -422,6 +437,8 @@ class ReviewManagementRepository(Protocol):
         *,
         actor: str,
         request_id: str,
+        state_version: str | None = None,
+        head_sha: str | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """在批准门之后执行一次人工 GitHub 发布。"""
@@ -564,6 +581,11 @@ class ReviewManagementService:
         actor: str,
         request_id: str,
         target_stage: str | None = None,
+        retry_scope: str | None = None,
+        agent: str | None = None,
+        batch_number: int | None = None,
+        state_version: str | None = None,
+        head_sha: str | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         effective_scope = _effective_scope(scope)
@@ -573,11 +595,15 @@ class ReviewManagementService:
                     review_run_id,
                     actor=actor,
                     request_id=request_id,
+                    state_version=state_version,
+                    head_sha=head_sha,
                 )
             return self._repository.publish(
                 review_run_id,
                 actor=actor,
                 request_id=request_id,
+                state_version=state_version,
+                head_sha=head_sha,
                 scope=effective_scope,
             )
         if effective_scope is None:
@@ -587,6 +613,11 @@ class ReviewManagementService:
                 actor=actor,
                 request_id=request_id,
                 target_stage=target_stage,
+                retry_scope=retry_scope,
+                agent=agent,
+                batch_number=batch_number,
+                state_version=state_version,
+                head_sha=head_sha,
             )
         return self._repository.apply_action(
             review_run_id,
@@ -594,6 +625,11 @@ class ReviewManagementService:
             actor=actor,
             request_id=request_id,
             target_stage=target_stage,
+            retry_scope=retry_scope,
+            agent=agent,
+            batch_number=batch_number,
+            state_version=state_version,
+            head_sha=head_sha,
             scope=effective_scope,
         )
 
@@ -731,14 +767,38 @@ class ReviewManagementService:
         unreviewed_findings: int,
     ) -> tuple[ReviewAction, ...]:
         status = item.workflow_status
+        if status is ExecutionStatus.SUPERSEDED:
+            # 旧 SHA 的结果不可再重试；用户只能从当前详情入口创建一条
+            # 新审查记录，避免把已被新提交替代的任务重新排回队列。
+            return (ReviewAction.NEW_REVIEW,)
+        summary_retry_available = item.summary_status == "failed"
+        if item.coverage_status == "partial" and (
+            item.failed_agents or item.failed_batches
+        ):
+            return (
+                ReviewAction.RETRY_FAILED_NODE,
+                ReviewAction.RETRY_STAGE,
+                ReviewAction.NEW_REVIEW,
+            )
         if status is ExecutionStatus.FAILED:
             return (ReviewAction.RETRY, ReviewAction.RETRY_STAGE, ReviewAction.RERUN)
         if status is ExecutionStatus.TIMED_OUT:
             return (ReviewAction.RETRY, ReviewAction.RERUN)
         if status is ExecutionStatus.AWAITING_APPROVAL:
             if unreviewed_findings:
-                return (ReviewAction.REJECT, ReviewAction.PAUSE)
-            return (ReviewAction.APPROVE, ReviewAction.REJECT, ReviewAction.PAUSE)
+                approval_actions: tuple[ReviewAction, ...] = (
+                    ReviewAction.REJECT,
+                    ReviewAction.PAUSE,
+                )
+            else:
+                approval_actions = (
+                    ReviewAction.APPROVE,
+                    ReviewAction.REJECT,
+                    ReviewAction.PAUSE,
+                )
+            if summary_retry_available:
+                return (ReviewAction.RETRY_FAILED_NODE, *approval_actions)
+            return approval_actions
         if status is ExecutionStatus.AWAITING_PUBLISH:
             return (ReviewAction.PUBLISH, ReviewAction.REJECT)
         if status is ExecutionStatus.REJECTED:
@@ -753,6 +813,8 @@ class ReviewManagementService:
                 actions += (ReviewAction.CANCEL,)
             return actions
         if item.model_review_completed_at is not None and status is ExecutionStatus.COMPLETED:
+            if summary_retry_available:
+                return (ReviewAction.RETRY_FAILED_NODE, ReviewAction.RERUN)
             return (ReviewAction.RERUN,)
         if status is ExecutionStatus.QUEUED:
             return (

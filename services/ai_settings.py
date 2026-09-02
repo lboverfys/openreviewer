@@ -1451,6 +1451,7 @@ class SqlAlchemyAiRuntimeProvider:
             else set()
         )
         required_agents = set(ReviewAgent)
+        has_agent_configuration = bool(configured_agents)
         revision = max(
             observed_revision,
             settings.revision if settings is not None else 0,
@@ -1467,15 +1468,19 @@ class SqlAlchemyAiRuntimeProvider:
                 # 仅用于判断的读取结果，继续复用它，并刷新检查时间。
                 self._touch_revision_check(now)
                 return self._cached
-            if settings is None and not configured_agents:
+            if settings is None and not has_agent_configuration:
                 self._close_cached()
                 self._cached_revision = revision
                 self._cache_initialized = True
                 self._touch_revision_check(now)
                 return None
-            # 一旦开始配置新版 Agent，就必须四个节点全部就绪。部分配置不能
-            # 静默退回旧单模型，也不能让某个 Agent 代替缺失节点。
-            if configured_agents and ready_agents != required_agents:
+            # Agent 是独立节点：只要至少有一路已启用且测试通过，就应构造
+            # 固定工作流，让缺失/停用的节点由工作流明确标记为 disabled。不能
+            # 因为某一路尚未配置就整体拒绝运行，也不能静默退回旧单模型；但
+            # 所有 Agent 都不可用时仍应返回 None，避免 Worker 领取后才失败。
+            if has_agent_configuration and (
+                self._agent_settings_service is None or not ready_agents
+            ):
                 self._close_cached()
                 self._cached_revision = revision
                 self._cache_initialized = True
@@ -1483,7 +1488,7 @@ class SqlAlchemyAiRuntimeProvider:
                 return None
             if self._cached is not None and self._cached.revision == revision:
                 return self._cached
-            use_agent_workflow = bool(configured_agents)
+            use_agent_workflow = has_agent_configuration
             reviewer: ModelReviewer | None = None
             agent_workflow: FixedAgentWorkflow | None = None
             try:
@@ -1520,7 +1525,15 @@ class SqlAlchemyAiRuntimeProvider:
                     from services.agent_workflow import FixedAgentWorkflow
 
                     agent_settings = self._agent_settings_service.model_settings()
-                    if set(agent_settings) != required_agents:
+                    # ``model_settings`` 只返回已启用且测试通过的节点；它与
+                    # 前面的轻量视图可能因配置竞态或损坏数据短暂不一致，按
+                    # 两者交集构造，至少保留已经确认可用的 Agent。
+                    agent_settings = {
+                        agent: model_settings
+                        for agent, model_settings in agent_settings.items()
+                        if agent in required_agents and agent in ready_agents
+                    }
+                    if not agent_settings:
                         self._close_cached()
                         self._cached_revision = revision
                         self._cache_initialized = True
@@ -1653,4 +1666,6 @@ def _connection_test_input() -> ModelReviewInput:
         rules=(),
         units=(unit,),
         total_estimated_input_bytes=unit.estimated_input_bytes,
+        connection_test=True,
+        allow_truncation_retry=False,
     )

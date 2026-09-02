@@ -1,14 +1,17 @@
 """单并发数据库 Worker 的进程入口。"""
 
+import json
 import logging
 import os
 import signal
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import timedelta
 from hashlib import sha256
 from inspect import Parameter, signature
 from threading import Event, Lock, RLock, Thread
+from typing import NoReturn
 from uuid import uuid4
 
 from apps.worker.settings import WorkerSettings
@@ -27,6 +30,7 @@ from domain.model_review import (
     ModelTokenUsage,
     materialize_findings,
 )
+from domain.review_planning import ReviewUnit
 from domain.security import (
     ErrorCode,
     SafeApplicationError,
@@ -37,7 +41,7 @@ from persistence.database import Database
 from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.agent_settings import AgentSettingsService
-from services.agent_workflow import WorkflowExecution
+from services.agent_workflow import WorkflowExecution, _PartialAgentReviewError
 from services.ai_settings import (
     ActiveAiRuntime,
     AiRuntimeProvider,
@@ -83,6 +87,7 @@ from services.review_planning import ReviewPlanner
 from services.task_queue import (
     ModelBatchBusyError,
     ModelBatchLease,
+    ModelReviewCheckpointTooLargeError,
     ReviewTaskLease,
     ReviewTaskQueue,
     TaskLeaseLostError,
@@ -535,8 +540,41 @@ class _PersistentBatchedReviewer:
         self._settings = settings
         self._lease_duration = lease_duration
 
+    def _raise_partial_batch_error(
+        self,
+        review_input: ModelReviewInput,
+        results: list[ModelReviewResult],
+        completed_batches: list[int],
+        failed_batch: int,
+        error: BaseException,
+    ) -> NoReturn:
+        """批次失败时把已经完成的结果交给工作流继续做部分汇总。"""
+
+        safe_error = SafeError.from_exception(error)
+        if safe_error.code is ErrorCode.TASK_LEASE_LOST or not results:
+            raise error
+        try:
+            partial_result = combine_model_review_results(
+                review_input,
+                tuple(results),
+            )
+        except Exception:
+            # 结果合并失败时保留原始批次错误，不能用辅助路径遮蔽根因。
+            raise error from None
+        raise _PartialAgentReviewError(
+            safe_error,
+            partial_result=partial_result,
+            completed_batches=tuple(completed_batches),
+            failed_batch=failed_batch,
+        ) from error
+
     def review(self, review_input: ModelReviewInput) -> ModelReviewResult:
         _raise_if_lease_lost(self._lease_cursor)
+        # 正式批次的截断恢复由 Worker 缩小输入；供应商适配器不得把同一
+        # 大请求改成 8K 后再次发送。旧的直接适配器调用仍保留兼容行为。
+        review_input = review_input.model_copy(
+            update={"allow_truncation_retry": False}
+        )
         batches = plan_model_review_batches(review_input, self._settings)
         if not batches:
             _raise_if_lease_lost(self._lease_cursor)
@@ -576,6 +614,7 @@ class _PersistentBatchedReviewer:
         )
         stored_by_number = {item.batch_number: item for item in stored}
         results: list[ModelReviewResult] = []
+        completed_batches: list[int] = []
         for batch in batches:
             _raise_if_lease_lost(self._lease_cursor)
             self._lease_cursor.renew(self._lease_duration)
@@ -607,10 +646,11 @@ class _PersistentBatchedReviewer:
                     agent=self._agent.value,
                 )
                 results.append(result)
+                completed_batches.append(batch.number)
                 continue
             allowed_attempts = self._settings.max_retries + 1
             if saved is not None and saved.attempt_count >= allowed_attempts:
-                raise SafeApplicationError(
+                error = SafeApplicationError(
                     SafeError(
                         code=ErrorCode.MODEL_SERVER_ERROR,
                         safe_message="模型批次已达到最大重试次数",
@@ -623,6 +663,13 @@ class _PersistentBatchedReviewer:
                             "batch_retry_managed": True,
                         },
                     )
+                )
+                self._raise_partial_batch_error(
+                    review_input,
+                    results,
+                    completed_batches,
+                    batch.number,
+                    error,
                 )
             try:
                 _raise_if_lease_lost(self._lease_cursor)
@@ -647,7 +694,14 @@ class _PersistentBatchedReviewer:
                         "batch_retry_managed": True,
                     },
                 )
-                raise SafeApplicationError(safe_error) from exc
+                error = SafeApplicationError(safe_error)
+                self._raise_partial_batch_error(
+                    review_input,
+                    results,
+                    completed_batches,
+                    batch.number,
+                    error,
+                )
             if (
                 claimed_batch.status.value == "succeeded"
                 and claimed_batch.result is not None
@@ -655,6 +709,7 @@ class _PersistentBatchedReviewer:
                 # 另一个 Worker 可能在本地快照之后完成了批次；读取其结果，
                 # 不再重复发起外部模型请求。
                 results.append(claimed_batch.result)
+                completed_batches.append(batch.number)
                 _raise_if_lease_lost(self._lease_cursor)
                 self._queue.record_model_progress(
                     current_lease,
@@ -675,6 +730,70 @@ class _PersistentBatchedReviewer:
                     agent=self._agent.value,
                 )
                 continue
+            batch_checkpoint_key = _truncation_input_key(batch.review_input)
+            checkpoint_results, checkpoint_split_nodes = _load_truncation_checkpoint(
+                getattr(claimed_batch, "checkpoint", None),
+                root_key=batch_checkpoint_key,
+            )
+            if not checkpoint_results and saved is not None:
+                checkpoint_results, checkpoint_split_nodes = _load_truncation_checkpoint(
+                    getattr(saved, "checkpoint", None),
+                    root_key=batch_checkpoint_key,
+                )
+            checkpoint_persistence_disabled = False
+
+            def persist_checkpoint(
+                key: str,
+                checkpoint_result: ModelReviewResult | None = None,
+                *,
+                split: bool = False,
+                _batch_number: int = batch.number,
+                _checkpoint_results: dict[str, ModelReviewResult] = checkpoint_results,
+                _checkpoint_split_nodes: set[str] = checkpoint_split_nodes,
+                _attempt_count: int = claimed_batch.attempt_count,
+                _root_key: str = batch_checkpoint_key,
+            ) -> None:
+                nonlocal checkpoint_persistence_disabled
+                if checkpoint_result is not None:
+                    _checkpoint_results[key] = checkpoint_result
+                # ``None`` 是递归器用于标记“该节点已截断并已拆分”的哨兵；
+                # 直接成功的模型结果始终是 ModelReviewResult。
+                if split or checkpoint_result is None:
+                    _checkpoint_split_nodes.add(key)
+                checkpoint_writer = getattr(
+                    self._queue,
+                    "checkpoint_model_batch",
+                    None,
+                )
+                if not callable(checkpoint_writer):
+                    # 兼容尚未实现检查点接口的测试/旧队列；生产 SQL 队列
+                    # 始终支持该接口，成功子批次不会因此丢失恢复能力。
+                    return
+                if checkpoint_persistence_disabled:
+                    return
+                try:
+                    checkpoint_writer(
+                        self._lease_cursor.lease,
+                        _batch_number,
+                        _dump_truncation_checkpoint(
+                            _checkpoint_results,
+                            _checkpoint_split_nodes,
+                            root_key=_root_key,
+                        ),
+                        agent=self._agent.value,
+                        expected_attempt_count=_attempt_count,
+                    )
+                except ModelReviewCheckpointTooLargeError:
+                    # 检查点只是优化项；超过有界 JSON 列时继续使用内存中的
+                    # 子结果，不能把已经成功的模型请求改报为失败。
+                    checkpoint_persistence_disabled = True
+                    LOGGER.warning(
+                        "Agent %s 批次 %s 截断检查点超过安全大小，"
+                        "本次调用降级为不持久化检查点",
+                        self._agent.value,
+                        _batch_number,
+                    )
+
             _raise_if_lease_lost(self._lease_cursor)
             self._queue.record_model_progress(
                 current_lease,
@@ -721,7 +840,12 @@ class _PersistentBatchedReviewer:
                 ):
                     _raise_if_lease_lost(self._lease_cursor)
                     result = remap_model_review_result(
-                        self._reviewer.review(batch.review_input),
+                        self._review_with_truncation_split(
+                            batch.review_input,
+                            checkpoint_results=checkpoint_results,
+                            checkpoint_split_nodes=checkpoint_split_nodes,
+                            on_checkpoint=persist_checkpoint,
+                        ),
                         batch,
                     )
                 _raise_if_lease_lost(self._lease_cursor)
@@ -837,7 +961,14 @@ class _PersistentBatchedReviewer:
                         self._agent.value,
                         batch.number,
                     )
-                raise SafeApplicationError(safe_error) from exc
+                error = SafeApplicationError(safe_error)
+                self._raise_partial_batch_error(
+                    review_input,
+                    results,
+                    completed_batches,
+                    batch.number,
+                    error,
+                )
             finally:
                 self._lease_cursor.unregister_model_batch(
                     self._agent.value,
@@ -876,12 +1007,237 @@ class _PersistentBatchedReviewer:
                 agent=self._agent.value,
             )
             results.append(result)
+            completed_batches.append(batch.number)
         return combine_model_review_results(review_input, tuple(results))
+
+    def _review_with_truncation_split(
+        self,
+        review_input: ModelReviewInput,
+        *,
+        depth: int = 0,
+        checkpoint_results: dict[str, ModelReviewResult] | None = None,
+        checkpoint_split_nodes: set[str] | None = None,
+        on_checkpoint: Callable[
+            [str, ModelReviewResult | None],
+            None,
+        ]
+        | None = None,
+    ) -> ModelReviewResult:
+        """输出截断后递归缩小输入，不重复发送同一请求。"""
+
+        # 子请求的稳定身份由计划/Unit/片段指纹组成；它不依赖模型返回内容，
+        # 因而可以在 Worker 重启后从批次 JSON 检查点恢复。
+        key = _truncation_input_key(review_input)
+        if checkpoint_results is not None:
+            cached = checkpoint_results.get(key)
+            if cached is not None:
+                return cached
+
+        def remember(result: ModelReviewResult) -> ModelReviewResult:
+            # 根请求若直接成功，随后会以完整批次结果落库，无需额外写一份
+            # 检查点；只有拆分后的子节点才需要在中途保存恢复快照。
+            if (
+                on_checkpoint is not None
+                and checkpoint_results is not None
+                and (depth > 0 or key in split_nodes)
+            ):
+                on_checkpoint(key, result)
+            return result
+
+        split_nodes = checkpoint_split_nodes if checkpoint_split_nodes is not None else set()
+        if key not in split_nodes:
+            try:
+                return remember(
+                    self._reviewer.review(
+                        review_input.model_copy(
+                            update={"allow_truncation_retry": False}
+                        )
+                    )
+                )
+            except Exception as exc:
+                error = SafeError.from_exception(exc)
+                if error.code is not ErrorCode.MODEL_OUTPUT_TRUNCATED or depth >= 8:
+                    raise
+                split_nodes.add(key)
+                if on_checkpoint is not None:
+                    on_checkpoint(key, None)
+        units = review_input.units
+        if len(units) > 1:
+            middle = len(units) // 2
+            child_inputs = (
+                _model_input_subset(review_input, units[:middle]),
+                _model_input_subset(review_input, units[middle:]),
+            )
+            child_results = tuple(
+                self._review_with_truncation_split(
+                    item,
+                    depth=depth + 1,
+                    checkpoint_results=checkpoint_results,
+                    checkpoint_split_nodes=split_nodes,
+                    on_checkpoint=on_checkpoint,
+                )
+                for item in child_inputs
+            )
+            # 只缓存叶子响应；中间结果的位置坐标可能已经经过一次映射，
+            # 直接缓存会在恢复时被父批次再次映射。
+            return combine_model_review_results(review_input, child_results)
+
+        # 单个 Unit 仍截断时，让现有规划器按更小的输入预算生成代码片段。
+        reduced_limit = max(
+            4_096,
+            min(
+                self._settings.max_batch_input_tokens // 2,
+                max(4_096, review_input.total_estimated_input_bytes // 4),
+            ),
+        )
+        if reduced_limit >= self._settings.max_batch_input_tokens:
+            raise SafeApplicationError(
+                SafeError(
+                    code=ErrorCode.MODEL_OUTPUT_TRUNCATED,
+                    safe_message="模型输出被截断，无法进一步拆分批次",
+                    retryable=True,
+                )
+            )
+        smaller_settings = replace(
+            self._settings,
+            max_batch_input_tokens=reduced_limit,
+        )
+        children = plan_model_review_batches(review_input, smaller_settings)
+        if len(children) <= 1:
+            raise SafeApplicationError(
+                SafeError(
+                    code=ErrorCode.MODEL_OUTPUT_TRUNCATED,
+                    safe_message="模型输出被截断，无法进一步拆分批次",
+                    retryable=True,
+                )
+            )
+        child_results = tuple(
+            self._review_with_truncation_split(
+                child.review_input,
+                depth=depth + 1,
+                checkpoint_results=checkpoint_results,
+                checkpoint_split_nodes=split_nodes,
+                on_checkpoint=on_checkpoint,
+            )
+            for child in children
+        )
+        return combine_model_review_results(
+            review_input,
+            child_results,
+            batches=children,
+        )
 
     def close(self) -> None:
         """底层适配器由运行时缓存统一关闭。"""
 
         return None
+
+
+def _model_input_subset(
+    source: ModelReviewInput,
+    units: tuple[ReviewUnit, ...],
+) -> ModelReviewInput:
+    """构造一个只含目标 Unit 和其规则的稳定子请求。"""
+
+    rule_paths = {path for unit in units for path in unit.rule_paths}
+    rules = tuple(rule for rule in source.rules if rule.path in rule_paths)
+    total_bytes = sum(unit.estimated_input_bytes for unit in units)
+    if source.planner_version in {"review-planner-v2", "review-planner-v3"}:
+        total_bytes += sum(rule.byte_size for rule in rules)
+    return source.model_copy(
+        update={
+            "rules": rules,
+            "units": units,
+            "total_estimated_input_bytes": total_bytes,
+            "allow_truncation_retry": False,
+        }
+    )
+
+
+def _truncation_input_key(review_input: ModelReviewInput) -> str:
+    """生成不含提示词正文的稳定子请求指纹。"""
+
+    identity = {
+        "plan": review_input.plan_fingerprint,
+        "agent": review_input.review_agent.value
+        if review_input.review_agent is not None
+        else None,
+        "units": [
+            {
+                "unit_key": unit.unit_key,
+                "patch_sha256": unit.patch_sha256,
+                "fragment_index": unit.fragment_index,
+                "fragment_count": unit.fragment_count,
+            }
+            for unit in review_input.units
+        ],
+        "rules": [rule.path for rule in review_input.rules],
+    }
+    return sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _load_truncation_checkpoint(
+    checkpoint: Mapping[str, object] | None,
+    *,
+    root_key: str | None = None,
+) -> tuple[dict[str, ModelReviewResult], set[str]]:
+    """读取并验证有界截断检查点；损坏条目会被忽略并重新请求。"""
+
+    if not isinstance(checkpoint, Mapping):
+        return {}, set()
+    if checkpoint.get("version") != 1:
+        return {}, set()
+    stored_root_key = checkpoint.get("root_key")
+    if (
+        root_key is not None
+        and isinstance(stored_root_key, str)
+        and stored_root_key != root_key
+    ):
+        return {}, set()
+    raw_results = checkpoint.get("results")
+    raw_split_nodes = checkpoint.get("split_nodes")
+    split_nodes = {
+        value
+        for value in raw_split_nodes
+        if isinstance(value, str) and len(value) == 64
+    } if isinstance(raw_split_nodes, (list, tuple, set, frozenset)) else set()
+    if not isinstance(raw_results, Mapping):
+        return {}, split_nodes
+    loaded: dict[str, ModelReviewResult] = {}
+    for raw_key, raw_result in list(raw_results.items())[:2048]:
+        if not isinstance(raw_key, str) or len(raw_key) != 64:
+            continue
+        try:
+            loaded[raw_key] = ModelReviewResult.model_validate(raw_result)
+        except (TypeError, ValueError):
+            continue
+    return loaded, split_nodes
+
+
+def _dump_truncation_checkpoint(
+    results: Mapping[str, ModelReviewResult],
+    split_nodes: set[str] | frozenset[str] = frozenset(),
+    *,
+    root_key: str | None = None,
+) -> dict[str, object]:
+    """将检查点编码为受限 JSON 结构。"""
+
+    return {
+        "version": 1,
+        "root_key": root_key,
+        "split_nodes": sorted(value for value in split_nodes if len(value) == 64),
+        "results": {
+            key: result.model_dump(mode="json")
+            for key, result in list(results.items())[:2048]
+        },
+    }
 
 
 def _model_batch_retry_delay(error: SafeError, attempt_count: int) -> timedelta:
@@ -927,20 +1283,39 @@ def _safe_unsupported_parameters_payload(
 def _workflow_result(
     review_input: ModelReviewInput,
     execution: WorkflowExecution,
+    *,
+    allow_partial: bool = False,
 ) -> ModelReviewResult:
     """把多 Agent 结果折叠为一条兼容记录，汇总 Agent 作为配置代表。"""
 
     agent_results_list: list[ModelReviewResult] = []
     for agent_execution in execution.agents:
-        if agent_execution.result is not None:
+        if agent_execution.result is not None and (
+            not allow_partial
+            or agent_execution.status == "completed"
+            or (
+                agent_execution.agent is not ReviewAgent.SUMMARY
+                and agent_execution.result.status
+                in {ModelCallStatus.SUCCEEDED, ModelCallStatus.SKIPPED}
+            )
+        ):
             agent_results_list.append(agent_execution.result)
     agent_results = tuple(agent_results_list)
     summary_result: ModelReviewResult | None = None
-    if execution.summary_execution is not None:
+    if execution.summary_execution is not None and (
+        not allow_partial or execution.summary_execution.status == "completed"
+    ):
         summary_result = execution.summary_execution.result
     results: tuple[ModelReviewResult, ...] = agent_results + (
         (summary_result,) if summary_result is not None else ()
     )
+    if allow_partial:
+        # 汇总失败或某一路失败时，只保留已经返回结构化结果的调用；失败
+        # 节点由 execution 的状态字段和事件单独表达，不能阻塞本地合并。
+        results = tuple(
+            item for item in results
+            if item.status in {ModelCallStatus.SUCCEEDED, ModelCallStatus.SKIPPED}
+        )
     if not results:
         raise TaskQueueError("固定 Agent 没有可持久化的模型结果")
     all_succeeded = all(
@@ -950,7 +1325,7 @@ def _workflow_result(
         not review_input.units
         and all(item.status is ModelCallStatus.SKIPPED for item in results)
     )
-    if execution.status != "completed" or not (
+    if (not allow_partial and execution.status != "completed") or not (
         all_succeeded or all_skipped
     ):
         raise TaskQueueError("固定 Agent 仅能聚合全部成功的模型结果")
@@ -1986,6 +2361,17 @@ class WorkerRuntime:
         # 普通领取租约升级为模型阶段租约，避免忙碌心跳在这段窗口内续成短租约。
         cursor.renew(self._settings.model_review_lease_duration)
         model_input = self._queue.load_model_review_input(cursor.lease)
+        if cursor.lease.model_attempt_count > 1:
+            self._queue.record_model_progress(
+                cursor.lease,
+                "retry_started",
+                {
+                    "agent": "workflow",
+                    "model_attempt_count": cursor.lease.model_attempt_count,
+                    "retry_scope": "failed_node",
+                },
+                agent="workflow",
+            )
         base_workflow = ai_runtime.agent_workflow
         if base_workflow is None:
             raise TaskQueueError("固定 Agent 工作流未配置")
@@ -2070,6 +2456,9 @@ class WorkerRuntime:
             on_aggregating=lambda: self._queue.mark_model_aggregating(
                 cursor.lease
             ),
+            allow_partial_aggregation=True,
+            local_aggregation=True,
+            force_summary=getattr(cursor.lease, "force_summary", False),
         )
         # 心跳线程可能在最后一个模型请求期间发现租约已被接管；即使编排器
         # 返回了完整结果，也不能让旧 Worker 覆盖新 Worker 的持久化结果。
@@ -2079,6 +2468,8 @@ class WorkerRuntime:
             phase = (
                 "agent_completed"
                 if item.status == "completed"
+                else "agent_not_applicable"
+                if item.status == "not_applicable"
                 else "agent_failed"
             )
             self._queue.record_model_progress(
@@ -2089,6 +2480,7 @@ class WorkerRuntime:
                     "status": item.status,
                     "duration_ms": item.duration_ms,
                     "finding_count": item.finding_count,
+                    "applicable_unit_count": item.applicable_unit_count,
                     "references": list(item.references),
                     "error": item.error,
                     **_agent_conclusion_payload(item),
@@ -2112,21 +2504,83 @@ class WorkerRuntime:
                 },
                 agent=item.agent.value,
             )
-        # 汇总事件只记录结构化计量和状态，不写模型思维链或完整响应。
+        # 汇总事件必须区分真实调用、跳过和本地确定性合并；不能在上游
+        # 失败时无条件写 ``summary_completed``。
         _raise_if_lease_lost(cursor)
+        if execution.summary_status == "completed":
+            summary_phase = "summary_completed"
+        elif execution.summary_status == "failed":
+            summary_phase = "summary_completed"
+        else:
+            summary_phase = "summary_skipped"
         self._queue.record_model_progress(
             cursor.lease,
-            "summary_completed",
+            summary_phase,
             {
                 "agent": "summary",
                 "phase": "workflow_completed",
-                "agent_status": execution.status,
+                "agent_status": execution.summary_status,
                 "agent_count": len(execution.agents),
                 "finding_count": len(execution.findings),
+                "aggregation_status": execution.aggregation_status,
+                "summary_status": execution.summary_status,
                 **_agent_conclusion_payload(execution.summary_execution),
             },
             agent="summary",
         )
+        if execution.aggregation_status in {"local", "completed"}:
+            self._queue.record_model_progress(
+                cursor.lease,
+                "aggregation_completed",
+                {
+                    "agent": "summary",
+                    "aggregation_status": execution.aggregation_status,
+                    "summary_status": execution.summary_status,
+                    "finding_count": len(execution.findings),
+                    "partial_result": execution.partial_result,
+                },
+                agent="summary",
+            )
+        if execution.partial_result:
+            self._queue.record_model_progress(
+                cursor.lease,
+                "workflow_partial",
+                {
+                    "agent": "workflow",
+                    "coverage_status": execution.coverage_status,
+                    "failed_agents": [item.value for item in execution.failed_agents],
+                    "failed_batches": [
+                        {"agent": agent, "batch_number": number}
+                        for agent, number in execution.failed_batches
+                    ],
+                    "finding_count": len(execution.findings),
+                    "summary_status": execution.summary_status,
+                },
+                agent="workflow",
+            )
+            # 成功 Agent 已经在批次表中落盘；这里再把可验证 Finding 写入
+            # 详情读模型。失败节点仍保持可重试，不改变旧 status=failed 语义。
+            try:
+                combined = _workflow_result(
+                    model_input,
+                    execution,
+                    allow_partial=True,
+                )
+                findings = materialize_findings(model_input, combined.output)
+                findings = self._verify_findings(cursor, model_input, findings)
+                stored = self._queue.store_model_review(
+                    cursor.lease,
+                    model_input,
+                    combined,
+                    findings,
+                    configuration_revision=ai_runtime.revision,
+                    partial=True,
+                )
+                return stored.execution_status
+            except TypeError:
+                # 兼容外部注入的旧队列实现；没有 partial 参数时继续走
+                # 旧错误路径，避免测试替身因签名不同而崩溃。
+                pass
         if execution.status != "completed":
             failed_executions = tuple(
                 item
@@ -2143,7 +2597,11 @@ class WorkerRuntime:
             raise TaskQueueError(execution.summary)
         # FixedAgentWorkflow 的候选已做稳定去重；统一持久化接口仍负责 SHA、
         # blob 和 verification 状态补齐。
-        combined = _workflow_result(model_input, execution)
+        combined = _workflow_result(
+            model_input,
+            execution,
+            allow_partial=execution.summary_status == "failed",
+        )
         _raise_if_lease_lost(cursor)
         findings = materialize_findings(model_input, combined.output)
         findings = self._verify_findings(cursor, model_input, findings)

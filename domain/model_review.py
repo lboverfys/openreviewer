@@ -207,6 +207,11 @@ class ModelReviewInput(ModelContract):
         exclude=True,
     )
     review_agent: ReviewAgent | None = Field(default=None, exclude=True)
+    # 以下标记只由应用边界注入，不参与 Review Plan 指纹。连接测试和真实
+    # 批次需要不同的副作用策略：前者只能发送一次最小请求，后者在输出
+    # 截断时由 Worker 拆分输入，而不是重复发送同一份大请求。
+    connection_test: bool = Field(default=False, exclude=True)
+    allow_truncation_retry: bool = Field(default=True, exclude=True)
 
     @field_validator("knowledge_references", "prior_agent_results")
     @classmethod

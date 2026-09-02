@@ -59,7 +59,15 @@ export function StageTimeline({ details }: { details: ReviewDetails }) {
   );
 }
 
-export function ModelBatchPanel({ details }: { details: ReviewDetails }) {
+export function ModelBatchPanel({
+  details,
+  onRetry,
+  retryBusy = false,
+}: {
+  details: ReviewDetails;
+  onRetry?: (agent: string, batchNumber?: number) => void;
+  retryBusy?: boolean;
+}) {
   const activeAgents = agentDefinitions.map((definition) => ({
     ...definition,
     progress: agentProgress(details.events, definition.key),
@@ -82,18 +90,28 @@ export function ModelBatchPanel({ details }: { details: ReviewDetails }) {
             : progress.status === "completed" ? 100 : 0;
           const statusLabel = progress.status === "completed"
             ? "已完成"
+            : progress.status === "disabled"
+              ? "未启用"
+            : progress.status === "not_applicable"
+              ? "不适用"
             : progress.status === "failed"
               ? "失败"
-              : progress.status === "running"
-                ? "进行中"
-                : progress.status === "planned"
-                  ? "已规划"
-                  : "等待开始";
+              : progress.status === "not_executed"
+                ? "未执行"
+                : progress.status === "running"
+                  ? "进行中"
+                  : progress.status === "planned"
+                    ? "已规划"
+                    : "等待开始";
+          const displayStatusLabel = progress.status === "failed"
+            && completeCount > 0
+            ? "部分完成"
+            : statusLabel;
           return (
             <article className={`review-agent-card is-${progress.status}`} key={key}>
               <header className="review-agent-card-header">
                 <div><strong>{label}</strong><span>{description}</span></div>
-                <b>{statusLabel}</b>
+                <b>{displayStatusLabel}</b>
               </header>
               <div className="review-agent-progress-meta">
                 <span>{completeCount}/{progress.batchCount || "—"} 批</span>
@@ -139,6 +157,38 @@ export function ModelBatchPanel({ details }: { details: ReviewDetails }) {
                   <p>{progress.errorMessage}</p>
                 </div>
               )}
+              {progress.status === "not_executed" && key === "summary" && (
+                <div className="review-agent-empty">
+                  <span>{details.coverage_status === "partial" ? "未执行" : "本地汇总"}</span>
+                  {details.coverage_status === "partial"
+                    ? "上游 Agent 未完成，汇总未执行"
+                    : "没有重复或冲突候选，已使用本地确定性汇总"}
+                </div>
+              )}
+              {progress.status === "not_applicable" && (
+                <div className="review-agent-empty">
+                  <span>不适用</span>
+                  当前变更没有落入此 Agent 的职责范围
+                </div>
+              )}
+              {progress.status === "failed"
+                && onRetry
+                && (key === "summary" || progress.batchCount === 0 || failedCount > 1) && (
+                  <button
+                    type="button"
+                    className="review-agent-retry-btn"
+                    disabled={retryBusy}
+                    onClick={() => onRetry(key)}
+                  >
+                    {retryBusy
+                      ? "处理中…"
+                      : key === "summary"
+                        ? "重试汇总"
+                        : failedCount > 1
+                          ? `重试失败批次（${failedCount}）`
+                          : `重试${label}`}
+                  </button>
+                )}
               {progress.references.length > 0 && (
                 <details className="review-agent-references">
                   <summary>RAG 引用（{progress.references.length}）</summary>
@@ -158,6 +208,16 @@ export function ModelBatchPanel({ details }: { details: ReviewDetails }) {
                       <div className={`review-agent-batch-row ${completed ? "is-completed" : failed ? "is-failed" : requestStarted ? "is-running" : ""}`} key={number}>
                         <span>第 {number}/{progress.batchCount} 批</span><b>{batchStatus}</b>
                         {event && <small>{completed ? `输入 ${payloadNumber(event, "input_tokens")?.toLocaleString() ?? "—"} · 输出 ${payloadNumber(event, "output_tokens")?.toLocaleString() ?? "—"} · 推理 ${payloadNumber(event, "reasoning_tokens")?.toLocaleString() ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))}` : failed ? `${payloadString(event, "error_code") ?? "错误"} · ${payloadString(event, "error_message") ?? "模型请求失败"}` : `预计输入 ${payloadNumber(event, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token`}</small>}
+                        {failed && onRetry && (
+                          <button
+                            type="button"
+                            className="review-agent-retry-btn"
+                            disabled={retryBusy}
+                            onClick={() => onRetry(key, number)}
+                          >
+                            {retryBusy ? "处理中…" : `重试第 ${number} 批`}
+                          </button>
+                        )}
                       </div>
                     );
                   })}

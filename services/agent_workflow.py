@@ -22,7 +22,8 @@ from domain.model_review import (
     ModelReviewInput,
     ModelReviewResult,
 )
-from domain.security import ErrorCode, SafeError
+from domain.review_planning import REVIEW_AGENTS
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_review import ModelReviewer, ModelServiceSettings
 from services.task_queue import TaskLeaseLostError
 
@@ -53,6 +54,10 @@ class AgentExecution:
     error: str | None
     references: tuple[str, ...] = ()
     safe_error: SafeError | None = None
+    # 批次级恢复信息由 Worker 注入/读取；保留默认值以兼容旧的构造调用。
+    completed_batches: tuple[int, ...] = ()
+    failed_batches: tuple[int, ...] = ()
+    applicable_unit_count: int = 0
 
     @property
     def finding_count(self) -> int:
@@ -68,6 +73,72 @@ class WorkflowExecution:
     started_at: datetime
     completed_at: datetime
     summary_execution: AgentExecution | None = None
+    # ``status`` 继续保留旧的 completed/failed 语义，供旧队列和客户端使用。
+    # 下列字段表达“是否有可用部分结果”以及汇总节点的真实状态，避免把
+    # 未执行的汇总伪装成失败。
+    coverage_status: str = "complete"
+    partial_result: bool = False
+    aggregation_status: str = "not_started"
+    summary_status: str = "not_executed"
+    failed_agents: tuple[ReviewAgent, ...] = ()
+    failed_batches: tuple[tuple[str, int], ...] = ()
+
+
+class _PartialAgentReviewError(SafeApplicationError):
+    """某个 Agent 的后续批次失败，但前置批次已有可用结果。"""
+
+    def __init__(
+        self,
+        error: SafeError,
+        *,
+        partial_result: ModelReviewResult,
+        completed_batches: tuple[int, ...],
+        failed_batch: int,
+    ) -> None:
+        super().__init__(error)
+        self.partial_result = partial_result
+        self.completed_batches = completed_batches
+        self.failed_batch = failed_batch
+
+
+def scope_model_review_input(
+    review_input: ModelReviewInput,
+    agent: ReviewAgent,
+) -> ModelReviewInput:
+    """按规划阶段标注的职责筛选一个 Agent 的模型输入。
+
+    ``Review Plan`` 仍是完整快照；这里仅构造请求级子集，因此 Finding 的
+    最终身份校验仍可使用完整输入。规则也同步收窄并重新计算字节总量，避免
+    批次预算把未发送的规则计入请求。
+    """
+
+    if agent not in REVIEW_AGENTS or not review_input.units:
+        return review_input.model_copy(update={"review_agent": agent})
+    units = tuple(
+        unit for unit in review_input.units if agent in unit.review_domains
+    )
+    if not units:
+        return review_input.model_copy(
+            update={
+                "rules": (),
+                "units": (),
+                "total_estimated_input_bytes": 0,
+                "review_agent": agent,
+            }
+        )
+    rule_paths = {path for unit in units for path in unit.rule_paths}
+    rules = tuple(rule for rule in review_input.rules if rule.path in rule_paths)
+    total_bytes = sum(unit.estimated_input_bytes for unit in units)
+    if review_input.planner_version in {"review-planner-v2", "review-planner-v3"}:
+        total_bytes += sum(rule.byte_size for rule in rules)
+    return review_input.model_copy(
+        update={
+            "rules": rules,
+            "units": units,
+            "total_estimated_input_bytes": total_bytes,
+            "review_agent": agent,
+        }
+    )
 
 
 class FixedAgentWorkflow:
@@ -118,6 +189,13 @@ class FixedAgentWorkflow:
         *,
         references: Mapping[ReviewAgent, tuple[str, ...]] | None = None,
         on_aggregating: Callable[[], None] | None = None,
+        # 生产 Worker 开启增强模式；默认关闭是为了让升级过程中的旧调用方
+        # 继续得到原有的 failed/不调用汇总行为。
+        allow_partial_aggregation: bool = False,
+        local_aggregation: bool = True,
+        # 汇总失败后的人工重试会复用前三路结果，但必须再次进入汇总模型；
+        # 该标记只由持久化租约投影，普通运行仍按候选去重结果决定是否调用。
+        force_summary: bool = False,
     ) -> WorkflowExecution:
         started_at = self._clock()
         refs = references or {}
@@ -130,6 +208,19 @@ class FixedAgentWorkflow:
         def invoke(agent: ReviewAgent) -> AgentExecution:
             if lease_lost.is_set():
                 raise TaskLeaseLostError()
+            agent_input = scope_model_review_input(review_input, agent)
+            # 有 Unit 但没有命中该 Agent 职责时，不发送空模型请求。这个状态
+            # 是“不适用”，不是配置缺失，也不应出现在失败重试列表中。
+            if review_input.units and not agent_input.units:
+                return AgentExecution(
+                    agent,
+                    "not_applicable",
+                    None,
+                    0,
+                    "当前变更不适用此 Agent",
+                    refs.get(agent, ()),
+                    applicable_unit_count=0,
+                )
             reviewer = self._reviewers.get(agent)
             if reviewer is None:
                 return AgentExecution(
@@ -139,14 +230,12 @@ class FixedAgentWorkflow:
                     0,
                     "Agent 未启用",
                     refs.get(agent, ()),
+                    applicable_unit_count=len(agent_input.units),
                 )
             begin = time.monotonic()
             try:
-                agent_input = review_input.model_copy(
-                    update={
-                        "knowledge_references": refs.get(agent, ()),
-                        "review_agent": agent,
-                    }
+                agent_input = agent_input.model_copy(
+                    update={"knowledge_references": refs.get(agent, ())}
                 )
                 result = reviewer.review(agent_input)
                 if (
@@ -163,6 +252,7 @@ class FixedAgentWorkflow:
                         max(0, int((time.monotonic() - begin) * 1000)),
                         "Agent 未返回成功结果",
                         refs.get(agent, ()),
+                        applicable_unit_count=len(agent_input.units),
                     )
                 return AgentExecution(
                     agent,
@@ -171,6 +261,7 @@ class FixedAgentWorkflow:
                     max(0, int((time.monotonic() - begin) * 1000)),
                     None,
                     refs.get(agent, ()),
+                    applicable_unit_count=len(agent_input.units),
                 )
             except Exception as exc:
                 safe_error = SafeError.from_exception(exc)
@@ -179,6 +270,25 @@ class FixedAgentWorkflow:
                 if safe_error.code is ErrorCode.TASK_LEASE_LOST:
                     lease_lost.set()
                     raise
+                if isinstance(exc, _PartialAgentReviewError):
+                    return AgentExecution(
+                        agent,
+                        "failed",
+                        exc.partial_result,
+                        max(0, int((time.monotonic() - begin) * 1000)),
+                        exc.error.safe_message,
+                        refs.get(agent, ()),
+                        exc.error,
+                        completed_batches=exc.completed_batches,
+                        failed_batches=(exc.failed_batch,),
+                        applicable_unit_count=len(agent_input.units),
+                    )
+                raw_batch = safe_error.details.get("batch_number")
+                failed_batches = (
+                    (raw_batch,)
+                    if isinstance(raw_batch, int) and raw_batch > 0
+                    else ()
+                )
                 return AgentExecution(
                     agent,
                     "failed",
@@ -187,6 +297,8 @@ class FixedAgentWorkflow:
                     safe_error.safe_message,
                     refs.get(agent, ()),
                     safe_error,
+                    failed_batches=failed_batches,
+                    applicable_unit_count=len(agent_input.units),
                 )
 
         if self._max_concurrency == 1:
@@ -217,10 +329,33 @@ class FixedAgentWorkflow:
                     executions[execution.agent] = execution
 
         ordered = tuple(executions[agent] for agent in PARALLEL_AGENTS)
+        raw_candidates = tuple(
+            candidate
+            for item in ordered
+            if item.result is not None
+            for candidate in item.result.output.findings
+        )
         findings = _merge_findings(ordered)
         failed = any(item.status == "failed" for item in ordered)
         disabled = any(item.status == "disabled" for item in ordered)
         status = "failed" if failed or disabled else "completed"
+        # ``not_applicable`` 表示当前变更没有落入该职责范围，不应阻塞工作流；
+        # ``disabled`` 则是配置缺失，仍按失败覆盖处理。
+        failed_agents = tuple(item.agent for item in ordered if item.status == "failed")
+        usable_results = any(
+            item.result is not None
+            and item.result.status
+            in {ModelCallStatus.SUCCEEDED, ModelCallStatus.SKIPPED}
+            for item in ordered
+        )
+        partial_result = bool(
+            allow_partial_aggregation
+            and (failed or disabled)
+            and usable_results
+        )
+        coverage_status = "partial" if partial_result else "complete"
+        aggregation_status = "not_started"
+        summary_status = "not_executed"
         summary = (
             "三路 Agent 均完成，未发现可靠问题"
             if not findings and not failed and not disabled
@@ -228,10 +363,15 @@ class FixedAgentWorkflow:
             if not failed and not disabled
             else "至少一个 Agent 未启用或失败，结果覆盖不完整"
         )
-        if not failed and not disabled and on_aggregating is not None:
+        if (not failed and not disabled or partial_result) and on_aggregating is not None:
             # 回调位于三路结果已确定、汇总模型尚未调用的边界。持久化实现可在
             # 这里用短事务暴露 DAG 状态，异常则直接阻止后续外部模型请求。
             on_aggregating()
+            aggregation_status = "started"
+        if allow_partial_aggregation and (failed or disabled):
+            # 即使某一路失败，也先把已有候选在本地稳定合并；该状态不等于
+            # 完整工作流成功，后续仍会保留失败节点供用户重试。
+            aggregation_status = "local" if local_aggregation else "partial"
         # 汇总模型只能处理确定性准备好的候选；失败时仍保留部分结果，不能伪造成功。
         summary_execution: AgentExecution | None = None
         if (
@@ -239,7 +379,15 @@ class FixedAgentWorkflow:
             and not failed
             and not disabled
             and review_input.units
+            and (
+                force_summary
+                or
+                not allow_partial_aggregation
+                or not local_aggregation
+                or len(raw_candidates) > len(findings)
+            )
         ):
+            summary_status = "running"
             summary_started = time.monotonic()
             # 前三路已经逐批检查过完整补丁。汇总阶段只需要读取它们的
             # 结构化结论；再次携带所有 rules/patch 会把请求体放大数倍，
@@ -300,9 +448,11 @@ class FixedAgentWorkflow:
                         None,
                         refs.get(ReviewAgent.SUMMARY, ()),
                     )
+                    summary_status = "completed"
+                    aggregation_status = "completed"
                 else:
-                    status = "failed"
-                    summary = "汇总 Agent 未返回成功结果，结果覆盖不完整"
+                    # 汇总是增强节点；其失败不应抹掉前三路已经完成的结果。
+                    summary = "本地确定性汇总已完成，模型汇总未成功"
                     summary_execution = AgentExecution(
                         ReviewAgent.SUMMARY,
                         "failed",
@@ -311,14 +461,15 @@ class FixedAgentWorkflow:
                         "汇总 Agent 未返回成功结果",
                         refs.get(ReviewAgent.SUMMARY, ()),
                     )
+                    summary_status = "failed"
+                    aggregation_status = "local"
             except Exception as exc:
                 safe_error = SafeError.from_exception(exc)
                 # 汇总阶段同样不能吞掉租约失效，否则前三路结果可能被旧 Worker
                 # 继续写入，且会额外发起一次没有意义的模型请求。
                 if safe_error.code is ErrorCode.TASK_LEASE_LOST:
                     raise
-                status = "failed"
-                summary = "汇总 Agent 调用失败，结果覆盖不完整"
+                summary = "本地确定性汇总已完成，模型汇总调用失败"
                 summary_execution = AgentExecution(
                     ReviewAgent.SUMMARY,
                     "failed",
@@ -328,6 +479,18 @@ class FixedAgentWorkflow:
                     refs.get(ReviewAgent.SUMMARY, ()),
                     safe_error,
                 )
+                summary_status = "failed"
+                aggregation_status = "local"
+        elif allow_partial_aggregation and (failed or disabled):
+            summary = "上游 Agent 未完成，汇总未执行；已保留部分结果"
+            summary_status = "skipped"
+        elif allow_partial_aggregation and not review_input.units:
+            summary_status = "skipped"
+            aggregation_status = "completed"
+        elif not failed and not disabled:
+            # 没有重复/冲突候选时不必额外调用模型，使用本地结果即可。
+            summary_status = "skipped"
+            aggregation_status = "local"
         completed_at = self._clock()
         return WorkflowExecution(
             status=status,
@@ -337,6 +500,16 @@ class FixedAgentWorkflow:
             started_at=started_at,
             completed_at=completed_at,
             summary_execution=summary_execution,
+            coverage_status=coverage_status,
+            partial_result=partial_result,
+            aggregation_status=aggregation_status,
+            summary_status=summary_status,
+            failed_agents=failed_agents,
+            failed_batches=tuple(
+                (item.agent.value, number)
+                for item in ordered
+                for number in item.failed_batches
+            ),
         )
 
     def close(self) -> None:

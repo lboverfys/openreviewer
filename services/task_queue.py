@@ -104,6 +104,21 @@ class ModelReviewConflictError(TaskQueueError):
         )
 
 
+class ModelReviewCheckpointTooLargeError(ModelReviewConflictError):
+    """截断恢复检查点超过持久化边界，但模型结果本身仍然有效。"""
+
+    def __init__(self) -> None:
+        SafeApplicationError.__init__(
+            self,
+            SafeError(
+                code=ErrorCode.MODEL_REVIEW_CONFLICT,
+                safe_message="截断恢复检查点超过安全大小",
+                retryable=False,
+                details={"checkpoint_too_large": True},
+            ),
+        )
+
+
 class ModelBatchBusyError(TaskQueueError):
     """批次仍有有效执行租约，应等待而不是重复调用模型。"""
 
@@ -175,6 +190,9 @@ class ReviewTaskLease:
     ci_poll_count: int = 0
     model_attempt_count: int = 0
     review_plan_id: str | None = None
+    # 汇总增强节点失败后，人工重试需要在复用前三路成功批次的同时
+    # 强制再次调用汇总模型；该标记由持久化队列从最近的汇总失败事件投影。
+    force_summary: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +233,8 @@ class StoredModelReview:
     created: bool
     finding_count: int
     execution_status: ExecutionStatus
+    coverage_status: str = "complete"
+    partial: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +254,8 @@ class StoredModelBatch:
     result: ModelReviewResult | None
     error_code: str | None
     error_message: str | None
+    # 输出截断后拆分恢复所需的有界检查点；不包含密钥或原始提示词。
+    checkpoint: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,6 +458,18 @@ class ReviewTaskQueue(Protocol):
         """原子保存单批结果，并可校验领取时的批次代次。"""
         ...
 
+    def checkpoint_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        checkpoint: Mapping[str, object],
+        *,
+        agent: str = "default",
+        expected_attempt_count: int | None = None,
+    ) -> StoredModelBatch:
+        """保存输出截断拆分的有界恢复检查点，不结束批次租约。"""
+        ...
+
     def fail_model_batch(
         self,
         lease: ReviewTaskLease,
@@ -498,8 +532,14 @@ class ReviewTaskQueue(Protocol):
         findings: tuple[MaterializedFinding, ...],
         *,
         configuration_revision: int | None = None,
+        partial: bool = False,
     ) -> StoredModelReview:
-        """验证租约、SHA 和计划指纹，并原子保存调用、Finding 与 Outbox。"""
+        """验证租约、SHA 和计划指纹，并原子保存调用、Finding 与 Outbox。
+
+        ``partial=True`` 表示固定 DAG 仍有失败节点，但已有 Agent 结果可以
+        先展示。该模式不会写入模型阶段完成时间，成功批次和 Finding 会保留，
+        后续失败节点重试时可幂等复用。
+        """
         ...
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:

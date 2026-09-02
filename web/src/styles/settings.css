@@ -785,6 +785,7 @@
 }
 
 .agent-settings-status {
+  flex-wrap: wrap;
   justify-content: space-between;
   margin-top: 12px;
   padding: 7px 9px;
@@ -841,8 +842,35 @@
 
 .agent-settings-fields .agent-settings-key,
 .agent-settings-fields .agent-settings-check,
+.agent-settings-fields .agent-settings-shared-toggle,
 .agent-settings-advanced {
   grid-column: 1 / -1;
+}
+
+.agent-settings-shared-toggle {
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px !important;
+  padding: 8px 9px;
+  border: 1px solid #dce9e1;
+  border-radius: 5px;
+  background: #f7fbf8;
+}
+
+.agent-settings-shared-toggle input {
+  width: 14px;
+  min-height: 14px;
+}
+
+.agent-settings-shared-toggle > span {
+  color: #3f6655 !important;
+  font-size: 10px !important;
+}
+
+.agent-settings-shared-toggle small {
+  flex-basis: 100%;
+  margin-left: 21px;
 }
 
 .agent-settings-advanced {

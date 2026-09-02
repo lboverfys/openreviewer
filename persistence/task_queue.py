@@ -1,5 +1,6 @@
 """基于 PostgreSQL 的任务租约、恢复、重试与心跳存储。"""
 
+import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -36,6 +37,7 @@ from domain.model_review import (
     materialize_findings,
 )
 from domain.review_planning import (
+    DEFAULT_REVIEW_DOMAINS,
     RepositoryRule,
     RepositoryRulesSnapshot,
     ReviewPlan,
@@ -67,6 +69,7 @@ from services.task_queue import (
     ModelBatchBusyError,
     ModelBatchLease,
     ModelBudgetExceededError,
+    ModelReviewCheckpointTooLargeError,
     ModelReviewConflictError,
     ModelReviewInputError,
     ReviewPlanConflictError,
@@ -80,6 +83,30 @@ from services.task_queue import (
     TaskLeaseLostError,
     TaskQueueError,
 )
+
+_MAX_TRUNCATION_CHECKPOINT_BYTES = 4 * 1024 * 1024
+
+
+def _validated_truncation_checkpoint(
+    checkpoint: Mapping[str, object],
+) -> dict[str, object]:
+    """验证并复制拆分检查点，避免把任意不可序列化对象写入 JSON 列。"""
+
+    if not isinstance(checkpoint, Mapping):
+        raise ModelReviewConflictError("截断恢复检查点格式无效")
+    copied = dict(checkpoint)
+    try:
+        encoded = json.dumps(
+            copied,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ModelReviewConflictError("截断恢复检查点不可序列化") from exc
+    if len(encoded) > _MAX_TRUNCATION_CHECKPOINT_BYTES:
+        raise ModelReviewCheckpointTooLargeError()
+    return copied
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -98,6 +125,42 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _latest_summary_failed(session: Session, review_run_id: str) -> bool:
+    """读取当前运行最近一次汇总终态，判断是否需要强制汇总重试。
+
+    汇总事件数量受详情读取上限约束；这里按时间和自增 ID 取一条，查询始终为
+    O(1)。``summary_skipped`` 会覆盖旧的失败事件，避免普通部分重试误触发
+    汇总模型。
+    """
+
+    row = session.execute(
+        select(OutboxEventRecord.event_type, OutboxEventRecord.payload)
+        .where(
+            OutboxEventRecord.aggregate_type == "review_run",
+            OutboxEventRecord.aggregate_id == review_run_id,
+            OutboxEventRecord.event_type.in_(
+                (
+                    "review.model.summary_completed",
+                    "review.model.summary_skipped",
+                )
+            ),
+        )
+        .order_by(
+            OutboxEventRecord.occurred_at.desc(),
+            OutboxEventRecord.id.desc(),
+        )
+        .limit(1)
+    ).one_or_none()
+    if row is None:
+        return False
+    event_type, payload = row
+    return (
+        event_type == "review.model.summary_completed"
+        and isinstance(payload, dict)
+        and payload.get("agent_status") == "failed"
+    )
 
 
 def _task_run_mutation_load_options() -> tuple[Load, Load]:
@@ -517,6 +580,11 @@ class SqlAlchemyReviewTaskQueue:
                     claimed_from_status is ExecutionStatus.READY_FOR_REVIEW
                     and review_plan_id is not None
                 )
+                force_summary = (
+                    _latest_summary_failed(session, task.review_run_id)
+                    if is_model_stage
+                    else False
+                )
                 if is_model_stage:
                     task.model_attempt_count += 1
                 elif claimed_from_status in {
@@ -559,6 +627,7 @@ class SqlAlchemyReviewTaskQueue:
                     ci_poll_count=task.ci_poll_count,
                     claimed_from_status=claimed_from_status,
                     review_plan_id=review_plan_id,
+                    force_summary=force_summary,
                 )
             except TaskQueueError:
                 session.rollback()
@@ -613,6 +682,7 @@ class SqlAlchemyReviewTaskQueue:
                     ci_poll_count=lease.ci_poll_count,
                     claimed_from_status=lease.claimed_from_status,
                     review_plan_id=lease.review_plan_id,
+                    force_summary=lease.force_summary,
                 )
             except TaskLeaseLostError:
                 session.rollback()
@@ -1275,6 +1345,9 @@ class SqlAlchemyReviewTaskQueue:
                         "patch": unit.patch,
                         "patch_sha256": unit.patch_sha256,
                         "rule_paths": list(unit.rule_paths),
+                        "review_domains": [
+                            agent.value for agent in unit.review_domains
+                        ],
                         "estimated_input_bytes": unit.estimated_input_bytes,
                         "planner_version": unit.planner_version,
                     }
@@ -1422,6 +1495,7 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewUnitRecord.patch,
                 ReviewUnitRecord.patch_sha256,
                 ReviewUnitRecord.rule_paths,
+                ReviewUnitRecord.review_domains,
                 ReviewUnitRecord.estimated_input_bytes,
                 ReviewUnitRecord.planner_version,
             )
@@ -1471,6 +1545,9 @@ class SqlAlchemyReviewTaskQueue:
                     patch=row.patch,
                     patch_sha256=row.patch_sha256,
                     rule_paths=tuple(row.rule_paths),
+                    review_domains=tuple(
+                        row.review_domains or DEFAULT_REVIEW_DOMAINS
+                    ),
                     estimated_input_bytes=row.estimated_input_bytes,
                     planner_version=row.planner_version,
                 )
@@ -1622,8 +1699,14 @@ class SqlAlchemyReviewTaskQueue:
         findings: tuple[MaterializedFinding, ...],
         *,
         configuration_revision: int | None = None,
+        partial: bool = False,
     ) -> StoredModelReview:
-        """短事务原子保存调用审计、Finding、完成标记和 Outbox。"""
+        """短事务保存模型结果。
+
+        ``partial`` 用于固定 Agent DAG：成功节点的 Finding 先落库，但不把
+        Review Plan 标记为完成。后续完整重试会复用同一 ``model_call`` 并只
+        插入尚未存在的指纹，避免重复结果和重复计费。
+        """
 
         if (
             lease.claimed_from_status is not ExecutionStatus.READY_FOR_REVIEW
@@ -1663,6 +1746,8 @@ class SqlAlchemyReviewTaskQueue:
             raise ModelReviewConflictError("空 Review Plan 不应调用模型")
         if review_input.units and result.status.value != "succeeded":
             raise ModelReviewConflictError("非空 Review Plan 缺少成功模型调用")
+        if partial and not review_input.units:
+            raise ModelReviewConflictError("空 Review Plan 不应保存部分结果")
 
         now = self._clock()
         with self._sessions() as session:
@@ -1674,6 +1759,7 @@ class SqlAlchemyReviewTaskQueue:
                         ModelCallRecord.model,
                         ModelCallRecord.request_fingerprint,
                         ModelCallRecord.finding_count,
+                        ReviewPlanRecord.model_review_completed_at,
                         ReviewRunRecord.execution_status,
                     )
                     .join(
@@ -1685,8 +1771,11 @@ class SqlAlchemyReviewTaskQueue:
                         ReviewRunRecord.id == ReviewPlanRecord.review_run_id,
                     )
                     .where(ModelCallRecord.review_plan_id == review_input.review_plan_id)
+                    # 该表对 review_plan_id 有唯一约束；LIMIT 仍作为数据损坏
+                    # 或旧迁移不完整时的有界保护，避免详情请求无界读取。
+                    .limit(1)
                 ).one_or_none()
-                if existing is not None:
+                if existing is not None and existing.model_review_completed_at is not None:
                     if (
                         existing.provider != result.provider.value
                         or existing.model != result.model
@@ -1700,9 +1789,53 @@ class SqlAlchemyReviewTaskQueue:
                         created=False,
                         finding_count=existing.finding_count,
                         execution_status=ExecutionStatus(existing.execution_status),
+                        coverage_status=CoverageStatus.COMPLETE.value,
+                        partial=False,
                     )
 
+                # 未完成的 partial 快照也必须经过当前租约所有权检查。旧实现
+                # 在这里直接返回，导致调用方的任务仍停留在 RUNNING，租约无法
+                # 释放，后续 Worker 只能等待超时恢复。
                 task, run = self._locked_owned_task_with_run(session, lease, now)
+                if existing is not None:
+                    same_partial = (
+                        partial
+                        and existing.model_review_completed_at is None
+                        and existing.request_fingerprint == result.request_fingerprint
+                    )
+                    if same_partial:
+                        if (
+                            existing.provider != result.provider.value
+                            or existing.model != result.model
+                        ):
+                            raise ModelReviewConflictError(
+                                "同一 Review Plan 已保存不同模型请求"
+                            )
+                        # 结果快照已经写入；本次重入不再插入 Finding，但要把
+                        # 当前任务收口为可重试的 partial 状态并清除租约。
+                        self._set_owned_status(task, run, ExecutionStatus.FAILED, now)
+                        self._set_workflow_status(
+                            task,
+                            run,
+                            ExecutionStatus.AGENT_BATCHES,
+                            now,
+                        )
+                        run.coverage_status = CoverageStatus.PARTIAL.value
+                        run.review_conclusion = (
+                            ReviewConclusion.FINDINGS_PRESENT.value
+                            if existing.finding_count
+                            else ReviewConclusion.NO_CONFIRMED_FINDINGS.value
+                        )
+                        session.commit()
+                        return StoredModelReview(
+                            model_call_id=existing.id,
+                            created=False,
+                            finding_count=existing.finding_count,
+                            execution_status=ExecutionStatus.FAILED,
+                            coverage_status=CoverageStatus.PARTIAL.value,
+                            partial=True,
+                        )
+
                 plan = session.scalar(
                     select(ReviewPlanRecord)
                     .where(
@@ -1794,7 +1927,9 @@ class SqlAlchemyReviewTaskQueue:
                     )
                 )
                 coverage_complete = bool(
-                    plan.rules_complete and not incomplete_file_count
+                    plan.rules_complete
+                    and not incomplete_file_count
+                    and not partial
                 )
                 lifecycle_occurrences, fixed_finding_count = (
                     self._reconcile_finding_lifecycles(
@@ -1812,8 +1947,20 @@ class SqlAlchemyReviewTaskQueue:
                         f"{plan.id}:{result.request_fingerprint}",
                     )
                 )
-                session.add(
-                    ModelCallRecord(
+                # 计划只有一个兼容的 ModelCall 行。部分结果已经存在时复用
+                # 该行并更新为本次聚合快照，避免唯一键冲突；完整结果随后
+                # 可以在同一行上完成收口。
+                model_call = (
+                    session.scalar(
+                        select(ModelCallRecord)
+                        .where(ModelCallRecord.id == existing.id)
+                        .with_for_update()
+                    )
+                    if existing is not None
+                    else None
+                )
+                if model_call is None:
+                    model_call = ModelCallRecord(
                         id=model_call_id,
                         review_plan_id=plan.id,
                         configuration_revision=configuration_revision,
@@ -1829,25 +1976,48 @@ class SqlAlchemyReviewTaskQueue:
                         duration_ms=result.duration_ms,
                         input_tokens=result.usage.input_tokens,
                         output_tokens=result.usage.output_tokens,
-                        cache_read_input_tokens=(
-                            result.usage.cache_read_input_tokens
-                        ),
-                        cache_write_input_tokens=(
-                            result.usage.cache_write_input_tokens
-                        ),
-                        reasoning_output_tokens=(
-                            result.usage.reasoning_output_tokens
-                        ),
-                        estimated_cost_microusd=(
-                            result.estimated_cost_microusd
-                        ),
-                        finding_count=len(findings),
+                        cache_read_input_tokens=result.usage.cache_read_input_tokens,
+                        cache_write_input_tokens=result.usage.cache_write_input_tokens,
+                        reasoning_output_tokens=result.usage.reasoning_output_tokens,
+                        estimated_cost_microusd=result.estimated_cost_microusd,
+                        finding_count=0,
                         created_at=now,
                     )
-                )
+                    session.add(model_call)
+                else:
+                    model_call_id = model_call.id
+                    model_call.configuration_revision = configuration_revision
+                    model_call.provider = result.provider.value
+                    model_call.api_protocol = result.api_protocol.value
+                    model_call.model = result.model
+                    model_call.status = result.status.value
+                    model_call.prompt_version = result.prompt_version
+                    model_call.request_fingerprint = result.request_fingerprint
+                    model_call.provider_response_id = result.provider_response_id
+                    model_call.provider_request_id = result.provider_request_id
+                    model_call.response_status = result.response_status
+                    model_call.duration_ms = result.duration_ms
+                    model_call.input_tokens = result.usage.input_tokens
+                    model_call.output_tokens = result.usage.output_tokens
+                    model_call.cache_read_input_tokens = result.usage.cache_read_input_tokens
+                    model_call.cache_write_input_tokens = result.usage.cache_write_input_tokens
+                    model_call.reasoning_output_tokens = result.usage.reasoning_output_tokens
+                    model_call.estimated_cost_microusd = result.estimated_cost_microusd
                 session.flush()
+                existing_fingerprints = set(
+                    session.scalars(
+                        select(ReviewFindingRecord.fingerprint).where(
+                            ReviewFindingRecord.review_run_id == run.id
+                        )
+                    )
+                )
+                new_findings = tuple(
+                    item
+                    for item in findings
+                    if item.finding.fingerprint not in existing_fingerprints
+                )
                 finding_rows: list[dict[str, object]] = []
-                for item in findings:
+                for item in new_findings:
                     finding = item.finding
                     evidence_status = (
                         finding.evidence_verification_status
@@ -1938,35 +2108,58 @@ class SqlAlchemyReviewTaskQueue:
                 if finding_rows:
                     session.execute(insert(ReviewFindingRecord), finding_rows)
 
-                plan.model_review_completed_at = now
+                total_finding_count = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(ReviewFindingRecord)
+                        .where(ReviewFindingRecord.review_run_id == run.id)
+                    )
+                    or 0
+                )
+                model_call.finding_count = total_finding_count
+
                 run.review_conclusion = (
                     ReviewConclusion.FINDINGS_PRESENT.value
-                    if findings
+                    if total_finding_count
                     else ReviewConclusion.NO_CONFIRMED_FINDINGS.value
                 )
                 run.coverage_status = (
-                    CoverageStatus.COMPLETE.value
-                    if coverage_complete
-                    else CoverageStatus.PARTIAL.value
+                    CoverageStatus.PARTIAL.value
+                    if partial or not coverage_complete
+                    else CoverageStatus.COMPLETE.value
                 )
-                self._set_owned_status(
-                    task,
-                    run,
-                    ExecutionStatus.COMPLETED,
-                    now,
-                )
-                # 旧 execution_status 保持 completed 以兼容现有队列；新的
-                # 工作流必须停在人工批准门，不得把结果误显示为已发布。
-                self._set_workflow_status(
-                    task,
-                    run,
-                    ExecutionStatus.AWAITING_APPROVAL,
-                    now,
-                )
+                if partial:
+                    # 兼容旧队列的 failed 状态，同时把真实 DAG 停在可重试的
+                    # Agent 节点。成功批次/Finding 已保存，租约被安全释放。
+                    self._set_owned_status(task, run, ExecutionStatus.FAILED, now)
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.AGENT_BATCHES,
+                        now,
+                    )
+                    event_type = "review.model.partial"
+                else:
+                    plan.model_review_completed_at = now
+                    self._set_owned_status(
+                        task,
+                        run,
+                        ExecutionStatus.COMPLETED,
+                        now,
+                    )
+                    # 旧 execution_status 保持 completed 以兼容现有队列；新的
+                    # 工作流必须停在人工批准门，不得把结果误显示为已发布。
+                    self._set_workflow_status(
+                        task,
+                        run,
+                        ExecutionStatus.AWAITING_APPROVAL,
+                        now,
+                    )
+                    event_type = "review.model.completed"
                 self._add_event(
                     session,
                     task,
-                    "review.model.completed",
+                    event_type,
                     result.request_fingerprint,
                     now,
                     extra_payload={
@@ -1975,11 +2168,13 @@ class SqlAlchemyReviewTaskQueue:
                         "provider": result.provider.value,
                         "model": result.model,
                         "model_call_status": result.status.value,
-                        "finding_count": len(findings),
+                        "finding_count": total_finding_count,
                         "new_finding_count": sum(
                             status is FindingOccurrenceStatus.NEW
                             for status, _count, _previous in lifecycle_occurrences.values()
                         ),
+                        "partial": partial,
+                        "coverage_status": run.coverage_status,
                         "still_present_finding_count": sum(
                             status is FindingOccurrenceStatus.STILL_PRESENT
                             for status, _count, _previous in lifecycle_occurrences.values()
@@ -2005,9 +2200,13 @@ class SqlAlchemyReviewTaskQueue:
                 session.commit()
                 return StoredModelReview(
                     model_call_id=model_call_id,
-                    created=True,
-                    finding_count=len(findings),
-                    execution_status=ExecutionStatus.COMPLETED,
+                    created=existing is None,
+                    finding_count=total_finding_count,
+                    execution_status=(
+                        ExecutionStatus.FAILED if partial else ExecutionStatus.COMPLETED
+                    ),
+                    coverage_status=run.coverage_status,
+                    partial=partial,
                 )
             except (
                 ModelReviewConflictError,
@@ -2041,7 +2240,13 @@ class SqlAlchemyReviewTaskQueue:
             "batch_failed",
             "agent_completed",
             "agent_failed",
+            "agent_not_applicable",
             "summary_completed",
+            "summary_skipped",
+            "aggregation_completed",
+            "workflow_partial",
+            "retry_requested",
+            "retry_started",
         }
         if phase not in allowed_phases:
             raise ValueError("unsupported model progress phase")
@@ -2567,6 +2772,71 @@ class SqlAlchemyReviewTaskQueue:
                 session.rollback()
                 raise TaskQueueError("model batch result could not be persisted") from exc
 
+    def checkpoint_model_batch(
+        self,
+        lease: ReviewTaskLease,
+        batch_number: int,
+        checkpoint: Mapping[str, object],
+        *,
+        agent: str = "default",
+        expected_attempt_count: int | None = None,
+    ) -> StoredModelBatch:
+        """保存截断拆分的结构化子结果检查点。
+
+        检查点写在批次已有的 ``error_details`` JSON 列中，避免为一次恢复性
+        优化引入迁移；它只在批次仍由当前 Worker 持有时更新，过期 Worker
+        不能覆盖新代次的检查点。
+        """
+
+        if lease.review_plan_id is None:
+            raise ModelReviewConflictError("模型批次缺少 Review Plan")
+        validated = _validated_truncation_checkpoint(checkpoint)
+        now = self._clock()
+        with self._sessions() as session:
+            try:
+                self._locked_owned_task_with_run(session, lease, now)
+                row = session.scalar(
+                    select(ModelReviewBatchRecord)
+                    .where(
+                        ModelReviewBatchRecord.review_plan_id == lease.review_plan_id,
+                        ModelReviewBatchRecord.agent == agent,
+                        ModelReviewBatchRecord.batch_number == batch_number,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise ModelReviewConflictError("模型批次不存在")
+                if row.status == ModelBatchStatus.SUCCEEDED.value:
+                    session.commit()
+                    return self._stored_model_batch(row)
+                if (
+                    row.status != ModelBatchStatus.RUNNING.value
+                    or row.lease_owner != lease.worker_id
+                    or row.lease_expires_at is None
+                    or _as_utc(row.lease_expires_at) <= _as_utc(now)
+                    or (
+                        expected_attempt_count is not None
+                        and row.attempt_count != expected_attempt_count
+                    )
+                ):
+                    raise TaskLeaseLostError("模型批次租约已失效")
+                details = (
+                    dict(row.error_details)
+                    if isinstance(row.error_details, dict)
+                    else {}
+                )
+                details["truncation_checkpoint"] = validated
+                row.error_details = details
+                row.updated_at = now
+                session.commit()
+                return self._stored_model_batch(row)
+            except (TaskLeaseLostError, ModelReviewConflictError):
+                session.rollback()
+                raise
+            except SQLAlchemyError as exc:
+                session.rollback()
+                raise TaskQueueError("model batch checkpoint could not be persisted") from exc
+
     def fail_model_batch(
         self,
         lease: ReviewTaskLease,
@@ -2629,7 +2899,15 @@ class SqlAlchemyReviewTaskQueue:
                 row.available_at = now + delay
                 row.error_code = error.code.value
                 row.error_message = error.safe_message[:1000]
-                row.error_details = dict(error.details)
+                details = dict(error.details)
+                # 如果截断拆分在本次调用中已经完成了部分子批次，保留检查点，
+                # 让下一次领取直接复用这些成功结果，而不是重复请求。
+                previous_details = row.error_details
+                if isinstance(previous_details, dict):
+                    checkpoint = previous_details.get("truncation_checkpoint")
+                    if isinstance(checkpoint, dict):
+                        details["truncation_checkpoint"] = checkpoint
+                row.error_details = details
                 row.updated_at = now
                 self._add_event(
                     session,
@@ -2698,6 +2976,11 @@ class SqlAlchemyReviewTaskQueue:
                 result = ModelReviewResult.model_validate(row.result)
             except (TypeError, ValueError) as exc:
                 raise TaskQueueError("已保存的模型批次结果无效") from exc
+        checkpoint = None
+        if isinstance(row.error_details, dict):
+            raw_checkpoint = row.error_details.get("truncation_checkpoint")
+            if isinstance(raw_checkpoint, dict):
+                checkpoint = dict(raw_checkpoint)
         return StoredModelBatch(
             id=row.id,
             review_plan_id=row.review_plan_id,
@@ -2712,6 +2995,7 @@ class SqlAlchemyReviewTaskQueue:
             result=result,
             error_code=row.error_code,
             error_message=row.error_message,
+            checkpoint=checkpoint,
         )
 
     def reserve_model_budget(

@@ -34,11 +34,45 @@ export const agentDefinitions = [
 
 export type ReviewAgentKey = (typeof agentDefinitions)[number]["key"];
 
-export function actionKey(action?: ReviewAction, reviewRunId?: string): string {
+type ActionKeyTarget = {
+  agent?: string | null;
+  batchNumber?: number | null;
+  stateVersion?: string | null;
+};
+
+// 同一页面状态下的网络重试必须复用一个幂等键；状态版本或失败批次变化
+// 时则生成新的键，避免把两次不同的人工操作误当成同一次。只保留有限条
+// 记录，防止长时间打开详情页造成内存增长。
+const pendingActionKeys = new Map<string, string>();
+const MAX_PENDING_ACTION_KEYS = 128;
+
+export function actionKey(
+  action?: ReviewAction,
+  reviewRunId?: string,
+  target?: ActionKeyTarget,
+): string {
   if (action === "publish" && reviewRunId) {
     return `ui:publish:${reviewRunId}`;
   }
-  return `ui:${Date.now()}:${crypto.randomUUID()}`;
+  if (!action || !reviewRunId) {
+    return `ui:${Date.now()}:${crypto.randomUUID()}`;
+  }
+  const identity = [
+    action,
+    reviewRunId,
+    target?.agent ?? "",
+    target?.batchNumber == null ? "" : String(target.batchNumber),
+    target?.stateVersion ?? "",
+  ].join(":");
+  const existing = pendingActionKeys.get(identity);
+  if (existing) return existing;
+  const value = `ui:${crypto.randomUUID()}`;
+  pendingActionKeys.set(identity, value);
+  if (pendingActionKeys.size > MAX_PENDING_ACTION_KEYS) {
+    const oldest = pendingActionKeys.keys().next().value;
+    if (oldest) pendingActionKeys.delete(oldest);
+  }
+  return value;
 }
 
 export function formatBytes(value: number | null): string {
@@ -208,7 +242,6 @@ function latestAgentEvents(
   const latestAttempt = attempts.length > 0 ? Math.max(...attempts) : null;
   return matching.filter((event) => (
     latestAttempt === null
-      || payloadNumber(event, "model_attempt_count") === null
       || payloadNumber(event, "model_attempt_count") === latestAttempt
   ));
 }
@@ -290,6 +323,11 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
   const completedEvent = latestAgentEvent(scoped, "review.model.agent_completed");
   const failedEvent = latestAgentEvent(scoped, "review.model.agent_failed");
   const summaryEvent = latestAgentEvent(scoped, "review.model.summary_completed");
+  const summarySkippedEvent = latestAgentEvent(scoped, "review.model.summary_skipped");
+  const notApplicableEvent = latestAgentEvent(
+    scoped,
+    "review.model.agent_not_applicable",
+  );
   const batches = latestBatchEvents(scoped);
   const batchCount = payloadNumber(planned, "batch_count")
     ?? Math.max(0, ...batches.keys());
@@ -302,25 +340,43 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
   const lastTerminal = [...scoped].reverse().find((event) => (
     event.event_type === "review.model.agent_completed"
       || event.event_type === "review.model.agent_failed"
+      || event.event_type === "review.model.agent_not_applicable"
       || event.event_type === "review.model.summary_completed"
+      || event.event_type === "review.model.summary_skipped"
   ));
   const terminalIsSuccess = lastTerminal?.event_type === "review.model.agent_completed"
+    && lastTerminal.payload.status !== "not_applicable"
     || (lastTerminal?.event_type === "review.model.summary_completed"
       && lastTerminal.payload.agent_status === "completed");
-  const terminalIsFailure = lastTerminal?.event_type === "review.model.agent_failed"
+  const terminalIsDisabled = lastTerminal?.event_type === "review.model.agent_failed"
+    && lastTerminal.payload.status === "disabled";
+  const terminalIsNotApplicable = lastTerminal?.event_type
+    === "review.model.agent_not_applicable"
+    || (lastTerminal?.event_type === "review.model.agent_completed"
+      && lastTerminal.payload.status === "not_applicable");
+  const terminalIsFailure = (
+    (lastTerminal?.event_type === "review.model.agent_failed" && !terminalIsDisabled)
     || (lastTerminal?.event_type === "review.model.summary_completed"
-      && lastTerminal.payload.agent_status !== "completed");
+      && lastTerminal.payload.agent_status !== "completed")
+  );
+  const terminalIsSkipped = lastTerminal?.event_type === "review.model.summary_skipped";
   const status = terminalIsSuccess
     ? "completed"
-    : terminalIsFailure
-      ? "failed"
-      : failedBatches.length > 0
+    : terminalIsDisabled
+      ? "disabled"
+      : terminalIsNotApplicable
+        ? "not_applicable"
+      : terminalIsFailure
         ? "failed"
-        : scoped.some((event) => event.event_type === "review.model.request_started")
-          ? "running"
-          : planned
-            ? "planned"
-            : "waiting";
+        : terminalIsSkipped
+          ? "not_executed"
+          : failedBatches.length > 0
+            ? "failed"
+            : scoped.some((event) => event.event_type === "review.model.request_started")
+              ? "running"
+              : planned
+                ? "planned"
+                : "waiting";
   const terminal = terminalIsSuccess || terminalIsFailure ? lastTerminal : undefined;
   const findingCount = payloadNumber(terminal, "finding_count")
     ?? (agent === "summary" ? payloadNumber(summaryEvent, "finding_count") : null)
@@ -351,6 +407,8 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
     ...stringArrayPayload(completedEvent, "references"),
     ...stringArrayPayload(failedEvent, "references"),
     ...stringArrayPayload(summaryEvent, "references"),
+    ...stringArrayPayload(summarySkippedEvent, "references"),
+    ...stringArrayPayload(notApplicableEvent, "references"),
   ])];
   const verdict = payloadVerdict(terminal);
   const conclusionSummary = payloadString(terminal, "summary");

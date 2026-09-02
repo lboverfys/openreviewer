@@ -18,6 +18,7 @@ from domain.review_planning import (
     ReviewFilePlan,
     ReviewPlan,
     ReviewUnit,
+    infer_review_domains,
     repository_rule_candidate_paths,
 )
 from services.task_queue import ReviewTarget
@@ -338,6 +339,11 @@ class DeterministicReviewPlanner:
         if item.patch is None:
             raise AssertionError("review units require patch text")
         patch_sha256 = sha256(item.patch.encode("utf-8")).hexdigest()
+        review_domains = infer_review_domains(
+            item.path,
+            item.patch,
+            tuple(rule.path for rule in rules),
+        )
         identity = {
             "planner_version": self._settings.planner_version,
             "review_version_key": target.review_version_key,
@@ -350,6 +356,7 @@ class DeterministicReviewPlanner:
                 {"path": rule.path, "content_sha256": rule.content_sha256}
                 for rule in rules
             ],
+            "review_domains": [agent.value for agent in review_domains],
         }
         unit_key = sha256(_canonical_json(identity)).hexdigest()
         language = _language_for(item.path)
@@ -366,6 +373,7 @@ class DeterministicReviewPlanner:
             patch=item.patch,
             patch_sha256=patch_sha256,
             rule_paths=tuple(rule.path for rule in rules),
+            review_domains=review_domains,
             estimated_input_bytes=estimated_input_bytes,
             planner_version=self._settings.planner_version,
         )
@@ -392,7 +400,13 @@ class DeterministicReviewPlanner:
                 }
                 for item in files
             ],
-            "units": [unit.unit_key for unit in units],
+            "units": [
+                {
+                    "unit_key": unit.unit_key,
+                    "review_domains": [agent.value for agent in unit.review_domains],
+                }
+                for unit in units
+            ],
             "model_budget": self._settings.model_budget.model_dump(mode="json"),
         }
         return sha256(_canonical_json(identity)).hexdigest()

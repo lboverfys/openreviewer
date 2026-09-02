@@ -56,14 +56,16 @@ const actionLabels: Record<ReviewAction, string> = {
   start: "开始审查",
   pause: "暂停",
   resume: "继续",
-  retry_stage: "按阶段重试",
+  retry_stage: "从指定阶段重试",
   approve: "批准审查",
   reject: "驳回",
   publish: "发布到 GitHub",
   expedite: "立即唤醒",
-  retry: "重新排队重试",
+  retry: "重试当前失败节点",
   cancel: "取消任务",
-  rerun: "重新审查",
+  rerun: "新建审查（最新提交）",
+  retry_failed_node: "重试当前失败节点",
+  new_review: "新建审查（最新提交）",
 };
 
 type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
@@ -87,6 +89,19 @@ const retryTargetOptions: ReadonlyArray<[RetryTargetStage, string]> = [
   ["aggregating", "结果汇总"],
 ];
 
+function retryStageNotice(targetStage: RetryTargetStage): string {
+  switch (targetStage) {
+    case "ci":
+      return "将清理 CI 之后的规划、Agent 批次、Finding 和汇总结果；保留任务身份、提交 SHA 与审计日志。";
+    case "planning":
+      return "将清理当前规划及后续 Agent 批次、Finding 和汇总结果；保留任务身份、CI 结果、提交 SHA 与审计日志。";
+    case "agent_batches":
+      return "将清理全部模型批次、模型 Finding 与汇总结果；保留任务身份、CI 结果、审查计划、提交 SHA 与审计日志。";
+    case "aggregating":
+      return "将清理当前汇总快照；保留安全、规范、逻辑 Agent 的成功批次，Finding 会在重试时由这些批次重新生成，并保留任务身份及审计日志。";
+  }
+}
+
 const actionIcons: Record<ReviewAction, string> = {
   start: "▶",
   pause: "Ⅱ",
@@ -99,6 +114,8 @@ const actionIcons: Record<ReviewAction, string> = {
   retry: "↻",
   cancel: "×",
   rerun: "⟳",
+  retry_failed_node: "↻",
+  new_review: "＋",
 };
 
 const findingCategoryLabels: Record<string, string> = {
@@ -140,8 +157,14 @@ const eventLabels: Record<string, string> = {
   "review.model.batch_failed": "AI 批次失败",
   "review.model.agent_completed": "审查 Agent 已完成",
   "review.model.agent_failed": "审查 Agent 失败",
+  "review.model.agent_not_applicable": "审查 Agent 不适用",
   "review.model.aggregating_started": "开始汇总审查结果",
   "review.model.summary_completed": "汇总 Agent 已完成",
+  "review.model.summary_skipped": "汇总未执行",
+  "review.model.aggregation_completed": "本地汇总已完成",
+  "review.model.workflow_partial": "部分结果已保存",
+  "review.model.retry_requested": "已请求节点重试",
+  "review.model.retry_started": "节点重试已开始",
   "review.model.budget_exhausted": "模型资源保护已触发",
   "review.model.budget_observed": "模型资源用量已记录",
   "review.model.completed": "AI 分析完成",
@@ -162,6 +185,8 @@ const eventLabels: Record<string, string> = {
   "review.superseded": "任务被新提交替代",
   "review.manual.expedite": "管理员立即唤醒任务",
   "review.manual.retry": "管理员重试任务",
+  "review.manual.retry_failed_node": "管理员重试失败节点",
+  "review.manual.new_review_requested": "已创建最新提交审查",
   "review.manual.cancel": "管理员取消任务",
   "review.manual.rerun_requested": "管理员发起重新审查",
   "review.finding.decided": "管理员更新问题裁决",
@@ -302,8 +327,9 @@ function ReviewDetailPage({
     if (action === "cancel" && !window.confirm("确定取消这个任务吗？")) return;
     if (action === "approve" && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
-    if (action === "retry_stage" && !window.confirm("将清除所选阶段及之后的结果，并从该阶段重新审查。继续吗？")) return;
+    if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
     if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
+    if ((action === "rerun" || action === "new_review") && !window.confirm(`将使用提交 ${shortSha(details.head_sha)} 创建一条新的审查记录，当前任务和结果不会被覆盖。继续吗？`)) return;
     if (
       action === "resume"
       && details.last_error_code === "model_budget_exceeded"
@@ -311,17 +337,72 @@ function ReviewDetailPage({
     ) return;
     setActionBusy(action);
     try {
+      const failedNode = action === "retry_failed_node"
+        || (action === "retry" && details.coverage_status === "partial");
+      const newReview = action === "new_review"
+        || (action === "rerun" && details.coverage_status === "partial");
       const result = await api.reviewAction(
         details.review_run_id,
         action,
-        actionKey(action, details.review_run_id),
+        actionKey(action, details.review_run_id, {
+          stateVersion: details.change_token,
+        }),
         action === "retry_stage" ? retryTargetStage : undefined,
+        {
+          retryScope: failedNode
+            ? "failed_node"
+            : newReview
+              ? "new_review"
+              : action === "retry_stage"
+                ? "stage"
+              : undefined,
+          // 顶部按钮表示“所有失败节点”；卡片按钮走 retryNode，
+          // 才会携带具体 Agent/批次，避免只重置失败列表中的第一项。
+          agent: undefined,
+          batchNumber: undefined,
+          stateVersion: details.change_token,
+          headSha: details.head_sha,
+        },
       );
-      if (action === "rerun" && result.review_run_id !== details.review_run_id) {
+      if ((action === "rerun" || action === "new_review") && result.review_run_id !== details.review_run_id) {
         onOpenReview(result.review_run_id);
       } else {
         await loadDetails();
       }
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) {
+        onSignedOut("登录状态已失效，请重新登录");
+      } else {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function retryNode(agent: string, batchNumber?: number) {
+    if (!details || !canManageReviews || actionBusy !== null) return;
+    const action = "retry_failed_node" as ReviewAction;
+    setActionBusy(action);
+    try {
+      await api.reviewAction(
+        details.review_run_id,
+        action,
+        actionKey(action, details.review_run_id, {
+          agent,
+          batchNumber,
+          stateVersion: details.change_token,
+        }),
+        undefined,
+        {
+          retryScope: "failed_node",
+          agent,
+          batchNumber,
+          stateVersion: details.change_token,
+          headSha: details.head_sha,
+        },
+      );
+      await loadDetails();
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
@@ -634,18 +715,29 @@ function ReviewDetailPage({
               </label>
             )}
             {hasActions ? availableActions.map((action) => (
-              <button
-                key={action}
-                type="button"
-                className={`review-action-btn action-${action}`}
-                disabled={actionBusy !== null}
-                onClick={() => void runAction(action)}
-              >
-                <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "resume" && modelGuardPaused ? "继续当前阶段" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
-              </button>
+              <div className="review-action-with-hint" key={action}>
+                <button
+                  type="button"
+                  className={`review-action-btn action-${action}`}
+                  disabled={actionBusy !== null}
+                  onClick={() => void runAction(action)}
+                >
+                  <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "resume" && modelGuardPaused ? "继续当前阶段" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
+                </button>
+                {(action === "retry_failed_node" || action === "retry") && <small>不会重复调用已成功的模型请求</small>}
+                {action === "retry_stage" && <small>{retryStageNotice(retryTargetStage)}</small>}
+                {(action === "new_review" || action === "rerun") && <small>创建新记录，不覆盖当前任务</small>}
+              </div>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
           </div>
         </section>
+
+        {details.coverage_status === "partial" && (
+          <section className="review-coverage-warning" role="status">
+            <DetailIcon>!</DetailIcon>
+            <div><strong>部分覆盖</strong><p>已有结果可以查看，但仍有 Agent 或批次待重试；完成前不能批准或发布。</p></div>
+          </section>
+        )}
 
         <section className="review-summary-strip" aria-label="任务关键指标">
           <div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div>
@@ -667,7 +759,11 @@ function ReviewDetailPage({
         <div className={`review-detail-grid active-${activeTab}`}>
           <div className="review-detail-primary">
             <StageTimeline details={details} />
-            <ModelBatchPanel details={details} />
+            <ModelBatchPanel
+              details={details}
+              onRetry={canManageReviews ? retryNode : undefined}
+              retryBusy={actionBusy !== null}
+            />
             {!agentSummaries.some((item) => item.progress.events.length > 0) && !details.model_review_completed_at && (
               <section className="review-panel review-agent-tab-empty"><DetailIcon>◌</DetailIcon><div><strong>Agent 尚未开始执行</strong><p>完成 CI 和审查规划后，四路 Agent 的实时进度会显示在这里。</p></div></section>
             )}
@@ -677,6 +773,15 @@ function ReviewDetailPage({
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
                 <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.new_finding_count > 0 && <span className="result-count result-count-new">{details.new_finding_count} 条新增</span>}{details.fixed_finding_count > 0 && <span className="result-count result-count-fixed">{details.fixed_finding_count} 条已修复</span>}{details.unreviewed_finding_count > 0 && <span className="result-count result-count-pending">{details.unreviewed_finding_count} 待裁决</span>}</div>
               </div>
+              {details.summary_status === "skipped" && details.coverage_status === "partial" && (
+                <div className="review-summary-status is-warning"><strong>上游 Agent 未完成，汇总未执行</strong><span>已保留可用的部分结果</span></div>
+              )}
+              {details.aggregation_status === "local" && details.coverage_status !== "partial" && (
+                <div className="review-summary-status is-local"><strong>本地汇总已完成</strong><span>结果已按身份去重并排序</span></div>
+              )}
+              {details.summary_status === "failed" && (
+                <div className="review-summary-status is-warning"><strong>汇总失败</strong><span>已继续使用本地确定性汇总</span></div>
+              )}
               {(finalAgentProgress.status === "completed" || details.model_review_completed_at) && (
                 finalAgentProgress.hasStructuredConclusion && finalAgentProgress.verdict ? (
                   <div className={`review-final-conclusion verdict-${finalAgentProgress.verdict}`}>
@@ -733,7 +838,7 @@ function ReviewDetailPage({
                 </div>
               )}
               {!details.model_review_completed_at && (currentModelFailure || retryPending) && (
-                <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small></div></div>
+                <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small>{(availableActions.includes("retry_failed_node") || (availableActions.includes("retry") && details.coverage_status === "partial")) && <button type="button" className="review-inline-retry-btn" disabled={actionBusy !== null} onClick={() => void runAction(availableActions.includes("retry_failed_node") ? "retry_failed_node" : "retry")}>立即重试当前失败节点</button>}</div></div>
               )}
               {!details.model_review_completed_at && !currentModelFailure && !retryPending && (
                 <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>AI 结果尚未生成</strong><p>模型完成后，候选问题会显示在这里。</p></div></div>

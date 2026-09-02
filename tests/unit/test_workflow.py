@@ -9,7 +9,9 @@ from apps.worker.main import (
     WorkerRuntime,
     _agent_conclusion_payload,
     _BusyHeartbeat,
+    _dump_truncation_checkpoint,
     _LeaseCursor,
+    _load_truncation_checkpoint,
     _model_budget_context,
     _PersistentBatchedReviewer,
     _safe_unsupported_parameters_payload,
@@ -26,25 +28,35 @@ from domain.enums import (
     ReviewAgent,
     WorkerStatus,
 )
-from domain.model_review import ModelReviewOutput, ModelReviewResult, ModelTokenUsage
-from domain.security import ErrorCode, SafeApplicationError
+from domain.model_review import (
+    ModelReviewInput,
+    ModelReviewOutput,
+    ModelReviewResult,
+    ModelTokenUsage,
+)
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 from domain.workflow import (
     WorkflowAction,
     WorkflowTransitionError,
     next_automatic_stage,
     transition,
 )
+from persistence.review_management import _project_agent_progress
 from services.agent_workflow import (
     PARALLEL_AGENTS,
     AgentExecution,
     FixedAgentWorkflow,
     WorkflowExecution,
     _execution_context,
+    _PartialAgentReviewError,
+    scope_model_review_input,
 )
 from services.ai_settings import ActiveAiRuntime
-from services.model_review import ModelReviewer, ModelServiceSettings
+from services.model_review import ModelReviewBatch, ModelReviewer, ModelServiceSettings
+from services.review_management import StoredReviewEvent
 from services.task_queue import (
     ModelBatchBusyError,
+    ModelReviewCheckpointTooLargeError,
     ReviewTaskLease,
     ReviewTaskQueue,
     StoredModelBatch,
@@ -1566,3 +1578,557 @@ def test_workflow_compatibility_result_rejects_partial_success() -> None:
 
     with pytest.raises(TaskQueueError):
         _workflow_result(make_model_input(), execution)
+
+
+def test_truncation_split_checkpoint_reuses_completed_children() -> None:
+    """截断后的子请求在 Worker 重启/重试时不得重复调用。"""
+
+    source = make_model_input()
+    second_unit = source.units[0].model_copy(
+        update={
+            "unit_key": "e" * 64,
+            "file": "src/other.py",
+            "patch_sha256": source.units[0].patch_sha256,
+        }
+    )
+    source = source.model_copy(
+        update={
+            "units": (source.units[0], second_unit),
+            "total_estimated_input_bytes": (
+                source.units[0].estimated_input_bytes
+                + second_unit.estimated_input_bytes
+            ),
+        }
+    )
+
+    class TruncatingReviewer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def review(self, review_input):
+            self.calls.append(tuple(unit.unit_key for unit in review_input.units))
+            if len(review_input.units) > 1:
+                raise SafeApplicationError(
+                    SafeError(
+                        code=ErrorCode.MODEL_OUTPUT_TRUNCATED,
+                        safe_message="输出被截断",
+                        retryable=True,
+                    )
+                )
+            return model_result(str(len(self.calls)))
+
+        def close(self) -> None:
+            return None
+
+    reviewer = TruncatingReviewer()
+    wrapped = _PersistentBatchedReviewer(
+        cast(ReviewTaskQueue, object()),
+        cast(_LeaseCursor, object()),
+        ReviewAgent.SECURITY,
+        reviewer,
+        ModelServiceSettings(
+            provider=ModelProvider.OPENAI,
+            model="test-model",
+            api_key="test-key",
+        ),
+        timedelta(minutes=10),
+    )
+    results: dict[str, ModelReviewResult] = {}
+    split_nodes: set[str] = set()
+
+    def checkpoint(key: str, result: ModelReviewResult | None) -> None:
+        if result is None:
+            split_nodes.add(key)
+        else:
+            results[key] = result
+
+    first = wrapped._review_with_truncation_split(
+        source,
+        checkpoint_results=results,
+        checkpoint_split_nodes=split_nodes,
+        on_checkpoint=checkpoint,
+    )
+    assert len(reviewer.calls) == 3
+    payload = _dump_truncation_checkpoint(
+        results,
+        split_nodes,
+        root_key="root",
+    )
+    loaded_results, loaded_splits = _load_truncation_checkpoint(payload)
+    assert loaded_results
+    assert split_nodes
+
+    retry_reviewer = TruncatingReviewer()
+    retry = _PersistentBatchedReviewer(
+        cast(ReviewTaskQueue, object()),
+        cast(_LeaseCursor, object()),
+        ReviewAgent.SECURITY,
+        retry_reviewer,
+        ModelServiceSettings(
+            provider=ModelProvider.OPENAI,
+            model="test-model",
+            api_key="test-key",
+        ),
+        timedelta(minutes=10),
+    )
+    resumed = retry._review_with_truncation_split(
+        source,
+        checkpoint_results=loaded_results,
+        checkpoint_split_nodes=loaded_splits,
+    )
+    assert retry_reviewer.calls == []
+    assert resumed == first
+
+
+def test_partial_agent_result_keeps_completed_batches_for_workflow_aggregation() -> None:
+    """后置批次失败时，前置批次结果仍应进入部分汇总。"""
+
+    source = make_model_input()
+    partial = model_result("1").model_copy(update={"output": make_output()})
+    partial_error = SafeError(
+        code=ErrorCode.MODEL_TIMEOUT,
+        safe_message="第二批模型请求超时",
+        retryable=True,
+        details={"batch_number": 2},
+    )
+
+    class PartialReviewer:
+        def review(self, _review_input):
+            raise _PartialAgentReviewError(
+                partial_error,
+                partial_result=partial,
+                completed_batches=(1,),
+                failed_batch=2,
+            )
+
+        def close(self) -> None:
+            return None
+
+    reviewers = {
+        ReviewAgent.SECURITY: PartialReviewer(),
+        ReviewAgent.CONVENTION: StaticReviewer(
+            model_result("2"), name="convention", calls=[]
+        ),
+        ReviewAgent.LOGIC: StaticReviewer(model_result("3"), name="logic", calls=[]),
+    }
+    execution = FixedAgentWorkflow(reviewers, max_concurrency=1).run(
+        source,
+        allow_partial_aggregation=True,
+    )
+
+    security = next(
+        item for item in execution.agents if item.agent is ReviewAgent.SECURITY
+    )
+    assert security.status == "failed"
+    assert security.result == partial
+    assert security.completed_batches == (1,)
+    assert security.failed_batches == (2,)
+    assert execution.partial_result is True
+    assert execution.failed_agents == (ReviewAgent.SECURITY,)
+    assert execution.failed_batches == ((ReviewAgent.SECURITY.value, 2),)
+
+    combined = _workflow_result(source, execution, allow_partial=True)
+    assert combined.output.findings
+
+
+def test_disabled_agent_is_not_reported_as_retryable_failure() -> None:
+    source = make_model_input()
+    reviewers = {
+        ReviewAgent.CONVENTION: StaticReviewer(
+            model_result("2"), name="convention", calls=[]
+        ),
+        ReviewAgent.LOGIC: StaticReviewer(model_result("3"), name="logic", calls=[]),
+    }
+
+    execution = FixedAgentWorkflow(reviewers, max_concurrency=1).run(
+        source,
+        allow_partial_aggregation=True,
+    )
+
+    security = next(
+        item for item in execution.agents if item.agent is ReviewAgent.SECURITY
+    )
+    assert security.status == "disabled"
+    assert execution.partial_result is True
+    assert execution.failed_agents == ()
+
+
+def test_workflow_sends_only_units_in_each_agent_responsibility() -> None:
+    source = make_model_input()
+    security_unit = source.units[0].model_copy(
+        update={
+            "unit_key": "f" * 64,
+            "file": "src/security.py",
+            "review_domains": (ReviewAgent.SECURITY,),
+        }
+    )
+    logic_unit = source.units[0].model_copy(
+        update={
+            "unit_key": "a" * 64,
+            "file": "src/orders.py",
+            "review_domains": (ReviewAgent.CONVENTION, ReviewAgent.LOGIC),
+        }
+    )
+    source = source.model_copy(
+        update={
+            "units": (logic_unit, security_unit),
+            "total_estimated_input_bytes": (
+                security_unit.estimated_input_bytes + logic_unit.estimated_input_bytes
+            ),
+        }
+    )
+
+    assert tuple(unit.file for unit in scope_model_review_input(source, ReviewAgent.SECURITY).units) == (
+        "src/security.py",
+    )
+    assert tuple(unit.file for unit in scope_model_review_input(source, ReviewAgent.LOGIC).units) == (
+        "src/orders.py",
+    )
+
+    calls: dict[ReviewAgent, list[ModelReviewInput]] = {
+        agent: []
+        for agent in (ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC)
+    }
+    reviewers = {
+        agent: StaticReviewer(
+            model_result(str(index)),
+            name=agent.value,
+            calls=[],
+            inputs=calls[agent],
+        )
+        for index, agent in enumerate(calls, start=1)
+    }
+    execution = FixedAgentWorkflow(reviewers, max_concurrency=1).run(source)
+
+    assert [item.file for item in calls[ReviewAgent.SECURITY][0].units] == [
+        "src/security.py"
+    ]
+    assert [item.file for item in calls[ReviewAgent.CONVENTION][0].units] == [
+        "src/orders.py"
+    ]
+    assert [item.file for item in calls[ReviewAgent.LOGIC][0].units] == [
+        "src/orders.py"
+    ]
+    assert all(item.status == "completed" for item in execution.agents)
+
+
+def test_workflow_marks_unmatched_agent_as_not_applicable() -> None:
+    base = make_model_input()
+    source = base.model_copy(
+        update={
+            "units": (
+                base.units[0].model_copy(
+                    update={"review_domains": (ReviewAgent.LOGIC,)}
+                ),
+            )
+        }
+    )
+    calls: list[str] = []
+    reviewers = {
+        ReviewAgent.LOGIC: StaticReviewer(
+            model_result("1"), name="logic", calls=calls
+        )
+    }
+
+    execution = FixedAgentWorkflow(reviewers, max_concurrency=1).run(source)
+
+    statuses = {item.agent: item.status for item in execution.agents}
+    assert statuses[ReviewAgent.SECURITY] == "not_applicable"
+    assert statuses[ReviewAgent.CONVENTION] == "not_applicable"
+    assert statuses[ReviewAgent.LOGIC] == "completed"
+    assert calls == ["logic"]
+    assert execution.status == "completed"
+
+
+def test_agent_progress_projection_distinguishes_disabled_from_failed() -> None:
+    events = (
+        StoredReviewEvent(
+            id="disabled",
+            event_type="review.model.agent_failed",
+            payload={
+                "agent": ReviewAgent.SECURITY.value,
+                "status": "disabled",
+            },
+            occurred_at=datetime(2026, 8, 31, tzinfo=UTC),
+        ),
+    )
+
+    statuses, _summaries, _aggregation, _summary, _partial, failed, batches = (
+        _project_agent_progress(
+            events,
+            coverage_status="partial",
+            model_completed=False,
+        )
+    )
+
+    assert statuses[ReviewAgent.SECURITY.value] == "disabled"
+    assert failed == ()
+    assert batches == ()
+
+
+def test_agent_progress_projection_ignores_legacy_events_after_new_attempt() -> None:
+    old_time = datetime(2026, 8, 30, tzinfo=UTC)
+    new_time = datetime(2026, 8, 31, tzinfo=UTC)
+    events = (
+        StoredReviewEvent(
+            id="old-completed",
+            event_type="review.model.agent_completed",
+            payload={
+                "agent": ReviewAgent.CONVENTION.value,
+                "status": "completed",
+            },
+            occurred_at=old_time,
+        ),
+        StoredReviewEvent(
+            id="new-started",
+            event_type="review.model.retry_started",
+            payload={
+                "agent": "workflow",
+                "model_attempt_count": 2,
+            },
+            occurred_at=new_time,
+        ),
+        StoredReviewEvent(
+            id="new-failed",
+            event_type="review.model.agent_failed",
+            payload={
+                "agent": ReviewAgent.SECURITY.value,
+                "status": "failed",
+                "model_attempt_count": 2,
+            },
+            occurred_at=new_time,
+        ),
+    )
+
+    statuses, _summaries, _aggregation, _summary, _partial, failed, _batches = (
+        _project_agent_progress(
+            events,
+            coverage_status="partial",
+            model_completed=False,
+        )
+    )
+
+    assert statuses[ReviewAgent.SECURITY.value] == "failed"
+    assert statuses[ReviewAgent.CONVENTION.value] == "waiting"
+    assert failed == (ReviewAgent.SECURITY.value,)
+
+
+def test_persistent_reviewer_exposes_prior_batch_after_later_failure(monkeypatch) -> None:
+    """持久化批次循环失败时应把前置成功结果交给工作流。"""
+
+    source = make_model_input()
+    batches = tuple(
+        ModelReviewBatch(
+            number=number,
+            total=2,
+            review_input=source,
+            estimated_input_tokens=10,
+        )
+        for number in (1, 2)
+    )
+
+    import apps.worker.main as worker_main
+
+    monkeypatch.setattr(worker_main, "plan_model_review_batches", lambda *_args, **_kwargs: batches)
+
+    class Queue(_HeartbeatQueue):
+        def record_model_progress(self, *_args, **_kwargs) -> None:
+            return None
+
+        def ensure_model_batches(self, *_args, **_kwargs):
+            return ()
+
+        def claim_model_batch(self, _lease, batch_number, **_kwargs):
+            return StoredModelBatch(
+                id=f"batch-{batch_number}",
+                review_plan_id="plan-1",
+                agent=ReviewAgent.SECURITY.value,
+                batch_number=batch_number,
+                batch_count=2,
+                unit_keys=("d" * 64,),
+                estimated_input_tokens=10,
+                status=ModelBatchStatus.RUNNING,
+                attempt_count=1,
+                request_fingerprint=None,
+                result=None,
+                error_code=None,
+                error_message=None,
+            )
+
+        def complete_model_batch(self, *_args, **_kwargs):
+            return None
+
+        def fail_model_batch(self, *_args, **_kwargs):
+            return None
+
+        def reserve_model_budget(self, *_args, **_kwargs):
+            return None
+
+        def settle_model_budget(self, *_args, **_kwargs):
+            return None
+
+    class Reviewer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def review(self, _review_input):
+            self.calls += 1
+            if self.calls == 1:
+                return model_result("1")
+            raise RuntimeError("第二批失败")
+
+        def close(self) -> None:
+            return None
+
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    lease = ReviewTaskLease(
+        task_id="task-1",
+        review_run_id="run-1",
+        worker_id="worker-1",
+        attempt_count=1,
+        model_attempt_count=1,
+        lease_expires_at=now + timedelta(minutes=10),
+        claimed_from_status=ExecutionStatus.READY_FOR_REVIEW,
+        review_plan_id="plan-1",
+    )
+    queue = Queue()
+    cursor = _LeaseCursor(cast(ReviewTaskQueue, queue), lease, timedelta(minutes=10))
+    reviewer = Reviewer()
+    wrapped = _PersistentBatchedReviewer(
+        cast(ReviewTaskQueue, queue),
+        cursor,
+        ReviewAgent.SECURITY,
+        reviewer,
+        ModelServiceSettings(
+            provider=ModelProvider.OPENAI,
+            model="test-model",
+            api_key="test-key",
+        ),
+        timedelta(minutes=10),
+    )
+
+    with pytest.raises(_PartialAgentReviewError) as raised:
+        wrapped.review(source)
+
+    assert reviewer.calls == 2
+    assert raised.value.partial_result.status is ModelCallStatus.SUCCEEDED
+    assert raised.value.completed_batches == (1,)
+    assert raised.value.failed_batch == 2
+
+
+def test_checkpoint_size_limit_does_not_fail_successful_model_batch(monkeypatch) -> None:
+    """检查点过大时只放弃恢复快照，不能把模型成功改成批次失败。"""
+
+    source = make_model_input()
+    second_unit = source.units[0].model_copy(
+        update={"unit_key": "e" * 64, "file": "src/other.py"}
+    )
+    source = source.model_copy(
+        update={
+            "units": (source.units[0], second_unit),
+            "total_estimated_input_bytes": sum(
+                unit.estimated_input_bytes for unit in (source.units[0], second_unit)
+            ),
+        }
+    )
+    batch = ModelReviewBatch(
+        number=1,
+        total=1,
+        review_input=source,
+        estimated_input_tokens=10,
+    )
+
+    import apps.worker.main as worker_main
+
+    monkeypatch.setattr(worker_main, "plan_model_review_batches", lambda *_args, **_kwargs: (batch,))
+
+    class Queue(_HeartbeatQueue):
+        def record_model_progress(self, *_args, **_kwargs) -> None:
+            return None
+
+        def ensure_model_batches(self, *_args, **_kwargs):
+            return ()
+
+        def claim_model_batch(self, _lease, _batch_number, **_kwargs):
+            return StoredModelBatch(
+                id="batch-1",
+                review_plan_id="plan-1",
+                agent=ReviewAgent.SECURITY.value,
+                batch_number=1,
+                batch_count=1,
+                unit_keys=tuple(unit.unit_key for unit in source.units),
+                estimated_input_tokens=10,
+                status=ModelBatchStatus.RUNNING,
+                attempt_count=1,
+                request_fingerprint=None,
+                result=None,
+                error_code=None,
+                error_message=None,
+            )
+
+        def checkpoint_model_batch(self, *_args, **_kwargs):
+            raise ModelReviewCheckpointTooLargeError()
+
+        def complete_model_batch(self, *_args, **_kwargs):
+            return None
+
+        def fail_model_batch(self, *_args, **_kwargs):
+            raise AssertionError("检查点过大不应触发批次失败")
+
+        def reserve_model_budget(self, *_args, **_kwargs):
+            return None
+
+        def settle_model_budget(self, *_args, **_kwargs):
+            return None
+
+    class Reviewer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def review(self, review_input):
+            self.calls += 1
+            if len(review_input.units) > 1:
+                raise SafeApplicationError(
+                    SafeError(
+                        code=ErrorCode.MODEL_OUTPUT_TRUNCATED,
+                        safe_message="输出被截断",
+                        retryable=True,
+                    )
+                )
+            return model_result("1").model_copy(
+                update={"output": ModelReviewOutput(findings=())}
+            )
+
+        def close(self) -> None:
+            return None
+
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    lease = ReviewTaskLease(
+        task_id="task-1",
+        review_run_id="run-1",
+        worker_id="worker-1",
+        attempt_count=1,
+        model_attempt_count=1,
+        lease_expires_at=now + timedelta(minutes=10),
+        claimed_from_status=ExecutionStatus.READY_FOR_REVIEW,
+        review_plan_id="plan-1",
+    )
+    queue = Queue()
+    reviewer = Reviewer()
+    wrapped = _PersistentBatchedReviewer(
+        cast(ReviewTaskQueue, queue),
+        _LeaseCursor(cast(ReviewTaskQueue, queue), lease, timedelta(minutes=10)),
+        ReviewAgent.SECURITY,
+        reviewer,
+        ModelServiceSettings(
+            provider=ModelProvider.OPENAI,
+            model="test-model",
+            api_key="test-key",
+        ),
+        timedelta(minutes=10),
+    )
+
+    result = wrapped.review(source)
+
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert reviewer.calls == 3
