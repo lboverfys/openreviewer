@@ -70,7 +70,6 @@ from services.review_planning import DeterministicReviewPlanner, ReviewPlanningS
 from services.reviews import ReviewService
 from services.task_queue import (
     ModelBatchBusyError,
-    ModelBudgetExceededError,
     ModelReviewConflictError,
     ReviewPlanConflictError,
     ReviewPlanInputError,
@@ -1437,75 +1436,22 @@ def test_model_stage_uses_an_independent_retry_counter(database: Database) -> No
     assert second_model_lease.review_plan_id is not None
 
 
-def test_model_budget_settlement_releases_unused_reservation(
+def test_legacy_model_budget_entry_points_are_non_blocking_and_not_persisted(
     database: Database,
 ) -> None:
+    """历史预算接口只保留调用兼容性，不再限制或写入模型用量。"""
+
     clock = MutableClock(datetime(2026, 8, 28, 8, 0, tzinfo=UTC))
-    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
+    queue, lease, task_id, run_id, plan_id = _prepare_budget_lease(
         database,
         clock,
-        key="budget-settlement",
+        key="budget-compatibility",
         policy=ModelBudgetPolicy(
             enforcement="enforce",
-            max_http_calls=2,
-            max_input_tokens=1_000,
-            max_output_tokens=256,
-            max_estimated_cost_microusd=1_000,
-            max_duration_seconds=30,
-        ),
-    )
-    reservation = queue.reserve_model_budget(
-        lease,
-        ModelBudgetRequest(
-            provider="openai",
-            api_protocol="responses",
-            model="test-model",
-            request_bytes=200,
-            input_token_upper_bound=400,
-            output_token_upper_bound=100,
-            cost_upper_bound_microusd=500,
-        ),
-    )
-
-    queue.settle_model_budget(
-        reservation,
-        input_tokens=150,
-        output_tokens=30,
-        estimated_cost_microusd=125,
-        response_status=200,
-        duration_ms=250,
-    )
-
-    with database.sessions() as session:
-        plan = session.get(ReviewPlanRecord, plan_id)
-        call = session.get(ModelHttpCallRecord, reservation.id)
-        assert plan is not None
-        assert call is not None
-        assert plan.model_http_calls == 1
-        assert plan.model_input_tokens == 150
-        assert plan.model_output_tokens == 30
-        assert plan.model_estimated_cost_microusd == 125
-        assert call.status == "settled"
-        assert call.actual_input_tokens == 150
-        assert call.actual_output_tokens == 30
-        assert call.actual_cost_microusd == 125
-
-
-def test_model_budget_observe_mode_records_overrun_without_blocking(
-    database: Database,
-) -> None:
-    """观测模式允许继续请求，并保留累计指标与越限事件。"""
-
-    clock = MutableClock(datetime(2026, 8, 28, 8, 3, tzinfo=UTC))
-    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
-        database,
-        clock,
-        key="budget-observe",
-        policy=ModelBudgetPolicy(
             max_http_calls=1,
             max_input_tokens=1_000,
             max_output_tokens=256,
-            max_estimated_cost_microusd=1_000,
+            max_estimated_cost_microusd=1,
             max_duration_seconds=30,
         ),
     )
@@ -1516,337 +1462,57 @@ def test_model_budget_observe_mode_records_overrun_without_blocking(
         request_bytes=200,
         input_token_upper_bound=400,
         output_token_upper_bound=100,
-        cost_upper_bound_microusd=500,
+        cost_upper_bound_microusd=None,
     )
+
     first = queue.reserve_model_budget(lease, request)
     queue.settle_model_budget(
         first,
-        input_tokens=150,
-        output_tokens=30,
-        estimated_cost_microusd=125,
-        response_status=200,
-        duration_ms=250,
+        input_tokens=None,
+        output_tokens=None,
+        estimated_cost_microusd=None,
+        response_status=None,
+        duration_ms=31_000,
+        uncertain=True,
     )
-
+    # 即使历史计划是 enforce、已经越过旧时限，第二次调用也不能被阻断。
+    clock.value += timedelta(minutes=2)
     second = queue.reserve_model_budget(lease, request)
-
-    with database.sessions() as session:
-        plan = session.get(ReviewPlanRecord, plan_id)
-        assert plan is not None
-        assert second.sequence == 2
-        assert plan.model_budget_mode == "observe"
-        assert plan.model_http_calls == 2
-        assert plan.model_budget_exhausted_reason is None
-        observed = session.scalar(
-            select(OutboxEventRecord)
-            .where(OutboxEventRecord.event_type == "review.model.budget_observed")
-            .order_by(OutboxEventRecord.occurred_at.desc())
-        )
-        assert observed is not None
-        assert observed.payload["budget_reason"] == "http_calls"
-
-
-def test_legacy_null_model_budget_mode_defaults_to_observe(
-    database: Database,
-) -> None:
-    """迁移尚未回填的旧计划行也不能恢复预算硬阻断。"""
-
-    clock = MutableClock(datetime(2026, 8, 28, 8, 4, tzinfo=UTC))
-    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
-        database,
-        clock,
-        key="budget-legacy-null-mode",
-        policy=ModelBudgetPolicy(
-            max_http_calls=1,
-            max_input_tokens=1_000,
-            max_output_tokens=256,
-            max_estimated_cost_microusd=1_000,
-            max_duration_seconds=30,
-        ),
-    )
-    with database.sessions() as session:
-        plan = session.get(ReviewPlanRecord, plan_id)
-        assert plan is not None
-        # 模拟 0040 迁移前创建、但尚未被回填的历史行。
-        plan.model_budget_mode = None
-        session.commit()
-
-    request = ModelBudgetRequest(
-        provider="openai",
-        api_protocol="responses",
-        model="test-model",
-        request_bytes=200,
-        input_token_upper_bound=400,
-        output_token_upper_bound=100,
-        cost_upper_bound_microusd=500,
-    )
-    first = queue.reserve_model_budget(lease, request)
-    queue.settle_model_budget(
-        first,
-        input_tokens=150,
-        output_tokens=30,
-        estimated_cost_microusd=125,
-        response_status=200,
-        duration_ms=250,
-    )
-    second = queue.reserve_model_budget(lease, request)
-
-    with database.sessions() as session:
-        plan = session.get(ReviewPlanRecord, plan_id)
-        assert plan is not None
-        assert second.sequence == 2
-        assert plan.model_budget_exhausted_reason is None
-        observed = session.scalar(
-            select(OutboxEventRecord)
-            .where(OutboxEventRecord.event_type == "review.model.budget_observed")
-            .order_by(OutboxEventRecord.occurred_at.desc())
-        )
-        assert observed is not None
-        assert observed.payload["model_budget_mode"] == "observe"
-
-
-def test_model_budget_settlement_rejects_a_response_after_the_hard_deadline(
-    database: Database,
-) -> None:
-    """最后一个慢响应越过计划截止线时，结果不能继续进入成功流程。"""
-
-    clock = MutableClock(datetime(2026, 8, 28, 8, 5, tzinfo=UTC))
-    queue, lease, _task_id, run_id, plan_id = _prepare_budget_lease(
-        database,
-        clock,
-        key="budget-deadline",
-        policy=ModelBudgetPolicy(
-            enforcement="enforce",
-            max_http_calls=2,
-            max_input_tokens=1_000,
-            max_output_tokens=256,
-            max_estimated_cost_microusd=1_000,
-            max_duration_seconds=30,
-        ),
-    )
-    reservation = queue.reserve_model_budget(
+    queue.pause_for_model_budget(
         lease,
-        ModelBudgetRequest(
-            provider="openai",
-            api_protocol="responses",
-            model="test-model",
-            request_bytes=200,
-            input_token_upper_bound=400,
-            output_token_upper_bound=100,
-            cost_upper_bound_microusd=500,
+        SafeError(
+            code=ErrorCode.MODEL_BUDGET_EXCEEDED,
+            safe_message="历史预算错误",
+            retryable=False,
         ),
     )
-    clock.value += timedelta(seconds=31)
 
-    with pytest.raises(ModelBudgetExceededError) as captured:
-        queue.settle_model_budget(
-            reservation,
-            input_tokens=150,
-            output_tokens=30,
-            estimated_cost_microusd=125,
-            response_status=200,
-            duration_ms=31_000,
-        )
-
-    assert captured.value.error.details["budget_reason"] == "duration"
-    assert captured.value.error.details["settled_after_deadline"] is True
+    assert first.sequence == second.sequence == 1
     with database.sessions() as session:
         plan = session.get(ReviewPlanRecord, plan_id)
-        call = session.get(ModelHttpCallRecord, reservation.id)
+        task = session.get(ReviewTaskRecord, task_id)
+        run = session.get(ReviewRunRecord, run_id)
         assert plan is not None
-        assert call is not None
-        assert plan.model_budget_exhausted_reason == "duration"
-        assert call.status == "settled"
+        assert task is not None
+        assert run is not None
+        assert plan.model_http_calls == 0
+        assert plan.model_input_tokens == 0
+        assert plan.model_output_tokens == 0
+        assert plan.model_estimated_cost_microusd == 0
+        assert plan.model_budget_exhausted_reason is None
+        assert task.last_error_code is None
+        assert run.workflow_status != "paused"
+        assert session.scalar(
+            select(func.count()).select_from(ModelHttpCallRecord)
+        ) == 0
         assert session.scalar(
             select(func.count())
             .select_from(OutboxEventRecord)
             .where(
                 OutboxEventRecord.aggregate_id == run_id,
-                OutboxEventRecord.event_type == "review.model.budget_exhausted",
+                OutboxEventRecord.event_type.like("review.model.budget_%"),
             )
-        ) == 1
-
-
-def test_uncertain_model_budget_settlement_is_conservative_and_idempotent(
-    database: Database,
-) -> None:
-    clock = MutableClock(datetime(2026, 8, 28, 8, 10, tzinfo=UTC))
-    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
-        database,
-        clock,
-        key="budget-uncertain",
-        policy=ModelBudgetPolicy(
-            enforcement="enforce",
-            max_http_calls=2,
-            max_input_tokens=1_000,
-            max_output_tokens=256,
-            max_estimated_cost_microusd=1_000,
-            max_duration_seconds=30,
-        ),
-    )
-    reservation = queue.reserve_model_budget(
-        lease,
-        ModelBudgetRequest(
-            provider="anthropic",
-            api_protocol="messages",
-            model="test-model",
-            request_bytes=200,
-            input_token_upper_bound=400,
-            output_token_upper_bound=100,
-            cost_upper_bound_microusd=500,
-        ),
-    )
-
-    queue.settle_model_budget(
-        reservation,
-        input_tokens=None,
-        output_tokens=None,
-        estimated_cost_microusd=None,
-        response_status=None,
-        duration_ms=1_000,
-        uncertain=True,
-    )
-    queue.settle_model_budget(
-        reservation,
-        input_tokens=1,
-        output_tokens=1,
-        estimated_cost_microusd=1,
-        response_status=200,
-        duration_ms=2_000,
-    )
-
-    with database.sessions() as session:
-        plan = session.get(ReviewPlanRecord, plan_id)
-        call = session.get(ModelHttpCallRecord, reservation.id)
-        assert plan is not None
-        assert call is not None
-        assert plan.model_input_tokens == 400
-        assert plan.model_output_tokens == 100
-        assert plan.model_estimated_cost_microusd == 500
-        assert call.status == "uncertain"
-        assert call.actual_input_tokens is None
-        assert call.actual_output_tokens is None
-        assert call.actual_cost_microusd is None
-
-
-def test_cost_cap_rejects_request_when_model_pricing_is_unknown(
-    database: Database,
-) -> None:
-    clock = MutableClock(datetime(2026, 8, 28, 8, 20, tzinfo=UTC))
-    queue, lease, _task_id, _run_id, plan_id = _prepare_budget_lease(
-        database,
-        clock,
-        key="budget-pricing-unknown",
-        policy=ModelBudgetPolicy(
-            enforcement="enforce",
-            max_http_calls=2,
-            max_input_tokens=1_000,
-            max_output_tokens=256,
-            max_estimated_cost_microusd=1_000,
-            max_duration_seconds=30,
-        ),
-    )
-
-    with pytest.raises(ModelBudgetExceededError) as captured:
-        queue.reserve_model_budget(
-            lease,
-            ModelBudgetRequest(
-                provider="openai",
-                api_protocol="responses",
-                model="unpriced-model",
-                request_bytes=200,
-                input_token_upper_bound=400,
-                output_token_upper_bound=100,
-                cost_upper_bound_microusd=None,
-            ),
-        )
-
-    assert captured.value.error.details["budget_reason"] == "pricing_unknown"
-    with database.sessions() as session:
-        plan = session.get(ReviewPlanRecord, plan_id)
-        assert plan is not None
-        assert plan.model_budget_exhausted_reason == "pricing_unknown"
-        assert plan.model_http_calls == 0
-        assert session.scalar(
-            select(func.count()).select_from(ModelHttpCallRecord)
         ) == 0
-
-
-def test_budget_pause_resume_grants_an_audited_additional_window(
-    database: Database,
-) -> None:
-    clock = MutableClock(datetime(2026, 8, 28, 8, 30, tzinfo=UTC))
-    queue, first_lease, task_id, run_id, plan_id = _prepare_budget_lease(
-        database,
-        clock,
-        key="budget-resume-grant",
-        policy=ModelBudgetPolicy(
-            enforcement="enforce",
-            max_http_calls=1,
-            max_input_tokens=1_000,
-            max_output_tokens=256,
-            max_estimated_cost_microusd=1_000,
-            max_duration_seconds=30,
-        ),
-    )
-    request = ModelBudgetRequest(
-        provider="openai",
-        api_protocol="responses",
-        model="test-model",
-        request_bytes=200,
-        input_token_upper_bound=400,
-        output_token_upper_bound=100,
-        cost_upper_bound_microusd=250,
-    )
-    first = queue.reserve_model_budget(first_lease, request)
-    queue.settle_model_budget(
-        first,
-        input_tokens=200,
-        output_tokens=50,
-        estimated_cost_microusd=100,
-        response_status=200,
-        duration_ms=200,
-    )
-    with pytest.raises(ModelBudgetExceededError) as captured:
-        queue.reserve_model_budget(first_lease, request)
-    queue.pause_for_model_budget(first_lease, captured.value.error)
-
-    repository = SqlAlchemyReviewManagementRepository(
-        database.sessions,
-        clock=clock,
-    )
-    resumed_run_id, resumed_task_id, status = repository.apply_action(
-        run_id,
-        ReviewAction.RESUME,
-        actor="test-administrator",
-        request_id="budget-resume-001",
-    )
-    assert resumed_run_id == run_id
-    assert resumed_task_id == task_id
-    assert status is ExecutionStatus.READY_FOR_REVIEW
-
-    second_lease = queue.claim_next("worker-1", timedelta(seconds=30))
-    assert second_lease is not None
-    second = queue.reserve_model_budget(second_lease, request)
-    assert second.sequence == 2
-
-    with database.sessions() as session:
-        plan = session.get(ReviewPlanRecord, plan_id)
-        task = session.get(ReviewTaskRecord, task_id)
-        resume_event = session.scalar(
-            select(OutboxEventRecord).where(
-                OutboxEventRecord.event_type == "review.workflow.resume"
-            )
-        )
-        assert plan is not None
-        assert task is not None
-        assert resume_event is not None
-        assert plan.model_budget_resume_count == 1
-        assert plan.model_budget_exhausted_reason is None
-        assert task.last_error_code is None
-        assert resume_event.payload["model_budget_granted"] is True
-        assert resume_event.payload["previous_budget_reason"] == "http_calls"
-        assert resume_event.payload["max_model_http_calls"] == 2
 
 
 def test_incomplete_file_snapshot_cannot_be_planned(database: Database) -> None:

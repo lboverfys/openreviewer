@@ -774,33 +774,6 @@
               }
             ]
           },
-          "max_model_cost_microusd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Model Cost Microusd"
-          },
-          "max_model_duration_seconds": {
-            "title": "Max Model Duration Seconds",
-            "type": "integer"
-          },
-          "max_model_http_calls": {
-            "title": "Max Model Http Calls",
-            "type": "integer"
-          },
-          "max_model_input_tokens": {
-            "title": "Max Model Input Tokens",
-            "type": "integer"
-          },
-          "max_model_output_tokens": {
-            "title": "Max Model Output Tokens",
-            "type": "integer"
-          },
           "max_scope_depth": {
             "title": "Max Scope Depth",
             "type": "integer"
@@ -859,11 +832,6 @@
           "max_scope_depth",
           "max_unit_input_bytes",
           "max_total_input_bytes",
-          "max_model_http_calls",
-          "max_model_input_tokens",
-          "max_model_output_tokens",
-          "max_model_cost_microusd",
-          "max_model_duration_seconds",
           "updated_at",
           "updated_by",
           "providers"
@@ -3320,71 +3288,6 @@
             "minimum": 0.0,
             "title": "Expected Revision",
             "type": "integer"
-          },
-          "max_model_cost_microusd": {
-            "anyOf": [
-              {
-                "maximum": 1000000000000.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Model Cost Microusd"
-          },
-          "max_model_duration_seconds": {
-            "anyOf": [
-              {
-                "maximum": 86400.0,
-                "minimum": 30.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Model Duration Seconds"
-          },
-          "max_model_http_calls": {
-            "anyOf": [
-              {
-                "maximum": 10000.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Model Http Calls"
-          },
-          "max_model_input_tokens": {
-            "anyOf": [
-              {
-                "maximum": 1000000000.0,
-                "minimum": 1000.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Model Input Tokens"
-          },
-          "max_model_output_tokens": {
-            "anyOf": [
-              {
-                "maximum": 100000000.0,
-                "minimum": 256.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Model Output Tokens"
           },
           "max_scope_depth": {
             "maximum": 64.0,

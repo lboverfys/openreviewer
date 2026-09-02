@@ -902,16 +902,6 @@ export interface components {
          */
         AiSettingsResponse: {
             active_provider: components["schemas"]["ModelProvider"] | null;
-            /** Max Model Cost Microusd */
-            max_model_cost_microusd: number | null;
-            /** Max Model Duration Seconds */
-            max_model_duration_seconds: number;
-            /** Max Model Http Calls */
-            max_model_http_calls: number;
-            /** Max Model Input Tokens */
-            max_model_input_tokens: number;
-            /** Max Model Output Tokens */
-            max_model_output_tokens: number;
             /** Max Scope Depth */
             max_scope_depth: number;
             /** Max Total Input Bytes */
@@ -1714,16 +1704,6 @@ export interface components {
         ReviewPolicyUpdateRequest: {
             /** Expected Revision */
             expected_revision: number;
-            /** Max Model Cost Microusd */
-            max_model_cost_microusd?: number | null;
-            /** Max Model Duration Seconds */
-            max_model_duration_seconds?: number | null;
-            /** Max Model Http Calls */
-            max_model_http_calls?: number | null;
-            /** Max Model Input Tokens */
-            max_model_input_tokens?: number | null;
-            /** Max Model Output Tokens */
-            max_model_output_tokens?: number | null;
             /** Max Scope Depth */
             max_scope_depth: number;
             /** Max Total Input Bytes */

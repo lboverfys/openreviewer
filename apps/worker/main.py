@@ -63,12 +63,6 @@ from services.github_auth import (
 )
 from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
 from services.github_rules import GitHubRepositoryRuleLoader, RepositoryRuleLoader
-from services.model_budget import (
-    ModelBudgetAccountant,
-    ModelBudgetRequest,
-    ModelBudgetReservation,
-    model_budget_scope,
-)
 from services.model_review import (
     ModelReviewer,
     ModelServiceSettings,
@@ -451,76 +445,6 @@ class _BusyHeartbeat:
                     LOGGER.exception("Worker 模型租约续租失败")
 
 
-class _QueueModelBudgetAccountant(ModelBudgetAccountant):
-    """把模型适配器的每次真实 HTTP 请求绑定到当前计划预算。"""
-
-    def __init__(
-        self,
-        queue: ReviewTaskQueue,
-        lease_cursor: _LeaseCursor,
-        agent: str,
-    ) -> None:
-        self._queue = queue
-        self._lease_cursor = lease_cursor
-        self._agent = agent
-
-    def reserve(self, request: ModelBudgetRequest) -> ModelBudgetReservation:
-        # 预算预留本身会写数据库；租约丢失后必须在进入模型适配器前拦截。
-        self._lease_cursor.raise_if_lease_lost()
-        try:
-            return self._queue.reserve_model_budget(
-                self._lease_cursor.lease,
-                request,
-                agent=self._agent,
-            )
-        except TaskQueueError as exc:
-            if SafeError.from_exception(exc).code is ErrorCode.TASK_LEASE_LOST:
-                self._lease_cursor.mark_lease_lost()
-            raise
-
-    def settle(
-        self,
-        reservation: ModelBudgetReservation,
-        *,
-        input_tokens: int | None,
-        output_tokens: int | None,
-        estimated_cost_microusd: int | None,
-        response_status: int | None,
-        duration_ms: int,
-        uncertain: bool = False,
-    ) -> None:
-        try:
-            self._queue.settle_model_budget(
-                reservation,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                estimated_cost_microusd=estimated_cost_microusd,
-                response_status=response_status,
-                duration_ms=duration_ms,
-                uncertain=uncertain,
-            )
-        except TaskQueueError as exc:
-            if SafeError.from_exception(exc).code is ErrorCode.TASK_LEASE_LOST:
-                self._lease_cursor.mark_lease_lost()
-            raise
-
-
-def _model_budget_context(
-    queue: ReviewTaskQueue,
-    lease_cursor: _LeaseCursor,
-    agent: str,
-):
-    reserve = getattr(queue, "reserve_model_budget", None)
-    settle = getattr(queue, "settle_model_budget", None)
-    if not callable(reserve) or not callable(settle):
-        raise TaskQueueError(
-            "Worker 队列未实现模型预算接口，已拒绝发起模型请求"
-        )
-    return model_budget_scope(
-        _QueueModelBudgetAccountant(queue, lease_cursor, agent)
-    )
-
-
 class _PersistentBatchedReviewer:
     """把单个 Agent 的模型调用包裹成可恢复的持久化批次。"""
 
@@ -578,15 +502,9 @@ class _PersistentBatchedReviewer:
         batches = plan_model_review_batches(review_input, self._settings)
         if not batches:
             _raise_if_lease_lost(self._lease_cursor)
-            with _model_budget_context(
-                self._queue,
-                self._lease_cursor,
-                self._agent.value,
-            ):
-                # 预算预留和真正的 HTTP 请求之间仍可能收到心跳失效通知；
-                # 在最后一刻再检查一次，避免租约已丢失后调用模型。
-                _raise_if_lease_lost(self._lease_cursor)
-                return self._reviewer.review(review_input)
+            # 在最后一刻再检查一次，避免租约已丢失后调用模型。
+            _raise_if_lease_lost(self._lease_cursor)
+            return self._reviewer.review(review_input)
         _raise_if_lease_lost(self._lease_cursor)
         self._queue.record_model_progress(
             self._lease_cursor.lease,
@@ -833,21 +751,16 @@ class _PersistentBatchedReviewer:
                     },
                     agent=self._agent.value,
                 )
-                with _model_budget_context(
-                    self._queue,
-                    self._lease_cursor,
-                    self._agent.value,
-                ):
-                    _raise_if_lease_lost(self._lease_cursor)
-                    result = remap_model_review_result(
-                        self._review_with_truncation_split(
-                            batch.review_input,
-                            checkpoint_results=checkpoint_results,
-                            checkpoint_split_nodes=checkpoint_split_nodes,
-                            on_checkpoint=persist_checkpoint,
-                        ),
-                        batch,
-                    )
+                _raise_if_lease_lost(self._lease_cursor)
+                result = remap_model_review_result(
+                    self._review_with_truncation_split(
+                        batch.review_input,
+                        checkpoint_results=checkpoint_results,
+                        checkpoint_split_nodes=checkpoint_split_nodes,
+                        on_checkpoint=persist_checkpoint,
+                    ),
+                    batch,
+                )
                 _raise_if_lease_lost(self._lease_cursor)
                 self._queue.complete_model_batch(
                     self._lease_cursor.lease,
@@ -1790,8 +1703,6 @@ class WorkerRuntime:
                         "任务 %s 的租约已丢失，跳过失败上报并交由恢复流程接管",
                         lease.task_id,
                     )
-                elif safe_error.code is ErrorCode.MODEL_BUDGET_EXCEEDED:
-                    self._queue.pause_for_model_budget(cursor.lease, safe_error)
                 else:
                     self._queue.retry_or_fail(cursor.lease, safe_error)
             except TaskQueueError as persistence_error:
@@ -2089,16 +2000,11 @@ class WorkerRuntime:
                                 },
                             )
                             _raise_if_lease_lost(cursor)
-                            with _model_budget_context(
-                                self._queue,
-                                cursor,
-                                "default",
-                            ):
-                                _raise_if_lease_lost(cursor)
-                                batch_result = remap_model_review_result(
-                                    model_reviewer.review(batch.review_input),
-                                    batch,
-                                )
+                            _raise_if_lease_lost(cursor)
+                            batch_result = remap_model_review_result(
+                                model_reviewer.review(batch.review_input),
+                                batch,
+                            )
                             _raise_if_lease_lost(cursor)
                             complete_batch = getattr(
                                 self._queue,
@@ -2303,9 +2209,8 @@ class WorkerRuntime:
                     _raise_if_lease_lost(cursor)
                 else:
                     _raise_if_lease_lost(cursor)
-                    with _model_budget_context(self._queue, cursor, "default"):
-                        _raise_if_lease_lost(cursor)
-                        model_result = model_reviewer.review(model_input)
+                    _raise_if_lease_lost(cursor)
+                    model_result = model_reviewer.review(model_input)
                 _raise_if_lease_lost(cursor)
                 findings = materialize_findings(model_input, model_result.output)
                 findings = self._verify_findings(cursor, model_input, findings)
@@ -2510,7 +2415,7 @@ class WorkerRuntime:
         if execution.summary_status == "completed":
             summary_phase = "summary_completed"
         elif execution.summary_status == "failed":
-            summary_phase = "summary_completed"
+            summary_phase = "summary_failed"
         else:
             summary_phase = "summary_skipped"
         self._queue.record_model_progress(

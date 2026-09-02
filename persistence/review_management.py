@@ -25,7 +25,7 @@ from domain.evaluation import (
 )
 from domain.github import PullRequestSnapshot
 from domain.identifiers import build_review_version_key, normalize_sha
-from domain.security import ErrorCode, redact_sensitive
+from domain.security import redact_sensitive
 from domain.workflow import (
     WorkflowAction,
     WorkflowTransitionError,
@@ -218,7 +218,9 @@ def _project_agent_progress(
             summary_status = "skipped"
             statuses["summary"] = "not_executed"
             continue
-        if event.event_type.endswith("summary_completed"):
+        if event.event_type.endswith("summary_completed") or event.event_type.endswith(
+            "summary_failed"
+        ):
             raw_status = payload.get("agent_status")
             summary_status = (
                 "completed" if raw_status == "completed" else "failed"
@@ -1512,7 +1514,6 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     ReviewAction.REJECT,
                 }
                 if action in workflow_actions:
-                    budget_grant_payload: dict[str, object] = {}
                     try:
                         target = (
                             ExecutionStatus(target_stage)
@@ -1583,40 +1584,17 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                         ).value
                         run.execution_status = task.execution_status
                     elif action is ReviewAction.RESUME:
-                        if plan is not None and plan.model_budget_exhausted_reason:
-                            exhausted_reason = plan.model_budget_exhausted_reason
-                            plan.model_budget_resume_count += 1
+                        # 资源预算已从生产执行链路移除。迁移未覆盖的历史任务
+                        # 可能仍带有旧错误码/计划标记，恢复时一并清空，不能
+                        # 再生成“追加预算”事件或把旧限制带入下一次领取。
+                        if task.last_error_code == "model_budget_exceeded":
+                            task.last_error = None
+                            task.last_error_code = None
+                            task.last_error_retryable = None
+                            task.last_error_details = None
+                        if plan is not None:
                             plan.model_budget_exhausted_reason = None
                             plan.model_budget_exhausted_at = None
-                            plan.model_budget_started_at = now
-                            multiplier = plan.model_budget_resume_count + 1
-                            budget_grant_payload = {
-                                "model_budget_granted": True,
-                                "previous_budget_reason": exhausted_reason,
-                                "budget_resume_count": plan.model_budget_resume_count,
-                                "max_model_http_calls": (
-                                    plan.max_model_http_calls * multiplier
-                                ),
-                                "max_model_input_tokens": (
-                                    plan.max_model_input_tokens * multiplier
-                                ),
-                                "max_model_output_tokens": (
-                                    plan.max_model_output_tokens * multiplier
-                                ),
-                                "max_model_cost_microusd": (
-                                    plan.max_model_cost_microusd * multiplier
-                                    if plan.max_model_cost_microusd is not None
-                                    else None
-                                ),
-                                "max_model_duration_seconds": (
-                                    plan.max_model_duration_seconds
-                                ),
-                            }
-                            if task.last_error_code == ErrorCode.MODEL_BUDGET_EXCEEDED.value:
-                                task.last_error = None
-                                task.last_error_code = None
-                                task.last_error_retryable = None
-                                task.last_error_details = None
                         task.workflow_paused_from = None
                         run.workflow_paused_from = None
                         task.lease_owner = None
@@ -1679,7 +1657,6 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                                     if action is ReviewAction.PAUSE
                                     else None
                                 ),
-                                **budget_grant_payload,
                             },
                             occurred_at=now,
                             publish_attempts=0,

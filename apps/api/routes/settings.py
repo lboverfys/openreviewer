@@ -1,4 +1,4 @@
-"""模型、Agent 与审查预算设置路由。"""
+"""模型、Agent 与审查范围设置路由。"""
 
 from collections.abc import Callable
 from typing import Annotated
@@ -275,69 +275,13 @@ def register_settings_routes(
         _: Annotated[None, Depends(require_same_origin)],
     ) -> AiSettingsResponse:
         service = get_ai_settings_service()
-        budget_fields = {
-            "max_model_http_calls",
-            "max_model_input_tokens",
-            "max_model_output_tokens",
-            "max_model_cost_microusd",
-            "max_model_duration_seconds",
-        }
-        missing_budget_fields = budget_fields.difference(request_body.model_fields_set)
-        needs_compatibility_snapshot = bool(missing_budget_fields) or any(
-            getattr(request_body, field) is None
-            for field in budget_fields.difference({"max_model_cost_microusd"})
-        )
         try:
-            current = service.get() if needs_compatibility_snapshot else None
-            max_model_http_calls = request_body.max_model_http_calls
-            max_model_input_tokens = request_body.max_model_input_tokens
-            max_model_output_tokens = request_body.max_model_output_tokens
-            max_model_duration_seconds = request_body.max_model_duration_seconds
-            if current is not None:
-                max_model_http_calls = (
-                    max_model_http_calls
-                    if max_model_http_calls is not None
-                    else current.max_model_http_calls
-                )
-                max_model_input_tokens = (
-                    max_model_input_tokens
-                    if max_model_input_tokens is not None
-                    else current.max_model_input_tokens
-                )
-                max_model_output_tokens = (
-                    max_model_output_tokens
-                    if max_model_output_tokens is not None
-                    else current.max_model_output_tokens
-                )
-                max_model_duration_seconds = (
-                    max_model_duration_seconds
-                    if max_model_duration_seconds is not None
-                    else current.max_model_duration_seconds
-                )
-            if (
-                max_model_http_calls is None
-                or max_model_input_tokens is None
-                or max_model_output_tokens is None
-                or max_model_duration_seconds is None
-            ):
-                raise AiSettingsValidationError("模型预算字段不能为空")
-            max_model_cost_microusd = request_body.max_model_cost_microusd
-            if (
-                current is not None
-                and "max_model_cost_microusd" not in request_body.model_fields_set
-            ):
-                max_model_cost_microusd = current.max_model_cost_microusd
             view = service.update_review_policy(
                 ReviewPolicyDraft(
                     max_units=request_body.max_units,
                     max_scope_depth=request_body.max_scope_depth,
                     max_unit_input_bytes=request_body.max_unit_input_bytes,
                     max_total_input_bytes=request_body.max_total_input_bytes,
-                    max_model_http_calls=max_model_http_calls,
-                    max_model_input_tokens=max_model_input_tokens,
-                    max_model_output_tokens=max_model_output_tokens,
-                    max_model_cost_microusd=max_model_cost_microusd,
-                    max_model_duration_seconds=max_model_duration_seconds,
                 ),
                 expected_revision=request_body.expected_revision,
                 actor=principal.username,

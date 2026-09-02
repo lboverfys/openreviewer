@@ -12,7 +12,6 @@ from apps.worker.main import (
     _dump_truncation_checkpoint,
     _LeaseCursor,
     _load_truncation_checkpoint,
-    _model_budget_context,
     _PersistentBatchedReviewer,
     _safe_unsupported_parameters_payload,
     _workflow_result,
@@ -90,17 +89,15 @@ class StaticReviewer:
         return None
 
 
-class MissingModelBudgetQueue:
-    """故意缺少模型预算接口，用来验证 Worker 的 fail-closed 契约。"""
-
-
 class RecordingReviewer:
+    """记录意外的模型调用，供租约失败路径断言。"""
+
     def __init__(self) -> None:
         self.calls = 0
 
     def review(self, _review_input):
         self.calls += 1
-        raise AssertionError("预算接口缺失时不应调用模型")
+        raise AssertionError("该测试路径不应调用模型")
 
     def close(self) -> None:
         return None
@@ -1082,20 +1079,17 @@ def model_result(
     )
 
 
-def test_model_budget_context_rejects_queue_without_budget_methods() -> None:
-    with pytest.raises(TaskQueueError, match="未实现模型预算接口"):
-        _model_budget_context(
-            cast(ReviewTaskQueue, MissingModelBudgetQueue()),
-            cast(_LeaseCursor, object()),
-            "default",
-        )
+def test_empty_batch_path_does_not_require_resource_budget() -> None:
+    calls: list[str] = []
+    reviewer = StaticReviewer(model_result("1"), name="security", calls=calls)
 
+    class LeaseCursor:
+        def raise_if_lease_lost(self) -> None:
+            return None
 
-def test_empty_batch_path_does_not_bypass_model_budget_contract() -> None:
-    reviewer = RecordingReviewer()
     wrapped = _PersistentBatchedReviewer(
-        cast(ReviewTaskQueue, MissingModelBudgetQueue()),
-        cast(_LeaseCursor, object()),
+        cast(ReviewTaskQueue, object()),
+        cast(_LeaseCursor, LeaseCursor()),
         ReviewAgent.SECURITY,
         reviewer,
         ModelServiceSettings(
@@ -1109,10 +1103,10 @@ def test_empty_batch_path_does_not_bypass_model_budget_contract() -> None:
         update={"units": (), "total_estimated_input_bytes": 0}
     )
 
-    with pytest.raises(TaskQueueError, match="未实现模型预算接口"):
-        wrapped.review(empty_input)
+    result = wrapped.review(empty_input)
 
-    assert reviewer.calls == 0
+    assert result.status is ModelCallStatus.SUCCEEDED
+    assert calls == ["security"]
 
 
 def test_fixed_dag_automatic_edges() -> None:

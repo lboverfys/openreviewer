@@ -578,11 +578,6 @@ class AiSettingsResponse(BaseModel):
     max_scope_depth: int
     max_unit_input_bytes: int
     max_total_input_bytes: int
-    max_model_http_calls: int
-    max_model_input_tokens: int
-    max_model_output_tokens: int
-    max_model_cost_microusd: int | None
-    max_model_duration_seconds: int
     updated_at: datetime | None
     updated_by: str | None
     providers: tuple[AiProviderResponse, ...]
@@ -620,11 +615,6 @@ class AiSettingsResponse(BaseModel):
             max_scope_depth=view.max_scope_depth,
             max_unit_input_bytes=view.max_unit_input_bytes,
             max_total_input_bytes=view.max_total_input_bytes,
-            max_model_http_calls=view.max_model_http_calls,
-            max_model_input_tokens=view.max_model_input_tokens,
-            max_model_output_tokens=view.max_model_output_tokens,
-            max_model_cost_microusd=view.max_model_cost_microusd,
-            max_model_duration_seconds=view.max_model_duration_seconds,
             updated_at=view.updated_at,
             updated_by=view.updated_by,
             providers=tuple(providers),
@@ -921,28 +911,6 @@ class ReviewPolicyUpdateRequest(BaseModel):
     max_scope_depth: int = Field(ge=1, le=64)
     max_unit_input_bytes: int = Field(ge=4096, le=10 * 1024 * 1024)
     max_total_input_bytes: int = Field(ge=4096, le=100 * 1024 * 1024)
-    # 新增预算字段允许旧版管理页面省略；处理函数会沿用当前服务器配置。
-    max_model_http_calls: int | None = Field(default=None, ge=1, le=10_000)
-    max_model_input_tokens: int | None = Field(
-        default=None,
-        ge=1_000,
-        le=1_000_000_000,
-    )
-    max_model_output_tokens: int | None = Field(
-        default=None,
-        ge=256,
-        le=100_000_000,
-    )
-    max_model_cost_microusd: int | None = Field(
-        default=None,
-        ge=1,
-        le=1_000_000_000_000,
-    )
-    max_model_duration_seconds: int | None = Field(
-        default=None,
-        ge=30,
-        le=86_400,
-    )
 
 
 class ConfigurationAuditResponse(BaseModel):

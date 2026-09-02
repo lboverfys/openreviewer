@@ -47,11 +47,6 @@ function settings(revision: number): AiSettings {
     max_scope_depth: 8,
     max_unit_input_bytes: 1024 * 1024,
     max_total_input_bytes: 10 * 1024 * 1024,
-    max_model_http_calls: 20,
-    max_model_input_tokens: 100000,
-    max_model_output_tokens: 16000,
-    max_model_cost_microusd: null,
-    max_model_duration_seconds: 1800,
     updated_at: null,
     updated_by: "admin",
     providers: [
@@ -136,5 +131,8 @@ describe("设置页初始 revision 同步", () => {
     });
     await waitFor(() => expect(api.aiSettings).toHaveBeenCalledTimes(2));
     expect(screen.getByText("配置版本 2")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/资源预算|资源统计|费用统计|模型用量|单批预算/),
+    ).not.toBeInTheDocument();
   });
 });

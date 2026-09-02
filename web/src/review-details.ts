@@ -165,10 +165,8 @@ export function eventDetail(event: ReviewEvent): string | null {
   if (event.event_type === "review.model.batches_planned") {
     const batches = payloadNumber(event, "batch_count");
     const files = payloadNumber(event, "file_count");
-    const context = payloadNumber(event, "context_window_tokens");
-    const batchBudget = payloadNumber(event, "input_budget_tokens");
     const reasoning = payloadString(event, "reasoning_effort");
-    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 模型总容量 ${context?.toLocaleString() ?? "—"} · 单批约 ${batchBudget?.toLocaleString() ?? "—"} Token · 推理 ${reasoningEffortLabels[reasoning ?? ""] ?? reasoning ?? "—"}`;
+    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 系统将自动管理上下文与分批 · 推理 ${reasoningEffortLabels[reasoning ?? ""] ?? reasoning ?? "—"}`;
   }
   if (event.event_type === "review.model.batch_started") {
     const number = payloadNumber(event, "batch_number");
@@ -323,6 +321,7 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
   const completedEvent = latestAgentEvent(scoped, "review.model.agent_completed");
   const failedEvent = latestAgentEvent(scoped, "review.model.agent_failed");
   const summaryEvent = latestAgentEvent(scoped, "review.model.summary_completed");
+  const summaryFailedEvent = latestAgentEvent(scoped, "review.model.summary_failed");
   const summarySkippedEvent = latestAgentEvent(scoped, "review.model.summary_skipped");
   const notApplicableEvent = latestAgentEvent(
     scoped,
@@ -342,6 +341,7 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
       || event.event_type === "review.model.agent_failed"
       || event.event_type === "review.model.agent_not_applicable"
       || event.event_type === "review.model.summary_completed"
+      || event.event_type === "review.model.summary_failed"
       || event.event_type === "review.model.summary_skipped"
   ));
   const terminalIsSuccess = lastTerminal?.event_type === "review.model.agent_completed"
@@ -356,6 +356,7 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
       && lastTerminal.payload.status === "not_applicable");
   const terminalIsFailure = (
     (lastTerminal?.event_type === "review.model.agent_failed" && !terminalIsDisabled)
+    || lastTerminal?.event_type === "review.model.summary_failed"
     || (lastTerminal?.event_type === "review.model.summary_completed"
       && lastTerminal.payload.agent_status !== "completed")
   );
@@ -396,7 +397,8 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
   const errorEvent = [...scoped].reverse().find((event) => (
     (event.event_type === "review.model.batch_failed" && latestBatchEventSet.has(event))
       || event.event_type === "review.model.agent_failed"
-      || (event.event_type === "review.model.summary_completed" && terminalIsFailure)
+      || ((event.event_type === "review.model.summary_completed"
+        || event.event_type === "review.model.summary_failed") && terminalIsFailure)
   ));
   const errorCode = payloadString(errorEvent, "error_code")
     ?? payloadString(errorEvent, "code");
@@ -407,6 +409,7 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
     ...stringArrayPayload(completedEvent, "references"),
     ...stringArrayPayload(failedEvent, "references"),
     ...stringArrayPayload(summaryEvent, "references"),
+    ...stringArrayPayload(summaryFailedEvent, "references"),
     ...stringArrayPayload(summarySkippedEvent, "references"),
     ...stringArrayPayload(notApplicableEvent, "references"),
   ])];

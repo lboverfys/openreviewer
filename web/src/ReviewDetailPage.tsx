@@ -160,13 +160,12 @@ const eventLabels: Record<string, string> = {
   "review.model.agent_not_applicable": "审查 Agent 不适用",
   "review.model.aggregating_started": "开始汇总审查结果",
   "review.model.summary_completed": "汇总 Agent 已完成",
+  "review.model.summary_failed": "汇总 Agent 失败",
   "review.model.summary_skipped": "汇总未执行",
   "review.model.aggregation_completed": "本地汇总已完成",
   "review.model.workflow_partial": "部分结果已保存",
   "review.model.retry_requested": "已请求节点重试",
   "review.model.retry_started": "节点重试已开始",
-  "review.model.budget_exhausted": "模型资源保护已触发",
-  "review.model.budget_observed": "模型资源用量已记录",
   "review.model.completed": "AI 分析完成",
   "review.model.batches_persisted": "批次已保存",
   "review.workflow.approve": "审查已批准，等待发布",
@@ -200,7 +199,7 @@ const fileDecisionLabels: Record<string, string> = {
   patch_missing: "Diff 缺失",
   patch_too_large: "Diff 过大",
   rules_incomplete: "规则不完整",
-  omitted_by_budget: "旧版范围省略",
+  omitted_by_budget: "历史范围记录",
 };
 
 function ReviewDetailPage({
@@ -330,11 +329,6 @@ function ReviewDetailPage({
     if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
     if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
     if ((action === "rerun" || action === "new_review") && !window.confirm(`将使用提交 ${shortSha(details.head_sha)} 创建一条新的审查记录，当前任务和结果不会被覆盖。继续吗？`)) return;
-    if (
-      action === "resume"
-      && details.last_error_code === "model_budget_exceeded"
-      && !window.confirm("本任务因模型资源保护暂停。继续会从当前阶段恢复处理；确定继续吗？")
-    ) return;
     setActionBusy(action);
     try {
       const failedNode = action === "retry_failed_node"
@@ -497,7 +491,6 @@ function ReviewDetailPage({
 
   const availableActions = allowedReviewActions(user, details.available_actions);
   const hasActions = availableActions.length > 0;
-  const modelGuardPaused = details.last_error_code === "model_budget_exceeded";
   const latestBatchPlan = latestBatchPlanEvent(details.events);
   const currentModelFailure = latestEvent(
     details.events,
@@ -599,6 +592,12 @@ function ReviewDetailPage({
     (gate) => gate.admitted,
   ).length;
   const filteredEvents = details.events.filter((event) => {
+    // 历史版本可能留下旧预算事件；它们不再是当前产品语义，也不应在
+    // 详情页重新显示成可操作的阻断原因。
+    if (
+      event.event_type === "review.model.budget_exhausted"
+      || event.event_type === "review.model.budget_observed"
+    ) return false;
     if (eventFilter === "errors") return isErrorEvent(event);
     if (eventFilter === "model") return event.event_type.startsWith("review.model.");
     if (eventFilter === "workflow") return !event.event_type.startsWith("review.model.");
@@ -722,7 +721,7 @@ function ReviewDetailPage({
                   disabled={actionBusy !== null}
                   onClick={() => void runAction(action)}
                 >
-                  <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "resume" && modelGuardPaused ? "继续当前阶段" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
+                  <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
                 </button>
                 {(action === "retry_failed_node" || action === "retry") && <small>不会重复调用已成功的模型请求</small>}
                 {action === "retry_stage" && <small>{retryStageNotice(retryTargetStage)}</small>}
@@ -745,7 +744,6 @@ function ReviewDetailPage({
           <div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div>
           <div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/4</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div>
           <div><span>候选问题</span><strong>{details.findings.length}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div>
-          <div><span>模型用量</span><strong>{(details.model_input_tokens ?? 0).toLocaleString()}</strong><small>输入 Token</small></div>
         </section>
 
         <nav className="review-detail-tabs" aria-label="详情视图">
@@ -918,17 +916,12 @@ function ReviewDetailPage({
                 <div><dt>供应商</dt><dd>{details.model_provider ?? payloadString(latestBatchPlan, "provider") ?? "—"}</dd></div>
                 <div><dt>接口</dt><dd>{details.model_protocol ?? payloadString(latestBatchPlan, "api_protocol") ?? "—"}</dd></div>
                 <div><dt>推理档位</dt><dd>{reasoningEffortLabels[payloadString(latestBatchPlan, "reasoning_effort") ?? ""] ?? payloadString(latestBatchPlan, "reasoning_effort") ?? "—"}</dd></div>
-                <div><dt>单批预算</dt><dd>{payloadNumber(latestBatchPlan, "input_budget_tokens")?.toLocaleString() ?? "—"} Token</dd></div>
                 <div><dt>响应</dt><dd>{details.model_response_status ?? failureStatus ?? "—"}</dd></div>
-                <div><dt>输入 Token</dt><dd>{details.model_input_tokens?.toLocaleString() ?? "—"}</dd></div>
-                <div><dt>输出 Token</dt><dd>{details.model_output_tokens?.toLocaleString() ?? "—"}</dd></div>
-                <div><dt>推理 Token</dt><dd>{details.model_reasoning_tokens?.toLocaleString() ?? "—"}</dd></div>
                 <div><dt>耗时</dt><dd>{formatDuration(details.model_duration_ms ?? failureDuration)}</dd></div>
                 <div><dt>候选问题</dt><dd>{details.model_finding_count ?? "—"}</dd></div>
                 {failureCode && <div><dt>错误码</dt><dd>{failureCode}</dd></div>}
                 {failureRequestId && <div><dt>请求 ID</dt><dd><code title={failureRequestId}>{failureRequestId}</code></dd></div>}
               </dl>
-              {details.model_cost_microusd !== null && details.model_cost_microusd !== undefined && <div className="review-cost-note">估算成本 ${(details.model_cost_microusd / 1_000_000).toFixed(4)}</div>}
             </section>
 
             <section className="review-panel review-context-panel">

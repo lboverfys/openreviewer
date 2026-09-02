@@ -1383,15 +1383,10 @@ class _StructuredModelReviewer(ModelReviewer):
         self,
         reservation: ModelBudgetReservation | None,
     ) -> httpx.Timeout:
-        if reservation is None:
-            return self._settings.timeout
-        remaining = max(0.001, reservation.remaining_duration_ms / 1000)
-        return httpx.Timeout(
-            connect=min(self._settings.connect_timeout_seconds, remaining),
-            read=min(self._settings.read_timeout_seconds, remaining),
-            write=min(self._settings.write_timeout_seconds, remaining),
-            pool=min(self._settings.pool_timeout_seconds, remaining),
-        )
+        # 资源预算已经从生产执行链路移除。旧调用方可能仍传入兼容对象，
+        # 但不能再把其历史 ``remaining_duration_ms=0`` 解释成 1ms 超时。
+        del reservation
+        return self._settings.timeout
 
     def _settle_budget_audit(
         self,

@@ -63,7 +63,6 @@ from services.model_budget import ModelBudgetRequest
 from services.review_management import ReviewAction
 from services.review_planning import DeterministicReviewPlanner, ReviewPlanningSettings
 from services.reviews import ReviewService
-from services.task_queue import ModelBudgetExceededError
 
 
 @pytest.fixture(scope="module")
@@ -571,7 +570,7 @@ def test_postgres_outbox_claim_skips_a_row_locked_by_another_worker(
             row.publish_lease_expires_at = None
 
 
-def test_postgres_model_budget_allows_only_one_concurrent_reservation(
+def test_postgres_legacy_model_budget_entry_point_is_non_blocking(
     postgres_database: Database,
 ) -> None:
     queue, lease, plan_id = _prepare_postgres_budget_lease(postgres_database)
@@ -588,10 +587,7 @@ def test_postgres_model_budget_allows_only_one_concurrent_reservation(
 
     def reserve(agent: str):
         barrier.wait()
-        try:
-            return queue.reserve_model_budget(lease, request, agent=agent)
-        except ModelBudgetExceededError as exc:
-            return exc
+        return queue.reserve_model_budget(lease, request, agent=agent)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = (
@@ -600,22 +596,17 @@ def test_postgres_model_budget_allows_only_one_concurrent_reservation(
         )
         results = tuple(future.result(timeout=10) for future in futures)
 
-    failures = tuple(
-        item for item in results if isinstance(item, ModelBudgetExceededError)
-    )
-    successes = tuple(
-        item for item in results if not isinstance(item, ModelBudgetExceededError)
-    )
-    assert len(successes) == 1
-    assert len(failures) == 1
-    assert failures[0].error.details["budget_reason"] == "http_calls"
+    assert len(results) == 2
+    assert all(item.sequence == 1 for item in results)
     with postgres_database.sessions() as session:
         plan = session.get(ReviewPlanRecord, plan_id)
         assert plan is not None
-        assert plan.model_http_calls == 1
-        assert plan.model_budget_exhausted_reason == "http_calls"
+        assert plan.model_http_calls == 0
+        assert plan.model_input_tokens == 0
+        assert plan.model_output_tokens == 0
+        assert plan.model_budget_exhausted_reason is None
         assert session.scalar(
             select(func.count())
             .select_from(ModelHttpCallRecord)
             .where(ModelHttpCallRecord.review_plan_id == plan_id)
-        ) == 1
+        ) == 0

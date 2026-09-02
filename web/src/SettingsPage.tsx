@@ -15,12 +15,9 @@ import {
   subscribeReadCache,
 } from "./api";
 import AgentSettingsPanel from "./AgentSettingsPanel";
-import { NumberField, SelectField } from "./SettingsFields";
+import { NumberField } from "./SettingsFields";
 import {
-  batchInputOptions,
   bytesToInput,
-  contextWindowOptions,
-  formatTokens,
   inputToBytes,
   KIB,
   mergeProviderDrafts,
@@ -28,7 +25,6 @@ import {
   MIB,
   normalizeAiSettings,
   optionalDecimal,
-  outputTokenOptions,
   providerDraft,
   providerHasChanges,
   requiredInteger,
@@ -405,18 +401,6 @@ export default function SettingsPage({
     }));
   }
 
-  function updateContextWindow(value: string) {
-    updateProviderDraft(selectedProvider, (selected) => {
-      const outputLimit = Math.max(256, Number(value) - 4_096);
-      const currentOutput = Number(selected.maxOutputTokens);
-      return {
-        ...selected,
-        contextWindowTokens: value,
-        maxOutputTokens: String(Math.min(currentOutput, outputLimit)),
-      };
-    });
-  }
-
   // 主设置与 Agent 共用 revision；事件处理器优先取 ref 中已观察到的高版本。
   function expectedRevision(): number {
     return Math.max(
@@ -584,10 +568,6 @@ export default function SettingsPage({
           inputToBytes(policyDraft.maxTotalInputMib, MIB),
           "总输入上限",
         ),
-        max_model_duration_seconds: requiredInteger(
-          policyDraft.maxModelDurationSeconds,
-          "任务运行保护时限",
-        ),
       };
       const next = await api.updateReviewPolicy(payload);
       if (sequence !== refreshSequence.current) return;
@@ -609,7 +589,7 @@ export default function SettingsPage({
         invalidateAudits();
       }
       setPolicyMessageKind("success");
-      setPolicyMessage("审查范围和运行保护已保存");
+      setPolicyMessage("审查范围已保存");
     } catch (error) {
       if (sequence !== refreshSequence.current) return;
       if (error instanceof ApiError && error.status === 401) {
@@ -646,30 +626,6 @@ export default function SettingsPage({
   const policyDirty = Boolean(
     settings && policyDraft && reviewPolicyHasChanges(settings, policyDraft),
   );
-  const contextTokens = Number(draft?.contextWindowTokens ?? 0);
-  const outputTokens = Number(draft?.maxOutputTokens ?? 0);
-  const maxBatchInputTokens = Number(draft?.maxBatchInputTokens ?? 0);
-  const maxRequestBytes = Number(draft?.maxRequestBytes ?? 0);
-  const contextInputBudgetTokens = contextTokens
-    - outputTokens
-    - Math.max(4_096, Math.floor(contextTokens / 20));
-  const requestInputBudgetTokens = Math.floor(
-    Math.max(
-      0,
-      maxRequestBytes
-        - Math.max(16 * 1024, Math.floor(maxRequestBytes / 10))
-        - 4 * 1024,
-    ) / 2,
-  );
-  const inputBudgetTokens = Math.max(
-    0,
-    Math.min(
-      contextInputBudgetTokens,
-      maxBatchInputTokens,
-      requestInputBudgetTokens,
-    ),
-  );
-
   return (
     <div className="settings-page-layout">
       <header className="settings-navbar">
@@ -825,8 +781,8 @@ export default function SettingsPage({
 
                   <details className="settings-disclosure">
                     <summary>
-                      <span><strong>代码量与推理</strong><small>推荐保持“自动 + 每批 64K”</small></span>
-                      <span className="settings-summary-value">总 {formatTokens(draft.contextWindowTokens)} · 每批 {formatTokens(inputBudgetTokens)}</span>
+                      <span><strong>模型行为</strong><small>代码分批、上下文和输出长度由系统自动管理</small></span>
+                      <span className="settings-summary-value">自动</span>
                     </summary>
                     <fieldset disabled={Boolean(busyAction)}>
                       <div className="settings-reasoning-section">
@@ -843,13 +799,9 @@ export default function SettingsPage({
                           ))}
                         </div>
                       </div>
-                      <div className="settings-form-grid settings-form-grid-compact settings-context-grid">
-                        <SelectField name="context-window-tokens" label="模型总容量" help="按模型或中转站说明填写；1M 是总容量，不是每次都发送 1M。" value={draft.contextWindowTokens} options={contextWindowOptions(draft.contextWindowTokens)} onChange={updateContextWindow} />
-                        <SelectField name="max-batch-input-tokens" label="每批代码量" help="推荐 64K；出现 524 或长时间超时时可降到 32K。" value={draft.maxBatchInputTokens} options={batchInputOptions(draft.contextWindowTokens, draft.maxBatchInputTokens)} onChange={(value) => updateDraft("maxBatchInputTokens", value)} />
-                        <SelectField name="max-output-tokens" label="每批回答上限" help="只限制模型每批返回的审查结果长度。" value={draft.maxOutputTokens} options={outputTokenOptions(draft.contextWindowTokens, draft.maxOutputTokens)} onChange={(value) => updateDraft("maxOutputTokens", value)} />
+                      <div className="settings-form-grid settings-form-grid-compact">
                         <NumberField name="read-timeout-seconds" label="最多等待回答" value={draft.readTimeoutSeconds} min="10" max="3600" step="1" suffix="秒" onChange={(value) => updateDraft("readTimeoutSeconds", value)} />
                       </div>
-                      <div className="settings-info-band settings-context-budget"><strong>实际单批输入最多约 {formatTokens(inputBudgetTokens)} Token</strong><span>提交再大也会继续审查，超出的代码自动切到下一批</span></div>
                       <details className="settings-nested-disclosure">
                         <summary>传输与网络高级设置</summary>
                         <div className="settings-form-grid settings-form-grid-compact">
@@ -860,22 +812,6 @@ export default function SettingsPage({
                           <NumberField name="pool-timeout-seconds" label="等待空闲连接" value={draft.poolTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("poolTimeoutSeconds", value)} />
                         </div>
                       </details>
-                    </fieldset>
-                  </details>
-
-                  <details className="settings-disclosure">
-                    <summary>
-                      <span><strong>费用统计（可选）</strong><small>按你的中转站账单填写，也可以全部留空</small></span>
-                      <span className="settings-summary-value is-neutral">不影响实际扣费</span>
-                    </summary>
-                    <fieldset disabled={Boolean(busyAction)}>
-                      <div className="settings-info-band">这里只估算审查记录的成本，不会替你充值、扣费或改变服务商价格。单位统一为美元 / 100 万 Token。</div>
-                      <div className="settings-form-grid settings-form-grid-pricing">
-                        <NumberField name="input-price" label="输入单价" value={draft.inputPrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("inputPrice", value)} />
-                        <NumberField name="output-price" label="输出单价" value={draft.outputPrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("outputPrice", value)} />
-                        <NumberField name="cache-read-price" label="缓存读取单价" value={draft.cacheReadPrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("cacheReadPrice", value)} />
-                        <NumberField name="cache-write-price" label="缓存写入单价" value={draft.cacheWritePrice} min="0" max="1000000" step="0.000001" required={false} suffix="$" onChange={(value) => updateDraft("cacheWritePrice", value)} />
-                      </div>
                     </fieldset>
                   </details>
 
@@ -903,8 +839,8 @@ export default function SettingsPage({
                 <div className="settings-section-heading settings-policy-heading">
                   <div>
                     <span className="settings-eyebrow">REVIEW GUARDRAILS</span>
-                    <h2>审查范围与资源统计</h2>
-                    <p>任务级请求次数、Token 和费用只记录，不会因为累计用量暂停新审查。</p>
+                    <h2>审查范围</h2>
+                    <p>系统会自动管理模型上下文、分批和输出长度，避免遗漏可审查内容。</p>
                   </div>
                   {policyDirty && <span className="settings-unsaved-badge">有修改待保存</span>}
                 </div>
@@ -919,19 +855,6 @@ export default function SettingsPage({
                       <NumberField name="policy-scope-depth" label="规则目录深度" value={policyDraft.maxScopeDepth} min="1" max="64" onChange={(value) => updatePolicyDraft("maxScopeDepth", value)} />
                       <NumberField name="policy-unit-kib" label="单文件输入上限" value={policyDraft.maxUnitInputKib} min="4" max="10240" suffix="KiB" onChange={(value) => updatePolicyDraft("maxUnitInputKib", value)} />
                       <NumberField name="policy-total-mib" label="总输入上限" value={policyDraft.maxTotalInputMib} min="0.00390625" max="100" step="0.00390625" suffix="MiB" onChange={(value) => updatePolicyDraft("maxTotalInputMib", value)} />
-                    </div>
-                  </div>
-                  <div className="settings-policy-group">
-                    <div className="settings-inline-heading">
-                      <strong>任务级资源统计</strong>
-                      <small>以下指标用于审计和排查，不作为新任务的阻断条件。</small>
-                    </div>
-                    <div className="settings-form-grid settings-policy-grid">
-                      <NumberField name="policy-duration" label="任务运行保护时限" value={policyDraft.maxModelDurationSeconds} min="30" max="86400" suffix="秒" onChange={(value) => updatePolicyDraft("maxModelDurationSeconds", value)} />
-                    </div>
-                    <div className="settings-info-band">
-                      <strong>资源统计模式已启用</strong>
-                      <span>HTTP 请求、输入/输出 Token 和费用会写入审查记录；单次请求仍受大小、超时和重试保护。</span>
                     </div>
                   </div>
                 </fieldset>

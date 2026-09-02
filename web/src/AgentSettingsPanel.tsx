@@ -7,11 +7,6 @@ import {
   peekReadCache,
   subscribeReadCache,
 } from "./api";
-import {
-  batchInputOptions,
-  contextWindowOptions,
-  outputTokenOptions,
-} from "./settings-drafts";
 import { testStatusLabels } from "./settings-labels";
 import type {
   AiAgentSettings,
@@ -546,11 +541,8 @@ export default function AgentSettingsPanel({
                 <label className="agent-settings-key"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(event) => updateDraft(agent, "apiKey", event.target.value)} placeholder={item.api_key_configured ? item.api_key_mask ?? "已保存密钥" : "粘贴 API Key"} autoComplete="new-password" disabled={sharedConnection || draft.clearApiKey} /><small>{sharedConnection ? "由公共连接统一提供；不会在此重复保存。" : "留空保留原密钥；只显示掩码。"}</small></label>
                 {!sharedConnection && <label className="agent-settings-check"><input type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft(agent, "clearApiKey", event.target.checked)} disabled={!item.api_key_configured} /><span>保存时删除密钥</span></label>}
                 <details className="agent-settings-advanced">
-                  <summary>高级设置（系统默认自动管理）</summary>
+                  <summary>连接与重试</summary>
                   <div>
-                    <label><span>总上下文窗口</span><select value={draft.contextWindowTokens} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "contextWindowTokens", event.target.value)}>{contextWindowOptions(draft.contextWindowTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>模型总容量，留空时使用自动策略。</small></label>
-                    <label><span>每批输入上限</span><select value={draft.maxBatchInputTokens} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "maxBatchInputTokens", event.target.value)}>{batchInputOptions(draft.contextWindowTokens, draft.maxBatchInputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                    <label><span>回答上限</span><select value={draft.maxOutputTokens} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "maxOutputTokens", event.target.value)}>{outputTokenOptions(draft.contextWindowTokens, draft.maxOutputTokens).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                     <label><span>推理档位</span><select value={draft.reasoningEffort} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "reasoningEffort", event.target.value)}><option value="none">自动</option><option value="low">轻量</option><option value="medium">标准</option><option value="high">深入</option><option value="max">极致</option></select></label>
                     <label><span>连接超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.connectTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "connectTimeoutSeconds", event.target.value)} /></label>
                     <label><span>回答超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.readTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "readTimeoutSeconds", event.target.value)} /></label>

@@ -34,11 +34,6 @@ export interface ReviewPolicyDraft {
   maxScopeDepth: string;
   maxUnitInputKib: string;
   maxTotalInputMib: string;
-  maxModelHttpCalls: string;
-  maxModelInputTokens: string;
-  maxModelOutputTokens: string;
-  maxModelCostUsd: string;
-  maxModelDurationSeconds: string;
 }
 
 export const KIB = 1024;
@@ -83,13 +78,6 @@ export function reviewPolicyDraft(settings: AiSettings): ReviewPolicyDraft {
     maxScopeDepth: String(settings.max_scope_depth),
     maxUnitInputKib: bytesToInput(String(settings.max_unit_input_bytes), KIB),
     maxTotalInputMib: bytesToInput(String(settings.max_total_input_bytes), MIB),
-    maxModelHttpCalls: String(settings.max_model_http_calls),
-    maxModelInputTokens: String(settings.max_model_input_tokens),
-    maxModelOutputTokens: String(settings.max_model_output_tokens),
-    maxModelCostUsd: settings.max_model_cost_microusd === null
-      ? ""
-      : String(settings.max_model_cost_microusd / 1_000_000),
-    maxModelDurationSeconds: String(settings.max_model_duration_seconds),
   };
 }
 
@@ -281,14 +269,11 @@ export function reviewPolicyHasChanges(
   settings: AiSettings,
   draft: ReviewPolicyDraft,
 ): boolean {
-  // 任务级请求/Token/费用字段仅为兼容旧快照而保留，当前页面不再允许
-  // 编辑它们；不可编辑字段不应让用户看到永远无法消除的“待保存”状态。
   return (
     Number(draft.maxUnits) !== settings.max_units
     || Number(draft.maxScopeDepth) !== settings.max_scope_depth
     || Number(inputToBytes(draft.maxUnitInputKib, KIB)) !== settings.max_unit_input_bytes
     || Number(inputToBytes(draft.maxTotalInputMib, MIB)) !== settings.max_total_input_bytes
-    || Number(draft.maxModelDurationSeconds) !== settings.max_model_duration_seconds
   );
 }
 

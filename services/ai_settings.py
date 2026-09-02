@@ -90,7 +90,7 @@ class AiSettingsConflictError(AiSettingsError):
 
 
 class AiSettingsValidationError(AiSettingsError):
-    """管理员提交的模型或预算参数不满足边界。"""
+    """管理员提交的模型或审查范围参数不满足边界。"""
 
 
 class AiProviderNotReadyError(AiSettingsError):
@@ -331,6 +331,12 @@ class AiProviderDraft:
 
 @dataclass(frozen=True, slots=True)
 class ReviewPolicyDraft:
+    """审查范围草稿。
+
+    ``max_model_*`` 字段是旧版调用方的兼容属性。它们不会再被校验、保存或
+    传入运行时；新代码只应填写四个范围字段。
+    """
+
     max_units: int
     max_scope_depth: int
     max_unit_input_bytes: int
@@ -592,19 +598,11 @@ class AiSettingsService:
         actor: str,
     ) -> AiSettingsView:
         try:
-            model_budget = ModelBudgetPolicy(
-                max_http_calls=draft.max_model_http_calls,
-                max_input_tokens=draft.max_model_input_tokens,
-                max_output_tokens=draft.max_model_output_tokens,
-                max_estimated_cost_microusd=draft.max_model_cost_microusd,
-                max_duration_seconds=draft.max_model_duration_seconds,
-            )
             ReviewPlanningSettings(
                 max_units=draft.max_units,
                 max_scope_depth=draft.max_scope_depth,
                 max_unit_input_bytes=draft.max_unit_input_bytes,
                 max_total_input_bytes=draft.max_total_input_bytes,
-                model_budget=model_budget,
             )
         except ValueError as exc:
             raise AiSettingsValidationError(str(exc)) from exc
@@ -619,11 +617,6 @@ class AiSettingsService:
                         "max_scope_depth",
                         "max_unit_input_bytes",
                         "max_total_input_bytes",
-                        "max_model_http_calls",
-                        "max_model_input_tokens",
-                        "max_model_output_tokens",
-                        "max_model_cost_microusd",
-                        "max_model_duration_seconds",
                     )
                     if getattr(settings, name) != getattr(draft, name)
                 }
@@ -651,7 +644,7 @@ class AiSettingsService:
                 ) from exc
             except SQLAlchemyError as exc:
                 session.rollback()
-                raise AiSettingsPersistenceError("审查预算暂时无法保存") from exc
+                raise AiSettingsPersistenceError("审查范围暂时无法保存") from exc
         return self.get()
 
     def test_provider(
@@ -787,7 +780,6 @@ class AiSettingsService:
                 max_scope_depth=settings.max_scope_depth,
                 max_unit_input_bytes=settings.max_unit_input_bytes,
                 max_total_input_bytes=settings.max_total_input_bytes,
-                model_budget=self._model_budget(settings),
             )
         except ValueError as exc:
             raise AiSettingsConfigurationError(
@@ -1054,13 +1046,11 @@ class AiSettingsService:
 
     @staticmethod
     def _model_budget(settings: AiSettingsRecord) -> ModelBudgetPolicy:
-        return ModelBudgetPolicy(
-            max_http_calls=settings.max_model_http_calls,
-            max_input_tokens=settings.max_model_input_tokens,
-            max_output_tokens=settings.max_model_output_tokens,
-            max_estimated_cost_microusd=settings.max_model_cost_microusd,
-            max_duration_seconds=settings.max_model_duration_seconds,
-        )
+        # 旧数据库列仍可能存在，但不再进入任何新计划或运行时。返回默认的
+        # 非阻断策略可兼容尚未完成迁移的读取方，同时防止历史 ``enforce``
+        # 值被重新传播。
+        del settings
+        return ModelBudgetPolicy()
 
     @staticmethod
     def _check_revision(current: int, expected: int) -> None:
@@ -1506,15 +1496,6 @@ class SqlAlchemyAiRuntimeProvider:
                         max_scope_depth=snapshot.max_scope_depth,
                         max_unit_input_bytes=snapshot.max_unit_input_bytes,
                         max_total_input_bytes=snapshot.max_total_input_bytes,
-                        model_budget=ModelBudgetPolicy(
-                            max_http_calls=snapshot.max_model_http_calls,
-                            max_input_tokens=snapshot.max_model_input_tokens,
-                            max_output_tokens=snapshot.max_model_output_tokens,
-                            max_estimated_cost_microusd=(
-                                snapshot.max_model_cost_microusd
-                            ),
-                            max_duration_seconds=snapshot.max_model_duration_seconds,
-                        ),
                     )
                     if self._service.revision() != revision:
                         if reviewer is not None:

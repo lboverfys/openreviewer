@@ -48,7 +48,6 @@ from persistence.models import (
     FindingLifecycleRecord,
     GitHubInstallationRecord,
     ModelCallRecord,
-    ModelHttpCallRecord,
     ModelReviewBatchRecord,
     OutboxEventRecord,
     PullRequestCiCheckRecord,
@@ -68,7 +67,6 @@ from services.model_review import MAX_MODEL_REVIEW_BATCHES, ModelReviewBatch
 from services.task_queue import (
     ModelBatchBusyError,
     ModelBatchLease,
-    ModelBudgetExceededError,
     ModelReviewCheckpointTooLargeError,
     ModelReviewConflictError,
     ModelReviewInputError,
@@ -3005,233 +3003,37 @@ class SqlAlchemyReviewTaskQueue:
         *,
         agent: str = "default",
     ) -> ModelBudgetReservation:
-        """在发送 HTTP 前锁定计划并预留最坏情况用量。
+        """兼容旧调用方，但不再创建全局用量或配额记录。
 
-        新计划和升级后的历史计划都使用 ``observe`` 模式；显式保存
-        ``enforce`` 的计划仍保留旧版硬预算行为。对极少数尚未完成迁移、
-        模式仍为 NULL 的历史行，运行时也按 observe 兜底，避免预算再次阻断。
+        模型请求的上下文、响应大小、超时和租约保护由各自运行时负责。
+        该入口只返回短生命周期对象，绝不会查询或修改数据库，也不会因
+        历史计划字段、Token、费用或请求次数拒绝请求。
         """
 
-        if lease.review_plan_id is None:
-            raise ModelReviewConflictError("模型预算缺少 Review Plan")
         if not agent or len(agent) > 32:
-            raise ValueError("model budget agent name is invalid")
+            raise ValueError("model request agent name is invalid")
         numeric_values = (
             request.request_bytes,
             request.input_token_upper_bound,
             request.output_token_upper_bound,
         )
         if any(value < 0 for value in numeric_values):
-            raise ValueError("model budget reservation values cannot be negative")
+            raise ValueError("model request bounds cannot be negative")
         if (
             request.cost_upper_bound_microusd is not None
             and request.cost_upper_bound_microusd < 0
         ):
-            raise ValueError("model budget reservation values cannot be negative")
-        if request.input_token_upper_bound == 0 and request.request_bytes > 0:
-            raise ValueError("non-empty model request requires an input reservation")
-        now = self._clock()
-        with self._sessions() as session:
-            try:
-                task, _run = self._locked_owned_task_with_run(session, lease, now)
-                plan = session.scalar(
-                    select(ReviewPlanRecord)
-                    .where(ReviewPlanRecord.id == lease.review_plan_id)
-                    .with_for_update()
-                )
-                if plan is None:
-                    raise ModelReviewConflictError("模型预算关联的计划不存在")
-                # 0040 迁移会把历史 NULL 回填为 observe。运行时仍以 observe
-                # 兜底，防止迁移尚未完成或人工导入的旧行重新启用硬阻断；只有
-                # 明确保存 enforce 的计划才执行旧版硬预算。
-                budget_mode = plan.model_budget_mode or "observe"
-                if budget_mode not in {"observe", "enforce"}:
-                    raise TaskQueueError("模型预算处理模式无效")
-                enforce_budget = budget_mode == "enforce"
-                # 资源累计指标在 observe 模式只记录；墙上时钟仍是任务级
-                # 运行保护，避免异常中转站让一个任务无限占用 Worker。
-                started_at = plan.model_budget_started_at or now
-                elapsed_ms = max(
-                    0,
-                    int((_as_utc(now) - _as_utc(started_at)).total_seconds() * 1000),
-                )
-                max_duration_ms = plan.max_model_duration_seconds * 1000
-                budget_multiplier = plan.model_budget_resume_count + 1
-                max_http_calls = plan.max_model_http_calls * budget_multiplier
-                max_input_tokens = plan.max_model_input_tokens * budget_multiplier
-                max_output_tokens = plan.max_model_output_tokens * budget_multiplier
-                max_estimated_cost_microusd = (
-                    plan.max_model_cost_microusd * budget_multiplier
-                    if plan.max_model_cost_microusd is not None
-                    else None
-                )
-                reserved_cost_microusd = request.cost_upper_bound_microusd or 0
-                projections = {
-                    "http_calls": plan.model_http_calls + 1,
-                    "input_tokens": (
-                        plan.model_input_tokens + request.input_token_upper_bound
-                    ),
-                    "output_tokens": (
-                        plan.model_output_tokens + request.output_token_upper_bound
-                    ),
-                    "estimated_cost_microusd": (
-                        plan.model_estimated_cost_microusd
-                        + reserved_cost_microusd
-                    ),
-                }
-                reason = plan.model_budget_exhausted_reason if enforce_budget else None
-                if reason is None and elapsed_ms >= max_duration_ms:
-                    reason = "duration"
-                if (
-                    reason is None
-                    and max_estimated_cost_microusd is not None
-                    and request.cost_upper_bound_microusd is None
-                ):
-                    reason = "pricing_unknown"
-                if reason is None and projections["http_calls"] > max_http_calls:
-                    reason = "http_calls"
-                if (
-                    reason is None
-                    and projections["input_tokens"] > max_input_tokens
-                ):
-                    reason = "input_tokens"
-                if (
-                    reason is None
-                    and projections["output_tokens"] > max_output_tokens
-                ):
-                    reason = "output_tokens"
-                if (
-                    reason is None
-                    and max_estimated_cost_microusd is not None
-                    and projections["estimated_cost_microusd"]
-                    > max_estimated_cost_microusd
-                ):
-                    reason = "estimated_cost"
-                if reason is not None and (enforce_budget or reason == "duration"):
-                    plan.model_budget_started_at = started_at
-                    plan.model_budget_exhausted_at = (
-                        plan.model_budget_exhausted_at or now
-                    )
-                    plan.model_budget_exhausted_reason = reason
-                    error = ModelBudgetExceededError(
-                        reason,
-                        details={
-                            "review_plan_id": plan.id,
-                            "http_calls": plan.model_http_calls,
-                            "max_http_calls": max_http_calls,
-                            "input_tokens": plan.model_input_tokens,
-                            "max_input_tokens": max_input_tokens,
-                            "output_tokens": plan.model_output_tokens,
-                            "max_output_tokens": max_output_tokens,
-                            "estimated_cost_microusd": (
-                                plan.model_estimated_cost_microusd
-                            ),
-                            "max_estimated_cost_microusd": (
-                                max_estimated_cost_microusd
-                            ),
-                            "pricing_configured": (
-                                request.cost_upper_bound_microusd is not None
-                            ),
-                            "budget_resume_count": plan.model_budget_resume_count,
-                            "elapsed_ms": elapsed_ms,
-                            "max_duration_ms": max_duration_ms,
-                        },
-                    )
-                    self._add_event(
-                        session,
-                        task,
-                        "review.model.budget_exhausted",
-                        f"{plan.id}:{reason}",
-                        now,
-                        error=error.error,
-                        extra_payload={
-                            "review_plan_id": plan.id,
-                            "budget_reason": reason,
-                        },
-                    )
-                    session.commit()
-                    raise error
-
-                if reason is not None:
-                    # observe 模式只留下可审计事件，不设置 exhausted_reason，
-                    # 避免管理界面把观测到的超限误判成需要人工恢复的暂停。
-                    self._add_event(
-                        session,
-                        task,
-                        "review.model.budget_observed",
-                        f"{plan.id}:{reason}:{projections['http_calls']}",
-                        now,
-                        extra_payload={
-                            "review_plan_id": plan.id,
-                            "model_budget_mode": budget_mode,
-                            "budget_reason": reason,
-                            "http_calls": projections["http_calls"],
-                            "max_http_calls": max_http_calls,
-                            "input_tokens": projections["input_tokens"],
-                            "max_input_tokens": max_input_tokens,
-                            "output_tokens": projections["output_tokens"],
-                            "max_output_tokens": max_output_tokens,
-                            "estimated_cost_microusd": projections[
-                                "estimated_cost_microusd"
-                            ],
-                            "max_estimated_cost_microusd": (
-                                max_estimated_cost_microusd
-                            ),
-                            "pricing_configured": (
-                                request.cost_upper_bound_microusd is not None
-                            ),
-                            "budget_resume_count": plan.model_budget_resume_count,
-                            "elapsed_ms": elapsed_ms,
-                            "max_duration_ms": max_duration_ms,
-                        },
-                    )
-
-                call_id = str(self._uuid_factory())
-                sequence = projections["http_calls"]
-                plan.model_budget_started_at = started_at
-                plan.model_http_calls = projections["http_calls"]
-                plan.model_input_tokens = projections["input_tokens"]
-                plan.model_output_tokens = projections["output_tokens"]
-                plan.model_estimated_cost_microusd = projections[
-                    "estimated_cost_microusd"
-                ]
-                session.add(
-                    ModelHttpCallRecord(
-                        id=call_id,
-                        review_plan_id=plan.id,
-                        sequence=sequence,
-                        agent=agent,
-                        provider=request.provider,
-                        api_protocol=request.api_protocol,
-                        model=request.model,
-                        request_bytes=request.request_bytes,
-                        reserved_input_tokens=request.input_token_upper_bound,
-                        reserved_output_tokens=request.output_token_upper_bound,
-                        reserved_cost_microusd=reserved_cost_microusd,
-                        status="reserved",
-                        started_at=now,
-                    )
-                )
-                session.commit()
-                return ModelBudgetReservation(
-                    id=call_id,
-                    review_plan_id=plan.id,
-                    sequence=sequence,
-                    reserved_input_tokens=request.input_token_upper_bound,
-                    reserved_output_tokens=request.output_token_upper_bound,
-                    reserved_cost_microusd=reserved_cost_microusd,
-                    remaining_duration_ms=max(1, max_duration_ms - elapsed_ms),
-                )
-            except (
-                ModelBudgetExceededError,
-                ModelReviewConflictError,
-                TaskLeaseLostError,
-            ):
-                session.rollback()
-                raise
-            except SQLAlchemyError as exc:
-                session.rollback()
-                raise TaskQueueError("model budget could not be reserved") from exc
+            raise ValueError("model request bounds cannot be negative")
+        return ModelBudgetReservation(
+            id=str(self._uuid_factory()),
+            review_plan_id=lease.review_plan_id or "",
+            sequence=1,
+            reserved_input_tokens=request.input_token_upper_bound,
+            reserved_output_tokens=request.output_token_upper_bound,
+            reserved_cost_microusd=request.cost_upper_bound_microusd or 0,
+            # 该字段仅为旧类型兼容；模型适配器不会用它限制 HTTP 超时。
+            remaining_duration_ms=0,
+        )
 
     def settle_model_budget(
         self,
@@ -3244,244 +3046,26 @@ class SqlAlchemyReviewTaskQueue:
         duration_ms: int,
         uncertain: bool = False,
     ) -> None:
-        """结算真实用量；无法确认是否计费时保留全部预留。"""
+        """兼容旧签名；模型用量不再由队列结算或持久化。"""
 
-        if duration_ms < 0:
-            raise ValueError("model budget duration cannot be negative")
-        if response_status is not None and not 100 <= response_status <= 599:
-            raise ValueError("model budget response status is invalid")
-        actual_values = (input_tokens, output_tokens, estimated_cost_microusd)
-        if any(value is not None and value < 0 for value in actual_values):
-            raise ValueError("model budget actual values cannot be negative")
-        if not uncertain and (input_tokens is None or output_tokens is None):
-            raise ValueError("settled model budget requires token usage")
-        now = self._clock()
-        budget_error: ModelBudgetExceededError | None = None
-        with self._sessions() as session:
-            try:
-                row = session.scalar(
-                    select(ModelHttpCallRecord)
-                    .where(ModelHttpCallRecord.id == reservation.id)
-                    .with_for_update()
-                )
-                if row is None or row.review_plan_id != reservation.review_plan_id:
-                    raise ModelReviewConflictError("模型预算预留不存在")
-                if row.status != "reserved":
-                    return
-                plan = session.scalar(
-                    select(ReviewPlanRecord)
-                    .where(ReviewPlanRecord.id == reservation.review_plan_id)
-                    .with_for_update()
-                )
-                if plan is None:
-                    raise ModelReviewConflictError("模型预算关联的计划不存在")
-                # 与 reserve_model_budget 保持一致：NULL 只按 observe 兜底，
-                # 显式 enforce 才会让结算超限中断模型结果。
-                budget_mode = plan.model_budget_mode or "observe"
-                if budget_mode not in {"observe", "enforce"}:
-                    raise TaskQueueError("模型预算处理模式无效")
-                enforce_budget = budget_mode == "enforce"
-                started_at = plan.model_budget_started_at or row.started_at or now
-                elapsed_ms = max(
-                    0,
-                    int((_as_utc(now) - _as_utc(started_at)).total_seconds() * 1000),
-                )
-                max_duration_ms = plan.max_model_duration_seconds * 1000
-                row.response_status = response_status
-                row.duration_ms = duration_ms
-                row.completed_at = now
-                overrun_reason = (
-                    plan.model_budget_exhausted_reason if enforce_budget else None
-                )
-                if uncertain:
-                    row.status = "uncertain"
-                else:
-                    actual_input = int(input_tokens or 0)
-                    actual_output = int(output_tokens or 0)
-                    actual_cost = int(estimated_cost_microusd or 0)
-                    plan.model_input_tokens = max(
-                        0,
-                        plan.model_input_tokens
-                        - row.reserved_input_tokens
-                        + actual_input,
-                    )
-                    plan.model_output_tokens = max(
-                        0,
-                        plan.model_output_tokens
-                        - row.reserved_output_tokens
-                        + actual_output,
-                    )
-                    plan.model_estimated_cost_microusd = max(
-                        0,
-                        plan.model_estimated_cost_microusd
-                        - row.reserved_cost_microusd
-                        + actual_cost,
-                    )
-                    row.actual_input_tokens = actual_input
-                    row.actual_output_tokens = actual_output
-                    row.actual_cost_microusd = (
-                        actual_cost if estimated_cost_microusd is not None else None
-                    )
-                    row.status = "settled"
-                    budget_multiplier = plan.model_budget_resume_count + 1
-                    if overrun_reason is None and (
-                        plan.model_input_tokens
-                        > plan.max_model_input_tokens * budget_multiplier
-                    ):
-                        overrun_reason = "input_tokens"
-                    elif overrun_reason is None and (
-                        plan.model_output_tokens
-                        > plan.max_model_output_tokens * budget_multiplier
-                    ):
-                        overrun_reason = "output_tokens"
-                    elif overrun_reason is None and (
-                        plan.max_model_cost_microusd is not None
-                        and plan.model_estimated_cost_microusd
-                        > plan.max_model_cost_microusd * budget_multiplier
-                    ):
-                        overrun_reason = "estimated_cost"
-                # 结算时再次检查墙上时钟。硬预算模式下越过截止线会暂停任务；
-                # observe 模式仅记录这次观测，不影响已经收到的模型结果。
-                if overrun_reason is None and elapsed_ms >= max_duration_ms:
-                    overrun_reason = "duration"
-                if overrun_reason is not None:
-                    if enforce_budget or overrun_reason == "duration":
-                        newly_exhausted = plan.model_budget_exhausted_reason is None
-                        plan.model_budget_exhausted_at = (
-                            plan.model_budget_exhausted_at or now
-                        )
-                        plan.model_budget_exhausted_reason = overrun_reason
-                        if newly_exhausted:
-                            error = ModelBudgetExceededError(
-                                overrun_reason,
-                                details={
-                                    "review_plan_id": plan.id,
-                                    "model_http_calls": plan.model_http_calls,
-                                    "model_input_tokens": plan.model_input_tokens,
-                                    "model_output_tokens": plan.model_output_tokens,
-                                    "model_estimated_cost_microusd": (
-                                        plan.model_estimated_cost_microusd
-                                    ),
-                                    "budget_resume_count": plan.model_budget_resume_count,
-                                    "elapsed_ms": elapsed_ms,
-                                    "max_duration_ms": max_duration_ms,
-                                    "settled_after_deadline": (
-                                        overrun_reason == "duration"
-                                    ),
-                                },
-                            )
-                            self._add_event(
-                                session,
-                                None,
-                                "review.model.budget_exhausted",
-                                f"{plan.id}:{overrun_reason}:{reservation.sequence}",
-                                now,
-                                error=error.error,
-                                aggregate_id=plan.review_run_id,
-                                extra_payload={
-                                    "review_plan_id": plan.id,
-                                    "budget_reason": overrun_reason,
-                                    "settled_after_deadline": (
-                                        overrun_reason == "duration"
-                                    ),
-                                },
-                            )
-                            budget_error = error
-                    else:
-                        self._add_event(
-                            session,
-                            None,
-                            "review.model.budget_observed",
-                            f"{plan.id}:{overrun_reason}:{reservation.sequence}",
-                            now,
-                            aggregate_id=plan.review_run_id,
-                            extra_payload={
-                                "review_plan_id": plan.id,
-                                "model_budget_mode": budget_mode,
-                                "budget_reason": overrun_reason,
-                                "model_http_calls": plan.model_http_calls,
-                                "model_input_tokens": plan.model_input_tokens,
-                                "model_output_tokens": plan.model_output_tokens,
-                                "model_estimated_cost_microusd": (
-                                    plan.model_estimated_cost_microusd
-                                ),
-                                "budget_resume_count": plan.model_budget_resume_count,
-                                "elapsed_ms": elapsed_ms,
-                                "max_duration_ms": max_duration_ms,
-                                "settled_after_deadline": (
-                                    overrun_reason == "duration"
-                                ),
-                            },
-                        )
-                session.commit()
-            except ModelReviewConflictError:
-                session.rollback()
-                raise
-            except SQLAlchemyError as exc:
-                session.rollback()
-                raise TaskQueueError("model budget could not be settled") from exc
-        if budget_error is not None:
-            raise budget_error
+        del (
+            reservation,
+            input_tokens,
+            output_tokens,
+            estimated_cost_microusd,
+            response_status,
+            duration_ms,
+            uncertain,
+        )
 
     def pause_for_model_budget(
         self,
         lease: ReviewTaskLease,
         error: SafeError,
     ) -> None:
-        """把旧版硬预算超限任务转为人工暂停，并保留原工作流节点。"""
+        """兼容旧 Worker；绝不把任务切到人工暂停状态。"""
 
-        if error.code is not ErrorCode.MODEL_BUDGET_EXCEEDED:
-            raise ValueError("only model budget errors can pause this workflow")
-        now = self._clock()
-        with self._sessions() as session:
-            try:
-                task, run = self._locked_owned_task_with_run(session, lease, now)
-                current = ExecutionStatus(task.workflow_status)
-                paused_from = (
-                    current
-                    if current
-                    in {ExecutionStatus.AGENT_BATCHES, ExecutionStatus.AGGREGATING}
-                    else ExecutionStatus.AGENT_BATCHES
-                )
-                task.last_error = error.safe_message[:4000]
-                task.last_error_code = error.code.value
-                task.last_error_retryable = False
-                task.last_error_details = dict(error.details)
-                task.workflow_paused_from = paused_from.value
-                run.workflow_paused_from = paused_from.value
-                task.workflow_status = ExecutionStatus.PAUSED.value
-                run.workflow_status = ExecutionStatus.PAUSED.value
-                task.execution_status = ExecutionStatus.READY_FOR_REVIEW.value
-                run.execution_status = ExecutionStatus.READY_FOR_REVIEW.value
-                task.available_at = now
-                task.lease_owner = None
-                task.lease_expires_at = None
-                task.claimed_from_status = None
-                task.updated_at = now
-                run.updated_at = now
-                self._add_event(
-                    session,
-                    task,
-                    "review.workflow.pause",
-                    f"model-budget:{lease.review_plan_id}",
-                    now,
-                    error=error,
-                    extra_payload={
-                        "action": "pause",
-                        "actor": "model_budget",
-                        "previous_status": paused_from.value,
-                        "new_status": ExecutionStatus.PAUSED.value,
-                        "paused_from": paused_from.value,
-                        "review_plan_id": lease.review_plan_id,
-                    },
-                )
-                session.commit()
-            except TaskLeaseLostError:
-                session.rollback()
-                raise
-            except SQLAlchemyError as exc:
-                session.rollback()
-                raise TaskQueueError("model budget pause could not be persisted") from exc
+        del lease, error
 
     def mark_waiting_for_ci(self, lease: ReviewTaskLease) -> None:
         """供兼容测试路径把任务直接推进到 ``waiting_for_ci``。
