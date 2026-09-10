@@ -2088,7 +2088,11 @@ class CodeEmbeddingRecord(Base):
 
 class CodeIndexChunkRecord(Base):
     __tablename__ = "code_index_chunks"
-    __table_args__ = (Index("ix_code_index_chunks_embedding", "embedding_id"), Index("ix_code_index_chunks_chunk", "chunk_id"))
+    __table_args__ = (
+        Index("ix_code_index_chunks_embedding", "embedding_id"),
+        Index("ix_code_index_chunks_chunk", "chunk_id"),
+        Index("ix_code_index_chunks_index_embedding", "index_id", "embedding_id", "chunk_id"),
+    )
     index_id: Mapped[str] = mapped_column(String(64), ForeignKey("code_indexes.id", ondelete="CASCADE"), primary_key=True)
     chunk_id: Mapped[str] = mapped_column(String(64), ForeignKey("code_chunks.id"), primary_key=True)
     embedding_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("code_embeddings.id"), nullable=True)
@@ -2108,6 +2112,8 @@ class RetrievalTraceRecord(Base):
         Index("ix_retrieval_traces_review_created", "review_run_id", "created_at"),
         UniqueConstraint("review_run_id", "plan_fingerprint", "agent", name="uq_retrieval_trace_plan_agent"),
         Index("ix_retrieval_traces_index_created", "index_id", "created_at"),
+        Index("ix_retrieval_traces_temporary_created", "created_at", "id",
+            postgresql_where=sa.text("review_run_id IS NULL"), sqlite_where=sa.text("review_run_id IS NULL")),
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     index_id: Mapped[str] = mapped_column(String(64), ForeignKey("code_indexes.id", ondelete="CASCADE"), nullable=False)

@@ -12,6 +12,11 @@ export const retrievalStrategyLabels = {
 const routeLabels: Record<string, string> = { bm25: "BM25", vector: "向量", relation: "代码关系" };
 const agentLabels: Record<string, string> = { security: "安全", convention: "规范", logic: "逻辑", summary: "汇总" };
 
+export function vectorSearchLabel(mode: string | undefined): string {
+  const labels: Record<string, string> = {unused: "未执行", not_used: "未执行", exact_snapshot: "提交内精确检索", hnsw_snapshot: "HNSW 加速 · 提交过滤", exact_fallback: "候选不足 · 精确回退"};
+  return (mode ?? "unused").split(",").map(item => labels[item] ?? item).join(" / ");
+}
+
 export function EvidenceSnippet({ evidence }: { evidence: ContextEvidence }) {
   return <details className="retrieval-evidence">
     <summary>
@@ -49,6 +54,7 @@ export default function RetrievalTracePanel({ traces, compact = false }: { trace
       </div>
       <div className="retrieval-measurements">
         <span>本次模型请求：{trace.model_requests ?? 0}</span>
+        <span>向量搜索：{vectorSearchLabel(trace.vector_search_mode)}</span>
         {trace.rerank_cache_hit && <span>精排缓存命中</span>}
         <span>查询向量：{!trace.routes.some(item => item.route === "vector") ? "未使用" : trace.query_cache_hit ? "缓存命中" : "本次生成"}</span>
         <span>向量耗时：{trace.routes.some(item => item.route === "vector") ? formatDuration(trace.embedding_ms ?? 0) : "未执行"}</span>

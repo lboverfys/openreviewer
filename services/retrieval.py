@@ -6,10 +6,9 @@ import math
 import statistics
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from threading import RLock
 from typing import Any, cast
 from uuid import uuid4
 
@@ -40,12 +39,12 @@ from persistence.models import RetrievalSettingsRecord
 from persistence.retrieval import RetrievalRepository
 from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from services.ai_settings import AiSecretCipher
-from services.code_indexing import code_tokens
 from services.rbac import ResourceScope
 from services.retrieval_context import changed_symbols, merge_contexts, review_queries
 from services.retrieval_gateway import RetrievalGateway
 from services.retrieval_indexing import build_index
 from services.retrieval_indexing import embedding_batches as _embedding_batches
+from services.retrieval_lexical import LexicalIndex, LexicalSnapshotCache
 from services.retrieval_providers import (
     AliyunRetrievalClient,
     RequestBudget,
@@ -114,41 +113,6 @@ class RetrievalSettingsService:
             row.tested_fingerprint = stable_key(view.revision, view.settings.model_dump())
 
 
-class LexicalIndex:
-    def __init__(self, documents: Iterable[tuple[str, str, str, dict[str, int], int, int]]) -> None:
-        self.documents: dict[str, tuple[str, str, dict[str, int], int, int, int]] = {}
-        self.postings: dict[str, set[str]] = defaultdict(set)
-        total_length = 0
-        for chunk_id, file, symbol, tokens, start_line, end_line in documents:
-            length = sum(tokens.values())
-            self.documents[chunk_id] = file, symbol, tokens, length, start_line, end_line
-            total_length += length
-            for token in tokens:
-                self.postings[token].add(chunk_id)
-        self.average_length = max(1.0, total_length / max(1, len(self.documents)))
-
-    def search(self, query: str, limit: int) -> list[tuple[str, float]]:
-        terms = set(code_tokens(query))
-        candidates: set[str] = set()
-        for term in terms:
-            candidates.update(self.postings.get(term, ()))
-        scores = []
-        count = len(self.documents)
-        for chunk_id in candidates:
-            _, _, tokens, length, _, _ = self.documents[chunk_id]
-            score = 0.0
-            for term in terms.intersection(tokens):
-                frequency = tokens[term]
-                inverse = math.log(1 + (count - len(self.postings[term]) + 0.5) / (len(self.postings[term]) + 0.5))
-                score += inverse * frequency * 2.5 / (frequency + 1.5 * (0.25 + 0.75 * length / self.average_length))
-            scores.append((chunk_id, score))
-        return sorted(scores, key=lambda item: (-item[1], item[0]))[:limit]
-
-    def seeds(self, query: SearchQuery) -> list[str]:
-        files, symbols = set(query.seed_files), set(query.symbols)
-        return [chunk_id for chunk_id, (file, symbol, _, _, _, _) in self.documents.items() if (symbol in symbols if symbols else file in files)][:100]
-
-
 def reciprocal_rank_fusion(routes: dict[str, list[tuple[str, float]]], limit: int = _FUSION_LIMIT) -> list[tuple[str, float, tuple[str, ...]]]:
     scores: dict[str, float] = defaultdict(float)
     origins: dict[str, list[str]] = defaultdict(list)
@@ -171,9 +135,7 @@ class HybridRetrievalService:
     ) -> None:
         self.repository, self.settings = repository, settings
         self.client_factory, self.source_loader = client_factory, source_loader
-        self._lexical_lock = RLock()
-        self._lexical_id: str | None = None
-        self._lexical_cache: LexicalIndex | None = None
+        self._lexical_cache = LexicalSnapshotCache()
 
     def _client(self, view: RetrievalSettingsView, key: str | None, budget: RequestBudget | None = None):
         if not key:
@@ -229,12 +191,7 @@ class HybridRetrievalService:
     def _build(self, claim, sources: Sequence[SourceFile] | None, on_progress: Callable[[], None] | None) -> IndexView:
         return build_index(self.repository, self.settings, self._client, self.source_loader, claim, sources, on_progress)
     def _lexical(self, index_id: str) -> LexicalIndex:
-        with self._lexical_lock:
-            if self._lexical_id != index_id or self._lexical_cache is None:
-                self._lexical_cache = LexicalIndex(self.repository.lexical_documents(index_id))
-                self._lexical_id = index_id
-            return self._lexical_cache
-
+        return self._lexical_cache.get(index_id, lambda: LexicalIndex(self.repository.lexical_documents(index_id)))
     def search(
         self, index_id: str, query: SearchQuery, scope: ResourceScope | None = None, *,
         review_run_id: str | None = None, agent: str | None = None,
@@ -250,7 +207,8 @@ class HybridRetrievalService:
             if on_progress:
                 on_progress()
             trace = trace.model_copy(update={"agent": ReviewAgent(agent) if agent else None, "plan_fingerprint": plan_fingerprint})
-            return self.repository.save_trace(trace, review_run_id, agent)
+            # 工作台的临时搜索直接返回；只有审查上下文需要持久化证据快照。
+            return self.repository.save_trace(trace, review_run_id, agent) if review_run_id is not None else trace
         finally:
             if client is not None:
                 client.close()
@@ -269,6 +227,7 @@ class HybridRetrievalService:
         embedding_ms = rerank_ms = 0
         input_tokens = rerank_tokens = None
         cache_hit = False
+        vector_search_mode = "unused"
         warnings: list[str] = []
         if query.strategy not in {"bm25", "lexical_relations"} and client is not None and index.vector_count:
             begin = time.monotonic()
@@ -280,7 +239,9 @@ class HybridRetrievalService:
                 if vector is None:
                     response = client.embed((query.query,), purpose="query")
                     vector, embedding_ms, input_tokens = response.vectors[0], response.duration_ms, response.input_tokens
-                routes["vector"] = self.repository.vector_search(index.id, vector, settings.candidate_k)
+                vector_result = self.repository.vector_search_details(index.id, vector, settings.candidate_k)
+                routes["vector"] = list(vector_result.hits)
+                vector_search_mode = vector_result.mode
                 metrics.append(RouteMetric(route="vector", candidate_count=len(routes["vector"]), duration_ms=round((time.monotonic() - begin) * 1000)))
                 if index.vector_count < index.chunk_count:
                     warnings.append(f"向量覆盖 {index.vector_count}/{index.chunk_count} 个代码块，关键词与关系召回覆盖完整基础索引")
@@ -340,6 +301,7 @@ class HybridRetrievalService:
         return RetrievalTrace(
             id=str(uuid4()), index_id=index.id, query=query.query, strategy=actual, requested_strategy=query.strategy,
             rerank_cache_hit=rerank_cache_hit,
+            vector_search_mode=vector_search_mode,
             candidates=tuple(candidates), routes=tuple(metrics),
             duration_ms=round((time.monotonic() - started) * 1000),
             embedding_ms=embedding_ms, rerank_ms=rerank_ms, input_tokens=input_tokens,
@@ -397,7 +359,7 @@ class HybridRetrievalService:
                     for query, keys in grouped:
                         selected_keys = set(keys)
                         selected_units = tuple(unit for unit in units if unit.unit_key in selected_keys)
-                        query = query.model_copy(update={"symbols": changed_symbols(self._lexical(index.id).documents.values(), selected_units)})
+                        query = query.model_copy(update={"symbols": changed_symbols(self._lexical(index.id).documents_for_files(tuple(unit.file for unit in selected_units)), selected_units)})
                         traces.append((self._search(index, query, view.settings, client), keys))
                         on_progress()
                     first = traces[0][0]
@@ -407,6 +369,7 @@ class HybridRetrievalService:
                         "queries": tuple(query.query for query, _ in grouped), "query": f"{len(grouped)} 组变更上下文检索",
                         "candidates": candidates, "total_units": len(units),
                         "strategies_used": tuple(dict.fromkeys(item.strategy for item, _ in traces)),
+                        "vector_search_mode": ",".join(sorted({item.vector_search_mode for item, _ in traces} - {"unused"})) or "unused",
                         "query_cache_hit": all(item.query_cache_hit for item, _ in traces),
                         "rerank_cache_hit": all(item.rerank_cache_hit for item, _ in traces),
                         "covered_units": len({key for item in candidates if item.selected for key in item.unit_keys}),
@@ -442,7 +405,12 @@ class HybridRetrievalService:
         view, key = self.settings.runtime()
         client = self._client(view, key) if any(value not in {"bm25", "lexical_relations"} for value in strategies) else None
         reports: list[StrategyEvaluation] = []
+        vector_modes: set[str] = set()
         try:
+            # 每个策略使用相同的词法热缓存，避免后运行的策略白占缓存优势。
+            lexical = self._lexical(index_id)
+            for case in cases:
+                lexical.search(case.query, view.settings.candidate_k)
             # Warm query vectors once for every strategy. Timings then compare
             # retrieval/reranking rather than mixing cold and warm cache states.
             if client is not None:
@@ -463,6 +431,7 @@ class HybridRetrievalService:
                     trace = self._search(index, SearchQuery(query=case.query, seed_files=case.seed_files, symbols=case.symbols, strategy=strategy, limit=k), view.settings, client)
                     if trace.strategy != strategy:
                         raise RetrievalError("评测中发生策略降级，未生成效果对比报告；已有缓存已保留，请核对调用上限和服务状态")
+                    vector_modes.add(trace.vector_search_mode)
                     relevant = set(case.relevant_symbols)
                     symbols = [item.symbol for item in trace.selected]
                     recall = len(relevant.intersection(symbols)) / len(relevant)
@@ -487,7 +456,8 @@ class HybridRetrievalService:
             rerank_model=view.settings.rerank_model, generated_at=datetime.now(UTC).isoformat(),
             strategies=tuple(reports),
             query_cache_mode="shared_warm" if client is not None else "not_used",
-            vector_search_mode="exact_snapshot" if client is not None else "not_used",
+            lexical_cache_mode="shared_warm",
+            vector_search_mode=",".join(sorted(vector_modes - {"unused"})) or "not_used",
         )
         self.repository.save_evaluation(report)
         return report

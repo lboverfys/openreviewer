@@ -1539,6 +1539,11 @@ export interface components {
             /** Index Id */
             index_id: string;
             /**
+             * Lexical Cache Mode
+             * @default unknown
+             */
+            lexical_cache_mode: string;
+            /**
              * Query Cache Mode
              * @default shared_warm
              */
@@ -1747,6 +1752,11 @@ export interface components {
              * @default 0
              */
             total_units: number;
+            /**
+             * Vector Search Mode
+             * @default unused
+             */
+            vector_search_mode: string;
             /**
              * Warnings
              * @default []

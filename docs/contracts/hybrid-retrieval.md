@@ -11,7 +11,7 @@ Java 仅做静态语法解析与可确定的直接引用。接口代理、反射
 
 ## 三路召回与排序
 - BM25：方法名、类名、表名、路径、代码正文，保留原始标识符并拆分驼峰和下划线。
-- 向量：固定 1024 维；默认 qwen3.7-text-embedding。SQL 查询限制在指定代码索引快照内，精确余弦距离作为当前基线。
+- 向量：固定1024维；默认 qwen3.7-text-embedding。较大且覆盖率足够的快照采用HNSW候选，再严格按提交过滤；小快照、稀疏快照或候选不足时走精确路径。
 - 关系：从实际变更涉及的方法或显式 seed 出发，一条 JOIN 查询读取最多两跳的有界关系。
 - RRF：按各路名次融合，常数 k=60，同路重复结果只计一次；最多保留 30 个融合候选。
 - 精排：默认 qwen3.7-text-rerank；只处理融合后的有界代码片段。输入超过当前请求边界时记录明确警告并使用 RRF 次序。
@@ -45,7 +45,7 @@ OPENREVIEWER_RETRIEVAL_API_DISABLED=true 时，真实向量和精排请求在发
 ## 查询规模与索引
 - code_indexes：按状态及 lease_until 领取，列表以 repository_id / created_at 索引为基础，最多 50 条。
 - code_chunks / code_parse_cache：内容寻址主键，解析缓存按最多 1000 个文件键批量读取，正文仅按最多 150 个候选 ID 一次 JOIN 读取。
-- code_embeddings：内容寻址主键、configuration_key 索引，以及 pgvector HNSW 索引。当前实现的候选查询使用快照内精确搜索，HNSW 作为独立对照实验，不能将 HNSW 存在误称为已用于主查询。
+- code_embeddings：内容寻址主键、configuration_key 索引和pgvector HNSW索引。自适应路径通过执行计划验证使用HNSW；code_index_chunks 的 (index_id, embedding_id, chunk_id) 覆盖索引用于候选的提交过滤。
 - code_index_chunks：主键 (index_id, chunk_id)，外加 embedding_id 索引；快照过滤命中主键前缀。
 - code_relations：主键 (index_id, source_id, target_id, kind)，一次有界 JOIN 读取候选关联。
 - retrieval_traces：审查与创建时间、索引与创建时间索引，按 review / plan / agent 唯一冻结。
@@ -58,6 +58,14 @@ OPENREVIEWER_RETRIEVAL_API_DISABLED=true 时，真实向量和精排请求在发
 当前 NiuMa 集合包含 20 条 SQL/方法上下文样本，按业务域区分 development / validation。相关性在方法或 SQL 语句级标注；分片命中不代表模型已理解完整业务语义。报告不把检索结果宣称为真实代码缺陷准确率，真实审查准确率保持未评测。
 
 费用由服务商控制台统计。本功能不新增费用计算。
+
+词法索引预计算BM25单词贡献，只遍历命中的倒排列表并用堆选Top-K。每个索引缓存最多128条有界查询；API或Worker的版本缓存最多4份、估算保留预算128 MiB，超预算按LRU淘汰。同版本冷加载合并执行，不同版本冷加载串行控制峰值，热缓存访问不等待冷加载。
+
+手工搜索直接返回结果，不再重复保存候选正文；升级前的临时检索记录保留14天并按批清理。审查上下文仍完整冻结保存，继续保护其引用的索引。向量关联只更新能匹配到向量的空指针，无新增向量时不重复关联。
+
+OPENREVIEWER_VECTOR_SEARCH_MODE 默认 adaptive，可设 exact 强制精确检索；它不会开启模型API。自适应策略要求至少1000个已关联块，且不少于向量表统计行数的50%；统计未知时保守使用精确路径。HNSW最多取 max(40, 4K) 个候选，ef_search=80，迭代扫描上限20000；参数仅作用于当前事务。候选经LATERAL批量关联限制到指定提交，每个向量最多取K个同分块，最终不足K则回退精确检索。近似召回不承诺与精确结果完全相同，报告保留实际路径。
+
+评测会为所有策略统一预热词法查询缓存，并记录 lexical_cache_mode，避免后运行的策略因缓存占便宜。吞吐与延迟结论必须注明数据、缓存状态与查询范围；代码向量回放不等同于自然语言查询或真实模型准确率。
 
 ## 调用治理与维护
 

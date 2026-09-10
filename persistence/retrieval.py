@@ -38,6 +38,7 @@ from persistence.models import (
     ReviewRunRecord,
 )
 from persistence.resource_scope import resource_predicate
+from persistence.vector_search import VectorSearchResult, search_vectors
 from services.code_indexing import code_tokens
 from services.rbac import ResourceScope
 from services.retrieval_providers import RetrievalError
@@ -291,14 +292,16 @@ class RetrievalRepository:
                 row.lease_owner = row.lease_until = None
 
     def link_vectors(self, index_id: str, owner: str, configuration_key: str) -> int:
-        # 一个按快照与内容哈希关联的 UPDATE，避免逐块查找向量。
+        # 只更新实际找到向量的空关联；完整快照不可变，已有指针不重复写入。
         with self.sessions() as session, session.begin():
             self._owned(session, index_id, owner)
-            embedding = select(CodeEmbeddingRecord.id).join(CodeChunkRecord,
+            session.execute(update(CodeIndexChunkRecord).where(
+                CodeIndexChunkRecord.index_id == index_id,
+                CodeIndexChunkRecord.embedding_id.is_(None),
+                CodeChunkRecord.id == CodeIndexChunkRecord.chunk_id,
                 CodeEmbeddingRecord.input_hash == CodeChunkRecord.embedding_hash,
-            ).where(CodeChunkRecord.id == CodeIndexChunkRecord.chunk_id,
-                CodeEmbeddingRecord.configuration_key == configuration_key).scalar_subquery()
-            session.execute(update(CodeIndexChunkRecord).where(CodeIndexChunkRecord.index_id == index_id).values(embedding_id=embedding))
+                CodeEmbeddingRecord.configuration_key == configuration_key,
+            ).values(embedding_id=CodeEmbeddingRecord.id).execution_options(synchronize_session=False))
             return int(session.scalar(select(func.count()).select_from(CodeIndexChunkRecord).where(
                 CodeIndexChunkRecord.index_id == index_id, CodeIndexChunkRecord.embedding_id.is_not(None),
             )) or 0)
@@ -357,31 +360,10 @@ class RetrievalRepository:
             return {row["id"]: CodeChunk.model_validate(dict(row)) for row in rows}
 
     def vector_search(self, index_id: str, vector: Sequence[float], limit: int) -> list[tuple[str, float]]:
-        with self.sessions() as session:
-            if session.bind is not None and session.bind.dialect.name == "postgresql":
-                # Materialize the exact snapshot first. This gives an exact baseline
-                # and prevents ANN post-filtering from silently losing candidates.
-                candidates = select(CodeIndexChunkRecord.chunk_id, CodeEmbeddingRecord.embedding).join(
-                    CodeEmbeddingRecord, CodeEmbeddingRecord.id == CodeIndexChunkRecord.embedding_id,
-                ).where(CodeIndexChunkRecord.index_id == index_id).cte("snapshot_vectors").prefix_with("MATERIALIZED", dialect="postgresql")
-                distance = candidates.c.embedding.cosine_distance(list(vector))
-                rows = session.execute(select(candidates.c.chunk_id, distance.label("distance")).order_by(distance, candidates.c.chunk_id).limit(limit)).all()
-                return [(row.chunk_id, 1.0 - float(row.distance)) for row in rows]
-            # Small isolated SQLite fixtures use the same exact cosine baseline.
-            from math import sqrt
-            query_norm = sqrt(sum(v * v for v in vector))
-            rows = session.execute(select(CodeIndexChunkRecord.chunk_id, CodeEmbeddingRecord.embedding).join(
-                CodeEmbeddingRecord, CodeEmbeddingRecord.id == CodeIndexChunkRecord.embedding_id,
-            ).where(CodeIndexChunkRecord.index_id == index_id).limit(2001)).all()
-            if len(rows) > 2000:
-                raise RetrievalError("SQLite 仅支持小型检索测试集")
-            scores = []
-            for row in rows:
-                norm = sqrt(sum(v * v for v in row.embedding))
-                score = sum(a * b for a, b in zip(vector, row.embedding, strict=True)) / (query_norm * norm) if query_norm and norm else 0
-                scores.append((row.chunk_id, score))
-            return sorted(scores, key=lambda item: (-item[1], item[0]))[:limit]
+        return list(self.vector_search_details(index_id, vector, limit).hits)
 
+    def vector_search_details(self, index_id: str, vector: Sequence[float], limit: int, *, exact: bool = False) -> VectorSearchResult:
+        return search_vectors(self.sessions, index_id, vector, limit, exact=exact)
     def relation_search(self, index_id: str, seed_ids: Sequence[str], limit: int) -> list[tuple[str, float]]:
         if not seed_ids:
             return []

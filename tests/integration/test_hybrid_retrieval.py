@@ -339,11 +339,15 @@ def test_database_source_cache_handles_misses_and_streamed_rows(retrieval):
 def test_retention_preserves_referenced_indexes_and_paid_vectors(retrieval):
     from sqlalchemy import update
 
+    from domain.models import ReviewRequest
     from persistence.models import CodeEmbeddingRecord, CodeSourceCacheRecord
+    from persistence.repositories import SqlAlchemyReviewRepository
     from persistence.retrieval_runtime import RetrievalRuntimeRepository
+    from services.reviews import ReviewService
     service, sessions, _ = retrieval
     index = service.index_sources(TARGET, sources())
-    trace = service.search(index.id, SearchQuery(query="user", strategy="bm25"))
+    review = ReviewService(SqlAlchemyReviewRepository(sessions)).submit(ReviewRequest(**TARGET, pull_request_number=1), "retained-context")
+    trace = service.search(index.id, SearchQuery(query="user", strategy="bm25"), review_run_id=review.review_run_id)
     view = service.settings.get()
     service.repository.store_embeddings(view.settings.embedding_fingerprint, [("expired-query", "query-hash", (1.0,) * 1024)], purpose="query")
     service.index_sources({**TARGET, "head_sha": "c" * 40}, sources())
@@ -368,6 +372,67 @@ def test_explicit_enrichment_reuses_the_published_base_snapshot(retrieval):
     enriched = service.index_sources(TARGET, (), include_vectors=True)
     assert enriched.id == base.id and enriched.lexical_ready
     assert enriched.vector_status == "ready" and enriched.vector_count == base.chunk_count
+
+
+def test_manual_search_does_not_persist_candidate_bodies(retrieval):
+    from sqlalchemy import func
+
+    from persistence.models import RetrievalTraceRecord
+    service, sessions, _ = retrieval
+    index = service.index_sources(TARGET, sources(), include_vectors=False)
+    first = service.search(index.id, SearchQuery(query="user", strategy="bm25"))
+    second = service.search(index.id, SearchQuery(query="user", strategy="bm25"))
+    assert first.candidates and second.candidates
+    with sessions() as session:
+        assert session.scalar(select(func.count()).select_from(RetrievalTraceRecord)) == 0
+
+
+def test_base_index_links_once_and_unchanged_links_are_not_rewritten(retrieval, monkeypatch):
+    from domain.retrieval import stable_key
+    service, _, engine = retrieval
+    linked = []
+    original = service.repository.link_vectors
+    def link(*args):
+        linked.append(True)
+        return original(*args)
+    monkeypatch.setattr(service.repository, "link_vectors", link)
+    index = service.index_sources(TARGET, sources(), include_vectors=False)
+    assert len(linked) == 1
+    key = next(iter(service.repository.lexical_documents(index.id)))[0]
+    chunk = service.repository.chunks(index.id, (key,))[key]
+    config = service.settings.get().settings.embedding_fingerprint
+    service.repository.store_embeddings(config, [(stable_key(config, chunk.embedding_hash), chunk.embedding_hash, (1.0,) * 1024)])
+    service.repository.retry(index.id, None)
+    claim = service.repository.claim(index.id)
+    assert claim is not None
+    updates = []
+    def after(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE code_index_chunks"):
+            updates.append(cursor.rowcount)
+    event.listen(engine, "after_cursor_execute", after)
+    try:
+        assert original(index.id, claim[1], config) == 1
+        assert original(index.id, claim[1], config) == 1
+    finally:
+        event.remove(engine, "after_cursor_execute", after)
+    assert updates == [1, 0]
+
+
+def test_old_manual_traces_expire_without_removing_review_evidence(retrieval):
+    from sqlalchemy import update
+
+    from persistence.models import RetrievalTraceRecord
+    from persistence.retrieval_runtime import RetrievalRuntimeRepository
+    service, sessions, _ = retrieval
+    index = service.index_sources(TARGET, sources(), include_vectors=False)
+    trace = service.search(index.id, SearchQuery(query="user", strategy="bm25"))
+    service.repository.save_trace(trace)  # 模拟升级前已保存的临时搜索。
+    with sessions() as session, session.begin():
+        session.execute(update(RetrievalTraceRecord).where(RetrievalTraceRecord.id == trace.id).values(created_at=datetime.now(UTC) - timedelta(days=15)))
+    RetrievalRuntimeRepository(sessions).cleanup()
+    with sessions() as session:
+        assert session.get(RetrievalTraceRecord, trace.id) is None
+    assert service.repository.get(index.id).lexical_ready
 
 
 def test_bm25_evaluation_does_not_claim_vector_execution(retrieval):

@@ -97,7 +97,8 @@ def build_index(repository: RetrievalRepository, settings_service: Any, client_f
                         vector_status = "ready"
                     except RetrievalError as exc:
                         vector_status, vector_error = "failed", str(exc)
-            vector_count = repository.link_vectors(index_id, owner, configuration_key)
+            if embedded:
+                vector_count = repository.link_vectors(index_id, owner, configuration_key)
         repository.complete(index_id, owner, vector_count=vector_count, vector_status=vector_status,
             vector_error=vector_error, embedded=embedded, reused=reused,
             duration_ms=round((time.monotonic() - started) * 1000))

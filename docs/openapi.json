@@ -1880,6 +1880,11 @@
             "title": "Index Id",
             "type": "string"
           },
+          "lexical_cache_mode": {
+            "default": "unknown",
+            "title": "Lexical Cache Mode",
+            "type": "string"
+          },
           "query_cache_mode": {
             "default": "shared_warm",
             "title": "Query Cache Mode",
@@ -2273,6 +2278,11 @@
             "default": 0,
             "title": "Total Units",
             "type": "integer"
+          },
+          "vector_search_mode": {
+            "default": "unused",
+            "title": "Vector Search Mode",
+            "type": "string"
           },
           "warnings": {
             "default": [],

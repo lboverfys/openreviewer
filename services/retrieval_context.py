@@ -3,11 +3,12 @@
 import math
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from domain.retrieval import ContextEvidence, RetrievalTrace, SearchQuery
 from domain.review_planning import ReviewUnit
 from services.code_indexing import code_tokens
+from services.retrieval_lexical import Document
 
 
 def review_queries(units: Sequence[ReviewUnit], strategy, limit: int) -> tuple[tuple[SearchQuery, tuple[str, ...]], ...]:
@@ -32,12 +33,12 @@ def review_queries(units: Sequence[ReviewUnit], strategy, limit: int) -> tuple[t
     return tuple(result)
 
 
-def changed_symbols(documents, units: Sequence[ReviewUnit]) -> tuple[str, ...]:
+def changed_symbols(documents: Iterable[Document], units: Sequence[ReviewUnit]) -> tuple[str, ...]:
     ranges: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for unit in units:
         ranges[unit.file].extend((int(match.group(1)), int(match.group(1)) + max(1, int(match.group(2) or 1)) - 1)
             for match in re.finditer(r"^@@ -[0-9]+(?:,[0-9]+)? [+]([0-9]+)(?:,([0-9]+))? @@", unit.patch, re.M))
-    return tuple(dict.fromkeys(symbol for file, symbol, _, _, first, last in documents
+    return tuple(dict.fromkeys(symbol for file, symbol, _, first, last in documents
         if file in ranges and any(first <= end and last >= begin for begin, end in ranges[file])))[:100]
 
 

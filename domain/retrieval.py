@@ -171,6 +171,7 @@ class RetrievalTrace(RetrievalContract):
     total_units: int = 0
     model_requests: int = 0
     rerank_cache_hit: bool = False
+    vector_search_mode: str = "unused"
     candidates: tuple[ContextEvidence, ...]
     routes: tuple[RouteMetric, ...]
     duration_ms: int
@@ -259,5 +260,6 @@ class RetrievalEvaluationReport(RetrievalContract):
     generated_at: str
     strategies: tuple[StrategyEvaluation, ...]
     query_cache_mode: str = "shared_warm"
+    lexical_cache_mode: str = "unknown"
     vector_search_mode: str = "exact_snapshot"
     real_review_accuracy: float | None = None

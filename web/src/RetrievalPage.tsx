@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { Brand } from "./Auth";
-import RetrievalTracePanel, { retrievalStrategyLabels } from "./RetrievalTracePanel";
+import RetrievalTracePanel, { retrievalStrategyLabels, vectorSearchLabel } from "./RetrievalTracePanel";
 import CodeIndexPanel from "./CodeIndexPanel";
 import { formatDuration } from "./review-details";
 import type { AuthUser, CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettings, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
@@ -147,7 +147,8 @@ export default function RetrievalPage({ user, onBack, onSignedOut, initialReview
           const baseline = report.strategies.find(item => item.strategy === "bm25");
           return <article className="retrieval-report" key={report.id}>
             <header><div><h3>{report.dataset_version}</h3><small>{annotationLabels[report.annotation_source]} · {formatDate(report.generated_at)}</small></div><button onClick={() => downloadReport(report)}>导出报告</button></header>
-            <p>{report.embedding_model} / {report.rerank_model}</p><p className="retrieval-muted">查询缓存：{report.query_cache_mode === "not_used" ? "未使用" : report.query_cache_mode === "shared_warm" ? "统一预热" : report.query_cache_mode} · 向量搜索：{report.vector_search_mode === "not_used" ? "未执行" : report.vector_search_mode === "exact_snapshot" ? "指定提交内精确检索" : report.vector_search_mode}</p>
+            <p>{report.embedding_model} / {report.rerank_model}</p><p className="retrieval-muted">查询缓存：{report.query_cache_mode === "not_used" ? "未使用" : report.query_cache_mode === "shared_warm" ? "统一预热" : report.query_cache_mode} · 向量搜索：{vectorSearchLabel(report.vector_search_mode)}</p>
+            <p className="retrieval-muted">词法缓存：{report.lexical_cache_mode === "shared_warm" ? "各策略统一预热" : "未记录"}</p>
             <div className="retrieval-table-scroll"><table><thead><tr><th>策略</th><th>样本数</th><th>Recall@K</th><th>MRR</th><th>中位耗时</th><th>P95 耗时</th><th>召回率较基线</th></tr></thead><tbody>
               {report.strategies.map(item => <tr key={item.strategy}><td>{retrievalStrategyLabels[item.strategy]}</td><td>{item.sample_count}</td><td>{(item.recall_at_k * 100).toFixed(1)}% <small>K={item.k}</small></td><td>{item.mrr.toFixed(3)}</td><td>{formatDuration(Math.round(item.median_duration_ms))}</td><td>{formatDuration(Math.round(item.p95_duration_ms))}</td><td>{baseline ? `${item.recall_at_k >= baseline.recall_at_k ? "+" : ""}${((item.recall_at_k - baseline.recall_at_k) * 100).toFixed(1)} 个百分点` : "—"}</td></tr>)}
             </tbody></table></div>

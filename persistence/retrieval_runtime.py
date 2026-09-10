@@ -127,6 +127,8 @@ class RetrievalRuntimeRepository:
         ).order_by(CodeIndexRecord.created_at).limit(batch_size)
         total = 0
         with self.sessions() as session, session.begin():
+            total += self._delete_batch(session, RetrievalTraceRecord,
+                RetrievalTraceRecord.review_run_id.is_(None) & (RetrievalTraceRecord.created_at < now - timedelta(days=14)), batch_size)
             ids = session.scalars(expired_indexes).all()
             if ids:
                 session.execute(delete(CodeIndexRecord).where(CodeIndexRecord.id.in_(ids)))
@@ -143,7 +145,7 @@ class RetrievalRuntimeRepository:
 
     @staticmethod
     def _delete_batch(session: Session, model: Any, predicate: Any, limit: int) -> int:
-        candidates = session.scalars(select(model.id).where(predicate).order_by(model.created_at).limit(limit)).all()
+        candidates = session.scalars(select(model.id).where(predicate).order_by(model.created_at, model.id).limit(limit)).all()
         if candidates:
             session.execute(delete(model).where(model.id.in_(candidates)))
         return len(candidates)
