@@ -120,7 +120,7 @@ class TelemetryRegistry:
         status_code: int | None = None,
         outcome: str | None = None,
     ) -> None:
-        allowed_services = {"github", "model_openai", "model_anthropic"}
+        allowed_services = {"github", "model_openai", "model_anthropic", "retrieval_embedding", "retrieval_rerank"}
         normalized_service = service if service in allowed_services else "other"
         if outcome is None:
             if status_code is not None and 200 <= status_code < 300:

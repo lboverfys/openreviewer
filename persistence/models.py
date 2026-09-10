@@ -2006,6 +2006,7 @@ class CodeIndexRecord(Base):
         CheckConstraint("status IN ('queued','building','ready','failed')", name="status_value"),
         Index("ix_code_indexes_repository_created", "repository_id", "created_at"),
         Index("ix_code_indexes_status_lease", "status", "lease_until"),
+        Index("ix_code_indexes_created_at", "created_at"),
     )
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -2016,6 +2017,10 @@ class CodeIndexRecord(Base):
     embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
     dimensions: Mapped[int] = mapped_column(Integer, nullable=False, default=1024)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    lexical_ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    vector_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", server_default="pending")
+    vector_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    vector_error: Mapped[str | None] = mapped_column(String(500))
     source_target: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
     lease_owner: Mapped[str | None] = mapped_column(String(36))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -2035,6 +2040,7 @@ class CodeIndexRecord(Base):
 
 class CodeChunkRecord(Base):
     __tablename__ = "code_chunks"
+    __table_args__ = (Index("ix_code_chunks_created_at", "created_at"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     file: Mapped[str] = mapped_column(String(1024), nullable=False)
     blob_sha: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -2056,6 +2062,7 @@ class CodeChunkRecord(Base):
 
 class CodeParseRecord(Base):
     __tablename__ = "code_parse_cache"
+    __table_args__ = (Index("ix_code_parse_cache_created_at", "created_at"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     parser_version: Mapped[str] = mapped_column(String(50), nullable=False)
     chunks: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
@@ -2066,21 +2073,25 @@ class CodeEmbeddingRecord(Base):
     __tablename__ = "code_embeddings"
     __table_args__ = (
         Index("ix_code_embeddings_configuration", "configuration_key"),
+        Index("ix_code_embeddings_configuration_input", "configuration_key", "input_hash", unique=True),
+        Index("ix_code_embeddings_created_at", "created_at"),
+        Index("ix_code_embeddings_purpose_created", "purpose", "created_at"),
         Index("ix_code_embeddings_hnsw", "embedding", postgresql_using="hnsw", postgresql_ops={"embedding": "vector_cosine_ops"}),
     )
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     configuration_key: Mapped[str] = mapped_column(String(64), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(12), nullable=False, default="code", server_default="code")
     embedding: Mapped[list[float]] = mapped_column(Vector(1024).with_variant(JSON, "sqlite"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
 class CodeIndexChunkRecord(Base):
     __tablename__ = "code_index_chunks"
-    __table_args__ = (Index("ix_code_index_chunks_embedding", "embedding_id"),)
+    __table_args__ = (Index("ix_code_index_chunks_embedding", "embedding_id"), Index("ix_code_index_chunks_chunk", "chunk_id"))
     index_id: Mapped[str] = mapped_column(String(64), ForeignKey("code_indexes.id", ondelete="CASCADE"), primary_key=True)
     chunk_id: Mapped[str] = mapped_column(String(64), ForeignKey("code_chunks.id"), primary_key=True)
-    embedding_id: Mapped[str] = mapped_column(String(64), ForeignKey("code_embeddings.id"), nullable=False)
+    embedding_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("code_embeddings.id"), nullable=True)
 
 
 class CodeRelationRecord(Base):
@@ -2114,3 +2125,33 @@ class RetrievalEvaluationRecord(Base):
     index_id: Mapped[str] = mapped_column(String(64), ForeignKey("code_indexes.id", ondelete="CASCADE"), nullable=False)
     report: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class CodeSourceCacheRecord(Base):
+    __tablename__ = "code_source_cache"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+
+
+class RetrievalProviderStateRecord(Base):
+    __tablename__ = "retrieval_provider_state"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RetrievalRerankCacheRecord(Base):
+    __tablename__ = "retrieval_rerank_cache"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ranking: Mapped[list[list[float]]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+
+
+class RetrievalRequestBudgetRecord(Base):
+    __tablename__ = "retrieval_request_budgets"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)

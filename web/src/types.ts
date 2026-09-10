@@ -48,6 +48,8 @@ export type KnowledgeCitation = Schemas["KnowledgeCitationResponse"];
 export type KnowledgeSearchResult = Schemas["KnowledgeSearchResponse"];
 
 export type CodeIndexView = Schemas["IndexView"];
+export type IndexTarget = Schemas["IndexTarget"];
+export type RetrievalOperations = Schemas["RetrievalOperations"];
 export type RetrievalSettingsView = Schemas["RetrievalSettingsView"];
 export type RetrievalSettings = Schemas["RetrievalSettings"];
 export type RetrievalTrace = Schemas["RetrievalTrace"];

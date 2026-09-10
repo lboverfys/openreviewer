@@ -19,7 +19,7 @@ MAX_INDEX_FILES = 1_000
 MAX_SOURCE_BYTES = 256 * 1024
 MAX_CHUNK_CHARS = 6_000
 
-RetrievalStrategy = Literal["bm25", "hybrid", "hybrid_relations", "reranked"]
+RetrievalStrategy = Literal["bm25", "lexical_relations", "hybrid", "hybrid_relations", "reranked"]
 AnnotationSource = Literal["synthetic_contract", "agent_annotated", "independent_human"]
 RetrievalRoute = Literal["bm25", "vector", "relation"]
 
@@ -90,6 +90,7 @@ class RetrievalSettings(RetrievalContract):
     context_k: int = Field(default=8, ge=1, le=20)
     timeout_seconds: int = Field(default=60, ge=5, le=180)
     max_new_vectors_per_index: int = Field(default=100, ge=0, le=20_000)
+    max_requests_per_operation: int = Field(default=12, ge=0, le=300)
 
     @property
     def embedding_fingerprint(self) -> str:
@@ -114,6 +115,7 @@ class SearchQuery(RetrievalContract):
 
 class ContextEvidence(RetrievalContract):
     agent: ReviewAgent | None = None
+    unit_keys: tuple[str, ...] = ()
     reference_id: str
     chunk_id: str
     index_id: str
@@ -162,6 +164,13 @@ class RetrievalTrace(RetrievalContract):
     index_id: str
     query: str
     strategy: RetrievalStrategy
+    requested_strategy: RetrievalStrategy | None = None
+    strategies_used: tuple[RetrievalStrategy, ...] = ()
+    queries: tuple[str, ...] = ()
+    covered_units: int = 0
+    total_units: int = 0
+    model_requests: int = 0
+    rerank_cache_hit: bool = False
     candidates: tuple[ContextEvidence, ...]
     routes: tuple[RouteMetric, ...]
     duration_ms: int
@@ -184,6 +193,10 @@ class IndexView(RetrievalContract):
     installation_id: int
     head_sha: str
     status: str
+    lexical_ready: bool = False
+    vector_status: str = "pending"
+    vector_count: int = 0
+    vector_error: str | None = None
     embedding_model: str
     dimensions: int
     parsed_files: int = 0
@@ -198,6 +211,22 @@ class IndexView(RetrievalContract):
     error: str | None = None
     created_at: str
     completed_at: str | None = None
+
+
+class IndexTarget(RetrievalContract):
+    review_run_id: str
+    repository: str
+    pull_request_number: int
+    head_sha: str
+
+
+class RetrievalOperations(RetrievalContract):
+    pending_indexes: int = 0
+    oldest_pending_seconds: float = 0
+    available_indexes: int = 0
+    partial_indexes: int = 0
+    provider_busy: bool = False
+    circuit_open: bool = False
 
 
 class RetrievalEvaluationCase(RetrievalContract):

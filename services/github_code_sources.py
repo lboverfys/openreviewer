@@ -10,7 +10,8 @@ from urllib.parse import quote
 
 from domain.identifiers import normalize_sha
 from domain.paths import normalize_repository_path
-from domain.retrieval import MAX_INDEX_FILES, MAX_SOURCE_BYTES, SourceFile
+from domain.retrieval import MAX_INDEX_FILES, MAX_SOURCE_BYTES, SourceFile, stable_key
+from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from services.code_indexing import git_blob_sha
 from services.github import GitHubApiClient
 from services.github_context import InstallationTokenProvider
@@ -22,8 +23,9 @@ _MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
 
 class GitHubCodeSourceLoader:
-    def __init__(self, api: GitHubApiClient, tokens: InstallationTokenProvider) -> None:
+    def __init__(self, api: GitHubApiClient, tokens: InstallationTokenProvider, cache: RetrievalRuntimeRepository | None = None) -> None:
         self.api, self.tokens = api, tokens
+        self.cache = cache
 
     def __call__(self, target: dict[str, Any], heartbeat: Callable[[], None]) -> Sequence[SourceFile]:
         repository = target["repository"]
@@ -65,10 +67,20 @@ class GitHubCodeSourceLoader:
                 raise RetrievalError("仓库超过当前索引容量上限")
         sources: list[SourceFile] = []
         actual_total = 0
+        keys = {sha: stable_key(target["installation_id"], target["repository_id"], sha) for _, sha in files}
+        cached = self.cache.source_blobs(tuple(keys.values())) if self.cache is not None else {}
+        missing = [(path, sha) for path, sha in files if keys[sha] not in cached]
+        for path, sha in files:
+            content = cached.get(keys[sha])
+            if content is not None:
+                if git_blob_sha(content) != sha:
+                    raise RetrievalError("源码缓存与 Blob SHA 不一致")
+                actual_total += len(content.encode())
+                sources.append(SourceFile(file=path, blob_sha=sha, content=content))
         # Each request fetches up to 20 blobs, never one HTTP call per file.
-        for offset in range(0, len(files), 20):
+        for offset in range(0, len(missing), 20):
             heartbeat()
-            batch = files[offset:offset + 20]
+            batch = missing[offset:offset + 20]
             fields = " ".join(
                 f"b{index}:object(oid:{json.dumps(sha)}){{... on Blob{{oid text byteSize isBinary}}}}"
                 for index, (_, sha) in enumerate(batch)
@@ -81,6 +93,7 @@ class GitHubCodeSourceLoader:
             repo = data.get("repository") if isinstance(data, dict) else None
             if not isinstance(repo, dict):
                 raise RetrievalError("GitHub 批量代码响应不完整")
+            new_blobs = []
             for index, (path, sha) in enumerate(batch):
                 blob = repo.get(f"b{index}")
                 if not isinstance(blob, dict) or blob.get("oid") != sha or blob.get("isBinary") is True or not isinstance(blob.get("text"), str):
@@ -92,4 +105,7 @@ class GitHubCodeSourceLoader:
                 if len(content.encode()) > MAX_SOURCE_BYTES or git_blob_sha(content) != sha:
                     raise RetrievalError("GitHub 源码内容与 Blob SHA 不一致")
                 sources.append(SourceFile(file=path, blob_sha=sha, content=content))
-        return tuple(sources)
+                new_blobs.append((keys[sha], content))
+            if self.cache is not None:
+                self.cache.cache_blobs(new_blobs)
+        return tuple(sorted(sources, key=lambda source: source.file))

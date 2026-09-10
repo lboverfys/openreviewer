@@ -9,14 +9,16 @@ import type { AuthUser, RetrievalSettingsView } from "./types";
 
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
-  return {...actual, api: {...actual.api, retrievalSettings: vi.fn(), retrievalIndexes: vi.fn(), retrievalEvaluations: vi.fn(), updateRetrievalSettings: vi.fn()}};
+  return {...actual, api: {...actual.api, retrievalSettings: vi.fn(), retrievalIndexes: vi.fn(), retrievalEvaluations: vi.fn(), updateRetrievalSettings: vi.fn(), retrievalTargets: vi.fn(), retrievalOperations: vi.fn()}};
 });
 const user: AuthUser = { authenticated: true, username: "admin", role: "administrator", permissions: ["knowledge:manage"], expires_at: "2030-01-01T00:00:00Z" };
 const settings: RetrievalSettingsView = {revision: 1, key_configured: true, tested: true, external_calls_paused: false, settings: {
   enabled: true, api_host: "https://sample.cn-beijing.maas.aliyuncs.com", embedding_model: "qwen3.7-text-embedding",
-  rerank_model: "qwen3.7-text-rerank", dimensions: 1024, strategy: "reranked", candidate_k: 20, context_k: 8, timeout_seconds: 60, max_new_vectors_per_index: 100,
+  rerank_model: "qwen3.7-text-rerank", dimensions: 1024, strategy: "reranked", candidate_k: 20, context_k: 8, timeout_seconds: 60, max_new_vectors_per_index: 100, max_requests_per_operation: 12,
 }};
 beforeEach(() => {
+  vi.mocked(api.retrievalTargets).mockResolvedValue([]);
+  vi.mocked(api.retrievalOperations).mockResolvedValue({pending_indexes: 0, available_indexes: 0, oldest_pending_seconds: 0, partial_indexes: 0, provider_busy: false, circuit_open: false});
   vi.mocked(api.retrievalSettings).mockResolvedValue(settings);
   vi.mocked(api.retrievalIndexes).mockResolvedValue([]);
   vi.mocked(api.retrievalEvaluations).mockResolvedValue([]);
@@ -51,11 +53,11 @@ describe("代码检索页面", () => {
 });
 
 
-it("暂停时禁止排队索引和连接测试", async () => {
+it("暂停时可建立基础索引，连接测试仍被禁止", async () => {
   vi.mocked(api.retrievalSettings).mockResolvedValue({...settings, external_calls_paused: true});
   render(<RetrievalPage user={user} onBack={vi.fn()} onSignedOut={vi.fn()} initialReviewRunId="offline-review" />);
-  await screen.findByText(/服务器已暂停真实向量与精排请求/);
-  expect(screen.getByRole("button", {name: "为此提交建立索引"})).toBeDisabled();
+  await screen.findByText(/真实模型调用已暂停/);
+  expect(screen.getByRole("button", {name: "建立基础索引"})).toBeEnabled();
   fireEvent.click(screen.getByRole("button", {name: "模型配置"}));
   expect(screen.getByRole("button", {name: "测试已保存的连接"})).toBeDisabled();
 });

@@ -400,8 +400,7 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
         <div className="top-nav-left">
           <Brand />
           <div className="cluster-tag-chip">
-            <span className="sparkle-symbol">⚡</span>
-            <span>Cluster: Default</span>
+            <span>代码审查工作台</span>
           </div>
         </div>
 
@@ -420,7 +419,7 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
             <span className="beacon-circle" />
             <span className="beacon-label">
               {streamState === "live"
-                ? "SSE 实时同步中"
+                ? "实时同步中"
                 : streamState === "connecting"
                   ? "建立连接中"
                   : "正在重连"}

@@ -1054,6 +1054,14 @@
           "symbol": {
             "title": "Symbol",
             "type": "string"
+          },
+          "unit_keys": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Unit Keys",
+            "type": "array"
           }
         },
         "required": [
@@ -1198,6 +1206,35 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "IndexTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "pull_request_number": {
+            "title": "Pull Request Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "review_run_id": {
+            "title": "Review Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_run_id",
+          "repository",
+          "pull_request_number",
+          "head_sha"
+        ],
+        "title": "IndexTarget",
+        "type": "object"
+      },
       "IndexView": {
         "additionalProperties": false,
         "properties": {
@@ -1270,6 +1307,11 @@
             "title": "Installation Id",
             "type": "integer"
           },
+          "lexical_ready": {
+            "default": false,
+            "title": "Lexical Ready",
+            "type": "boolean"
+          },
           "parse_error_files": {
             "default": [],
             "items": {
@@ -1306,6 +1348,27 @@
           },
           "status": {
             "title": "Status",
+            "type": "string"
+          },
+          "vector_count": {
+            "default": 0,
+            "title": "Vector Count",
+            "type": "integer"
+          },
+          "vector_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Error"
+          },
+          "vector_status": {
+            "default": "pending",
+            "title": "Vector Status",
             "type": "string"
           }
         },
@@ -1863,6 +1926,43 @@
         "title": "RetrievalEvaluationReport",
         "type": "object"
       },
+      "RetrievalOperations": {
+        "additionalProperties": false,
+        "properties": {
+          "available_indexes": {
+            "default": 0,
+            "title": "Available Indexes",
+            "type": "integer"
+          },
+          "circuit_open": {
+            "default": false,
+            "title": "Circuit Open",
+            "type": "boolean"
+          },
+          "oldest_pending_seconds": {
+            "default": 0,
+            "title": "Oldest Pending Seconds",
+            "type": "number"
+          },
+          "partial_indexes": {
+            "default": 0,
+            "title": "Partial Indexes",
+            "type": "integer"
+          },
+          "pending_indexes": {
+            "default": 0,
+            "title": "Pending Indexes",
+            "type": "integer"
+          },
+          "provider_busy": {
+            "default": false,
+            "title": "Provider Busy",
+            "type": "boolean"
+          }
+        },
+        "title": "RetrievalOperations",
+        "type": "object"
+      },
       "RetrievalSettings": {
         "additionalProperties": false,
         "properties": {
@@ -1910,6 +2010,13 @@
             "title": "Max New Vectors Per Index",
             "type": "integer"
           },
+          "max_requests_per_operation": {
+            "default": 12,
+            "maximum": 300.0,
+            "minimum": 0.0,
+            "title": "Max Requests Per Operation",
+            "type": "integer"
+          },
           "rerank_model": {
             "default": "qwen3.7-text-rerank",
             "maxLength": 200,
@@ -1921,6 +2028,7 @@
             "default": "reranked",
             "enum": [
               "bm25",
+              "lexical_relations",
               "hybrid",
               "hybrid_relations",
               "reranked"
@@ -2023,6 +2131,11 @@
             "title": "Candidates",
             "type": "array"
           },
+          "covered_units": {
+            "default": 0,
+            "title": "Covered Units",
+            "type": "integer"
+          },
           "duration_ms": {
             "title": "Duration Ms",
             "type": "integer"
@@ -2051,6 +2164,11 @@
             ],
             "title": "Input Tokens"
           },
+          "model_requests": {
+            "default": 0,
+            "title": "Model Requests",
+            "type": "integer"
+          },
           "plan_fingerprint": {
             "anyOf": [
               {
@@ -2062,6 +2180,14 @@
             ],
             "title": "Plan Fingerprint"
           },
+          "queries": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Queries",
+            "type": "array"
+          },
           "query": {
             "title": "Query",
             "type": "string"
@@ -2069,6 +2195,29 @@
           "query_cache_hit": {
             "default": false,
             "title": "Query Cache Hit",
+            "type": "boolean"
+          },
+          "requested_strategy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "bm25",
+                  "lexical_relations",
+                  "hybrid",
+                  "hybrid_relations",
+                  "reranked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested Strategy"
+          },
+          "rerank_cache_hit": {
+            "default": false,
+            "title": "Rerank Cache Hit",
             "type": "boolean"
           },
           "rerank_ms": {
@@ -2094,15 +2243,36 @@
             "title": "Routes",
             "type": "array"
           },
+          "strategies_used": {
+            "default": [],
+            "items": {
+              "enum": [
+                "bm25",
+                "lexical_relations",
+                "hybrid",
+                "hybrid_relations",
+                "reranked"
+              ],
+              "type": "string"
+            },
+            "title": "Strategies Used",
+            "type": "array"
+          },
           "strategy": {
             "enum": [
               "bm25",
+              "lexical_relations",
               "hybrid",
               "hybrid_relations",
               "reranked"
             ],
             "title": "Strategy",
             "type": "string"
+          },
+          "total_units": {
+            "default": 0,
+            "title": "Total Units",
+            "type": "integer"
           },
           "warnings": {
             "default": [],
@@ -4107,6 +4277,7 @@
             "default": "reranked",
             "enum": [
               "bm25",
+              "lexical_relations",
               "hybrid",
               "hybrid_relations",
               "reranked"
@@ -4168,6 +4339,7 @@
           "strategy": {
             "enum": [
               "bm25",
+              "lexical_relations",
               "hybrid",
               "hybrid_relations",
               "reranked"
@@ -5096,6 +5268,49 @@
         "summary": "Index"
       }
     },
+    "/api/v1/retrieval/indexes/{index_id}/enrich": {
+      "post": {
+        "operationId": "enrich_api_v1_retrieval_indexes__index_id__enrich_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "index_id",
+            "required": true,
+            "schema": {
+              "title": "Index Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Enrich Api V1 Retrieval Indexes  Index Id  Enrich Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enrich"
+      }
+    },
     "/api/v1/retrieval/indexes/{index_id}/retry": {
       "post": {
         "operationId": "retry_index_api_v1_retrieval_indexes__index_id__retry_post",
@@ -5188,6 +5403,24 @@
         "summary": "Search"
       }
     },
+    "/api/v1/retrieval/operations": {
+      "get": {
+        "operationId": "operations_api_v1_retrieval_operations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalOperations"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Operations"
+      }
+    },
     "/api/v1/retrieval/settings": {
       "get": {
         "operationId": "settings_api_v1_retrieval_settings_get",
@@ -5258,6 +5491,28 @@
           }
         },
         "summary": "Test Settings"
+      }
+    },
+    "/api/v1/retrieval/targets": {
+      "get": {
+        "operationId": "targets_api_v1_retrieval_targets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/IndexTarget"
+                  },
+                  "title": "Response Targets Api V1 Retrieval Targets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Targets"
       }
     },
     "/api/v1/reviews": {

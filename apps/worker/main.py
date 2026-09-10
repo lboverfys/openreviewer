@@ -40,6 +40,7 @@ from domain.security import (
 from persistence.database import Database
 from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.retrieval import RetrievalRepository
+from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.agent_settings import AgentSettingsService
 from services.agent_workflow import WorkflowExecution, _PartialAgentReviewError
@@ -2644,7 +2645,7 @@ def main() -> None:
         retrieval_service=HybridRetrievalService(
             RetrievalRepository(database.sessions),
             RetrievalSettingsService(database.sessions, cipher),
-            source_loader=GitHubCodeSourceLoader(github_api, github_tokens),
+            source_loader=GitHubCodeSourceLoader(github_api, github_tokens, RetrievalRuntimeRepository(database.sessions)),
         ),
     )
 

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import math
-import re
 import statistics
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from threading import RLock
@@ -21,7 +20,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from domain.enums import ReviewAgent
 from domain.retrieval import (
     AnnotationSource,
-    CodeChunk,
     ContextEvidence,
     IndexView,
     RetrievalEvaluationCase,
@@ -40,17 +38,24 @@ from domain.retrieval import (
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from persistence.models import RetrievalSettingsRecord
 from persistence.retrieval import RetrievalRepository
+from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from services.ai_settings import AiSecretCipher
-from services.code_indexing import code_tokens, parse_cache_key, parse_sources
+from services.code_indexing import code_tokens
 from services.rbac import ResourceScope
+from services.retrieval_context import changed_symbols, merge_contexts, review_queries
+from services.retrieval_gateway import RetrievalGateway
+from services.retrieval_indexing import build_index
+from services.retrieval_indexing import embedding_batches as _embedding_batches
 from services.retrieval_providers import (
     AliyunRetrievalClient,
+    RequestBudget,
     RetrievalError,
     external_retrieval_paused,
     normalize_aliyun_host,
 )
 
 _CIPHER_SCOPE = "retrieval_aliyun"
+__all__ = ["HybridRetrievalService", "LexicalIndex", "RetrievalSettingsService", "reciprocal_rank_fusion", "_embedding_batches"]
 _RRF_K = 60
 _FUSION_LIMIT = 30
 
@@ -92,10 +97,6 @@ class RetrievalSettingsService:
                 previous = RetrievalSettings.model_validate(row.settings)
                 if row.ciphertext is not None and previous.api_host != settings.api_host and encrypted is None:
                     raise ValueError("切换百炼地址时必须同时提供新的 API Key")
-                if settings.enabled and not settings.api_host:
-                    raise ValueError("启用检索前必须配置百炼地址")
-                if settings.enabled and row.ciphertext is None and encrypted is None:
-                    raise ValueError("启用检索前必须配置 API Key")
                 if encrypted is not None:
                     row.ciphertext, row.nonce, row.key_version = encrypted.ciphertext, encrypted.nonce, encrypted.key_version
                 row.settings, row.revision = settings.model_dump(mode="json"), revision + 1
@@ -174,10 +175,11 @@ class HybridRetrievalService:
         self._lexical_id: str | None = None
         self._lexical_cache: LexicalIndex | None = None
 
-    def _client(self, view: RetrievalSettingsView, key: str | None):
+    def _client(self, view: RetrievalSettingsView, key: str | None, budget: RequestBudget | None = None):
         if not key:
             raise RetrievalError("检索模型密钥尚未配置")
-        return self.client_factory(view.settings, key)
+        return RetrievalGateway(self.repository, view.settings, key, self.client_factory(view.settings, key),
+            budget or RequestBudget(view.settings.max_requests_per_operation))
 
     def test_connection(self) -> RetrievalSettingsView:
         view, key = self.settings.runtime()
@@ -190,32 +192,33 @@ class HybridRetrievalService:
         self.settings.mark_tested(view)
         return self.settings.get()
 
-    def enqueue(self, target: dict[str, Any]) -> str:
+    def enqueue(self, target: dict[str, Any], *, include_vectors: bool = False) -> str:
         view = self.settings.get()
-        if view.external_calls_paused:
-            raise RetrievalError("检索模型外部调用已暂停，不能新建索引任务")
-        if not view.settings.enabled or not view.key_configured:
+        if include_vectors and view.external_calls_paused:
+            raise RetrievalError("检索模型外部调用已暂停，不能补全向量")
+        if include_vectors and not view.key_configured:
             raise RetrievalError("混合检索尚未启用或配置不完整")
-        return self.repository.enqueue(target, view.settings)
+        return self.repository.enqueue({**target, "include_vectors": include_vectors}, view.settings)
 
-    def retry_index(self, index_id: str, scope: ResourceScope | None) -> None:
-        if self.settings.get().external_calls_paused:
-            raise RetrievalError("检索模型外部调用已暂停，不能重试索引任务")
-        self.repository.retry(index_id, scope)
+    def retry_index(self, index_id: str, scope: ResourceScope | None, *, include_vectors: bool = False) -> None:
+        if include_vectors and self.settings.get().external_calls_paused:
+            raise RetrievalError("检索模型外部调用已暂停，不能补全向量")
+        self.repository.retry(index_id, scope, include_vectors=include_vectors)
 
-    def index_sources(self, target: dict[str, Any], sources: Sequence[SourceFile], on_progress: Callable[[], None] | None = None) -> IndexView:
-        index_id = self.enqueue(target)
+    def index_sources(self, target: dict[str, Any], sources: Sequence[SourceFile], on_progress: Callable[[], None] | None = None, *, include_vectors: bool = True) -> IndexView:
+        index_id = self.enqueue(target, include_vectors=include_vectors)
         existing = self.repository.get(index_id)
         if existing.status == "ready":
-            return existing
+            if not include_vectors or existing.vector_status == "ready":
+                return existing
+            self.repository.retry(index_id, None, include_vectors=True)
         claim = self.repository.claim(index_id)
         if claim is None:
             raise RetrievalError("该提交的索引正在构建", retryable=True)
         return self._build(claim, sources, on_progress)
 
     def process_next(self, on_progress: Callable[[], None] | None = None) -> bool:
-        view = self.settings.get()
-        if view.external_calls_paused or not view.settings.enabled or not view.key_configured or self.source_loader is None:
+        if self.source_loader is None:
             return False
         claim = self.repository.claim()
         if claim is None:
@@ -224,74 +227,7 @@ class HybridRetrievalService:
         return True
 
     def _build(self, claim, sources: Sequence[SourceFile] | None, on_progress: Callable[[], None] | None) -> IndexView:
-        index_id, owner, target, configuration_key = claim
-        started = time.monotonic()
-        view, key = self.settings.runtime()
-        client = None
-
-        def heartbeat() -> None:
-            if on_progress:
-                on_progress()
-            self.repository.renew(index_id, owner)
-
-        try:
-            client = self._client(view, key)
-            if configuration_key != view.settings.embedding_fingerprint:
-                raise RetrievalError("索引模型配置已变更，请创建新索引")
-            heartbeat()
-            if sources is None:
-                if self.source_loader is None:
-                    raise RetrievalError("GitHub 代码来源尚未配置")
-                sources = self.source_loader(target, heartbeat)
-            parse_keys = {source.file: parse_cache_key(source) for source in sources}
-            parse_cache = self.repository.cached_parses(tuple(parse_keys.values()))
-            parsed = parse_sources(sources, parse_cache)
-            by_file: dict[str, list[CodeChunk]] = defaultdict(list)
-            for chunk in parsed.chunks:
-                by_file[chunk.file].append(chunk)
-            new_parses = [(parse_keys[source.file], by_file[source.file]) for source in sources if parse_keys[source.file] not in parse_cache]
-            for offset in range(0, len(new_parses), 50):
-                heartbeat()
-                self.repository.store_parses(new_parses[offset:offset + 50])
-            self.repository.reset(index_id, owner)
-            unique = {chunk.embedding_hash: chunk for chunk in parsed.chunks}
-            keys = {digest: stable_key(configuration_key, digest) for digest in unique}
-            cached = self.repository.existing_embeddings(tuple(keys.values()))
-            missing = [chunk for digest, chunk in unique.items() if keys[digest] not in cached]
-            if len(missing) > view.settings.max_new_vectors_per_index:
-                raise RetrievalError(f"本索引需要新增 {len(missing)} 条向量，超过已配置上限 {view.settings.max_new_vectors_per_index}；尚未发起向量请求")
-            embedded_count = 0
-            reused_count = len(unique) - len(missing)
-            self.repository.progress(index_id, owner, len(sources), len(parsed.chunks), embedded_count, reused_count)
-            # This is bounded model batching (up to 20 chunks / 64 KB per call),
-            # rather than one request or SQL query for each source file.
-            for batch in _embedding_batches(missing):
-                heartbeat()
-                response = client.embed(tuple(chunk.embedding_text for chunk in batch))
-                heartbeat()
-                self.repository.store_embeddings(configuration_key, [
-                    (keys[chunk.embedding_hash], chunk.embedding_hash, vector)
-                    for chunk, vector in zip(batch, response.vectors, strict=True)
-                ])
-                embedded_count += len(batch)
-                self.repository.progress(index_id, owner, len(sources), len(parsed.chunks), embedded_count, reused_count)
-            for offset in range(0, len(parsed.chunks), 200):
-                heartbeat()
-                self.repository.store_chunk_batch(index_id, owner, parsed.chunks[offset:offset + 200], configuration_key)
-            self.repository.finish(
-                index_id, owner, parsed.relations, file_count=len(sources),
-                chunk_count=len(parsed.chunks), embedded_count=embedded_count,
-                reused_count=reused_count, duration_ms=round((time.monotonic() - started) * 1000),
-                parse_errors=parsed.parse_error_files, parsed_files=len(new_parses), reused_files=len(parse_cache),
-            )
-            return self.repository.get(index_id)
-        except Exception as exc:
-            self.repository.fail(index_id, owner, SafeError.from_exception(exc).safe_message)
-            raise
-        finally:
-            if client is not None:
-                client.close()
-
+        return build_index(self.repository, self.settings, self._client, self.source_loader, claim, sources, on_progress)
     def _lexical(self, index_id: str) -> LexicalIndex:
         with self._lexical_lock:
             if self._lexical_id != index_id or self._lexical_cache is None:
@@ -306,9 +242,11 @@ class HybridRetrievalService:
     ) -> RetrievalTrace:
         index = self.repository.get(index_id, scope)
         view, key = self.settings.runtime()
-        client = self._client(view, key) if query.strategy != "bm25" else None
+        client = self._client(view, key) if query.strategy not in {"bm25", "lexical_relations"} and key and not view.external_calls_paused else None
         try:
             trace = self._search(index, query, view.settings, client)
+            if client is not None:
+                trace = trace.model_copy(update={"model_requests": client.budget.used})
             if on_progress:
                 on_progress()
             trace = trace.model_copy(update={"agent": ReviewAgent(agent) if agent else None, "plan_fingerprint": plan_fingerprint})
@@ -318,10 +256,10 @@ class HybridRetrievalService:
                 client.close()
 
     def _search(self, index: IndexView, query: SearchQuery, settings: RetrievalSettings, client) -> RetrievalTrace:
-        if index.status != "ready":
+        if not index.lexical_ready:
             raise RetrievalError("索引尚未就绪", retryable=True)
         expected_id = stable_key(index.installation_id, index.repository_id, index.head_sha, settings.embedding_fingerprint)
-        if query.strategy != "bm25" and index.id != expected_id:
+        if query.strategy not in {"bm25", "lexical_relations"} and index.id != expected_id:
             raise RetrievalError("索引使用的向量模型配置与当前配置不同，请重建索引")
         started = time.monotonic()
         lexical = self._lexical(index.id)
@@ -332,19 +270,25 @@ class HybridRetrievalService:
         input_tokens = rerank_tokens = None
         cache_hit = False
         warnings: list[str] = []
-        if query.strategy != "bm25":
+        if query.strategy not in {"bm25", "lexical_relations"} and client is not None and index.vector_count:
             begin = time.monotonic()
             digest = sha256(query.query.encode()).hexdigest()
             vector_key = stable_key(settings.embedding_fingerprint, digest)
             vector = self.repository.cached_vector(vector_key)
             cache_hit = vector is not None
-            if vector is None:
-                response = client.embed((query.query,))
-                vector, embedding_ms, input_tokens = response.vectors[0], response.duration_ms, response.input_tokens
-                self.repository.store_embeddings(settings.embedding_fingerprint, [(vector_key, digest, vector)])
-            routes["vector"] = self.repository.vector_search(index.id, vector, settings.candidate_k)
-            metrics.append(RouteMetric(route="vector", candidate_count=len(routes["vector"]), duration_ms=round((time.monotonic() - begin) * 1000)))
-        if query.strategy in {"hybrid_relations", "reranked"}:
+            try:
+                if vector is None:
+                    response = client.embed((query.query,), purpose="query")
+                    vector, embedding_ms, input_tokens = response.vectors[0], response.duration_ms, response.input_tokens
+                routes["vector"] = self.repository.vector_search(index.id, vector, settings.candidate_k)
+                metrics.append(RouteMetric(route="vector", candidate_count=len(routes["vector"]), duration_ms=round((time.monotonic() - begin) * 1000)))
+                if index.vector_count < index.chunk_count:
+                    warnings.append(f"向量覆盖 {index.vector_count}/{index.chunk_count} 个代码块，关键词与关系召回覆盖完整基础索引")
+            except RetrievalError as exc:
+                warnings.append(str(exc))
+        elif query.strategy not in {"bm25", "lexical_relations"}:
+            warnings.append("向量服务暂停或尚未就绪，本次使用基础检索")
+        if query.strategy in {"lexical_relations", "hybrid_relations", "reranked"}:
             begin = time.monotonic()
             seeds = lexical.seeds(query)
             routes["relation"] = self.repository.relation_search(index.id, seeds, settings.candidate_k)
@@ -354,16 +298,20 @@ class HybridRetrievalService:
         fused = [item for item in fused if item[0] in chunks]
         order = list(range(len(fused)))
         scores: dict[int, float] = {}
-        if query.strategy == "reranked" and fused:
+        rerank_cache_hit = False
+        if query.strategy == "reranked" and fused and client is not None:
             # Keep query repetition and document bodies below the provider limit.
             per_document = min(6000, max(0, 110_000 // len(fused) - len(query.query.encode())))
             texts = tuple(chunks[item[0]].embedding_text.encode()[:per_document].decode("utf-8", errors="ignore") for item in fused)
             total_bytes = sum(len(text.encode()) for text in texts) + len(query.query.encode()) * len(texts)
             if total_bytes <= 110_000 and per_document >= 200:
-                result = client.rerank(query.query, texts)
-                order = [number for number, _ in result.ranking]
-                scores = dict(result.ranking)
-                rerank_ms, rerank_tokens = result.duration_ms, result.input_tokens
+                try:
+                    result = client.rerank(query.query, texts)
+                    order = [number for number, _ in result.ranking]
+                    scores = dict(result.ranking)
+                    rerank_ms, rerank_tokens, rerank_cache_hit = result.duration_ms, result.input_tokens, result.cache_hit
+                except RetrievalError as exc:
+                    warnings.append("精排未完成，使用 RRF 结果：" + str(exc))
             else:
                 warnings.append("精排输入超过本批上限，本次使用 RRF 排名")
         route_details = {route: {chunk_id: (rank, score) for rank, (chunk_id, score) in enumerate(hits, 1)} for route, hits in routes.items()}
@@ -388,8 +336,10 @@ class HybridRetrievalService:
             ))
         if index.parse_error_files:
             warnings.append("部分文件存在语法解析错误，请结合原始代码核对")
+        actual: RetrievalStrategy = "reranked" if scores else "hybrid_relations" if "vector" in routes and "relation" in routes else "hybrid" if "vector" in routes else "lexical_relations" if "relation" in routes else "bm25"
         return RetrievalTrace(
-            id=str(uuid4()), index_id=index.id, query=query.query, strategy=query.strategy,
+            id=str(uuid4()), index_id=index.id, query=query.query, strategy=actual, requested_strategy=query.strategy,
+            rerank_cache_hit=rerank_cache_hit,
             candidates=tuple(candidates), routes=tuple(metrics),
             duration_ms=round((time.monotonic() - started) * 1000),
             embedding_ms=embedding_ms, rerank_ms=rerank_ms, input_tokens=input_tokens,
@@ -418,54 +368,66 @@ class HybridRetrievalService:
             return model_input
         index_id = self.enqueue(target)
         index = self.repository.get(index_id)
-        if index.status == "failed":
+        if index.status == "failed" and not index.lexical_ready:
             raise RetrievalError("代码索引构建失败，请先重试索引")
-        if index.status != "ready":
-            claim = self.repository.claim(index_id)
-            if claim is None:
-                raise SafeApplicationError(SafeError(
+        if not index.lexical_ready:
+            raise SafeApplicationError(SafeError(
                     code=ErrorCode.RETRIEVAL_INDEX_PENDING,
                     safe_message="等待同一提交的代码索引完成",
                     retryable=True,
                     details={"batch_retry_managed": True, "retry_at": (datetime.now(UTC) + timedelta(seconds=20)).isoformat()},
-                ))
-            index = self._build(claim, None, on_progress)
-        purposes = {
-            ReviewAgent.SECURITY: "authorization, authentication, sensitive data and security boundaries",
-            ReviewAgent.CONVENTION: "repository conventions, interface contracts and maintainability",
-            ReviewAgent.LOGIC: "business logic, transactions, database queries and concurrency",
-        }
+            ))
+        purposes = (ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC)
         contexts: list[ContextEvidence] = []
-        for agent, purpose in purposes.items():
-            units = tuple(unit for unit in model_input.units if agent in unit.review_domains)
-            if not units:
-                continue
-            trace = cached.get(agent.value)
-            if trace is None:
-                ranges = {}
-                for unit in units[:100]:
-                    ranges[unit.file] = [(int(match.group(1)), int(match.group(1)) + max(1, int(match.group(2) or 1)) - 1) for match in re.finditer(r"^@@ -[0-9]+(?:,[0-9]+)? [+]([0-9]+)(?:,([0-9]+))? @@", unit.patch, re.M)]
-                changed_symbols = tuple(dict.fromkeys(
-                    symbol for file, symbol, _, _, first, last in self._lexical(index.id).documents.values()
-                    if file in ranges and any(first <= end and last >= begin for begin, end in ranges[file])
-                ))[:100]
-                query_text = (
-                    f"Find implementation and SQL evidence for reviewing {purpose}.\n"
-                    + "\n".join(unit.file + "\n" + unit.patch[:500] for unit in units[:4])
-                ).encode()[:1200].decode("utf-8", errors="ignore")
-                trace = self.search(
-                    index.id, SearchQuery(
-                        query=query_text, seed_files=tuple(unit.file for unit in units[:100]), symbols=changed_symbols,
-                        strategy=view.settings.strategy, limit=view.settings.context_k,
-                    ), review_run_id=model_input.review_run_id, agent=agent.value,
-                    plan_fingerprint=model_input.plan_fingerprint, on_progress=on_progress,
-                )
-            if trace.index_id != index.id:
-                raise RetrievalError("部分审查已保存旧配置的上下文，请恢复原配置后重试")
-            contexts.extend(item.model_copy(update={"agent": agent}) for item in trace.selected)
+        governance = RetrievalRuntimeRepository(self.repository.sessions)
+        budget_key = stable_key(model_input.review_run_id, model_input.plan_fingerprint)
+        budget = RequestBudget(view.settings.max_requests_per_operation, charge=lambda: governance.charge_request(budget_key, view.settings.max_requests_per_operation))
+        runtime, key = self.settings.runtime()
+        client = self._client(runtime, key, budget) if key and not runtime.external_calls_paused else None
+        try:
+            for agent in purposes:
+                requests_before = budget.used
+                units = tuple(unit for unit in model_input.units if agent in unit.review_domains)
+                if not units:
+                    continue
+                trace = cached.get(agent.value)
+                if trace is None:
+                    grouped = review_queries(units, view.settings.strategy, view.settings.context_k)
+                    traces = []
+                    for query, keys in grouped:
+                        selected_keys = set(keys)
+                        selected_units = tuple(unit for unit in units if unit.unit_key in selected_keys)
+                        query = query.model_copy(update={"symbols": changed_symbols(self._lexical(index.id).documents.values(), selected_units)})
+                        traces.append((self._search(index, query, view.settings, client), keys))
+                        on_progress()
+                    first = traces[0][0]
+                    candidates = merge_contexts(traces, view.settings.context_k)
+                    trace = first.model_copy(update={
+                        "id": str(uuid4()), "agent": agent, "plan_fingerprint": model_input.plan_fingerprint,
+                        "queries": tuple(query.query for query, _ in grouped), "query": f"{len(grouped)} 组变更上下文检索",
+                        "candidates": candidates, "total_units": len(units),
+                        "strategies_used": tuple(dict.fromkeys(item.strategy for item, _ in traces)),
+                        "query_cache_hit": all(item.query_cache_hit for item, _ in traces),
+                        "rerank_cache_hit": all(item.rerank_cache_hit for item, _ in traces),
+                        "covered_units": len({key for item in candidates if item.selected for key in item.unit_keys}),
+                        "duration_ms": sum(item.duration_ms for item, _ in traces),
+                        "warnings": tuple(dict.fromkeys(warning for item, _ in traces for warning in item.warnings)),
+                        "model_requests": budget.used - requests_before,
+                        "embedding_ms": sum(item.embedding_ms for item, _ in traces),
+                        "rerank_ms": sum(item.rerank_ms for item, _ in traces),
+                        "input_tokens": sum(item.input_tokens or 0 for item, _ in traces) or None,
+                        "rerank_tokens": sum(item.rerank_tokens or 0 for item, _ in traces) or None,
+                        "routes": tuple(RouteMetric(route=cast(RetrievalRoute, route), candidate_count=sum(metric.candidate_count for item, _ in traces for metric in item.routes if metric.route == route), duration_ms=sum(metric.duration_ms for item, _ in traces for metric in item.routes if metric.route == route)) for route in ("bm25", "vector", "relation") if any(metric.route == route for item, _ in traces for metric in item.routes)),
+                    })
+                    trace = self.repository.save_trace(trace, model_input.review_run_id, agent.value)
+                if trace.index_id != index.id:
+                    raise RetrievalError("部分审查已保存旧配置的上下文，请恢复原配置后重试")
+                contexts.extend(item.model_copy(update={"agent": agent}) for item in trace.selected)
+        finally:
+            if client is not None:
+                client.close()
         on_progress()
         return model_input.model_copy(update={"context_evidence": tuple(contexts)})
-
     def evaluate(
         self, index_id: str, cases: Sequence[RetrievalEvaluationCase], *,
         dataset_version: str, annotation_source: AnnotationSource,
@@ -478,7 +440,7 @@ class HybridRetrievalService:
             raise ValueError("评测需要 1 到 100 个不重复样本")
         index = self.repository.get(index_id, scope)
         view, key = self.settings.runtime()
-        client = self._client(view, key) if any(value != "bm25" for value in strategies) else None
+        client = self._client(view, key) if any(value not in {"bm25", "lexical_relations"} for value in strategies) else None
         reports: list[StrategyEvaluation] = []
         try:
             # Warm query vectors once for every strategy. Timings then compare
@@ -490,7 +452,7 @@ class HybridRetrievalService:
                 pending = [(digest, text) for digest, text in query_hashes.items() if keys[digest] not in existing]
                 for offset in range(0, len(pending), 4):
                     batch = pending[offset:offset + 4]
-                    response = client.embed(tuple(text for _, text in batch))
+                    response = client.embed(tuple(text for _, text in batch), purpose="query")
                     self.repository.store_embeddings(view.settings.embedding_fingerprint, [
                         (keys[digest], digest, vector) for (digest, _), vector in zip(batch, response.vectors, strict=True)
                     ])
@@ -499,6 +461,8 @@ class HybridRetrievalService:
                 recalls, ranks, durations = [], [], []
                 for case in cases:
                     trace = self._search(index, SearchQuery(query=case.query, seed_files=case.seed_files, symbols=case.symbols, strategy=strategy, limit=k), view.settings, client)
+                    if trace.strategy != strategy:
+                        raise RetrievalError("评测中发生策略降级，未生成效果对比报告；已有缓存已保留，请核对调用上限和服务状态")
                     relevant = set(case.relevant_symbols)
                     symbols = [item.symbol for item in trace.selected]
                     recall = len(relevant.intersection(symbols)) / len(relevant)
@@ -527,18 +491,3 @@ class HybridRetrievalService:
         )
         self.repository.save_evaluation(report)
         return report
-
-
-def _embedding_batches(chunks: Sequence[CodeChunk]) -> Iterator[tuple[CodeChunk, ...]]:
-    batch: list[CodeChunk] = []
-    size = 0
-    for chunk in chunks:
-        amount = len(chunk.embedding_text.encode())
-        if batch and (len(batch) >= 20 or size + amount > 64_000):
-            yield tuple(batch)
-            batch = []
-            size = 0
-        batch.append(chunk)
-        size += amount
-    if batch:
-        yield tuple(batch)

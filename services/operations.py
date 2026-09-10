@@ -13,7 +13,7 @@ from domain.enums import ExecutionStatus
 from domain.security import redact_sensitive
 
 # 就绪探针必须与 Alembic 当前 head 完全一致；否则新迁移后的实例会被错误摘流量。
-EXPECTED_DATABASE_REVISION = "20260910_0048"
+EXPECTED_DATABASE_REVISION = "20260910_0049"
 OUTBOX_LOGGER = logging.getLogger("openreviewer.outbox")
 LOGGER = logging.getLogger("openreviewer.operations")
 
@@ -210,6 +210,8 @@ class MetricsSnapshot:
     outbox_max_publish_attempts: int
     claimable_tasks: int
     oldest_claimable_task_age_seconds: float
+    retrieval_pending: int = 0
+    retrieval_oldest_age_seconds: float = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +264,7 @@ class CleanupResult:
     pull_request_versions: int = 0
     quota_buckets: int = 0
     finding_evaluations: int = 0
+    retrieval_records: int = 0
 
     @property
     def total(self) -> int:
@@ -275,6 +278,7 @@ class CleanupResult:
                 self.pull_request_versions,
                 self.quota_buckets,
                 self.finding_evaluations,
+                self.retrieval_records,
             )
         )
 
@@ -372,6 +376,12 @@ def render_prometheus_metrics(snapshot: MetricsSnapshot) -> str:
             "# TYPE openreviewer_task_queue_oldest_age_seconds gauge",
             "openreviewer_task_queue_oldest_age_seconds "
             f"{snapshot.oldest_claimable_task_age_seconds:.3f}",
+            "# HELP openreviewer_retrieval_pending Queued or building code indexes.",
+            "# TYPE openreviewer_retrieval_pending gauge",
+            f"openreviewer_retrieval_pending {snapshot.retrieval_pending}",
+            "# HELP openreviewer_retrieval_oldest_age_seconds Age of the oldest unfinished index.",
+            "# TYPE openreviewer_retrieval_oldest_age_seconds gauge",
+            f"openreviewer_retrieval_oldest_age_seconds {snapshot.retrieval_oldest_age_seconds:.3f}",
         )
     )
     return "\n".join(lines) + "\n"

@@ -1170,6 +1170,7 @@ def _copy_model_input(
     units: tuple[ReviewUnit, ...],
 ) -> ModelReviewInput:
     total_bytes = sum(unit.estimated_input_bytes for unit in units)
+    selected_unit_keys = {unit.unit_key for unit in units}
     if source.planner_version in {"review-planner-v2", "review-planner-v3"}:
         total_bytes += sum(rule.byte_size for rule in rules)
     return ModelReviewInput(
@@ -1185,7 +1186,7 @@ def _copy_model_input(
         rules=rules,
         units=units,
         total_estimated_input_bytes=total_bytes,
-        context_evidence=source.context_evidence,
+        context_evidence=tuple(item for item in source.context_evidence if not item.unit_keys or selected_unit_keys.intersection(item.unit_keys)),
         knowledge_references=source.knowledge_references,
         prior_agent_results=source.prior_agent_results,
         review_agent=source.review_agent,

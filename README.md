@@ -81,6 +81,8 @@ deployment/         niuma-2 Compose 部署配置
 
 ## 当前前端入口
 
+检索工作台现已支持基础索引与向量分阶段发布：模型暂停时仍可建立、恢复并使用关键词和代码关系检索。共享调用通道、请求缓存和持久化额度防止重复调用与重试重置；源码按 Blob 增量读取。详见 [可靠性与工作台升级](docs/architecture/retrieval-reliability.md)。
+
 当前 `niuma-2` 测试环境的 React 管理前端地址为：
 
 ```text

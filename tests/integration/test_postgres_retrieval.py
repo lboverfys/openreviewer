@@ -10,7 +10,8 @@ from tests.integration.test_postgres_contract import (
 )
 
 
-def test_postgres_vector_queries_are_snapshot_scoped(postgres_database):
+def test_postgres_vector_queries_are_snapshot_scoped(postgres_database, monkeypatch):
+    monkeypatch.setenv("OPENREVIEWER_RETRIEVAL_API_DISABLED", "false")
     database = postgres_database
     settings = RetrievalSettingsService(database.sessions, AiSecretCipher(b"k" * 32))
     settings.update(RetrievalSettings(enabled=True, api_host="https://fake.cn-beijing.maas.aliyuncs.com"), 0, "test", "fake-key")

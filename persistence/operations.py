@@ -12,6 +12,7 @@ from domain.enums import ExecutionStatus, WorkerStatus
 from domain.security import redact_sensitive
 from persistence.models import (
     AdminSessionRecord,
+    CodeIndexRecord,
     FindingEvaluationRecord,
     GitHubWebhookDeliveryRecord,
     ModelHttpCallRecord,
@@ -23,6 +24,7 @@ from persistence.models import (
     ReviewTaskRecord,
     WorkerHeartbeatRecord,
 )
+from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from services.operations import (
     CleanupResult,
     MetricsSnapshot,
@@ -117,6 +119,7 @@ class SqlAlchemyOperationsRepository:
         now = self._clock()
         try:
             with self._sessions() as session:
+                retrieval_pending, retrieval_oldest = session.execute(select(func.count(), func.min(CodeIndexRecord.created_at)).where(CodeIndexRecord.status.in_(("queued", "building")))).one()
                 review_counts: dict[str, int] = dict(
                     session.execute(
                         select(
@@ -199,6 +202,8 @@ class SqlAlchemyOperationsRepository:
             outbox_max_publish_attempts=int(maximum_attempts or 0),
             claimable_tasks=int(claimable_count or 0),
             oldest_claimable_task_age_seconds=oldest_claimable_age,
+            retrieval_pending=retrieval_pending,
+            retrieval_oldest_age_seconds=max(0, (now - _as_utc(retrieval_oldest)).total_seconds()) if retrieval_oldest else 0,
         )
 
     def claim_outbox(
@@ -378,6 +383,7 @@ class SqlAlchemyOperationsRepository:
                 )
         except SQLAlchemyError as exc:
             raise OperationsError("保留期清理失败") from exc
+        retrieval_records = RetrievalRuntimeRepository(self._sessions).cleanup(min(100, batch_size))
         return CleanupResult(
             published_outbox_events=published_outbox_events,
             admin_sessions=admin_sessions,
@@ -387,6 +393,7 @@ class SqlAlchemyOperationsRepository:
             pull_request_versions=pull_request_versions,
             quota_buckets=quota_buckets,
             finding_evaluations=finding_evaluations,
+            retrieval_records=retrieval_records,
         )
 
     @staticmethod

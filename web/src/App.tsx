@@ -9,6 +9,7 @@ import ReviewDetailPage from "./ReviewDetailPage";
 import SettingsPage from "./SettingsPage";
 import RetrievalPage from "./RetrievalPage";
 import type { AuthUser } from "./types";
+import "./styles/workspace-polish.css";
 
 type SessionState =
   | { phase: "checking" }

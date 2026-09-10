@@ -102,8 +102,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
 
         <div className="showcase-content">
           <div className="feature-highlight-chip">
-            <span className="sparkle-icon">✨</span>
-            <span>下一代智能化代码审查调度控制台</span>
+            <span>OpenReviewer · 审查工作台</span>
           </div>
 
           <h1>
@@ -113,8 +112,8 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
           </h1>
 
           <p className="showcase-subtitle">
-            全流程状态跃迁可视化、Worker 实时心跳感知与幂等任务隔离。
-            为自动化 PR 审查、模型推理与协同反馈提供坚实稳定的工程底座。
+            从拉取请求到问题确认，在同一个工作台查看审查进度、
+            跨文件代码证据和处理结果。
           </p>
 
           <div className="pipeline-interactive-card">
@@ -124,7 +123,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
                 <span className="dot d-yellow" />
                 <span className="dot d-green" />
               </div>
-              <span className="pipeline-name">Workflow Live Pipeline</span>
+              <span className="pipeline-name">审查流程</span>
               <span className="flow-badge">流程示意</span>
             </div>
 
@@ -133,7 +132,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
                 <div className="step-badge">✓</div>
                 <div className="step-info">
                   <strong>任务生成</strong>
-                  <small>Idempotent Key</small>
+                  <small>绑定提交版本</small>
                 </div>
               </div>
               <div className="step-connector active" />
@@ -141,7 +140,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
                 <div className="step-badge spin-gear">⚙</div>
                 <div className="step-info">
                   <strong>Worker 分发</strong>
-                  <small>Dispatching</small>
+                  <small>后台任务</small>
                 </div>
               </div>
               <div className="step-connector active" />
@@ -149,7 +148,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
                 <div className="step-badge pulse-scale">⏳</div>
                 <div className="step-info">
                   <strong>等待 CI 结果</strong>
-                  <small>Waiting for CI</small>
+                  <small>检查完成后继续</small>
                 </div>
               </div>
               <div className="step-connector" />
@@ -157,7 +156,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
                 <div className="step-badge">🚀</div>
                 <div className="step-info">
                   <strong>模型深度审查</strong>
-                  <small>AI Analysis</small>
+                  <small>问题与代码证据</small>
                 </div>
               </div>
             </div>
@@ -176,7 +175,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
           </div>
           <div className="stat-divider" />
           <div className="stat-unit">
-            <strong className="stat-number">AES-GCM</strong>
+            <strong className="stat-number">加密</strong>
             <span className="stat-desc">安全凭据管理</span>
           </div>
         </div>
@@ -290,7 +289,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
               <span>会话由服务端验证 · 密码不写入 localStorage</span>
             </div>
           </form>
-          <p className="warm-page-footnote">OpenReviewer Operations · Powered by NiuMa</p>
+          <p className="warm-page-footnote">OpenReviewer · 让审查结果有据可查</p>
         </div>
       </section>
     </main>

@@ -50,10 +50,12 @@ def main() -> None:
     index.add_argument("--installation-id", type=int, required=True)
     index.add_argument("--head-sha", required=True)
     index.add_argument("--dry-run", action="store_true", help="只估算代码块、缓存及请求批次数，不调用模型")
+    index.add_argument("--include-vectors", action="store_true", help="显式请求向量补全；仍受服务端暂停和数量上限控制")
     evaluate = commands.add_parser("evaluate")
     evaluate.add_argument("--index-id", required=True)
     evaluate.add_argument("--dataset", type=Path, required=True)
     evaluate.add_argument("--output", type=Path, required=True)
+    evaluate.add_argument("--strategies", nargs="+", choices=("bm25", "lexical_relations", "hybrid", "hybrid_relations", "reranked"), default=["bm25", "lexical_relations"])
     args = parser.parse_args()
     database = Database.from_environment()
     service = HybridRetrievalService(
@@ -84,10 +86,10 @@ def main() -> None:
                     "model_requests_made": 0,
                 }))
                 return
-            index_id = service.enqueue(target)
+            index_id = service.enqueue(target, include_vectors=args.include_vectors)
             if service.repository.get(index_id).status == "failed":
-                service.retry_index(index_id, None)
-            result = service.index_sources(target, sources)
+                service.retry_index(index_id, None, include_vectors=args.include_vectors)
+            result = service.index_sources(target, sources, include_vectors=args.include_vectors)
             print(result.model_dump_json())
         else:
             dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
@@ -95,6 +97,7 @@ def main() -> None:
             report = service.evaluate(
                 args.index_id, cases, dataset_version=dataset["version"],
                 annotation_source=dataset["annotation_source"], k=dataset.get("k", 8),
+                strategies=tuple(args.strategies),
             )
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")

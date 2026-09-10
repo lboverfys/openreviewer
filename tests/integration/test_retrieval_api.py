@@ -40,6 +40,9 @@ def test_retrieval_api_auth_configuration_and_scoped_index(retrieval, monkeypatc
             assert (await client.get(f"/api/v1/reviews/{review.review_run_id}/retrieval")).status_code == 200
             monkeypatch.setenv("OPENREVIEWER_RETRIEVAL_API_DISABLED", "true")
             assert (await client.get("/api/v1/retrieval/settings")).json()["external_calls_paused"] is True
-            assert (await client.post("/api/v1/retrieval/indexes", json={"review_run_id": review.review_run_id})).status_code == 409
-            assert (await client.post(f"/api/v1/retrieval/indexes/{index_id}/retry")).status_code == 409
+            assert (await client.post("/api/v1/retrieval/indexes", json={"review_run_id": review.review_run_id})).status_code == 202
+            assert (await client.post(f"/api/v1/retrieval/indexes/{index_id}/enrich")).status_code == 409
+            targets = (await client.get("/api/v1/retrieval/targets")).json()
+            assert targets[0]["review_run_id"] == review.review_run_id
+            assert (await client.get("/api/v1/retrieval/operations")).json()["available_indexes"] == 1
     asyncio.run(exercise())

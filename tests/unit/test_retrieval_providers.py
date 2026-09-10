@@ -4,6 +4,7 @@ import pytest
 from domain.retrieval import RetrievalSettings
 from services.retrieval_providers import (
     AliyunRetrievalClient,
+    RequestBudget,
     RetrievalError,
     normalize_aliyun_host,
 )
@@ -92,3 +93,13 @@ def test_server_pause_switch_blocks_real_requests_before_transport(monkeypatch):
         assert calls == []
     finally:
         client.close()
+
+
+def test_http_retries_consume_the_same_operation_budget(monkeypatch):
+    calls = []
+    monkeypatch.setattr("services.retrieval_providers.time.sleep", lambda _: None)
+    http = httpx.Client(transport=httpx.MockTransport(lambda request: (calls.append(request), httpx.Response(429))[1]))
+    client = AliyunRetrievalClient(RetrievalSettings(api_host="https://example.cn-beijing.maas.aliyuncs.com"), "test-key", http, budget=RequestBudget(2))
+    with pytest.raises(RetrievalError, match="请求上限"):
+        client.embed(("bounded",))
+    assert len(calls) == 2

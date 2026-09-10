@@ -1,6 +1,14 @@
 groups:
   - name: openreviewer
     rules:
+      - alert: OpenReviewerRetrievalIndexDelayed
+        expr: openreviewer_retrieval_pending > 0 and openreviewer_retrieval_oldest_age_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 代码索引构建长时间未完成
+          description: 基础索引或显式向量补全等待超过十五分钟，请检查索引状态和 Worker。
       - alert: OpenReviewerApiMetricsUnavailable
         expr: absent(up{job="openreviewer-api"}) or min(up{job="openreviewer-api"}) < 1
         for: 2m

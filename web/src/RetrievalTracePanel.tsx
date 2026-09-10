@@ -3,6 +3,7 @@ import { formatDuration } from "./review-details";
 
 export const retrievalStrategyLabels = {
   bm25: "BM25 基线",
+  lexical_relations: "关键词 + 代码关系",
   hybrid: "关键词 + 向量",
   hybrid_relations: "三路召回 + RRF",
   reranked: "三路召回 + 精排",
@@ -36,15 +37,19 @@ export default function RetrievalTracePanel({ traces, compact = false }: { trace
   return <div className="retrieval-traces">
     {traces.map(trace => <section className="retrieval-trace" key={trace.id}>
       <header className="retrieval-trace-heading">
-        <div><h3>{trace.agent ? `${agentLabels[trace.agent] ?? trace.agent} Agent 的上下文` : "检索结果"}</h3><span>{retrievalStrategyLabels[trace.strategy]}</span></div>
+        <div><h3>{trace.agent ? `${agentLabels[trace.agent] ?? trace.agent} Agent 的上下文` : "检索结果"}</h3><span>{trace.strategies_used?.length ? trace.strategies_used.map(strategy => retrievalStrategyLabels[strategy]).join(" / ") : retrievalStrategyLabels[trace.strategy]}</span></div>
         <strong>{formatDuration(trace.duration_ms)}</strong>
       </header>
       <p className="retrieval-query">{trace.query}</p>
+      {(trace.queries?.length ?? 0) > 0 && <details className="retrieval-query-details"><summary>查看 {trace.queries?.length} 组检索查询 · {trace.covered_units ?? 0}/{trace.total_units ?? 0} 个单元获得分组上下文</summary>{trace.queries?.map((query, index) => <p className="retrieval-query" key={index}>{query}</p>)}</details>}
+      {trace.requested_strategy && trace.requested_strategy !== trace.strategy && <p className="retrieval-fallback">已保留可用结果 · 原策略：{retrievalStrategyLabels[trace.requested_strategy]}</p>}
       <div className="retrieval-route-metrics">
         {trace.routes.map(metric => <div key={metric.route}><span>{routeLabels[metric.route]}</span><strong>{metric.candidate_count} 条</strong><small>{formatDuration(metric.duration_ms)}</small></div>)}
         <div><span>最终上下文</span><strong>{trace.candidates.filter(item => item.selected).length} 条</strong><small>{trace.candidates.length} 条融合候选</small></div>
       </div>
       <div className="retrieval-measurements">
+        <span>本次模型请求：{trace.model_requests ?? 0}</span>
+        {trace.rerank_cache_hit && <span>精排缓存命中</span>}
         <span>查询向量：{!trace.routes.some(item => item.route === "vector") ? "未使用" : trace.query_cache_hit ? "缓存命中" : "本次生成"}</span>
         <span>向量耗时：{trace.routes.some(item => item.route === "vector") ? formatDuration(trace.embedding_ms ?? 0) : "未执行"}</span>
         <span>精排耗时：{trace.candidates.some(item => item.rerank_score != null) ? formatDuration(trace.rerank_ms ?? 0) : "未执行"}</span>

@@ -59,6 +59,9 @@ describe("Nginx API allowlist", () => {
 
   it.each([
     "/api/v1/retrieval/settings",
+    "/api/v1/retrieval/targets",
+    "/api/v1/retrieval/operations",
+    "/api/v1/retrieval/indexes/index-1/enrich",
     "/api/v1/retrieval/settings/test",
     "/api/v1/retrieval/indexes",
     "/api/v1/retrieval/indexes/index-1",

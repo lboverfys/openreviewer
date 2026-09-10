@@ -312,6 +312,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/retrieval/indexes/{index_id}/enrich": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enrich */
+        post: operations["enrich_api_v1_retrieval_indexes__index_id__enrich_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/retrieval/indexes/{index_id}/retry": {
         parameters: {
             query?: never;
@@ -340,6 +357,23 @@ export interface paths {
         put?: never;
         /** Search */
         post: operations["search_api_v1_retrieval_indexes__index_id__search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Operations */
+        get: operations["operations_api_v1_retrieval_operations_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -375,6 +409,23 @@ export interface paths {
         put?: never;
         /** Test Settings */
         post: operations["test_settings_api_v1_retrieval_settings_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Targets */
+        get: operations["targets_api_v1_retrieval_targets_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1150,6 +1201,11 @@ export interface components {
             start_line: number;
             /** Symbol */
             symbol: string;
+            /**
+             * Unit Keys
+             * @default []
+             */
+            unit_keys: string[];
         };
         /** DashboardResponse */
         DashboardResponse: {
@@ -1193,6 +1249,17 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** IndexTarget */
+        IndexTarget: {
+            /** Head Sha */
+            head_sha: string;
+            /** Pull Request Number */
+            pull_request_number: number;
+            /** Repository */
+            repository: string;
+            /** Review Run Id */
+            review_run_id: string;
+        };
         /** IndexView */
         IndexView: {
             /** Chunk Count */
@@ -1220,6 +1287,11 @@ export interface components {
             /** Installation Id */
             installation_id: number;
             /**
+             * Lexical Ready
+             * @default false
+             */
+            lexical_ready: boolean;
+            /**
              * Parse Error Files
              * @default []
              */
@@ -1244,6 +1316,18 @@ export interface components {
             reused_files: number;
             /** Status */
             status: string;
+            /**
+             * Vector Count
+             * @default 0
+             */
+            vector_count: number;
+            /** Vector Error */
+            vector_error?: string | null;
+            /**
+             * Vector Status
+             * @default pending
+             */
+            vector_status: string;
         };
         /** KnowledgeCitationResponse */
         KnowledgeCitationResponse: {
@@ -1471,6 +1555,39 @@ export interface components {
              */
             vector_search_mode: string;
         };
+        /** RetrievalOperations */
+        RetrievalOperations: {
+            /**
+             * Available Indexes
+             * @default 0
+             */
+            available_indexes: number;
+            /**
+             * Circuit Open
+             * @default false
+             */
+            circuit_open: boolean;
+            /**
+             * Oldest Pending Seconds
+             * @default 0
+             */
+            oldest_pending_seconds: number;
+            /**
+             * Partial Indexes
+             * @default 0
+             */
+            partial_indexes: number;
+            /**
+             * Pending Indexes
+             * @default 0
+             */
+            pending_indexes: number;
+            /**
+             * Provider Busy
+             * @default false
+             */
+            provider_busy: boolean;
+        };
         /** RetrievalSettings */
         RetrievalSettings: {
             /**
@@ -1510,6 +1627,11 @@ export interface components {
              */
             max_new_vectors_per_index: number;
             /**
+             * Max Requests Per Operation
+             * @default 12
+             */
+            max_requests_per_operation: number;
+            /**
              * Rerank Model
              * @default qwen3.7-text-rerank
              */
@@ -1519,7 +1641,7 @@ export interface components {
              * @default reranked
              * @enum {string}
              */
-            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
+            strategy: "bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked";
             /**
              * Timeout Seconds
              * @default 60
@@ -1557,6 +1679,11 @@ export interface components {
             agent?: components["schemas"]["ReviewAgent"] | null;
             /** Candidates */
             candidates: components["schemas"]["ContextEvidence"][];
+            /**
+             * Covered Units
+             * @default 0
+             */
+            covered_units: number;
             /** Duration Ms */
             duration_ms: number;
             /**
@@ -1570,8 +1697,18 @@ export interface components {
             index_id: string;
             /** Input Tokens */
             input_tokens?: number | null;
+            /**
+             * Model Requests
+             * @default 0
+             */
+            model_requests: number;
             /** Plan Fingerprint */
             plan_fingerprint?: string | null;
+            /**
+             * Queries
+             * @default []
+             */
+            queries: string[];
             /** Query */
             query: string;
             /**
@@ -1579,6 +1716,13 @@ export interface components {
              * @default false
              */
             query_cache_hit: boolean;
+            /** Requested Strategy */
+            requested_strategy?: ("bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked") | null;
+            /**
+             * Rerank Cache Hit
+             * @default false
+             */
+            rerank_cache_hit: boolean;
             /**
              * Rerank Ms
              * @default 0
@@ -1589,10 +1733,20 @@ export interface components {
             /** Routes */
             routes: components["schemas"]["RouteMetric"][];
             /**
+             * Strategies Used
+             * @default []
+             */
+            strategies_used: ("bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked")[];
+            /**
              * Strategy
              * @enum {string}
              */
-            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
+            strategy: "bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked";
+            /**
+             * Total Units
+             * @default 0
+             */
+            total_units: number;
             /**
              * Warnings
              * @default []
@@ -2184,7 +2338,7 @@ export interface components {
              * @default reranked
              * @enum {string}
              */
-            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
+            strategy: "bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked";
             /**
              * Symbols
              * @default []
@@ -2213,7 +2367,7 @@ export interface components {
              * Strategy
              * @enum {string}
              */
-            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
+            strategy: "bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked";
         };
         /** ValidationError */
         ValidationError: {
@@ -2793,6 +2947,39 @@ export interface operations {
             };
         };
     };
+    enrich_api_v1_retrieval_indexes__index_id__enrich_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                index_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     retry_index_api_v1_retrieval_indexes__index_id__retry_post: {
         parameters: {
             query?: never;
@@ -2857,6 +3044,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    operations_api_v1_retrieval_operations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalOperations"];
                 };
             };
         };
@@ -2930,6 +3137,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetrievalSettingsView"];
+                };
+            };
+        };
+    };
+    targets_api_v1_retrieval_targets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndexTarget"][];
                 };
             };
         };

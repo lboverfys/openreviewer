@@ -13,6 +13,17 @@ class Tokens:
         return "test-token"
 
 
+class BlobCache:
+    def __init__(self):
+        self.values = {}
+
+    def source_blobs(self, keys):
+        return {key: self.values[key] for key in keys if key in self.values}
+
+    def cache_blobs(self, items):
+        self.values.update(items)
+
+
 def test_github_snapshot_uses_one_blob_batch_for_multiple_files():
     content = ["class A {}", "class B {}"]
     shas = [git_blob_sha(value) for value in content]
@@ -34,11 +45,14 @@ def test_github_snapshot_uses_one_blob_batch_for_multiple_files():
             for i, (sha, value) in enumerate(zip(shas, content, strict=True))
         }}})
     client = httpx.Client(base_url="https://api.github.com", transport=httpx.MockTransport(handler))
-    loader = GitHubCodeSourceLoader(GitHubApiClient(client=client), Tokens())
+    loader = GitHubCodeSourceLoader(GitHubApiClient(client=client), Tokens(), BlobCache())
     files = loader({"installation_id": 10, "repository_id": 42, "repository": "owner/repo", "head_sha": "a" * 40}, lambda: None)
     assert len(files) == 2
     assert len([request for request in calls if request.url.path == "/graphql"]) == 1
     assert len(calls) == 4
+    repeated = loader({"installation_id": 10, "repository_id": 42, "repository": "owner/repo", "head_sha": "a" * 40}, lambda: None)
+    assert repeated == files
+    assert len([request for request in calls if request.url.path == "/graphql"]) == 1
 
 
 def test_github_truncated_tree_cannot_become_complete_index():

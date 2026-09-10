@@ -7,6 +7,7 @@ import math
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -17,6 +18,7 @@ from domain.retrieval import VECTOR_DIMENSIONS, RetrievalSettings
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_review import normalize_api_base_url
 from services.pinned_http import PublicDnsPinnedHTTPTransport
+from services.telemetry import GLOBAL_TELEMETRY
 
 
 def external_retrieval_paused() -> bool:
@@ -58,6 +60,21 @@ class RerankResult:
     ranking: tuple[tuple[int, float], ...]
     duration_ms: int
     input_tokens: int | None
+    cache_hit: bool = False
+
+
+@dataclass(slots=True)
+class RequestBudget:
+    limit: int
+    used: int = 0
+    charge: Callable[[], bool] | None = None
+
+    def consume(self) -> None:
+        if self.used >= self.limit:
+            raise RetrievalError("本次操作已达到模型请求上限，已停止额外调用")
+        if self.charge is not None and not self.charge():
+            raise RetrievalError("本次任务累计已达到模型请求上限，重试不会重置额度")
+        self.used += 1
 
 
 @dataclass(slots=True)
@@ -66,6 +83,7 @@ class AliyunRetrievalClient:
     api_key: str = field(repr=False)
     client: httpx.Client | None = field(default=None, repr=False)
     _owns_client: bool = field(default=False, init=False)
+    budget: RequestBudget | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.api_key or any(char.isspace() for char in self.api_key):
@@ -90,12 +108,22 @@ class AliyunRetrievalClient:
             raise RetrievalError("检索模型外部调用已暂停，需管理员明确开启")
         started = time.monotonic()
         for attempt in range(3):
+            if self.budget is not None:
+                self.budget.consume()
+            request_started = time.monotonic()
+            outcome = "success"
             try:
                 return self._post_once(path, payload)
             except RetrievalError as exc:
+                outcome = "client_error"
                 if not exc.retryable or attempt == 2 or time.monotonic() - started > 200 - self.settings.timeout_seconds:
                     raise
                 time.sleep(max(exc.retry_after, 2 ** attempt))
+            finally:
+                GLOBAL_TELEMETRY.observe_external(
+                    "retrieval_embedding" if "embeddings" in path else "retrieval_rerank",
+                    time.monotonic() - request_started, outcome=outcome,
+                )
         raise AssertionError("unreachable retry state")
 
     def _post_once(self, path: str, payload: dict[str, object]) -> dict[str, Any]:

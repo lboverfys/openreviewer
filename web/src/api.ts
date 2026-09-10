@@ -536,6 +536,9 @@ async function request<T>(
 }
 
 export const api = {
+  retrievalTargets: (signal?: AbortSignal) => request<import("./types").IndexTarget[]>("/api/v1/retrieval/targets", {signal}),
+  retrievalOperations: (signal?: AbortSignal) => request<import("./types").RetrievalOperations>("/api/v1/retrieval/operations", {signal}),
+  enrichCodeIndex: (indexId: string) => request<{status: string}>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/enrich`, {method: "POST"}),
 
   retrievalSettings: (signal?: AbortSignal) =>
     request<RetrievalSettingsView>("/api/v1/retrieval/settings", { signal }),

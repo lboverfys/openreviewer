@@ -205,8 +205,9 @@ def test_index_limit_is_checked_before_model_requests(retrieval):
     view = service.settings.get()
     service.settings.update(view.settings.model_copy(update={"max_new_vectors_per_index": 0}), view.revision, "tester")
     FakeModels.embeddings = 0
-    with pytest.raises(RetrievalError, match="尚未发起向量请求"):
-        service.index_sources(TARGET, sources())
+    index = service.index_sources(TARGET, sources())
+    assert index.lexical_ready and index.vector_status == "limited"
+    assert "尚未发起向量请求" in index.vector_error
     assert FakeModels.embeddings == 0
 
 def test_review_retries_reuse_frozen_context_after_configuration_changes(retrieval):
@@ -231,7 +232,7 @@ def test_review_retries_reuse_frozen_context_after_configuration_changes(retriev
     assert second.context_evidence == first.context_evidence
 
 
-def test_pause_blocks_index_creation_retry_and_worker_claim(retrieval, monkeypatch):
+def test_pause_allows_basic_index_but_blocks_explicit_vector_enrichment(retrieval, monkeypatch):
     service, _, _ = retrieval
     ready = service.index_sources(TARGET, sources())
     queued = service.enqueue({**TARGET, "head_sha": "b" * 40})
@@ -243,15 +244,112 @@ def test_pause_blocks_index_creation_retry_and_worker_claim(retrieval, monkeypat
         raise AssertionError("paused worker must not load source files")
     service.source_loader = forbidden_loader
     monkeypatch.setenv("OPENREVIEWER_RETRIEVAL_API_DISABLED", "true")
+    assert service.enqueue({**TARGET, "head_sha": "d" * 40})
     with pytest.raises(RetrievalError, match="暂停"):
-        service.enqueue({**TARGET, "head_sha": "d" * 40})
-    with pytest.raises(RetrievalError, match="暂停"):
-        service.retry_index(failed, None)
-    assert service.process_next() is False
+        service.retry_index(failed, None, include_vectors=True)
     assert service.repository.get(queued).status == "queued"
     assert service.repository.get(failed).status == "failed"
     assert service.search(ready.id, SearchQuery(query="user", strategy="bm25")).candidates
     assert FakeModels.embeddings == requests_before
+
+
+def test_offline_index_and_fallback_search_never_construct_model_client(retrieval, monkeypatch):
+    service, _, _ = retrieval
+    monkeypatch.setenv("OPENREVIEWER_RETRIEVAL_API_DISABLED", "true")
+    def forbidden(*args):
+        raise AssertionError("offline indexing must not construct a model client")
+    service.client_factory = forbidden
+    index = service.index_sources(TARGET, sources(), include_vectors=False)
+    assert index.status == "ready" and index.lexical_ready and index.vector_status == "paused"
+    trace = service.search(index.id, SearchQuery(query="getById", strategy="reranked", seed_files=("UserService.java",)))
+    assert trace.strategy == "lexical_relations" and trace.requested_strategy == "reranked"
+    assert trace.candidates and trace.model_requests == 0
+
+
+def test_provider_failure_keeps_base_index_and_requests_are_bounded(retrieval):
+    service, _, _ = retrieval
+    current = service.settings.get()
+    service.settings.update(current.settings.model_copy(update={"max_requests_per_operation": 0}), current.revision, "tester")
+    count = FakeModels.embeddings
+    index = service.index_sources(TARGET, sources())
+    assert index.lexical_ready and index.vector_status == "failed"
+    assert "请求上限" in index.vector_error
+    assert service.search(index.id, SearchQuery(query="user", strategy="bm25")).candidates
+    assert FakeModels.embeddings == count
+
+
+def test_repeated_search_reuses_embedding_and_rerank(retrieval):
+    service, _, _ = retrieval
+    index = service.index_sources(TARGET, sources())
+    query = SearchQuery(query="find user SQL", strategy="reranked")
+    first, second = service.search(index.id, query), service.search(index.id, query)
+    assert first.model_requests == 2
+    assert second.model_requests == 0 and second.rerank_cache_hit
+    assert [(item.chunk_id, item.rank) for item in first.candidates] == [(item.chunk_id, item.rank) for item in second.candidates]
+
+
+def test_shared_provider_lane_and_circuit_breaker(retrieval):
+    from persistence.retrieval_runtime import RetrievalRuntimeRepository
+    service, sessions, _ = retrieval
+    first, second = RetrievalRuntimeRepository(sessions), RetrievalRuntimeRepository(sessions)
+    with first.model_lane("test-lane"):
+        with pytest.raises(RetrievalError, match="其他请求"):
+            with second.model_lane("test-lane"):
+                raise AssertionError("a second process entered the same provider lane")
+    for _ in range(3):
+        with pytest.raises(RetrievalError, match="fixture failure"):
+            with first.model_lane("test-lane"):
+                raise RetrievalError("fixture failure")
+    assert second.circuit_state("test-lane") == (False, True)
+    with pytest.raises(RetrievalError, match="熔断"):
+        with second.model_lane("test-lane"):
+            raise AssertionError("open circuit must not enter the provider")
+
+
+def test_operation_budget_survives_recreating_the_gateway(retrieval):
+    from persistence.retrieval_runtime import RetrievalRuntimeRepository
+    from services.retrieval_providers import RequestBudget
+    _, sessions, _ = retrieval
+    runtime = RetrievalRuntimeRepository(sessions)
+    first = RequestBudget(1, charge=lambda: runtime.charge_request("same-review-operation", 1))
+    first.consume()
+    retry = RequestBudget(1, charge=lambda: runtime.charge_request("same-review-operation", 1))
+    with pytest.raises(RetrievalError, match="累计"):
+        retry.consume()
+
+
+def test_retention_preserves_referenced_indexes_and_paid_vectors(retrieval):
+    from sqlalchemy import update
+
+    from persistence.models import CodeEmbeddingRecord, CodeSourceCacheRecord
+    from persistence.retrieval_runtime import RetrievalRuntimeRepository
+    service, sessions, _ = retrieval
+    index = service.index_sources(TARGET, sources())
+    trace = service.search(index.id, SearchQuery(query="user", strategy="bm25"))
+    view = service.settings.get()
+    service.repository.store_embeddings(view.settings.embedding_fingerprint, [("expired-query", "query-hash", (1.0,) * 1024)], purpose="query")
+    service.index_sources({**TARGET, "head_sha": "c" * 40}, sources())
+    old = datetime.now(UTC) - timedelta(days=120)
+    with sessions() as session, session.begin():
+        session.execute(update(CodeIndexRecord).where(CodeIndexRecord.id == index.id).values(created_at=old))
+        session.execute(update(CodeEmbeddingRecord).values(created_at=old))
+        session.add(CodeSourceCacheRecord(id="expired-source", content="class Old {}", created_at=old))
+    runtime = RetrievalRuntimeRepository(sessions)
+    assert runtime.cleanup() >= 1
+    assert service.repository.get(trace.index_id).lexical_ready
+    with sessions() as session:
+        assert session.get(CodeSourceCacheRecord, "expired-source") is None
+        assert session.get(CodeEmbeddingRecord, "expired-query") is None
+        assert session.scalar(select(CodeEmbeddingRecord.id).limit(1)) is not None
+
+
+def test_explicit_enrichment_reuses_the_published_base_snapshot(retrieval):
+    service, _, _ = retrieval
+    base = service.index_sources(TARGET, sources(), include_vectors=False)
+    assert base.lexical_ready and base.vector_count == 0
+    enriched = service.index_sources(TARGET, (), include_vectors=True)
+    assert enriched.id == base.id and enriched.lexical_ready
+    assert enriched.vector_status == "ready" and enriched.vector_count == base.chunk_count
 
 
 def test_bm25_evaluation_does_not_claim_vector_execution(retrieval):
