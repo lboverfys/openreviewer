@@ -1616,7 +1616,11 @@ class WorkerRuntime:
             return self._retrieval_service.process_next(check_progress)
         except Exception as exc:
             safe_error = SafeError.from_exception(exc)
-            LOGGER.error("代码索引处理失败，错误码=%s，说明=%s", safe_error.code.value, safe_error.safe_message)
+            frame = exc.__traceback__
+            while frame is not None and frame.tb_next is not None:
+                frame = frame.tb_next
+            location = f"{os.path.basename(frame.tb_frame.f_code.co_filename)}:{frame.tb_lineno}" if frame is not None else "unknown"
+            LOGGER.error("代码索引处理失败，类型=%s，位置=%s，错误码=%s，说明=%s", type(exc).__name__, location, safe_error.code.value, safe_error.safe_message)
             return True
         finally:
             done.set()

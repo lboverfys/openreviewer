@@ -318,6 +318,24 @@ def test_operation_budget_survives_recreating_the_gateway(retrieval):
         retry.consume()
 
 
+def test_database_source_cache_handles_misses_and_streamed_rows(retrieval):
+    from persistence.retrieval_runtime import RetrievalRuntimeRepository
+    _, sessions, engine = retrieval
+    runtime = RetrievalRuntimeRepository(sessions)
+    assert runtime.source_blobs(("missing",)) == {}
+    runtime.cache_blobs((("blob-a", "class A {}"), ("blob-b", "class B {}")))
+    statements = []
+    def collect(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+    event.listen(engine, "before_cursor_execute", collect)
+    try:
+        assert runtime.source_blobs(("blob-a", "missing", "blob-b")) == {"blob-a": "class A {}", "blob-b": "class B {}"}
+    finally:
+        event.remove(engine, "before_cursor_execute", collect)
+    assert len(statements) == 1
+
+
 def test_retention_preserves_referenced_indexes_and_paid_vectors(retrieval):
     from sqlalchemy import update
 

@@ -100,9 +100,9 @@ class RetrievalRuntimeRepository:
         if len(keys) > 1000:
             raise ValueError("源码缓存查询超过文件上限")
         with self.sessions() as session:
-            return dict(session.execute(select(CodeSourceCacheRecord.id, CodeSourceCacheRecord.content).where(
+            return {row.id: row.content for row in session.execute(select(CodeSourceCacheRecord.id, CodeSourceCacheRecord.content).where(
                 CodeSourceCacheRecord.id.in_(keys),
-            ).limit(len(keys)).execution_options(yield_per=50)).tuples())
+            ).limit(len(keys)).execution_options(yield_per=50))}
 
     def cache_blobs(self, items: Sequence[tuple[str, str]]) -> None:
         if not items:
