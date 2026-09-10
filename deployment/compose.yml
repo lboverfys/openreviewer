@@ -1,6 +1,7 @@
 name: openreviewer
 
 x-openreviewer-environment: &openreviewer-environment
+  OPENREVIEWER_RETRIEVAL_API_DISABLED: "${OPENREVIEWER_RETRIEVAL_API_DISABLED:-true}"
   OPENREVIEWER_ENV: "${OPENREVIEWER_ENV:-test}"
   OPENREVIEWER_LOG_LEVEL: "${OPENREVIEWER_LOG_LEVEL:-INFO}"
   OPENREVIEWER_DB_HOST: postgres
@@ -49,7 +50,7 @@ x-openreviewer-container: &openreviewer-container
 
 services:
   postgres:
-    image: "${OPENREVIEWER_POSTGRES_IMAGE:-postgres:16.10-bookworm}"
+    image: "${OPENREVIEWER_POSTGRES_IMAGE:-pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b}"
     container_name: openreviewer-postgres
     restart: unless-stopped
     environment:

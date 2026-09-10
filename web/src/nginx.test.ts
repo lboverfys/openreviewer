@@ -58,6 +58,22 @@ describe("Nginx API allowlist", () => {
   });
 
   it.each([
+    "/api/v1/retrieval/settings",
+    "/api/v1/retrieval/settings/test",
+    "/api/v1/retrieval/indexes",
+    "/api/v1/retrieval/indexes/index-1",
+    "/api/v1/retrieval/indexes/index-1/retry",
+    "/api/v1/retrieval/indexes/index-1/search",
+    "/api/v1/retrieval/evaluations",
+    "/api/v1/reviews/review-1/retrieval",
+  ])("proxies the supported retrieval route %s", (path) => {
+    expect(isProxied(path)).toBe(true);
+  });
+
+  it.each([
+    "/api/v1/retrieval",
+    "/api/v1/retrieval/settings/delete",
+    "/api/v1/retrieval/indexes/index-1/delete",
     "/api/v1/settings",
     "/api/v1/settings/ai/providers/custom",
     "/api/v1/settings/ai/providers/openai/delete",

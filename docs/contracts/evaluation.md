@@ -57,3 +57,9 @@ python -m apps.maintenance.report_real_evaluation <受控目录>/real-observatio
 
 输出只含聚合统计，不回显样本、裁决人或原始模型文本；包括总体及 provider/model/prompt 分组、
 precision/recall 的 95% Wilson 区间、定位准确率、重复率、未裁决数、分歧数、Token、耗时和成本。
+
+## 检索证据协议升级
+
+structured-review-v5 增加 context_evidence 和 context_references。现有录制回放样本不含关联上下文，保持原期望 Finding 集合；其作用仍为解析和物化回归。该夹具版本调整不代表执行过真实模型准确率评测。
+
+检索策略评测另行保存 annotation_source、代码索引版本、模型名及固定查询集。agent_annotated 结果不能标记为 independent_human。自动标注的检索相关性不等同于真实缺陷金标。

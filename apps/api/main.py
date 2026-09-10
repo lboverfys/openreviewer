@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 from apps.api.routes.dashboard import register_dashboard_routes
 from apps.api.routes.knowledge import register_knowledge_routes
+from apps.api.routes.retrieval import register_retrieval_routes
 from apps.api.routes.reviews import register_review_routes
 from apps.api.routes.settings import register_settings_routes
 from apps.api.schemas import (
@@ -45,6 +46,7 @@ from persistence.database import Database, DatabaseConfigurationError
 from persistence.external_actions import SqlAlchemyExternalActionStore
 from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.repositories import SqlAlchemyReviewRepository
+from persistence.retrieval import RetrievalRepository
 from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.agent_settings import AgentSettingsService
@@ -104,6 +106,7 @@ from services.rag import (
     MarkdownKnowledgeBase,
 )
 from services.rbac import Permission, ResourceScope, has_permission, permissions_for
+from services.retrieval import HybridRetrievalService, RetrievalSettingsService
 from services.review_management import (
     PullRequestIdentityLoader,
     ReviewManagementService,
@@ -191,6 +194,7 @@ def create_app(
     dashboard_stream: DashboardStreamCoordinator[DashboardResponse] | None = None,
     github_access_policy: GitHubAccessPolicy | None = None,
     telemetry_registry: TelemetryRegistry | None = None,
+    retrieval_service: HybridRetrievalService | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -245,6 +249,7 @@ def create_app(
         openapi_url=None,
         lifespan=lifespan,
     )
+    application.state.retrieval_service = retrieval_service
     application.state.review_service = review_service
     application.state.auth_service = auth_service
     application.state.dashboard_service = dashboard_service
@@ -319,6 +324,25 @@ def create_app(
                 ) from exc
             application.state.owned_database = configured_database
             return configured_database
+
+
+    def get_retrieval_service() -> HybridRetrievalService:
+        configured: HybridRetrievalService | None = application.state.retrieval_service
+        if configured is not None:
+            return configured
+        with initialization_lock:
+            configured = application.state.retrieval_service
+            if configured is None:
+                try:
+                    sessions = get_database().sessions
+                    configured = HybridRetrievalService(
+                        RetrievalRepository(sessions),
+                        RetrievalSettingsService(sessions, AiSecretCipher.from_environment()),
+                    )
+                except AiSettingsConfigurationError as exc:
+                    raise HTTPException(503, "检索加密配置暂时不可用") from exc
+                application.state.retrieval_service = configured
+        return configured
 
     def get_operations_service() -> OperationsService:
         """返回共享数据库上的就绪、指标和维护服务。"""
@@ -1317,6 +1341,14 @@ def create_app(
         require_settings_manager=require_settings_manager,
         require_same_origin=require_same_origin,
         translate_ai_settings_error=translate_ai_settings_error,
+    )
+
+
+    register_retrieval_routes(
+        application, get_service=get_retrieval_service,
+        require_manager=require_knowledge_manager,
+        require_viewer=require_review_viewer,
+        require_same_origin=require_same_origin,
     )
 
     register_knowledge_routes(

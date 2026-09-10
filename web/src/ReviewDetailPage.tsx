@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { allowedReviewActions, hasPermission, roleLabels } from "./rbac";
 import FindingCard from "./ReviewFindingCard";
+import RetrievalTracePanel from "./RetrievalTracePanel";
+import "./styles/retrieval.css";
 import {
   DetailIcon,
   ModelBatchPanel,
@@ -30,6 +32,8 @@ import {
 } from "./review-details";
 import type {
   AuthUser,
+  ContextEvidence,
+  RetrievalTrace,
   FindingDecision,
   ReviewAction,
   ReviewDetails,
@@ -210,6 +214,24 @@ function ReviewDetailPage({
   onSignedOut,
 }: ReviewDetailPageProps) {
   const [details, setDetails] = useState<ReviewDetails | null>(null);
+
+  const [retrievalTraces, setRetrievalTraces] = useState<RetrievalTrace[]>([]);
+  const [retrievalLoadError, setRetrievalLoadError] = useState("");
+  const retrievalEvidence = useMemo<Record<string, ContextEvidence>>(
+    () => Object.fromEntries(retrievalTraces.flatMap(trace => trace.candidates).map(item => [item.reference_id, item])),
+    [retrievalTraces],
+  );
+  useEffect(() => {
+    if (!details) return;
+    const controller = new AbortController();
+    api.reviewRetrieval(reviewRunId, controller.signal).then(items => {
+      if (!controller.signal.aborted) { setRetrievalTraces(items); setRetrievalLoadError(""); }
+    }).catch(failure => {
+      if (!controller.signal.aborted) setRetrievalLoadError(errorMessage(failure));
+    });
+    return () => controller.abort();
+  }, [reviewRunId, details?.events.length]);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionBusy, setActionBusy] = useState<ReviewAction | null>(null);
@@ -757,6 +779,13 @@ function ReviewDetailPage({
         <div className={`review-detail-grid active-${activeTab}`}>
           <div className="review-detail-primary">
             <StageTimeline details={details} />
+
+            <section className="review-panel">
+              <div className="review-panel-heading"><h2>检索上下文</h2>
+                {hasPermission(user, "knowledge:manage") && <button type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</button>}
+              </div>
+              {retrievalLoadError ? <p className="retrieval-warning">{retrievalLoadError}</p> : <RetrievalTracePanel traces={retrievalTraces} compact />}
+            </section>
             <ModelBatchPanel
               details={details}
               onRetry={canManageReviews ? retryNode : undefined}
@@ -851,6 +880,7 @@ function ReviewDetailPage({
                 <div className="review-findings-list">
                   {filteredFindings.map((finding) => (
                     <FindingCard
+                      contextEvidence={retrievalEvidence}
                       key={finding.id}
                       finding={finding}
                       busy={findingBusy === finding.id}

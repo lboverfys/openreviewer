@@ -1,4 +1,5 @@
-import type { FindingDecision, ReviewFinding } from "./types";
+import { EvidenceSnippet } from "./RetrievalTracePanel";
+import type { ContextEvidence, FindingDecision, ReviewFinding } from "./types";
 import { formatDate } from "./utils";
 
 const severityLabels: Record<string, string> = {
@@ -18,10 +19,10 @@ const evidenceVerificationLabels: Record<
   ReviewFinding["evidence_verification_status"],
   string
 > = {
-  unverified: "事实：未复核",
-  verified: "事实：已确认",
-  rejected: "事实：已否定",
-  not_applicable: "事实：不适用",
+  unverified: "源码证据：未核验",
+  verified: "源码证据：已匹配",
+  rejected: "源码证据：未匹配",
+  not_applicable: "源码证据：不适用",
 };
 
 const findingDecisionLabels: Record<ReviewFinding["adjudication_status"], string> = {
@@ -52,8 +53,10 @@ export default function FindingCard({
   busy,
   editable,
   onDecision,
+  contextEvidence = {},
 }: {
   finding: ReviewFinding;
+  contextEvidence?: Record<string, ContextEvidence>;
   busy: boolean;
   editable: boolean;
   onDecision: (finding: ReviewFinding, decision: FindingDecision) => void;
@@ -126,6 +129,13 @@ export default function FindingCard({
       {reviewed && finding.reviewed_at && (
         <small className="finding-reviewed-note">由 {finding.reviewed_by ?? "管理员"} 于 {formatDate(finding.reviewed_at)} 更新</small>
       )}
+
+      {(finding.context_references ?? []).length > 0 && <section className="finding-context-evidence">
+        <h4>关联代码证据</h4>
+        {(finding.context_references ?? []).map(reference => contextEvidence[reference]
+          ? <EvidenceSnippet key={reference} evidence={contextEvidence[reference]} />
+          : <p className="retrieval-muted" key={reference}>关联证据快照暂未加载</p>)}
+      </section>}
     </article>
   );
 }

@@ -125,7 +125,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
                 <span className="dot d-green" />
               </div>
               <span className="pipeline-name">Workflow Live Pipeline</span>
-              <span className="flow-badge">ACTIVE</span>
+              <span className="flow-badge">流程示意</span>
             </div>
 
             <div className="pipeline-flow-steps">
@@ -166,13 +166,13 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
 
         <div className="showcase-stats-bar">
           <div className="stat-unit">
-            <strong className="stat-number">0 ms</strong>
-            <span className="stat-desc">SSE 实时流式延迟</span>
+            <strong className="stat-number">实时</strong>
+            <span className="stat-desc">任务状态订阅</span>
           </div>
           <div className="stat-divider" />
           <div className="stat-unit">
-            <strong className="stat-number">100%</strong>
-            <span className="stat-desc">幂等重试保护</span>
+            <strong className="stat-number">可恢复</strong>
+            <span className="stat-desc">任务租约与重试</span>
           </div>
           <div className="stat-divider" />
           <div className="stat-unit">
@@ -287,7 +287,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
-              <span>安全环境校验通过 · 零 localStorage 明文留存</span>
+              <span>会话由服务端验证 · 密码不写入 localStorage</span>
             </div>
           </form>
           <p className="warm-page-footnote">OpenReviewer Operations · Powered by NiuMa</p>

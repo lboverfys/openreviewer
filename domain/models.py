@@ -253,6 +253,7 @@ class FindingLocation(ContractModel):
 
 
 class ReviewFinding(ContractModel):
+    context_references: tuple[str, ...] = Field(default=(), max_length=8)
     fingerprint: str = Field(min_length=1, max_length=256)
     head_sha: str = Field(min_length=40, max_length=64)
     severity: Severity

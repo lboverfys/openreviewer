@@ -55,6 +55,8 @@ class ErrorCode(StrEnum):
     MODEL_REVIEW_INPUT_INVALID = "model_review_input_invalid"
     MODEL_REVIEW_CONFLICT = "model_review_conflict"
     MODEL_BATCH_BUSY = "model_batch_busy"
+    RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"
+    RETRIEVAL_INDEX_PENDING = "retrieval_index_pending"
     MODEL_BUDGET_EXCEEDED = "model_budget_exceeded"
 
 

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "provenance": {
     "source": "recorded-output-fixture",
-    "prompt_version": "structured-review-v4",
+    "prompt_version": "structured-review-v5",
     "provider": "openai",
     "api_protocol": "responses",
     "model": "benchmark-snapshot-20260828"

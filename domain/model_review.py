@@ -23,9 +23,10 @@ from domain.enums import (
 from domain.identifiers import build_review_version_key, normalize_sha
 from domain.models import FindingLocation, ReviewFinding
 from domain.paths import normalize_repository_path
+from domain.retrieval import ContextEvidence
 from domain.review_planning import RepositoryRule, ReviewUnit
 
-PROMPT_VERSION = "structured-review-v4"
+PROMPT_VERSION = "structured-review-v5"
 MAX_MODEL_FINDINGS = 200
 MAX_MODEL_CHECKED_AREAS = 12
 MAX_MODEL_SUMMARY_LENGTH = 4_000
@@ -64,6 +65,7 @@ class ModelFindingLocation(ModelContract):
 class ModelFindingCandidate(ModelContract):
     """模型可生成的 Finding 候选，不含平台拥有的身份和复核字段。"""
 
+    context_references: tuple[str, ...] = Field(default=(), max_length=8)
     unit_key: str = Field(pattern=r"^[0-9a-f]{64}$")
     severity: Severity
     category: FindingCategory
@@ -179,6 +181,7 @@ class ModelTokenUsage(ModelContract):
 class ModelReviewInput(ModelContract):
     """一次数据库批量读取生成的、绑定精确计划的模型输入。"""
 
+    context_evidence: tuple[ContextEvidence, ...] = Field(default=(), max_length=60, exclude=True)
     review_plan_id: str = Field(min_length=1, max_length=36)
     review_run_id: str = Field(min_length=1, max_length=36)
     plan_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -230,6 +233,8 @@ class ModelReviewInput(ModelContract):
 
     @model_validator(mode="after")
     def validate_identity(self) -> Self:
+        if any(item.head_sha != self.head_sha for item in self.context_evidence):
+            raise ValueError("retrieval context does not match review SHA")
         expected_key = build_review_version_key(
             self.repository_id,
             self.pull_request_number,
@@ -380,6 +385,7 @@ def model_review_output_schema() -> dict[str, object]:
             "confidence": {"type": "number"},
             "rule_reference": nullable_string,
             "identity_hint": nullable_string,
+            "context_references": {"type": "array", "items": {"type": "string"}},
         },
         "required": [
             "unit_key",
@@ -394,6 +400,7 @@ def model_review_output_schema() -> dict[str, object]:
             "confidence",
             "rule_reference",
             "identity_hint",
+            "context_references",
         ],
     }
     return {
@@ -429,6 +436,7 @@ def materialize_findings(
         unit.unit_key: _index_diff_locations(unit.patch) for unit in review_input.units
     }
     known_rule_paths = {rule.path for rule in review_input.rules}
+    known_context = {item.reference_id for item in review_input.context_evidence}
     verification_rank = {
         VerificationStatus.REJECTED: 0,
         VerificationStatus.UNVERIFIED: 1,
@@ -436,6 +444,8 @@ def materialize_findings(
     }
     findings_by_fingerprint: dict[str, MaterializedFinding] = {}
     for candidate in output.findings:
+        if not set(candidate.context_references) <= known_context:
+            raise ValueError("model finding references unknown retrieval evidence")
         unit = units_by_key.get(candidate.unit_key)
         if unit is None:
             raise ValueError("model finding references an unknown review unit")
@@ -487,6 +497,7 @@ def materialize_findings(
                 evidence_verification_status=evidence_status,
                 evidence_verification_reason=evidence_reason,
                 rule_reference=candidate.rule_reference,
+                context_references=candidate.context_references,
             ),
         )
         existing = findings_by_fingerprint.get(fingerprint)

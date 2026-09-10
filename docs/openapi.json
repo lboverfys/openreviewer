@@ -876,6 +876,21 @@
         "title": "AuthResponse",
         "type": "object"
       },
+      "CodeIndexCreate": {
+        "properties": {
+          "review_run_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Review Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_run_id"
+        ],
+        "title": "CodeIndexCreate",
+        "type": "object"
+      },
       "ConfigurationAuditListResponse": {
         "properties": {
           "items": {
@@ -927,6 +942,138 @@
           "created_at"
         ],
         "title": "ConfigurationAuditResponse",
+        "type": "object"
+      },
+      "ContextEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewAgent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blob_sha": {
+            "title": "Blob Sha",
+            "type": "string"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "end_line": {
+            "title": "End Line",
+            "type": "integer"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "fused_rank": {
+            "title": "Fused Rank",
+            "type": "integer"
+          },
+          "fusion_score": {
+            "title": "Fusion Score",
+            "type": "number"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "index_id": {
+            "title": "Index Id",
+            "type": "string"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "reference_id": {
+            "title": "Reference Id",
+            "type": "string"
+          },
+          "rerank_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Score"
+          },
+          "route_ranks": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Route Ranks",
+            "type": "object"
+          },
+          "route_scores": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Route Scores",
+            "type": "object"
+          },
+          "routes": {
+            "items": {
+              "enum": [
+                "bm25",
+                "vector",
+                "relation"
+              ],
+              "type": "string"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
+          "selected": {
+            "default": false,
+            "title": "Selected",
+            "type": "boolean"
+          },
+          "start_line": {
+            "title": "Start Line",
+            "type": "integer"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id",
+          "chunk_id",
+          "index_id",
+          "head_sha",
+          "file",
+          "blob_sha",
+          "symbol",
+          "start_line",
+          "end_line",
+          "content",
+          "content_hash",
+          "routes",
+          "rank",
+          "fused_rank",
+          "fusion_score"
+        ],
+        "title": "ContextEvidence",
         "type": "object"
       },
       "DashboardResponse": {
@@ -1049,6 +1196,137 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IndexView": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_count": {
+            "title": "Chunk Count",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "dimensions": {
+            "title": "Dimensions",
+            "type": "integer"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "embedded_count": {
+            "title": "Embedded Count",
+            "type": "integer"
+          },
+          "embedding_model": {
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "integer"
+          },
+          "parse_error_files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Parse Error Files",
+            "type": "array"
+          },
+          "parsed_files": {
+            "default": 0,
+            "title": "Parsed Files",
+            "type": "integer"
+          },
+          "relation_count": {
+            "title": "Relation Count",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "repository_id": {
+            "title": "Repository Id",
+            "type": "integer"
+          },
+          "reused_count": {
+            "title": "Reused Count",
+            "type": "integer"
+          },
+          "reused_files": {
+            "default": 0,
+            "title": "Reused Files",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "repository",
+          "repository_id",
+          "installation_id",
+          "head_sha",
+          "status",
+          "embedding_model",
+          "dimensions",
+          "file_count",
+          "chunk_count",
+          "relation_count",
+          "embedded_count",
+          "reused_count",
+          "duration_ms",
+          "created_at"
+        ],
+        "title": "IndexView",
         "type": "object"
       },
       "KnowledgeCitationResponse": {
@@ -1506,6 +1784,346 @@
         ],
         "title": "Permission",
         "type": "string"
+      },
+      "RetrievalEvaluationReport": {
+        "additionalProperties": false,
+        "properties": {
+          "annotation_source": {
+            "enum": [
+              "synthetic_contract",
+              "agent_annotated",
+              "independent_human"
+            ],
+            "title": "Annotation Source",
+            "type": "string"
+          },
+          "dataset_version": {
+            "title": "Dataset Version",
+            "type": "string"
+          },
+          "embedding_model": {
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "index_id": {
+            "title": "Index Id",
+            "type": "string"
+          },
+          "query_cache_mode": {
+            "default": "shared_warm",
+            "title": "Query Cache Mode",
+            "type": "string"
+          },
+          "real_review_accuracy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Real Review Accuracy"
+          },
+          "rerank_model": {
+            "title": "Rerank Model",
+            "type": "string"
+          },
+          "strategies": {
+            "items": {
+              "$ref": "#/components/schemas/StrategyEvaluation"
+            },
+            "title": "Strategies",
+            "type": "array"
+          },
+          "vector_search_mode": {
+            "default": "exact_snapshot",
+            "title": "Vector Search Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "index_id",
+          "dataset_version",
+          "annotation_source",
+          "embedding_model",
+          "rerank_model",
+          "generated_at",
+          "strategies"
+        ],
+        "title": "RetrievalEvaluationReport",
+        "type": "object"
+      },
+      "RetrievalSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "api_host": {
+            "default": "",
+            "title": "Api Host",
+            "type": "string"
+          },
+          "candidate_k": {
+            "default": 20,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Candidate K",
+            "type": "integer"
+          },
+          "context_k": {
+            "default": 8,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Context K",
+            "type": "integer"
+          },
+          "dimensions": {
+            "const": 1024,
+            "default": 1024,
+            "title": "Dimensions",
+            "type": "integer"
+          },
+          "embedding_model": {
+            "default": "qwen3.7-text-embedding",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_new_vectors_per_index": {
+            "default": 100,
+            "maximum": 20000.0,
+            "minimum": 0.0,
+            "title": "Max New Vectors Per Index",
+            "type": "integer"
+          },
+          "rerank_model": {
+            "default": "qwen3.7-text-rerank",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Rerank Model",
+            "type": "string"
+          },
+          "strategy": {
+            "default": "reranked",
+            "enum": [
+              "bm25",
+              "hybrid",
+              "hybrid_relations",
+              "reranked"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 60,
+            "maximum": 180.0,
+            "minimum": 5.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "RetrievalSettings",
+        "type": "object"
+      },
+      "RetrievalSettingsUpdate": {
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 65536,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key",
+            "writeOnly": true
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/RetrievalSettings"
+          }
+        },
+        "required": [
+          "settings",
+          "expected_revision"
+        ],
+        "title": "RetrievalSettingsUpdate",
+        "type": "object"
+      },
+      "RetrievalSettingsView": {
+        "additionalProperties": false,
+        "properties": {
+          "external_calls_paused": {
+            "default": false,
+            "title": "External Calls Paused",
+            "type": "boolean"
+          },
+          "key_configured": {
+            "title": "Key Configured",
+            "type": "boolean"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/RetrievalSettings"
+          },
+          "tested": {
+            "default": false,
+            "title": "Tested",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revision",
+          "settings",
+          "key_configured"
+        ],
+        "title": "RetrievalSettingsView",
+        "type": "object"
+      },
+      "RetrievalTrace": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewAgent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ContextEvidence"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "embedding_ms": {
+            "default": 0,
+            "title": "Embedding Ms",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "index_id": {
+            "title": "Index Id",
+            "type": "string"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "plan_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Fingerprint"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "query_cache_hit": {
+            "default": false,
+            "title": "Query Cache Hit",
+            "type": "boolean"
+          },
+          "rerank_ms": {
+            "default": 0,
+            "title": "Rerank Ms",
+            "type": "integer"
+          },
+          "rerank_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Tokens"
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/RouteMetric"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
+          "strategy": {
+            "enum": [
+              "bm25",
+              "hybrid",
+              "hybrid_relations",
+              "reranked"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "index_id",
+          "query",
+          "strategy",
+          "candidates",
+          "routes",
+          "duration_ms"
+        ],
+        "title": "RetrievalTrace",
+        "type": "object"
       },
       "ReviewAcceptedResponse": {
         "description": "\u5f02\u6b65\u5ba1\u67e5\u4efb\u52a1\u5165\u961f\u540e\u7684\u7a33\u5b9a\u786e\u8ba4\u54cd\u5e94\u3002",
@@ -2782,6 +3400,14 @@
             "title": "Confidence",
             "type": "number"
           },
+          "context_references": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Context References",
+            "type": "array"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -3421,6 +4047,146 @@
           "detail_code"
         ],
         "title": "ReviewStageResponse",
+        "type": "object"
+      },
+      "RouteMetric": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_count": {
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "route": {
+            "enum": [
+              "bm25",
+              "vector",
+              "relation"
+            ],
+            "title": "Route",
+            "type": "string"
+          }
+        },
+        "required": [
+          "route",
+          "candidate_count",
+          "duration_ms"
+        ],
+        "title": "RouteMetric",
+        "type": "object"
+      },
+      "SearchQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 8,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "seed_files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Seed Files",
+            "type": "array"
+          },
+          "strategy": {
+            "default": "reranked",
+            "enum": [
+              "bm25",
+              "hybrid",
+              "hybrid_relations",
+              "reranked"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
+          "symbols": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Symbols",
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchQuery",
+        "type": "object"
+      },
+      "StrategyEvaluation": {
+        "additionalProperties": false,
+        "properties": {
+          "cases": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Cases",
+            "type": "array"
+          },
+          "k": {
+            "title": "K",
+            "type": "integer"
+          },
+          "median_duration_ms": {
+            "title": "Median Duration Ms",
+            "type": "number"
+          },
+          "mrr": {
+            "title": "Mrr",
+            "type": "number"
+          },
+          "p95_duration_ms": {
+            "title": "P95 Duration Ms",
+            "type": "number"
+          },
+          "recall_at_k": {
+            "title": "Recall At K",
+            "type": "number"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "strategy": {
+            "enum": [
+              "bm25",
+              "hybrid",
+              "hybrid_relations",
+              "reranked"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "strategy",
+          "sample_count",
+          "recall_at_k",
+          "mrr",
+          "k",
+          "median_duration_ms",
+          "p95_duration_ms",
+          "cases"
+        ],
+        "title": "StrategyEvaluation",
         "type": "object"
       },
       "ValidationError": {
@@ -4187,6 +4953,313 @@
         "summary": "Search Knowledge"
       }
     },
+    "/api/v1/retrieval/evaluations": {
+      "get": {
+        "operationId": "evaluations_api_v1_retrieval_evaluations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RetrievalEvaluationReport"
+                  },
+                  "title": "Response Evaluations Api V1 Retrieval Evaluations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Evaluations"
+      }
+    },
+    "/api/v1/retrieval/indexes": {
+      "get": {
+        "operationId": "indexes_api_v1_retrieval_indexes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/IndexView"
+                  },
+                  "title": "Response Indexes Api V1 Retrieval Indexes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Indexes"
+      },
+      "post": {
+        "operationId": "create_index_api_v1_retrieval_indexes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeIndexCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Index"
+      }
+    },
+    "/api/v1/retrieval/indexes/{index_id}": {
+      "get": {
+        "operationId": "index_api_v1_retrieval_indexes__index_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "index_id",
+            "required": true,
+            "schema": {
+              "title": "Index Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Index"
+      }
+    },
+    "/api/v1/retrieval/indexes/{index_id}/retry": {
+      "post": {
+        "operationId": "retry_index_api_v1_retrieval_indexes__index_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "index_id",
+            "required": true,
+            "schema": {
+              "title": "Index Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Retry Index Api V1 Retrieval Indexes  Index Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Index"
+      }
+    },
+    "/api/v1/retrieval/indexes/{index_id}/search": {
+      "post": {
+        "operationId": "search_api_v1_retrieval_indexes__index_id__search_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "index_id",
+            "required": true,
+            "schema": {
+              "title": "Index Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalTrace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search"
+      }
+    },
+    "/api/v1/retrieval/settings": {
+      "get": {
+        "operationId": "settings_api_v1_retrieval_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalSettingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Settings"
+      },
+      "put": {
+        "operationId": "update_settings_api_v1_retrieval_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetrievalSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalSettingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Settings"
+      }
+    },
+    "/api/v1/retrieval/settings/test": {
+      "post": {
+        "operationId": "test_settings_api_v1_retrieval_settings_test_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalSettingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Test Settings"
+      }
+    },
     "/api/v1/reviews": {
       "get": {
         "description": "\u8fd4\u56de\u8ba4\u8bc1\u540e\u7684\u6700\u8fd1\u5ba1\u67e5\u4efb\u52a1\u5217\u8868\u3002\n\n\u53c2\u6570\uff1a\n    _: \u7ba1\u7406\u5458\u4f1a\u8bdd\u4f9d\u8d56\u3002\n    limit: \u8fd4\u56de\u6761\u6570\uff0c\u8303\u56f4 1 \u5230 100\uff0c\u9ed8\u8ba4 50\u3002\n\n\u8fd4\u56de\uff1a\n    \u5305\u542b\u6570\u636e\u5e93\u4e2d\u7684\u603b\u8fd0\u884c\u6570\u548c\u6309\u521b\u5efa\u65f6\u95f4\u5012\u5e8f\u6392\u5217\u7684\u6700\u8fd1\u4efb\u52a1\uff1b\u4efb\u52a1\u72b6\u6001\u3001\n    \u5c1d\u8bd5\u6b21\u6570\u548c\u6700\u540e\u9519\u8bef\u6765\u81ea\u540c\u4e00\u6b21 Dashboard \u8bfb\u53d6\u3002\n\n\u5f02\u5e38\uff1a\n    HTTPException(401): \u4f1a\u8bdd\u65e0\u6548\u3002\n    HTTPException(503): \u67e5\u8be2\u5931\u8d25\u3002",
@@ -4603,6 +5676,49 @@
           }
         },
         "summary": "Sync Review Identity"
+      }
+    },
+    "/api/v1/reviews/{review_run_id}/retrieval": {
+      "get": {
+        "operationId": "review_retrieval_api_v1_reviews__review_run_id__retrieval_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_run_id",
+            "required": true,
+            "schema": {
+              "title": "Review Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RetrievalTrace"
+                  },
+                  "title": "Response Review Retrieval Api V1 Reviews  Review Run Id  Retrieval Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Retrieval"
       }
     },
     "/api/v1/settings/ai": {

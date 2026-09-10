@@ -51,6 +51,8 @@ export const stageLabels: Record<string, string> = {
 };
 
 export const phaseLabels: Record<string, string> = {
+  retrieval_started: "准备代码检索上下文",
+  retrieval_completed: "代码检索上下文已就绪",
   queued: "任务已进入队列，等待 Worker 领取",
   context_loading: "Worker 正在读取 PR、变更文件和 CI 状态",
   waiting_ci: "代码已读取，正在等待 GitHub CI 结束",

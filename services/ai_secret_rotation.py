@@ -13,6 +13,7 @@ from persistence.models import (
     AiAgentConfigRecord,
     AiAgentSecretRecord,
     AiProviderSecretRecord,
+    RetrievalSettingsRecord,
 )
 from services.ai_settings import (
     AiSecretCipher,
@@ -26,14 +27,15 @@ class AiSecretRotationBatch:
     provider_secrets: int
     agent_secrets: int
     complete: bool
+    retrieval_secrets: int = 0
 
     @property
     def rotated(self) -> int:
-        return self.provider_secrets + self.agent_secrets
+        return self.provider_secrets + self.agent_secrets + self.retrieval_secrets
 
 
 class AiSecretRotationService:
-    """用至多两次有界查询轮换供应商和 Agent 密钥。"""
+    """用至多三次有界查询轮换供应商、Agent 与检索密钥。"""
 
     def __init__(
         self,
@@ -91,6 +93,18 @@ class AiSecretRotationService:
                         ).tuples().all()
                     )
 
+                remaining -= len(agents)
+                retrieval = session.scalar(select(RetrievalSettingsRecord).where(
+                    RetrievalSettingsRecord.id == 1,
+                    RetrievalSettingsRecord.ciphertext.is_not(None),
+                    RetrievalSettingsRecord.key_version != self._cipher.key_version,
+                ).with_for_update(skip_locked=True)) if remaining else None
+                if retrieval is not None and retrieval.ciphertext is not None and retrieval.nonce is not None and retrieval.key_version is not None:
+                    plaintext = self._cipher.decrypt("retrieval_aliyun", retrieval.ciphertext, retrieval.nonce, retrieval.key_version)
+                    encrypted = self._cipher.encrypt("retrieval_aliyun", plaintext)
+                    retrieval.ciphertext, retrieval.nonce, retrieval.key_version = encrypted.ciphertext, encrypted.nonce, encrypted.key_version
+                    retrieval.updated_at = now
+
                 for provider_secret in providers:
                     provider = ModelProvider(provider_secret.provider)
                     plaintext = self._cipher.decrypt(
@@ -120,11 +134,12 @@ class AiSecretRotationService:
                     agent_secret.updated_at = now
 
                 session.commit()
-                rotated = len(providers) + len(agents)
+                rotated = len(providers) + len(agents) + int(retrieval is not None)
                 return AiSecretRotationBatch(
                     provider_secrets=len(providers),
                     agent_secrets=len(agents),
                     complete=rotated < batch_size,
+                    retrieval_secrets=int(retrieval is not None),
                 )
             except AiSettingsConfigurationError:
                 session.rollback()

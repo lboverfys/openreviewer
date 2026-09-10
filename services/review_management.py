@@ -190,6 +190,7 @@ class StoredFinding:
     reviewed_at: datetime | None
     reviewed_by: str | None
     created_at: datetime
+    context_references: tuple[str, ...] = ()
 
     @property
     def location_verification_status(self) -> VerificationStatus:

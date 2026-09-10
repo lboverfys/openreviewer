@@ -7,6 +7,7 @@ import KnowledgePage from "./KnowledgePage";
 import { hasPermission } from "./rbac";
 import ReviewDetailPage from "./ReviewDetailPage";
 import SettingsPage from "./SettingsPage";
+import RetrievalPage from "./RetrievalPage";
 import type { AuthUser } from "./types";
 
 type SessionState =
@@ -18,11 +19,16 @@ export type AppView =
   | { kind: "dashboard" }
   | { kind: "settings" }
   | { kind: "knowledge" }
+  | { kind: "retrieval"; reviewRunId?: string }
   | { kind: "review"; reviewRunId: string };
 
 export function readAppView(hash = window.location.hash): AppView {
   if (hash === "#settings") return { kind: "settings" };
   if (hash === "#knowledge") return { kind: "knowledge" };
+  if (hash === "#retrieval") return {kind: "retrieval"};
+  if (hash.startsWith("#retrieval/")) {
+    try { return {kind: "retrieval", reviewRunId: decodeURIComponent(hash.slice("#retrieval/".length))}; } catch { return {kind: "dashboard"}; }
+  }
   if (hash.startsWith("#review/")) {
     try {
       const reviewRunId = decodeURIComponent(hash.slice("#review/".length));
@@ -56,6 +62,7 @@ export default function App() {
   const onOpenKnowledge = useCallback(() => {
     window.location.hash = "knowledge";
   }, []);
+  const onOpenRetrieval = useCallback(() => { window.location.hash = "retrieval"; }, []);
   const onOpenReview = useCallback((reviewRunId: string) => {
     window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;
   }, []);
@@ -96,7 +103,7 @@ export default function App() {
     if (session.phase !== "authenticated") return;
     const denied =
       (view.kind === "settings" && !hasPermission(session.user, "settings:manage"))
-      || (view.kind === "knowledge" && !hasPermission(session.user, "knowledge:manage"));
+      || ((view.kind === "knowledge" || view.kind === "retrieval") && !hasPermission(session.user, "knowledge:manage"));
     if (denied) window.location.hash = "";
   }, [session, view]);
 
@@ -128,6 +135,9 @@ export default function App() {
       />
     );
   }
+  if (view.kind === "retrieval" && hasPermission(session.user, "knowledge:manage")) {
+    return <RetrievalPage user={session.user} onBack={onBack} onSignedOut={onSignedOut} initialReviewRunId={view.reviewRunId} />;
+  }
   if (view.kind === "review") {
     return (
       <ReviewDetailPage
@@ -145,6 +155,7 @@ export default function App() {
       onSignedOut={onSignedOut}
       onOpenSettings={onOpenSettings}
       onOpenKnowledge={onOpenKnowledge}
+      onOpenRetrieval={onOpenRetrieval}
       onOpenReview={onOpenReview}
     />
   );

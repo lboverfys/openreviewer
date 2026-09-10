@@ -1,4 +1,5 @@
 import type {
+  CodeIndexView, RetrievalSettingsView, RetrievalSettings, RetrievalTrace, RetrievalEvaluationReport, RetrievalSearchQuery,
   AuthUser,
   AiProvider,
   AiProviderUpdate,
@@ -535,6 +536,28 @@ async function request<T>(
 }
 
 export const api = {
+
+  retrievalSettings: (signal?: AbortSignal) =>
+    request<RetrievalSettingsView>("/api/v1/retrieval/settings", { signal }),
+  updateRetrievalSettings: (settings: RetrievalSettings, revision: number, apiKey?: string) =>
+    request<RetrievalSettingsView>("/api/v1/retrieval/settings", {
+      method: "PUT", body: JSON.stringify({settings, expected_revision: revision, api_key: apiKey}),
+    }),
+  testRetrievalSettings: () =>
+    request<RetrievalSettingsView>("/api/v1/retrieval/settings/test", {method: "POST"}, CONNECTION_TEST_TIMEOUT_MS),
+  retrievalIndexes: (signal?: AbortSignal) =>
+    request<CodeIndexView[]>("/api/v1/retrieval/indexes", {signal}),
+  createCodeIndex: (reviewRunId: string) =>
+    request<CodeIndexView>("/api/v1/retrieval/indexes", {method: "POST", body: JSON.stringify({review_run_id: reviewRunId})}),
+  retryCodeIndex: (indexId: string) =>
+    request<{status: string}>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/retry`, {method: "POST"}),
+  searchCodeIndex: (indexId: string, query: RetrievalSearchQuery, signal?: AbortSignal) =>
+    request<RetrievalTrace>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/search`, {method: "POST", body: JSON.stringify(query), signal}, 150_000),
+  reviewRetrieval: (reviewRunId: string, signal?: AbortSignal) =>
+    request<RetrievalTrace[]>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/retrieval`, {signal}),
+  retrievalEvaluations: (signal?: AbortSignal) =>
+    request<RetrievalEvaluationReport[]>("/api/v1/retrieval/evaluations", {signal}),
+
   /**
    * 读取当前管理员会话。
    *

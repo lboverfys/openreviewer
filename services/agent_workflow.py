@@ -112,6 +112,7 @@ def scope_model_review_input(
     批次预算把未发送的规则计入请求。
     """
 
+    review_input = review_input.model_copy(update={"context_evidence": tuple(item for item in review_input.context_evidence if item.agent is None or item.agent == agent)})
     if agent not in REVIEW_AGENTS or not review_input.units:
         return review_input.model_copy(update={"review_agent": agent})
     units = tuple(
@@ -395,6 +396,7 @@ class FixedAgentWorkflow:
             # prior_agent_results，明确告诉汇总模型没有新的代码单元可查。
             summary_input = review_input.model_copy(
                 update={
+                    "context_evidence": (),
                     "rules": (),
                     "units": (),
                     "total_estimated_input_bytes": 0,

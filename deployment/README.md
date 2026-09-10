@@ -406,3 +406,11 @@ curl --fail --insecure https://127.0.0.1:18443/healthz
 ```
 
 认证功能应通过浏览器从 Web 同源入口验证，不通过命令行把真实密码写进 shell 历史。
+
+## 含向量索引的版本升级
+
+本次数据库迁移需要 PostgreSQL 16 的 pgvector 扩展。模板镜像已固定到实际验证的 pgvector/pgvector:pg16 digest，包含 PostgreSQL 16.15 / pgvector 0.8.6。
+
+现有 .env 中显式设置的 OPENREVIEWER_POSTGRES_IMAGE 会覆盖模板默认值，必须在升级方案中一并调整。数据库数据目录、备份目录和账号继续复用。先备份并在独立库验证恢复，再替换数据库镜像并执行 Alembic 迁移；不删除原数据卷，不手工回退已执行迁移。
+
+OPENREVIEWER_RETRIEVAL_API_DISABLED 默认 true。该开关会同时暂停 API 和 Worker 的真实向量、精排请求；仅在确认数据范围与调用上限后开启。模型费用从百炼控制台管理。

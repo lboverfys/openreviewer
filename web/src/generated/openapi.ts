@@ -260,6 +260,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/retrieval/evaluations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Evaluations */
+        get: operations["evaluations_api_v1_retrieval_evaluations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/indexes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Indexes */
+        get: operations["indexes_api_v1_retrieval_indexes_get"];
+        put?: never;
+        /** Create Index */
+        post: operations["create_index_api_v1_retrieval_indexes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/indexes/{index_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Index */
+        get: operations["index_api_v1_retrieval_indexes__index_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/indexes/{index_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Index */
+        post: operations["retry_index_api_v1_retrieval_indexes__index_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/indexes/{index_id}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Search */
+        post: operations["search_api_v1_retrieval_indexes__index_id__search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Settings */
+        get: operations["settings_api_v1_retrieval_settings_get"];
+        /** Update Settings */
+        put: operations["update_settings_api_v1_retrieval_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/settings/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Settings */
+        post: operations["test_settings_api_v1_retrieval_settings_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews": {
         parameters: {
             query?: never;
@@ -445,6 +566,23 @@ export interface paths {
          * @description 从 GitHub 回查并补全历史任务的 PR 作者、链接和分支信息。
          */
         post: operations["sync_review_identity_api_v1_reviews__review_run_id__identity_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{review_run_id}/retrieval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Review Retrieval */
+        get: operations["review_retrieval_api_v1_reviews__review_run_id__retrieval_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -938,6 +1076,11 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** CodeIndexCreate */
+        CodeIndexCreate: {
+            /** Review Run Id */
+            review_run_id: string;
+        };
         /** ConfigurationAuditListResponse */
         ConfigurationAuditListResponse: {
             /** Items */
@@ -958,6 +1101,55 @@ export interface components {
             created_at: string;
             /** Revision */
             revision: number;
+        };
+        /** ContextEvidence */
+        ContextEvidence: {
+            agent?: components["schemas"]["ReviewAgent"] | null;
+            /** Blob Sha */
+            blob_sha: string;
+            /** Chunk Id */
+            chunk_id: string;
+            /** Content */
+            content: string;
+            /** Content Hash */
+            content_hash: string;
+            /** End Line */
+            end_line: number;
+            /** File */
+            file: string;
+            /** Fused Rank */
+            fused_rank: number;
+            /** Fusion Score */
+            fusion_score: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Index Id */
+            index_id: string;
+            /** Rank */
+            rank: number;
+            /** Reference Id */
+            reference_id: string;
+            /** Rerank Score */
+            rerank_score?: number | null;
+            /** Route Ranks */
+            route_ranks?: {
+                [key: string]: number;
+            };
+            /** Route Scores */
+            route_scores?: {
+                [key: string]: number;
+            };
+            /** Routes */
+            routes: ("bm25" | "vector" | "relation")[];
+            /**
+             * Selected
+             * @default false
+             */
+            selected: boolean;
+            /** Start Line */
+            start_line: number;
+            /** Symbol */
+            symbol: string;
         };
         /** DashboardResponse */
         DashboardResponse: {
@@ -1000,6 +1192,58 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** IndexView */
+        IndexView: {
+            /** Chunk Count */
+            chunk_count: number;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Created At */
+            created_at: string;
+            /** Dimensions */
+            dimensions: number;
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Embedded Count */
+            embedded_count: number;
+            /** Embedding Model */
+            embedding_model: string;
+            /** Error */
+            error?: string | null;
+            /** File Count */
+            file_count: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Id */
+            id: string;
+            /** Installation Id */
+            installation_id: number;
+            /**
+             * Parse Error Files
+             * @default []
+             */
+            parse_error_files: string[];
+            /**
+             * Parsed Files
+             * @default 0
+             */
+            parsed_files: number;
+            /** Relation Count */
+            relation_count: number;
+            /** Repository */
+            repository: string;
+            /** Repository Id */
+            repository_id: number;
+            /** Reused Count */
+            reused_count: number;
+            /**
+             * Reused Files
+             * @default 0
+             */
+            reused_files: number;
+            /** Status */
+            status: string;
         };
         /** KnowledgeCitationResponse */
         KnowledgeCitationResponse: {
@@ -1193,6 +1437,168 @@ export interface components {
          * @enum {string}
          */
         Permission: "reviews:view" | "findings:adjudicate" | "reviews:approve" | "reviews:publish" | "reviews:manage" | "settings:manage" | "knowledge:manage";
+        /** RetrievalEvaluationReport */
+        RetrievalEvaluationReport: {
+            /**
+             * Annotation Source
+             * @enum {string}
+             */
+            annotation_source: "synthetic_contract" | "agent_annotated" | "independent_human";
+            /** Dataset Version */
+            dataset_version: string;
+            /** Embedding Model */
+            embedding_model: string;
+            /** Generated At */
+            generated_at: string;
+            /** Id */
+            id: string;
+            /** Index Id */
+            index_id: string;
+            /**
+             * Query Cache Mode
+             * @default shared_warm
+             */
+            query_cache_mode: string;
+            /** Real Review Accuracy */
+            real_review_accuracy?: number | null;
+            /** Rerank Model */
+            rerank_model: string;
+            /** Strategies */
+            strategies: components["schemas"]["StrategyEvaluation"][];
+            /**
+             * Vector Search Mode
+             * @default exact_snapshot
+             */
+            vector_search_mode: string;
+        };
+        /** RetrievalSettings */
+        RetrievalSettings: {
+            /**
+             * Api Host
+             * @default
+             */
+            api_host: string;
+            /**
+             * Candidate K
+             * @default 20
+             */
+            candidate_k: number;
+            /**
+             * Context K
+             * @default 8
+             */
+            context_k: number;
+            /**
+             * Dimensions
+             * @default 1024
+             * @constant
+             */
+            dimensions: 1024;
+            /**
+             * Embedding Model
+             * @default qwen3.7-text-embedding
+             */
+            embedding_model: string;
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Max New Vectors Per Index
+             * @default 100
+             */
+            max_new_vectors_per_index: number;
+            /**
+             * Rerank Model
+             * @default qwen3.7-text-rerank
+             */
+            rerank_model: string;
+            /**
+             * Strategy
+             * @default reranked
+             * @enum {string}
+             */
+            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
+            /**
+             * Timeout Seconds
+             * @default 60
+             */
+            timeout_seconds: number;
+        };
+        /** RetrievalSettingsUpdate */
+        RetrievalSettingsUpdate: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Expected Revision */
+            expected_revision: number;
+            settings: components["schemas"]["RetrievalSettings"];
+        };
+        /** RetrievalSettingsView */
+        RetrievalSettingsView: {
+            /**
+             * External Calls Paused
+             * @default false
+             */
+            external_calls_paused: boolean;
+            /** Key Configured */
+            key_configured: boolean;
+            /** Revision */
+            revision: number;
+            settings: components["schemas"]["RetrievalSettings"];
+            /**
+             * Tested
+             * @default false
+             */
+            tested: boolean;
+        };
+        /** RetrievalTrace */
+        RetrievalTrace: {
+            agent?: components["schemas"]["ReviewAgent"] | null;
+            /** Candidates */
+            candidates: components["schemas"]["ContextEvidence"][];
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * Embedding Ms
+             * @default 0
+             */
+            embedding_ms: number;
+            /** Id */
+            id: string;
+            /** Index Id */
+            index_id: string;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Plan Fingerprint */
+            plan_fingerprint?: string | null;
+            /** Query */
+            query: string;
+            /**
+             * Query Cache Hit
+             * @default false
+             */
+            query_cache_hit: boolean;
+            /**
+             * Rerank Ms
+             * @default 0
+             */
+            rerank_ms: number;
+            /** Rerank Tokens */
+            rerank_tokens?: number | null;
+            /** Routes */
+            routes: components["schemas"]["RouteMetric"][];
+            /**
+             * Strategy
+             * @enum {string}
+             */
+            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
+            /**
+             * Warnings
+             * @default []
+             */
+            warnings: string[];
+        };
         /**
          * ReviewAcceptedResponse
          * @description 异步审查任务入队后的稳定确认响应。
@@ -1566,6 +1972,11 @@ export interface components {
             /** Confidence */
             confidence: number;
             /**
+             * Context References
+             * @default []
+             */
+            context_references: string[];
+            /**
              * Created At
              * Format: date-time
              */
@@ -1741,6 +2152,68 @@ export interface components {
             started_at: string | null;
             /** Status */
             status: string;
+        };
+        /** RouteMetric */
+        RouteMetric: {
+            /** Candidate Count */
+            candidate_count: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * Route
+             * @enum {string}
+             */
+            route: "bm25" | "vector" | "relation";
+        };
+        /** SearchQuery */
+        SearchQuery: {
+            /**
+             * Limit
+             * @default 8
+             */
+            limit: number;
+            /** Query */
+            query: string;
+            /**
+             * Seed Files
+             * @default []
+             */
+            seed_files: string[];
+            /**
+             * Strategy
+             * @default reranked
+             * @enum {string}
+             */
+            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
+            /**
+             * Symbols
+             * @default []
+             */
+            symbols: string[];
+        };
+        /** StrategyEvaluation */
+        StrategyEvaluation: {
+            /** Cases */
+            cases: {
+                [key: string]: unknown;
+            }[];
+            /** K */
+            k: number;
+            /** Median Duration Ms */
+            median_duration_ms: number;
+            /** Mrr */
+            mrr: number;
+            /** P95 Duration Ms */
+            p95_duration_ms: number;
+            /** Recall At K */
+            recall_at_k: number;
+            /** Sample Count */
+            sample_count: number;
+            /**
+             * Strategy
+             * @enum {string}
+             */
+            strategy: "bm25" | "hybrid" | "hybrid_relations" | "reranked";
         };
         /** ValidationError */
         ValidationError: {
@@ -2205,6 +2678,262 @@ export interface operations {
             };
         };
     };
+    evaluations_api_v1_retrieval_evaluations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalEvaluationReport"][];
+                };
+            };
+        };
+    };
+    indexes_api_v1_retrieval_indexes_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndexView"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_index_api_v1_retrieval_indexes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodeIndexCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndexView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    index_api_v1_retrieval_indexes__index_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                index_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndexView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_index_api_v1_retrieval_indexes__index_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                index_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_api_v1_retrieval_indexes__index_id__search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                index_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchQuery"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalTrace"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    settings_api_v1_retrieval_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalSettingsView"];
+                };
+            };
+        };
+    };
+    update_settings_api_v1_retrieval_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetrievalSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalSettingsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_settings_api_v1_retrieval_settings_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalSettingsView"];
+                };
+            };
+        };
+    };
     list_reviews_api_v1_reviews_get: {
         parameters: {
             query?: {
@@ -2452,6 +3181,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewDetailsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_retrieval_api_v1_reviews__review_run_id__retrieval_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalTrace"][];
                 };
             };
             /** @description Validation Error */

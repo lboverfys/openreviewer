@@ -46,3 +46,12 @@ export type KnowledgeLibrary = Schemas["KnowledgeDocumentListResponse"];
 export type KnowledgeMutation = Schemas["KnowledgeMutationResponse"];
 export type KnowledgeCitation = Schemas["KnowledgeCitationResponse"];
 export type KnowledgeSearchResult = Schemas["KnowledgeSearchResponse"];
+
+export type CodeIndexView = Schemas["IndexView"];
+export type RetrievalSettingsView = Schemas["RetrievalSettingsView"];
+export type RetrievalSettings = Schemas["RetrievalSettings"];
+export type RetrievalTrace = Schemas["RetrievalTrace"];
+export type ContextEvidence = Schemas["ContextEvidence"];
+export type RetrievalEvaluationReport = Schemas["RetrievalEvaluationReport"];
+export type RetrievalSearchQuery = Schemas["SearchQuery"];
+export type RetrievalStrategy = NonNullable<RetrievalSearchQuery["strategy"]>;

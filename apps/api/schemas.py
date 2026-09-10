@@ -194,6 +194,7 @@ class ReviewCiCheckResponse(BaseModel):
 
 
 class ReviewFindingResponse(BaseModel):
+    context_references: tuple[str, ...] = ()
     model_config = ConfigDict(frozen=True)
 
     id: str

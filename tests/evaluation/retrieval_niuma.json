@@ -1,0 +1,290 @@
+{
+  "version": "niuma-java-mybatis-c7dfb376-20260910-shared-query-v2",
+  "annotation_source": "agent_annotated",
+  "repository": "lboverfys/NiuMa",
+  "head_sha": "c7dfb376d49a3c81ed106d001b121def64b6aa13",
+  "k": 8,
+  "annotation_notes": "依据固定提交中 Mapper 方法与 XML 的真实内容标注必要上下文。标注由开发代理完成，未经过独立人工复核；查询中不放入预期 SQL 的精确方法名。只衡量检索相关性，不将该集合声称为真实缺陷金标。关系召回的 seed 是模拟 PR 中可见的 Mapper 方法。 所有策略使用相同的中文需求与变更方法声明，避免只向关系召回提供关键线索。按业务域划分 development/validation；完整报告应同时保留分组指标。",
+  "cases": [
+    {
+      "id": "email-exists",
+      "query": "注册前如何确认邮箱已经被其他有效账号使用，需要同时考虑用户名和邮箱联系方式？\n当前变更涉及的 Mapper 声明：\nboolean existsActiveEmail(\n            @Param(\"email\") String email,\n            @Param(\"emailHash\") String emailHash\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.existsActiveEmail"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/identity/mapper/RegistrationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.existsActiveEmail(String,String)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "email-rate-limit",
+      "query": "同一邮箱最近一小时申请验证码的次数怎样统计，并避免扫描全部申请记录？\n当前变更涉及的 Mapper 声明：\nint countRecentChallenges(\n            @Param(\"emailHash\") String emailHash,\n            @Param(\"since\") Instant since,\n            @Param(\"limit\") int limit\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.countRecentChallenges"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/identity/mapper/RegistrationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.countRecentChallenges(String,Instant,int)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "registration-lock",
+      "query": "核销邮箱注册挑战时，哪个查询会锁住该挑战，防止多个请求并发消费？\n当前变更涉及的 Mapper 声明：\nRegistrationChallengeRow selectChallengeForUpdate(@Param(\"id\") long id);",
+      "relevant_symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.selectChallengeForUpdate"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/identity/mapper/RegistrationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.selectChallengeForUpdate(long)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "roles-permissions",
+      "query": "登录后如何一次取得当前终端的角色和权限，并过滤停用账号和已删除权限？\n当前变更涉及的 Mapper 声明：\nList<IdentityAuthorizationGrant> selectAuthorizationGrants(\n            @Param(\"userId\") Long userId,\n            @Param(\"portal\") String portal\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.identity.mapper.UserAccountMapper.selectAuthorizationGrants"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/identity/mapper/UserAccountMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.identity.mapper.UserAccountMapper.selectAuthorizationGrants(Long,String)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "session-list",
+      "query": "账号安全页面要查看当前终端最近活跃的登录设备，查询应该如何限制范围和数量？\n当前变更涉及的 Mapper 声明：\nList<LoginSessionEntity> selectActiveLoginSessions(\n            @Param(\"userId\") Long userId,\n            @Param(\"portal\") String portal\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.identity.mapper.UserAccountMapper.selectActiveLoginSessions"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/identity/mapper/UserAccountMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.identity.mapper.UserAccountMapper.selectActiveLoginSessions(Long,String)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "session-batch-expire",
+      "query": "批量让一个用户在指定终端的若干活跃会话失效，哪个更新操作负责状态变更？\n当前变更涉及的 Mapper 声明：\nint expireLoginSessions(@Param(\"userId\") Long userId, @Param(\"portal\") String portal,\n                            @Param(\"sessionIds\") List<Long> sessionIds, @Param(\"now\") Instant now);",
+      "relevant_symbols": [
+        "com.niuma.business.identity.mapper.UserAccountMapper.expireLoginSessions"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/identity/mapper/UserAccountMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.identity.mapper.UserAccountMapper.expireLoginSessions(Long,String,List<Long>,Instant)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "recharge-idempotency",
+      "query": "重复提交同一次积分充值请求时，如何根据用户和请求幂等标识找到已有充值订单？\n当前变更涉及的 Mapper 声明：\nRechargeOrderEntity selectByUserIdempotency(\n            @Param(\"userId\") long userId,\n            @Param(\"idempotencyKey\") String idempotencyKey\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.finance.mapper.RechargeMapper.selectByUserIdempotency"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/finance/mapper/RechargeMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.finance.mapper.RechargeMapper.selectByUserIdempotency(long,String)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "recharge-lock",
+      "query": "充值回调更新订单状态前，如何锁定充值订单以避免并发处理？\n当前变更涉及的 Mapper 声明：\nRechargeOrderEntity selectOrderForUpdate(@Param(\"rechargeOrderId\") long rechargeOrderId);",
+      "relevant_symbols": [
+        "com.niuma.business.finance.mapper.RechargeMapper.selectOrderForUpdate"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/finance/mapper/RechargeMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.finance.mapper.RechargeMapper.selectOrderForUpdate(long)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "asset-account-create",
+      "query": "第一次充值为用户创建积分资产账户时，怎样处理并发重复创建并初始化各类余额？\n当前变更涉及的 Mapper 声明：\nint insertAccountIfAbsent(\n            @Param(\"accountId\") long accountId,\n            @Param(\"userId\") long userId,\n            @Param(\"now\") Instant now\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.finance.mapper.RechargeMapper.insertAccountIfAbsent"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/finance/mapper/RechargeMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.finance.mapper.RechargeMapper.insertAccountIfAbsent(long,long,Instant)"
+      ],
+      "split": "development"
+    },
+    {
+      "id": "invitation-timeout",
+      "query": "后台批量领取已超时的原始陪玩邀请时，如何跳过其他工作进程已经锁定的订单？\n当前变更涉及的 Mapper 声明：\nList<OrderRow> selectExpiredPendingInvitations(\n            @Param(\"now\") Instant now,\n            @Param(\"limit\") int limit\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.order.mapper.CompanionOrderMapper.selectExpiredPendingInvitations"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/order/mapper/CompanionOrderMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.order.mapper.CompanionOrderMapper.selectExpiredPendingInvitations(Instant,int)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "companion-order-page",
+      "query": "陪玩端订单列表需要按预约时间稳定分页，查找负责 LIMIT 和 OFFSET 的列表 SQL。\n当前变更涉及的 Mapper 声明：\nList<OrderListRow> selectOrders(\n            @Param(\"companionId\") long companionId,\n            @Param(\"status\") String status,\n            @Param(\"sourceType\") String sourceType,\n            @Param(\"gameCode\") String gameCode,\n            @Param(\"startFrom\") Instant startFrom,\n            @Param(\"startTo\") Instant startTo,\n            @Param(\"offset\") long offset,\n            @Param(\"limit\") int limit\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.order.mapper.CompanionOrderMapper.selectOrders"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/order/mapper/CompanionOrderMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.order.mapper.CompanionOrderMapper.selectOrders(long,String,String,String,Instant,Instant,long,int)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "ready-version",
+      "query": "陪玩确认准备就绪时，怎样同时校验参与者归属、接单状态和预期订单版本？\n当前变更涉及的 Mapper 声明：\nint markParticipantReady(\n            @Param(\"orderId\") long orderId,\n            @Param(\"companionId\") long companionId,\n            @Param(\"expectedOrderVersion\") int expectedOrderVersion,\n            @Param(\"now\") Instant now\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.order.mapper.CompanionOrderMapper.markParticipantReady"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/order/mapper/CompanionOrderMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.order.mapper.CompanionOrderMapper.markParticipantReady(long,long,int,Instant)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "notification-cursor",
+      "query": "通知列表向前翻页需要时间加主键的稳定游标，查找对应的按用户过滤查询。\n当前变更涉及的 Mapper 声明：\nList<UserNotificationEntity> selectNotificationsBefore(\n            @Param(\"userId\") Long userId,\n            @Param(\"type\") String type,\n            @Param(\"beforeOccurredAt\") Instant beforeOccurredAt,\n            @Param(\"beforeId\") Long beforeId,\n            @Param(\"limit\") int limit\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.selectNotificationsBefore"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/notification/mapper/NotificationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.selectNotificationsBefore(Long,String,Instant,Long,int)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "notification-read-boundary",
+      "query": "将历史通知全部标记已读时，如何只修改当前用户在指定时间之前的未读通知？\n当前变更涉及的 Mapper 声明：\nint markAllReadBefore(\n            @Param(\"userId\") Long userId,\n            @Param(\"beforeAt\") Instant beforeAt,\n            @Param(\"readAt\") Instant readAt\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.markAllReadBefore"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/notification/mapper/NotificationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.markAllReadBefore(Long,Instant,Instant)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "push-subscription-upsert",
+      "query": "浏览器重复注册推送订阅时，如何按用户、设备和渠道更新原有订阅及版本？\n当前变更涉及的 Mapper 声明：\nint upsertPushSubscription(\n            @Param(\"subscriptionId\") Long subscriptionId,\n            @Param(\"userId\") Long userId,\n            @Param(\"deviceId\") String deviceId,\n            @Param(\"endpoint\") String endpoint,\n            @Param(\"p256dh\") String p256dh,\n            @Param(\"authSecret\") String authSecret,\n            @Param(\"permission\") String permission,\n            @Param(\"status\") String status,\n            @Param(\"now\") Instant now\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.upsertPushSubscription"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/notification/mapper/NotificationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.upsertPushSubscription(Long,Long,String,String,String,String,String,String,Instant)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "push-endpoint-owner",
+      "query": "用户在同一浏览器切换账号后，怎样撤销推送 endpoint 原先属于其他账号或设备的活跃订阅？\n当前变更涉及的 Mapper 声明：\nint revokeActiveEndpointOwners(\n            @Param(\"userId\") Long userId,\n            @Param(\"deviceId\") String deviceId,\n            @Param(\"channel\") String channel,\n            @Param(\"endpoint\") String endpoint,\n            @Param(\"now\") Instant now\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.revokeActiveEndpointOwners"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/notification/mapper/NotificationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.notification.mapper.NotificationMapper.revokeActiveEndpointOwners(Long,String,String,String,Instant)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "emoji-batch-ownership",
+      "query": "发送多张个人表情前，如何批量校验资源属于当前用户且用途为聊天表情？\n当前变更涉及的 Mapper 声明：\nList<MediaAssetEntity> selectOwnedPersonalEmojiByIds(\n            @Param(\"assetIds\") Set<Long> assetIds,\n            @Param(\"ownerUserId\") Long ownerUserId\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.content.mapper.MediaAssetMapper.selectOwnedPersonalEmojiByIds"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/content/mapper/MediaAssetMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.content.mapper.MediaAssetMapper.selectOwnedPersonalEmojiByIds(Set<Long>,Long)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "asset-access",
+      "query": "读取媒体附件时，如何同时验证资源所有权或聊天会话、订单证据等业务访问关系？\n当前变更涉及的 Mapper 声明：\nMediaAssetEntity selectAccessibleById(\n            @Param(\"assetId\") Long assetId,\n            @Param(\"userId\") Long userId\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.content.mapper.MediaAssetMapper.selectAccessibleById"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/content/mapper/MediaAssetMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.content.mapper.MediaAssetMapper.selectAccessibleById(Long,Long)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "asset-review-lock",
+      "query": "批量审核陪玩资料附件前，怎样按资源主键顺序锁定未删除的媒体资源？\n当前变更涉及的 Mapper 声明：\nList<MediaAssetEntity> selectCompanionReviewAssetsForUpdate(@Param(\"assetIds\") Set<Long> assetIds);",
+      "relevant_symbols": [
+        "com.niuma.business.content.mapper.MediaAssetMapper.selectCompanionReviewAssetsForUpdate"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/content/mapper/MediaAssetMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.content.mapper.MediaAssetMapper.selectCompanionReviewAssetsForUpdate(Set<Long>)"
+      ],
+      "split": "validation"
+    },
+    {
+      "id": "registration-email-delivery",
+      "query": "发送注册验证码前，哪里保存加密收件人、模板类型、待发送状态和发送尝试次数？\n当前变更涉及的 Mapper 声明：\nint insertEmailDelivery(\n            @Param(\"id\") long id,\n            @Param(\"challengeId\") long challengeId,\n            @Param(\"recipientCiphertext\") String recipientCiphertext,\n            @Param(\"now\") Instant now\n    );",
+      "relevant_symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.insertEmailDelivery"
+      ],
+      "seed_files": [
+        "niuma-business/src/main/java/com/niuma/business/identity/mapper/RegistrationMapper.java"
+      ],
+      "symbols": [
+        "com.niuma.business.identity.mapper.RegistrationMapper.insertEmailDelivery(long,long,String,Instant)"
+      ],
+      "split": "development"
+    }
+  ]
+}

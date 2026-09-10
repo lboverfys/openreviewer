@@ -795,9 +795,8 @@ on_error() {
 }
 trap 'on_error "$?"' ERR
 
-# 先确保 PostgreSQL 健康，再执行一次迁移；不让 Compose 因 depends_on 自动重复执行
-# migrate，便于把迁移失败明确归因到本次发布。
-"${compose_cmd[@]}" up -d postgres
+# 先在原数据库镜像上验证备份，再停止应用并切换数据库镜像。
+# 不让 Compose 因 depends_on 自动重复执行 migrate。
 wait_healthy openreviewer-postgres 180
 backup_file=""
 create_verified_database_backup
@@ -805,6 +804,8 @@ rollout_started=1
 # 迁移前必须先让旧版本应用完全退出。否则旧 Worker 可能在新表结构已经部分
 # 变更时继续领取任务或发起模型请求，形成不可审计的双版本并行窗口。
 stop_application_services "$previous_release" "$deploy_stop_timeout"
+"${compose_cmd[@]}" up -d postgres
+wait_healthy openreviewer-postgres 180
 remove_stale_migration_container
 migration_started=1
 "${compose_cmd[@]}" run --rm --no-deps migrate

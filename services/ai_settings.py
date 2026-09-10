@@ -186,7 +186,7 @@ class AiSecretCipher:
             previous_keys=previous_keys,
         )
 
-    def encrypt(self, provider: ModelProvider, api_key: str) -> EncryptedAiSecret:
+    def encrypt(self, provider: ModelProvider | str, api_key: str) -> EncryptedAiSecret:
         normalized = api_key.strip()
         if not normalized or normalized != api_key or any(
             character.isspace() for character in normalized
@@ -204,7 +204,7 @@ class AiSecretCipher:
 
     def decrypt(
         self,
-        provider: ModelProvider,
+        provider: ModelProvider | str,
         ciphertext: bytes,
         nonce: bytes,
         key_version: int,
@@ -234,8 +234,9 @@ class AiSecretCipher:
             ) from exc
 
     @staticmethod
-    def _associated_data(provider: ModelProvider, key_version: int) -> bytes:
-        return f"openreviewer:ai-provider:{provider.value}:v{key_version}".encode(
+    def _associated_data(provider: ModelProvider | str, key_version: int) -> bytes:
+        name = provider.value if isinstance(provider, ModelProvider) else provider
+        return f"openreviewer:ai-provider:{name}:v{key_version}".encode(
             "ascii"
         )
 

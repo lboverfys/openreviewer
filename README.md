@@ -71,6 +71,14 @@ deployment/         niuma-2 Compose 部署配置
   激活；API Key 使用 AES-256-GCM 加密，OpenAI 可动态选择接口协议，Worker 按配置 revision
   在下一条任务生效。
 
+## 代码混合检索升级
+
+新增版本化 Java / MyBatis 索引、BM25 / 向量 / 静态关系三路召回、RRF 与精排、审查证据引用，以及“代码检索与评测”管理页。向量和精排由阿里云百炼 API 提供，运行服务器不部署推理模型。检索密钥在设置页加密保存。
+
+依赖 PostgreSQL 16 的 pgvector 扩展。迁移 0046–0048 增加独立索引、缓存、检索快照和评测表。部署前先确认数据库镜像含扩展；现有数据卷先备份并验证恢复，再按部署手册更新数据库镜像。默认 OPENREVIEWER_RETRIEVAL_API_DISABLED=true，暂停真实检索模型调用。
+
+完整范围、索引边界、接口和评测口径见 [混合检索契约](docs/contracts/hybrid-retrieval.md)。本次真实接口可用性已验证；完整仓库向量与策略评测在外部调用暂停后待继续，不能把当前升级宣称为已经证明提高了真实模型准确率。
+
 ## 当前前端入口
 
 当前 `niuma-2` 测试环境的 React 管理前端地址为：

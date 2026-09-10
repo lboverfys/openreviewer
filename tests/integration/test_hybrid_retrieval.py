@@ -1,0 +1,264 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import sessionmaker
+
+from domain.retrieval import (
+    RetrievalEvaluationCase,
+    RetrievalSettings,
+    SearchQuery,
+    SourceFile,
+)
+from persistence.models import Base, CodeIndexRecord
+from persistence.retrieval import RetrievalRepository
+from services.ai_settings import AiSecretCipher
+from services.code_indexing import git_blob_sha
+from services.retrieval import (
+    HybridRetrievalService,
+    RetrievalSettingsService,
+    reciprocal_rank_fusion,
+)
+from services.retrieval_providers import EmbeddingResult, RerankResult, RetrievalError
+
+TARGET = {"installation_id": 10, "repository_id": 123, "repository": "sample/repo", "head_sha": "a" * 40}
+
+
+class FakeModels:
+    embeddings = 0
+
+    def __init__(self, settings, key):
+        self.settings = settings
+
+    def close(self):
+        pass
+
+    def embed(self, texts):
+        FakeModels.embeddings += len(texts)
+        vectors = []
+        for text in texts:
+            vector = [0.0] * 1024
+            vector[0 if "user" in text.casefold() else 1] = 1.0
+            vectors.append(tuple(vector))
+        return EmbeddingResult(tuple(vectors), 1, 10)
+
+    def rerank(self, query, documents):
+        scores = [(i, 1.0 if "select" in value.casefold() else 0.1) for i, value in enumerate(documents)]
+        return RerankResult(tuple(sorted(scores, key=lambda item: (-item[1], item[0]))), 1, 10)
+
+
+@pytest.fixture
+def retrieval(tmp_path, monkeypatch):
+    # This fixture injects FakeModels; it never constructs a live model client.
+    monkeypatch.setenv("OPENREVIEWER_RETRIEVAL_API_DISABLED", "false")
+    engine = create_engine("sqlite:///" + str(tmp_path / "retrieval.sqlite3"))
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(engine, expire_on_commit=False)
+    settings = RetrievalSettingsService(sessions, AiSecretCipher(b"a" * 32))
+    settings.update(RetrievalSettings(enabled=True, api_host="https://sample.cn-beijing.maas.aliyuncs.com"), 0, "tester", "test-key")
+    service = HybridRetrievalService(RetrievalRepository(sessions), settings, client_factory=FakeModels)
+    try:
+        yield service, sessions, engine
+    finally:
+        engine.dispose()
+
+
+def sources(prefix=""):
+    values = [
+        ("UserMapper.java", "package sample; interface UserMapper { User getById(long id); }"),
+        ("UserService.java", "package sample; class UserService { UserMapper mapper; User load(long id) { return mapper.getById(id); } }"),
+        ("UserMapper.xml", '<mapper namespace="sample.UserMapper"><select id="getById">SELECT id FROM users WHERE id = #{id}</select></mapper>'),
+    ]
+    return tuple(SourceFile(file=path, content=prefix + text, blob_sha=git_blob_sha(prefix + text)) for path, text in values)
+
+
+def test_rrf_uses_ranks_and_deduplicates_within_a_route():
+    fused = reciprocal_rank_fusion({"bm25": [("a", 999), ("b", 1), ("a", 999)], "vector": [("b", 0.9), ("c", 0.8)]})
+    assert fused[0][0] == "b"
+    assert len(fused) == 3
+    assert fused[1][1] == pytest.approx(1 / 61)
+
+
+def test_index_search_cache_and_snapshot_reuse(retrieval):
+    service, _, _ = retrieval
+    FakeModels.embeddings = 0
+    index = service.index_sources(TARGET, sources())
+    assert index.status == "ready"
+    assert index.chunk_count >= 5
+    assert index.relation_count >= 3
+    first_count = FakeModels.embeddings
+    assert service.index_sources(TARGET, sources()).id == index.id
+    assert FakeModels.embeddings == first_count
+    query = SearchQuery(query="find the user query SQL", seed_files=("UserService.java",), strategy="reranked", limit=3)
+    first = service.search(index.id, query)
+    second = service.search(index.id, query)
+    assert not first.query_cache_hit
+    assert second.query_cache_hit
+    assert first.candidates[0].symbol == "sample.UserMapper.getById"
+    changed = service.index_sources({**TARGET, "head_sha": "b" * 40}, sources("\n"))
+    assert changed.id != index.id
+    assert changed.reused_count > 0
+    assert changed.embedded_count == 0
+
+
+def test_scope_prevents_cross_repository_access(retrieval):
+    from services.rbac import ResourceScope
+    service, _, _ = retrieval
+    index = service.index_sources(TARGET, sources())
+    denied = ResourceScope(installation_ids=frozenset({10}), repositories=frozenset({"other/repo"}))
+    assert service.repository.list_indexes(denied) == ()
+    with pytest.raises(LookupError):
+        service.search(index.id, SearchQuery(query="user"), denied)
+
+
+def test_expired_index_lease_rejects_old_owner(retrieval):
+    service, sessions, _ = retrieval
+    index_id = service.enqueue(TARGET)
+    claim = service.repository.claim(index_id)
+    assert claim is not None
+    _, owner, _, _ = claim
+    with sessions() as session, session.begin():
+        row = session.get(CodeIndexRecord, index_id)
+        row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+    newer = service.repository.claim(index_id)
+    assert newer is not None and newer[1] != owner
+    with pytest.raises(RetrievalError, match="租约"):
+        service.repository.progress(index_id, owner, 1, 1, 0, 0)
+    service.repository.fail(index_id, owner, "old failure")
+    assert service.repository.get(index_id).status == "building"
+
+
+def test_embedding_configuration_change_requires_new_index(retrieval):
+    service, _, _ = retrieval
+    index = service.index_sources(TARGET, sources())
+    view = service.settings.get()
+    service.settings.update(view.settings.model_copy(update={"embedding_model": "another-model"}), view.revision, "tester")
+    with pytest.raises(RetrievalError, match="配置不同"):
+        service.search(index.id, SearchQuery(query="user"))
+    assert service.search(index.id, SearchQuery(query="user", strategy="bm25")).candidates
+
+
+def test_metrics_are_computed_from_labels_and_preserve_annotation_origin(retrieval):
+    service, _, _ = retrieval
+    index = service.index_sources(TARGET, sources())
+    report = service.evaluate(index.id, [
+        RetrievalEvaluationCase(id="sql", query="find user SQL", relevant_symbols=("sample.UserMapper.getById",), seed_files=("UserService.java",)),
+    ], dataset_version="controlled-v1", annotation_source="synthetic_contract", k=8)
+    assert len(report.strategies) == 4
+    assert all(item.recall_at_k == 1 for item in report.strategies)
+    assert report.real_review_accuracy is None
+    assert report.annotation_source == "synthetic_contract"
+
+
+def test_candidate_loading_is_one_query_for_multiple_ids(retrieval):
+    service, _, engine = retrieval
+    index = service.index_sources(TARGET, sources())
+    ids = [row[0] for row in service.repository.lexical_documents(index.id)]
+    statements = []
+    def collect(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+    event.listen(engine, "before_cursor_execute", collect)
+    try:
+        result = service.repository.chunks(index.id, ids)
+    finally:
+        event.remove(engine, "before_cursor_execute", collect)
+    assert len(result) == len(ids)
+    assert len(statements) == 1
+
+
+def test_configuration_secret_is_encrypted_and_not_returned(retrieval):
+    from persistence.models import RetrievalSettingsRecord
+    service, sessions, _ = retrieval
+    assert "test-key" not in service.settings.get().model_dump_json()
+    with sessions() as session:
+        row = session.scalar(select(RetrievalSettingsRecord))
+        assert row.ciphertext != b"test-key"
+    view = service.settings.get()
+    with pytest.raises(ValueError, match="新的 API Key"):
+        service.settings.update(view.settings.model_copy(update={"api_host": "https://another.cn-beijing.maas.aliyuncs.com"}), view.revision, "tester")
+
+def test_unchanged_files_reuse_parse_cache(retrieval, monkeypatch):
+    service, _, _ = retrieval
+    first = service.index_sources(TARGET, sources())
+    assert first.parsed_files == len(sources())
+    def fail_if_parsed(source):
+        raise AssertionError("unchanged source parsed again")
+    monkeypatch.setattr("services.code_indexing._java", fail_if_parsed)
+    monkeypatch.setattr("services.code_indexing._xml", fail_if_parsed)
+    second = service.index_sources({**TARGET, "head_sha": "c" * 40}, sources())
+    assert second.parsed_files == 0
+    assert second.reused_files == len(sources())
+    assert second.embedded_count == 0
+
+
+def test_retrieval_secret_rotation_preserves_runtime_key(retrieval):
+    from services.ai_secret_rotation import AiSecretRotationService
+    service, sessions, _ = retrieval
+    cipher = AiSecretCipher(b"b" * 32, key_version=2, previous_keys=((1, b"a" * 32),))
+    result = AiSecretRotationService(sessions, cipher).rotate_batch()
+    assert result.retrieval_secrets == 1
+    assert RetrievalSettingsService(sessions, cipher).runtime()[1] == "test-key"
+
+def test_index_limit_is_checked_before_model_requests(retrieval):
+    service, _, _ = retrieval
+    view = service.settings.get()
+    service.settings.update(view.settings.model_copy(update={"max_new_vectors_per_index": 0}), view.revision, "tester")
+    FakeModels.embeddings = 0
+    with pytest.raises(RetrievalError, match="尚未发起向量请求"):
+        service.index_sources(TARGET, sources())
+    assert FakeModels.embeddings == 0
+
+def test_review_retries_reuse_frozen_context_after_configuration_changes(retrieval):
+    from domain.models import ReviewRequest
+    from persistence.repositories import SqlAlchemyReviewRepository
+    from services.reviews import ReviewService
+    from tests.unit.test_model_review import make_model_input
+
+    service, sessions, _ = retrieval
+    original = make_model_input()
+    target = {"installation_id": 10, "repository_id": original.repository_id, "repository": original.repository, "head_sha": original.head_sha}
+    review = ReviewService(SqlAlchemyReviewRepository(sessions)).submit(
+        ReviewRequest(**target, pull_request_number=original.pull_request_number), "context-freeze",
+    )
+    service.index_sources(target, sources())
+    review_input = original.model_copy(update={"review_run_id": review.review_run_id})
+    first = service.review_context(review_input, lambda: None)
+    assert first.context_evidence
+    view = service.settings.get()
+    service.settings.update(view.settings.model_copy(update={"embedding_model": "changed", "enabled": False}), view.revision, "tester")
+    second = service.review_context(review_input, lambda: None)
+    assert second.context_evidence == first.context_evidence
+
+
+def test_pause_blocks_index_creation_retry_and_worker_claim(retrieval, monkeypatch):
+    service, _, _ = retrieval
+    ready = service.index_sources(TARGET, sources())
+    queued = service.enqueue({**TARGET, "head_sha": "b" * 40})
+    failed = service.enqueue({**TARGET, "head_sha": "c" * 40})
+    claim = service.repository.claim(failed)
+    service.repository.fail(failed, claim[1], "fixture failure")
+    requests_before = FakeModels.embeddings
+    def forbidden_loader(*args):
+        raise AssertionError("paused worker must not load source files")
+    service.source_loader = forbidden_loader
+    monkeypatch.setenv("OPENREVIEWER_RETRIEVAL_API_DISABLED", "true")
+    with pytest.raises(RetrievalError, match="暂停"):
+        service.enqueue({**TARGET, "head_sha": "d" * 40})
+    with pytest.raises(RetrievalError, match="暂停"):
+        service.retry_index(failed, None)
+    assert service.process_next() is False
+    assert service.repository.get(queued).status == "queued"
+    assert service.repository.get(failed).status == "failed"
+    assert service.search(ready.id, SearchQuery(query="user", strategy="bm25")).candidates
+    assert FakeModels.embeddings == requests_before
+
+
+def test_bm25_evaluation_does_not_claim_vector_execution(retrieval):
+    service, _, _ = retrieval
+    index = service.index_sources(TARGET, sources())
+    requests_before = FakeModels.embeddings
+    report = service.evaluate(index.id, (RetrievalEvaluationCase(id="lexical-only", query="getById SQL", relevant_symbols=("sample.UserMapper.getById",)),), dataset_version="fixture-bm25-only", annotation_source="synthetic_contract", strategies=("bm25",))
+    assert report.query_cache_mode == "not_used"
+    assert report.vector_search_mode == "not_used"
+    assert FakeModels.embeddings == requests_before

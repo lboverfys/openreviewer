@@ -2100,6 +2100,7 @@ class SqlAlchemyReviewTaskQueue:
                             "previous_review_run_id": previous_run_id,
                             "lifecycle_backfilled_at": now,
                             "rule_reference": finding.rule_reference,
+                            "context_references": list(finding.context_references),
                             "created_at": now,
                         }
                     )
@@ -3595,11 +3596,11 @@ class SqlAlchemyReviewTaskQueue:
         )
         batch_retry_managed = (
             is_model_stage
-            and error.code is ErrorCode.MODEL_BATCH_BUSY
+            and error.code in {ErrorCode.MODEL_BATCH_BUSY, ErrorCode.RETRIEVAL_INDEX_PENDING}
             and error.details.get("batch_retry_managed") is True
         )
         if batch_retry_managed:
-            # 只有批次忙碌才表示本次领取没有发出模型请求。其他批次错误
+            # 批次忙碌或等待代码索引表示本次领取没有发出审查模型请求。其他批次错误
             # （超时、解析失败等）确实已经完成了一次模型尝试，不能回退
             # model_attempt_count，否则会绕过任务级重试上限或改变后续阶段判断。
             task.model_attempt_count = max(0, task.model_attempt_count - 1)
@@ -3699,7 +3700,7 @@ class SqlAlchemyReviewTaskQueue:
         """
 
         if (
-            error.code is not ErrorCode.MODEL_BATCH_BUSY
+            error.code not in {ErrorCode.MODEL_BATCH_BUSY, ErrorCode.RETRIEVAL_INDEX_PENDING}
             or error.details.get("batch_retry_managed") is not True
         ):
             return None

@@ -39,6 +39,7 @@ from domain.security import (
 )
 from persistence.database import Database
 from persistence.operations import SqlAlchemyOperationsRepository
+from persistence.retrieval import RetrievalRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
 from services.agent_settings import AgentSettingsService
 from services.agent_workflow import WorkflowExecution, _PartialAgentReviewError
@@ -61,6 +62,7 @@ from services.github_auth import (
     GitHubAppSettings,
     GitHubAppTokenProvider,
 )
+from services.github_code_sources import GitHubCodeSourceLoader
 from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
 from services.github_rules import GitHubRepositoryRuleLoader, RepositoryRuleLoader
 from services.model_review import (
@@ -77,6 +79,7 @@ from services.operations import (
     WorkerMaintenance,
 )
 from services.rag import ManagedMarkdownKnowledgeBase, MarkdownKnowledgeBase
+from services.retrieval import HybridRetrievalService, RetrievalSettingsService
 from services.review_planning import ReviewPlanner
 from services.task_queue import (
     ModelBatchBusyError,
@@ -1355,6 +1358,7 @@ class WorkerRuntime:
         knowledge_base: MarkdownKnowledgeBase | None = None,
         maintenance: WorkerMaintenance | None = None,
         evidence_verifier: EvidenceVerifier | None = None,
+        retrieval_service: HybridRetrievalService | None = None,
         stop_event: Event | None = None,
         instance_id: str | None = None,
     ) -> None:
@@ -1381,6 +1385,7 @@ class WorkerRuntime:
         self._knowledge_base = knowledge_base
         self._maintenance = maintenance
         self._evidence_verifier = evidence_verifier
+        self._retrieval_service = retrieval_service
         self._stop_event = stop_event or Event()
         # Worker 心跳 token 与任务租约是两层独立的所有权。进程 token 被新
         # 实例接管后，旧实例不能再轮询或写入 ``idle/stopping``；普通任务
@@ -1581,6 +1586,47 @@ class WorkerRuntime:
                 )
             LOGGER.info("Worker 已停止")
 
+
+    def _process_retrieval_index(self) -> bool:
+        if self._retrieval_service is None:
+            return False
+        done = Event()
+        heartbeat_thread = None
+
+        def check_progress() -> None:
+            nonlocal heartbeat_thread
+            if self._stop_event.is_set() or self._worker_ownership_lost.is_set():
+                raise TaskLeaseLostError("索引工作进程已停止")
+            if heartbeat_thread is None:
+                self._record_owned_heartbeat(WorkerStatus.BUSY, None)
+                heartbeat_thread = Thread(target=beat, daemon=True)
+                heartbeat_thread.start()
+
+        def beat() -> None:
+            while not done.wait(self._settings.poll_interval.total_seconds()):
+                try:
+                    self._record_owned_heartbeat(WorkerStatus.BUSY, None)
+                    if self._worker_ownership_lost.is_set():
+                        return
+                except TaskQueueError:
+                    LOGGER.exception("索引工作进程心跳暂时失败")
+
+        try:
+            return self._retrieval_service.process_next(check_progress)
+        except Exception as exc:
+            safe_error = SafeError.from_exception(exc)
+            LOGGER.error("代码索引处理失败，错误码=%s，说明=%s", safe_error.code.value, safe_error.safe_message)
+            return True
+        finally:
+            done.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=5)
+            if heartbeat_thread is not None and heartbeat_thread.is_alive():
+                self._stop_event.set()
+                LOGGER.error("索引心跳未及时退出，停止当前 Worker 避免旧心跳覆盖状态")
+            elif not self._worker_ownership_lost.is_set():
+                self._record_owned_heartbeat(WorkerStatus.IDLE, None)
+
     def run_once(self) -> bool:
         """执行一轮“恢复、心跳、领取、处理”的队列流程。
 
@@ -1640,6 +1686,8 @@ class WorkerRuntime:
             ),
         )
         if lease is None:
+            if self._retrieval_service is not None:
+                return self._process_retrieval_index()
             return False
 
         # 心跳线程可能在领取事务期间发现本进程已被新实例接管。此时任务
@@ -2266,6 +2314,10 @@ class WorkerRuntime:
         # 普通领取租约升级为模型阶段租约，避免忙碌心跳在这段窗口内续成短租约。
         cursor.renew(self._settings.model_review_lease_duration)
         model_input = self._queue.load_model_review_input(cursor.lease)
+        if self._retrieval_service is not None:
+            self._queue.record_model_progress(cursor.lease, "retrieval_started", {"agent": "workflow"}, agent="workflow")
+            model_input = self._retrieval_service.review_context(model_input, lambda: cursor.renew(self._settings.model_review_lease_duration))
+            self._queue.record_model_progress(cursor.lease, "retrieval_completed", {"agent": "workflow", "context_count": len(model_input.context_evidence)}, agent="workflow")
         if cursor.lease.model_attempt_count > 1:
             self._queue.record_model_progress(
                 cursor.lease,
@@ -2589,6 +2641,11 @@ def main() -> None:
         ),
         maintenance=maintenance,
         evidence_verifier=GitHubEvidenceVerifier(github_api, github_tokens),
+        retrieval_service=HybridRetrievalService(
+            RetrievalRepository(database.sessions),
+            RetrievalSettingsService(database.sessions, cipher),
+            source_loader=GitHubCodeSourceLoader(github_api, github_tokens),
+        ),
     )
 
     def stop_worker(_signum: int, _frame: object) -> None:

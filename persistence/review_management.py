@@ -916,6 +916,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 ReviewFindingRecord.location_in_diff,
                 ReviewFindingRecord.location_symbol,
                 ReviewFindingRecord.rule_reference,
+                ReviewFindingRecord.context_references,
                 ReviewFindingRecord.reviewed_at,
                 ReviewFindingRecord.reviewed_by,
                 ReviewFindingRecord.created_at,
@@ -971,6 +972,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 location_in_diff=bool(row["location_in_diff"]),
                 location_symbol=row["location_symbol"],
                 rule_reference=row["rule_reference"],
+                context_references=tuple(row["context_references"] or ()),
                 reviewed_at=_as_utc(row["reviewed_at"]),
                 reviewed_by=row["reviewed_by"],
                 created_at=_required_utc(
