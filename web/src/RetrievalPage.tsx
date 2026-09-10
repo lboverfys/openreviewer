@@ -6,7 +6,6 @@ import CodeIndexPanel from "./CodeIndexPanel";
 import { formatDuration } from "./review-details";
 import type { AuthUser, CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettings, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
 import { errorMessage, formatDate } from "./utils";
-import "./styles/retrieval.css";
 
 type Tab = "search" | "evaluations" | "settings";
 const annotationLabels: Record<string, string> = { synthetic_contract: "合成契约样本", agent_annotated: "代理标注 · 非独立人工金标", independent_human: "独立人工标注" };

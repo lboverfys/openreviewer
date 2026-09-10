@@ -1,67 +1,89 @@
+/* ==========================================================
+   OpenReviewer · 暗夜极光设计系统（全局基础层）
+   深空蓝黑底 + 极光渐变 + 玻璃拟态卡片 + 靛青强调色
+   ========================================================== */
 :root {
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
-  color: #2b251f;
-  background: #fbf9f5;
+  color: #e9eef9;
+  background: #05080f;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  /* 暖白与落日橙配色 */
-  --bg-main: #fbf9f5;
-  --bg-card: #ffffff;
-  --bg-card-subtle: #f8f5ee;
-  --bg-input: #ffffff;
+  /* 背景层级 */
+  --bg-abyss: #05080f;
+  --bg-main: #0a101d;
+  --bg-card: rgba(15, 23, 42, 0.66);
+  --bg-card-solid: #101a2e;
+  --bg-elevated: #17233c;
+  --bg-input: rgba(9, 14, 26, 0.85);
+  --bg-hover: rgba(148, 163, 184, 0.07);
 
   /* 边框 */
-  --border-soft: rgba(0, 0, 0, 0.06);
-  --border-subtle: rgba(234, 88, 12, 0.1);
-  --border-orange: #fed7aa;
-  --border-orange-active: #ff6b00;
+  --border-soft: rgba(148, 163, 184, 0.1);
+  --border-strong: rgba(148, 163, 184, 0.22);
+  --border-glow: rgba(99, 102, 241, 0.45);
 
-  /* 文本颜色 */
-  --text-main: #181512;
-  --text-secondary: #595045;
-  --text-muted: #8e8376;
-  --text-light: #bcb2a4;
+  /* 文本 */
+  --text-main: #e9eef9;
+  --text-secondary: #a3aec6;
+  --text-muted: #6b7a96;
+  --text-faint: #44516c;
 
-  /* 橙色品牌色体系 */
-  --orange-primary: #ff6b00;
-  --orange-hover: #ff8533;
-  --orange-light: #fff7ed;
-  --orange-border: #fed7aa;
-  --orange-glow: rgba(255, 107, 0, 0.2);
+  /* 品牌与强调 */
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-cyan: #22d3ee;
+  --accent-violet: #a78bfa;
+  --accent-soft: rgba(99, 102, 241, 0.16);
+  --accent-softer: rgba(99, 102, 241, 0.09);
+  --gradient-aurora: linear-gradient(135deg, #6366f1 0%, #22d3ee 100%);
+  --gradient-aurora-vivid: linear-gradient(120deg, #818cf8 0%, #6366f1 35%, #22d3ee 100%);
+  --gradient-text: linear-gradient(115deg, #a5b4fc 0%, #67e8f9 100%);
 
-  /* 状态颜色 */
-  --color-queued: #d97706;
-  --color-queued-bg: #fffbeb;
-  --color-queued-border: #fde68a;
+  /* 状态颜色（深色调校） */
+  --color-queued: #fbbf24;
+  --color-queued-bg: rgba(251, 191, 36, 0.1);
+  --color-queued-border: rgba(251, 191, 36, 0.28);
 
-  --color-running: #ea580c;
-  --color-running-bg: #fff7ed;
-  --color-running-border: #fed7aa;
+  --color-running: #38bdf8;
+  --color-running-bg: rgba(56, 189, 248, 0.1);
+  --color-running-border: rgba(56, 189, 248, 0.28);
 
-  --color-waiting: #c2410c;
-  --color-waiting-bg: #ffedd5;
-  --color-waiting-border: #fdba74;
+  --color-waiting: #fb923c;
+  --color-waiting-bg: rgba(251, 146, 60, 0.1);
+  --color-waiting-border: rgba(251, 146, 60, 0.28);
 
-  --color-ready: #0f766e;
-  --color-ready-bg: #f0fdfa;
-  --color-ready-border: #99f6e4;
+  --color-ready: #2dd4bf;
+  --color-ready-bg: rgba(45, 212, 191, 0.1);
+  --color-ready-border: rgba(45, 212, 191, 0.28);
 
-  --color-completed: #16a34a;
-  --color-completed-bg: #f0fdf4;
-  --color-completed-border: #bbf7d0;
+  --color-completed: #4ade80;
+  --color-completed-bg: rgba(74, 222, 128, 0.1);
+  --color-completed-border: rgba(74, 222, 128, 0.28);
 
-  --color-failed: #e11d48;
-  --color-failed-bg: #fff1f2;
-  --color-failed-border: #fecdd3;
+  --color-failed: #fb7185;
+  --color-failed-bg: rgba(251, 113, 133, 0.1);
+  --color-failed-border: rgba(251, 113, 133, 0.3);
 
-  /* 阴影 */
-  --shadow-bento: 0 4px 20px -2px rgba(234, 88, 12, 0.04), 0 2px 6px rgba(0, 0, 0, 0.02);
-  --shadow-hover: 0 10px 28px -4px rgba(234, 88, 12, 0.1), 0 2px 8px rgba(0, 0, 0, 0.04);
+  /* 阴影与光效 */
+  --shadow-card: 0 10px 36px -8px rgba(2, 6, 18, 0.65);
+  --shadow-hover: 0 18px 48px -10px rgba(2, 6, 18, 0.75), 0 0 0 1px rgba(99, 102, 241, 0.18);
+  --shadow-glow: 0 4px 22px -2px rgba(99, 102, 241, 0.45);
+  --shadow-glow-cyan: 0 4px 22px -2px rgba(34, 211, 238, 0.35);
+
+  /* 圆角 */
+  --radius-xl: 22px;
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 9px;
+
+  /* 动效曲线 */
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * {
@@ -73,77 +95,100 @@
 html, body {
   min-width: 320px;
   min-height: 100vh;
-  background-color: var(--bg-main);
+  background-color: var(--bg-abyss);
   color: var(--text-main);
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 body {
   background-image:
-    radial-gradient(circle at 10% 5%, rgba(251, 146, 60, 0.08) 0%, transparent 40%),
-    radial-gradient(circle at 90% 10%, rgba(254, 215, 170, 0.12) 0%, transparent 45%),
-    radial-gradient(circle at 50% 95%, rgba(253, 186, 116, 0.06) 0%, transparent 50%);
+    radial-gradient(ellipse 60% 45% at 12% -5%, rgba(99, 102, 241, 0.16) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 88% 8%, rgba(34, 211, 238, 0.1) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 45% at 50% 105%, rgba(167, 139, 250, 0.09) 0%, transparent 60%);
   background-attachment: fixed;
 }
 
 /* 自定义滚动条 */
 ::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg-main);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(234, 88, 12, 0.18);
+  background: rgba(148, 163, 184, 0.22);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(234, 88, 12, 0.35);
+  background: rgba(99, 102, 241, 0.45);
 }
 
-button, input {
+button, input, select, textarea {
   font: inherit;
+  color: inherit;
 }
 button {
   cursor: pointer;
   border: none;
   background: none;
-  color: inherit;
 }
-button:focus-visible, input:focus-visible {
-  outline: 2px solid var(--orange-primary);
+button:disabled {
+  cursor: not-allowed;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
+a {
+  color: var(--accent-cyan);
+  text-decoration: none;
+}
+
 code, .code-font {
   font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, Menlo, monospace;
 }
 
+::selection {
+  background: rgba(99, 102, 241, 0.35);
+  color: #ffffff;
+}
+
+/* 数字等宽，统计卡片不对齐跳动 */
+strong, b {
+  font-variant-numeric: tabular-nums;
+}
+
 /* ==========================================================
-   Brand Component
+   品牌组件
    ========================================================== */
 .brand-logo-unit {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   text-decoration: none;
 }
 
 .brand-sunburst-badge {
   display: flex;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #ff6b00 0%, #ff8e3c 100%);
+  border-radius: 12px;
+  background: var(--gradient-aurora);
   color: #ffffff;
-  box-shadow: 0 4px 12px rgba(255, 107, 0, 0.3);
-  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: var(--shadow-glow), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  transition: transform 0.3s var(--ease-spring), box-shadow 0.3s var(--ease-smooth);
 }
 
 .brand-logo-unit:hover .brand-sunburst-badge {
-  transform: scale(1.08) rotate(-4deg);
+  transform: scale(1.08) rotate(-5deg);
+  box-shadow: 0 6px 28px -2px rgba(99, 102, 241, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .brand-name-group {
@@ -154,60 +199,82 @@ code, .code-font {
 .brand-header-line {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
 }
 
 .brand-header-line strong {
   color: var(--text-main);
   font-size: 16px;
   font-weight: 800;
-  letter-spacing: 0;
+  letter-spacing: 0.01em;
 }
 
 .brand-v-pill {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--orange-light);
-  border: 1px solid var(--orange-border);
-  color: var(--orange-primary);
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border-glow);
+  color: var(--accent-hover);
   font-size: 9px;
   font-weight: 750;
+  letter-spacing: 0.02em;
 }
 
 .brand-name-group small {
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 /* ==========================================================
-   Loading Screen
+   加载屏 / 页面错误边界
    ========================================================== */
 .loading-screen {
   display: flex;
   min-height: 100vh;
   align-items: center;
   justify-content: center;
-  background: var(--bg-main);
+  background: transparent;
+  padding: 24px;
 }
 
 .loading-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
-  padding: 40px 48px;
-  border-radius: 20px;
+  gap: 22px;
+  padding: 44px 52px;
+  border-radius: var(--radius-xl);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
-  box-shadow: var(--shadow-bento);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  animation: card-rise 0.45s var(--ease-smooth);
+}
+
+.loading-card > button {
+  padding: 10px 22px;
+  border-radius: 10px;
+  background: var(--gradient-aurora);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 13px;
+  box-shadow: var(--shadow-glow);
+  transition: transform 0.2s var(--ease-spring), box-shadow 0.2s;
+}
+
+.loading-card > button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 28px -2px rgba(99, 102, 241, 0.65);
 }
 
 .loading-track {
-  width: 200px;
+  width: 220px;
   height: 5px;
   border-radius: 9999px;
-  background: #f4eee3;
+  background: rgba(148, 163, 184, 0.12);
   overflow: hidden;
   position: relative;
 }
@@ -219,7 +286,8 @@ code, .code-font {
   left: 0;
   width: 40%;
   border-radius: 9999px;
-  background: linear-gradient(90deg, #ff6b00, #ffb066);
+  background: var(--gradient-aurora);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.8);
   animation: spark-slide 1.4s infinite ease-in-out;
 }
 
@@ -233,4 +301,29 @@ code, .code-font {
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;
+}
+
+/* ==========================================================
+   全局通用动效
+   ========================================================== */
+@keyframes card-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes beacon-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
+  50% { opacity: 0.65; box-shadow: 0 0 0 5px transparent; }
+}
+
+@keyframes spin-360 {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
