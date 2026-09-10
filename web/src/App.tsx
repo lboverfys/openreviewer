@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, useCallback, useEffect, useState } from "react";
 
 import { api, ApiError } from "./api";
 import { LoadingScreen, Login } from "./Auth";
-import DashboardPage from "./DashboardPage";
-import KnowledgePage from "./KnowledgePage";
+import PageBoundary from "./PageBoundary";
 import { hasPermission } from "./rbac";
-import ReviewDetailPage from "./ReviewDetailPage";
-import SettingsPage from "./SettingsPage";
-import RetrievalPage from "./RetrievalPage";
 import type { AuthUser } from "./types";
 import "./styles/workspace-polish.css";
+
+const DashboardPage = lazy(() => import("./DashboardPage"));
+const KnowledgePage = lazy(() => import("./KnowledgePage"));
+const ReviewDetailPage = lazy(() => import("./ReviewDetailPage"));
+const SettingsPage = lazy(() => import("./SettingsPage"));
+const RetrievalPage = lazy(() => import("./RetrievalPage"));
 
 type SessionState =
   | { phase: "checking" }
@@ -42,6 +44,10 @@ export function readAppView(hash = window.location.hash): AppView {
 }
 
 export default function App() {
+  return <PageBoundary><AppContent /></PageBoundary>;
+}
+
+function AppContent() {
   const [session, setSession] = useState<SessionState>({ phase: "checking" });
   const [view, setView] = useState<AppView>(readAppView);
 
