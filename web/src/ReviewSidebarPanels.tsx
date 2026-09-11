@@ -32,7 +32,7 @@ interface ReviewSidebarProps {
   retryStatus: string | null;
   modelDisplayState: string;
   modelStateClass: string;
-  modelDisplayName: string;
+  modelDisplayName: string | null;
   latestBatchPlan: ReviewEvent | undefined;
   failureStatus: number | null;
   failureDuration: number | null;
