@@ -43,6 +43,13 @@ const agentLabels: Record<ReviewAgent, { title: string; description: string }> =
 
 const agentOrder: ReviewAgent[] = ["security", "convention", "logic", "summary"];
 
+const agentIcons: Record<ReviewAgent, string> = {
+  security: "🛡",
+  convention: "📐",
+  logic: "🧠",
+  summary: "📋",
+};
+
 function agentDraft(settings: AiAgentSettings): AgentDraft {
   return {
     provider: settings.provider,
@@ -509,7 +516,10 @@ export default function AgentSettingsPanel({
           return (
             <article className="agent-settings-card" key={agent}>
               <div className="agent-settings-card-heading">
-                <div><strong>{agentLabels[agent].title}</strong><small>{agentLabels[agent].description}</small></div>
+                <div className="agent-card-title-row">
+                  <span className={`agent-mark is-${agent}`} aria-hidden="true">{agentIcons[agent]}</span>
+                  <div><strong>{agentLabels[agent].title}</strong><small>{agentLabels[agent].description}</small></div>
+                </div>
                 <div className="agent-settings-card-badges">
                   {dirty && <span className="settings-unsaved-badge">未保存</span>}
                   <span className={"settings-test-badge is-" + item.test_status}><span className="settings-status-dot" />{testStatusLabels[item.test_status]}</span>

@@ -341,24 +341,33 @@ export default function KnowledgePage({
   }
 
   return (
-    <div className="knowledge-page">
-      <header className="knowledge-navbar">
-        <button type="button" className="knowledge-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">←</button>
+    <div className="knowledge-shell">
+      <header className="console-topbar knowledge-topbar">
+        <button type="button" className="console-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
+        </button>
         <div className="knowledge-brand"><strong>知识库</strong><span>OpenReviewer / Markdown RAG</span></div>
         <div className="knowledge-nav-actions">
-          <button type="button" className="knowledge-nav-btn" onClick={onOpenSettings}>AI 设置</button>
-          <span className="knowledge-user">{user.username}</span>
+          <button type="button" className="btn-ghost" onClick={onOpenSettings}>AI 设置</button>
+          <div className="console-user-pill">
+            <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
+            <span className="user-identity"><span className="user-username">{user.username}</span></span>
+          </div>
         </div>
       </header>
 
       <main className="knowledge-main">
-        <section className="knowledge-titlebar">
-          <div><span className="knowledge-eyebrow">RAG KNOWLEDGE BASE</span><h1>审查知识文档</h1><p>维护新的审查规则时会生成不可变版本，已开始的任务继续使用原知识快照。</p></div>
+        <section className="knowledge-hero">
+          <div className="knowledge-hero-copy">
+            <span className="eyebrow">RAG KNOWLEDGE BASE</span>
+            <h1>审查知识文档</h1>
+            <p>维护新的审查规则时会生成不可变版本，已开始的任务继续使用原知识快照。</p>
+          </div>
           <div className="knowledge-stats">
-            <span><b>{library?.enabled_count ?? 0}</b>启用</span>
-            <span><b>{library?.total ?? 0}</b>文档</span>
-            <span><b>{formatSize(library?.total_enabled_bytes ?? 0)}</b>启用内容</span>
-            <span><b>r{library?.revision ?? 0}</b>版本</span>
+            <span className="knowledge-stat-chip is-enabled"><b>{library?.enabled_count ?? 0}</b>启用</span>
+            <span className="knowledge-stat-chip"><b>{library?.total ?? 0}</b>文档</span>
+            <span className="knowledge-stat-chip"><b>{formatSize(library?.total_enabled_bytes ?? 0)}</b>启用内容</span>
+            <span className="knowledge-stat-chip"><b>r{library?.revision ?? 0}</b>版本</span>
           </div>
         </section>
 
@@ -397,8 +406,8 @@ export default function KnowledgePage({
           </section>
 
           <aside className="knowledge-inspector-pane">
-            <section className="knowledge-search-test"><div><span className="knowledge-eyebrow">RETRIEVAL TEST</span><h2>检索测试</h2></div><form onSubmit={(event) => { event.preventDefault(); void testSearch(); }}><input id="knowledge-search-query" name="knowledge-search-query" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="输入代码或规则关键词" /><button type="submit" disabled={!searchQuery.trim() || busy === "search"}>{busy === "search" ? "检索中" : "检索"}</button></form><div className="knowledge-citations">{citations.map((item, index) => <article key={`${item.source}-${item.heading}-${index}`}><div><strong>{item.heading}</strong><b>{item.score.toFixed(3)}</b></div><small>{item.source} · {item.version}</small><p>{item.excerpt}</p></article>)}{citations.length === 0 && <p className="knowledge-no-citation">输入关键词可验证当前已启用文档的召回结果。</p>}</div></section>
-            {document && <section className="knowledge-history"><div><span className="knowledge-eyebrow">VERSION HISTORY</span><h2>版本记录</h2></div><dl><div><dt>当前版本</dt><dd>v{document.current_version}</dd></div><div><dt>内容指纹</dt><dd><code>{document.content_sha256.slice(0, 12)}</code></dd></div><div><dt>更新人</dt><dd>{document.updated_by}</dd></div><div><dt>更新时间</dt><dd>{formatDate(document.updated_at)}</dd></div></dl><div className="knowledge-version-list">{document.versions.map((version) => <div key={version.version}><span><strong>v{version.version}</strong><small>{formatDate(version.created_at)} · {version.created_by}</small></span>{version.version === document.current_version ? <b>当前</b> : <button type="button" disabled={Boolean(busy) || document.archived} onClick={() => void restoreVersion(version.version)}>恢复</button>}</div>)}</div></section>}
+            <section className="knowledge-search-test"><div><span className="eyebrow">RETRIEVAL TEST</span><h2>检索测试</h2></div><form onSubmit={(event) => { event.preventDefault(); void testSearch(); }}><input id="knowledge-search-query" name="knowledge-search-query" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="输入代码或规则关键词" /><button type="submit" disabled={!searchQuery.trim() || busy === "search"}>{busy === "search" ? "检索中" : "检索"}</button></form><div className="knowledge-citations">{citations.map((item, index) => <article key={`${item.source}-${item.heading}-${index}`}><div><strong>{item.heading}</strong><b>{item.score.toFixed(3)}</b></div><small>{item.source} · {item.version}</small><p>{item.excerpt}</p></article>)}{citations.length === 0 && <p className="knowledge-no-citation">输入关键词可验证当前已启用文档的召回结果。</p>}</div></section>
+            {document && <section className="knowledge-history"><div><span className="eyebrow">VERSION HISTORY</span><h2>版本记录</h2></div><dl><div><dt>当前版本</dt><dd>v{document.current_version}</dd></div><div><dt>内容指纹</dt><dd><code>{document.content_sha256.slice(0, 12)}</code></dd></div><div><dt>更新人</dt><dd>{document.updated_by}</dd></div><div><dt>更新时间</dt><dd>{formatDate(document.updated_at)}</dd></div></dl><div className="knowledge-version-list">{document.versions.map((version) => <div key={version.version}><span><strong>v{version.version}</strong><small>{formatDate(version.created_at)} · {version.created_by}</small></span>{version.version === document.current_version ? <b>当前</b> : <button type="button" disabled={Boolean(busy) || document.archived} onClick={() => void restoreVersion(version.version)}>恢复</button>}</div>)}</div></section>}
           </aside>
         </div>
       </main>

@@ -627,11 +627,11 @@ export default function SettingsPage({
     settings && policyDraft && reviewPolicyHasChanges(settings, policyDraft),
   );
   return (
-    <div className="settings-page-layout">
-      <header className="settings-navbar">
+    <div className="settings-shell">
+      <header className="console-topbar settings-topbar">
         <div className="settings-nav-start">
-          <button type="button" className="settings-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
+          <button type="button" className="console-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
           </button>
           <div className="settings-heading-lockup">
             <div className="settings-heading-icon">
@@ -641,19 +641,23 @@ export default function SettingsPage({
           </div>
         </div>
         <div className="settings-nav-end">
-          <button type="button" className="settings-icon-btn" onClick={() => void refreshAllSettings()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
+          <button type="button" className="console-icon-btn" onClick={() => void refreshAllSettings()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
           </button>
-          <div className="settings-user"><span>{user.username.slice(0, 1).toUpperCase()}</span><strong>{user.username}</strong></div>
-          <button type="button" className="settings-icon-btn" onClick={logout} title="退出登录" aria-label="退出登录">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
+          <div className="console-user-pill">
+            <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
+            <span className="user-identity"><span className="user-username">{user.username}</span></span>
+          </div>
+          <button type="button" className="console-icon-btn" onClick={logout} title="退出登录" aria-label="退出登录">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
           </button>
         </div>
       </header>
 
       <main className="settings-main">
-        <div className="settings-title-row">
-          <div>
+        <section className="settings-hero">
+          <div className="settings-hero-copy">
+            <span className="eyebrow">MODEL CONNECTION</span>
             <h1>模型服务</h1>
             <p className="settings-intro">支持官方接口和兼容中转站，日常只需配置地址、模型和密钥。</p>
             <div className="settings-meta-line">
@@ -662,11 +666,14 @@ export default function SettingsPage({
               <span>修改人 {settings?.updated_by ?? "--"}</span>
             </div>
           </div>
-          <div className={`settings-runtime-state ${settings?.active_provider ? "is-active" : "is-idle"}`}>
+          <div className={`settings-runtime-card ${settings?.active_provider ? "is-active" : "is-idle"}`}>
             <span className="settings-status-dot" />
-            {settings?.active_provider ? `${providerShortLabels[settings.active_provider]} 运行中` : "还未启用模型"}
+            <div>
+              <small>当前运行服务</small>
+              <strong>{settings?.active_provider ? `${providerShortLabels[settings.active_provider]} 运行中` : "还未启用模型"}</strong>
+            </div>
           </div>
-        </div>
+        </section>
 
         {message && (loading || !settings || !selectedSettings || !draft) && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
 
@@ -674,23 +681,22 @@ export default function SettingsPage({
           <div className="settings-loading">正在读取设置...</div>
         ) : (
           <>
-            <section className="settings-provider-workspace">
-              <aside className="settings-provider-nav" aria-label="接口类型">
-                <span className="settings-nav-label">接口类型</span>
-                {settings.providers.map((provider) => (
-                  <button key={provider.provider} type="button" className={selectedProvider === provider.provider ? "is-selected" : ""} onClick={() => setSelectedProvider(provider.provider)}>
-                    <span className={`provider-mark is-${provider.provider}`}>{provider.provider === "openai" ? "O" : "A"}</span>
-                    <span><strong>{providerShortLabels[provider.provider]}</strong><small>{provider.active ? "正在使用" : testStatusLabels[provider.test_status]}</small></span>
-                    {provider.active && <i className="provider-active-dot" />}
-                  </button>
-                ))}
-                <div className="settings-provider-tip">选择中转站使用的兼容格式，不代表必须向对应官方购买。</div>
-              </aside>
+            <section className="settings-provider-switch" aria-label="接口类型">
+              {settings.providers.map((provider) => (
+                <button key={provider.provider} type="button" className={`settings-provider-card ${selectedProvider === provider.provider ? "is-selected" : ""}`} onClick={() => setSelectedProvider(provider.provider)}>
+                  <span className={`provider-mark is-${provider.provider}`}>{provider.provider === "openai" ? "O" : "A"}</span>
+                  <span className="provider-card-copy"><strong>{providerShortLabels[provider.provider]}</strong><small>{provider.active ? "正在使用" : testStatusLabels[provider.test_status]}</small></span>
+                  {provider.active && <i className="provider-active-dot" />}
+                </button>
+              ))}
+              <div className="settings-provider-tip">选择中转站使用的兼容格式，不代表必须向对应官方购买。</div>
+            </section>
 
+            <section className="settings-config-card">
               <div className="settings-provider-content">
                 <div className="settings-section-heading">
                   <div>
-                    <span className="settings-eyebrow">MODEL CONNECTION</span>
+                    <span className="eyebrow">MODEL CONNECTION</span>
                     <h2>{providerLabels[selectedProvider]}</h2>
                     <ProviderStatus settings={selectedSettings} />
                   </div>

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
-import { Brand } from "./Auth";
 import RetrievalTracePanel, { retrievalStrategyLabels, vectorSearchLabel } from "./RetrievalTracePanel";
 import CodeIndexPanel from "./CodeIndexPanel";
 import { formatDuration } from "./review-details";
@@ -93,21 +92,57 @@ export default function RetrievalPage({ user, onBack, onSignedOut, initialReview
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  return <main className="retrieval-page">
-    <header className="retrieval-page-header"><Brand /><div><span>{user.username}</span><button onClick={onBack}>返回控制台</button></div></header>
-    <div className="retrieval-title"><div><span className="retrieval-eyebrow">OPENREVIEWER / CODE INTELLIGENCE</span><h1>让每一次判断，都有代码依据。</h1><p>版本化索引、跨文件检索与效果对比，汇集到一个工作区。</p></div><button disabled={Boolean(busy)} onClick={() => void refresh()}>刷新数据 ↗</button></div>
+  return <main className="retrieval-shell">
+    <header className="console-topbar retrieval-topbar">
+      <button type="button" className="console-icon-btn" onClick={onBack} title="返回控制台" aria-label="返回控制台">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
+      </button>
+      <div className="retrieval-brand-lockup"><strong>代码检索</strong><span>OpenReviewer / Code Intelligence</span></div>
+      <div className="retrieval-topbar-right">
+        <div className="console-user-pill">
+          <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
+          <span className="user-identity"><span className="user-username">{user.username}</span></span>
+        </div>
+        <button type="button" className="btn-ghost" onClick={onBack}>返回控制台</button>
+      </div>
+    </header>
+
+    <div className="retrieval-main">
+    <section className="retrieval-hero">
+      <div className="retrieval-hero-copy">
+        <span className="eyebrow">CODE INTELLIGENCE</span>
+        <h1>让每一次判断，都有代码依据</h1>
+        <p>版本化索引、跨文件检索与效果对比，汇集到一个工作区。</p>
+      </div>
+      <button type="button" className="btn-ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        刷新数据
+      </button>
+    </section>
     <div className="retrieval-overview" aria-label="检索运行概况">
-      <div><span>可用基础索引</span><strong>{operations?.available_indexes ?? "—"}</strong><small>关键词与代码关系</small></div>
-      <div><span>正在排队 / 构建</span><strong>{operations?.pending_indexes ?? "—"}</strong><small>最长等待 {operations ? formatDuration(Math.round((operations.oldest_pending_seconds ?? 0) * 1000)) : "—"}</small></div>
-      <div><span>模型调用状态</span><strong className="retrieval-overview-status">{view?.external_calls_paused ? "已暂停" : operations?.circuit_open ? "短暂熔断" : operations?.provider_busy ? "处理中" : view ? "按需调用" : "—"}</strong><small>基础检索始终独立运行</small></div>
-      <div><span>每次操作请求上限</span><strong>{draft?.max_requests_per_operation ?? "—"}</strong><small>包含失败后的重试</small></div>
+      <div className="retrieval-overview-card">
+        <span className="retrieval-overview-icon is-base" aria-hidden="true">⌘</span>
+        <div><span>可用基础索引</span><strong>{operations?.available_indexes ?? "—"}</strong><small>关键词与代码关系</small></div>
+      </div>
+      <div className="retrieval-overview-card">
+        <span className="retrieval-overview-icon is-queue" aria-hidden="true">⏳</span>
+        <div><span>正在排队 / 构建</span><strong>{operations?.pending_indexes ?? "—"}</strong><small>最长等待 {operations ? formatDuration(Math.round((operations.oldest_pending_seconds ?? 0) * 1000)) : "—"}</small></div>
+      </div>
+      <div className="retrieval-overview-card">
+        <span className="retrieval-overview-icon is-model" aria-hidden="true">⚡</span>
+        <div><span>模型调用状态</span><strong className="retrieval-overview-status">{view?.external_calls_paused ? "已暂停" : operations?.circuit_open ? "短暂熔断" : operations?.provider_busy ? "处理中" : view ? "按需调用" : "—"}</strong><small>基础检索始终独立运行</small></div>
+      </div>
+      <div className="retrieval-overview-card">
+        <span className="retrieval-overview-icon is-limit" aria-hidden="true">▦</span>
+        <div><span>每次操作请求上限</span><strong>{draft?.max_requests_per_operation ?? "—"}</strong><small>包含失败后的重试</small></div>
+      </div>
     </div>
-    <nav className="retrieval-tabs" aria-label="代码检索页面">
-      {([["search", "索引与检索"], ["evaluations", "评测对比"], ["settings", "模型配置"]] as const).map(([key, label]) => <button key={key} className={tab === key ? "active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
+    <nav className="seg-tabs retrieval-tabs" aria-label="代码检索页面">
+      {([["search", "索引与检索"], ["evaluations", "评测对比"], ["settings", "模型配置"]] as const).map(([key, label]) => <button key={key} className={tab === key ? "is-active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
     </nav>
-    {error && <div role="alert" className="retrieval-error">{error}</div>}
+    {error && <div role="alert" className="toast-banner is-error">{error}</div>}
     {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>真实模型调用已暂停</strong><p>可以建立基础索引，使用关键词和代码关系检索。已有向量会保留。</p></div></div>}
-    {message && <div role="status" className="retrieval-success">{message}</div>}
+    {message && <div role="status" className="toast-banner is-success">{message}</div>}
     {loading ? <div className="retrieval-empty">正在加载检索数据…</div> : <>
       {tab === "search" && <div className="retrieval-workspace">
         <CodeIndexPanel indexes={indexes} selectedId={selectedId} targets={targets} reviewRunId={reviewRunId} paused={Boolean(view?.external_calls_paused)} busy={Boolean(busy)}
@@ -175,5 +210,6 @@ export default function RetrievalPage({ user, onBack, onSignedOut, initialReview
         </form>
       </section>}
     </>}
+    </div>
   </main>;
 }

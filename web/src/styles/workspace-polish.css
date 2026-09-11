@@ -1,25 +1,25 @@
-/* 全局收尾润色（暗夜极光主题）
+/* 全局收尾润色（晨曦白瓷·明亮主题）
    仅保留少量跨页面微调，主体样式见 styles/*.css */
 body {
   text-rendering: optimizeLegibility;
 }
 
-/* 深色下输入控件统一配色，避免浏览器原生浅色控件突兀 */
+/* 明亮主题下输入控件统一浅色配色 */
 input, select, textarea {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 input::placeholder, textarea::placeholder {
   color: var(--text-faint);
 }
 
-/* 数字输入去掉原生步进器的浅色残影 */
+/* 数字输入去掉原生步进器的残影 */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   opacity: 1;
 }
 
-/* 日期/下拉等原生弹层在深色下的可读性 */
+/* 下拉原生弹层配色 */
 select option {
   background: var(--bg-card-solid);
   color: var(--text-main);

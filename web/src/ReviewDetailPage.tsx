@@ -10,6 +10,7 @@ import {
   ModelBatchPanel,
   StageTimeline,
 } from "./ReviewProgressPanels";
+import { ciStateLabels, ReviewSidebar } from "./ReviewSidebarPanels";
 import {
   actionKey,
   agentDefinitions,
@@ -18,14 +19,12 @@ import {
   applyRefreshedFindingPage,
   branchLabel,
   eventDetail,
-  formatBytes,
   formatDuration,
   isErrorEvent,
   latestBatchPlanEvent,
   latestEvent,
   payloadNumber,
   payloadString,
-  reasoningEffortLabels,
   retryDetail,
   verdictLabels,
   workflowReadout,
@@ -139,14 +138,6 @@ const evaluationGateReasonLabels: Record<string, string> = {
   high_severity_false_positive_rate_above_threshold: "高风险否决偏高",
 };
 
-const ciStateLabels: Record<string, string> = {
-  not_configured: "未配置",
-  unknown: "未知",
-  pending: "进行中",
-  success: "通过",
-  failure: "失败",
-};
-
 const eventLabels: Record<string, string> = {
   "review.requested": "任务已接收",
   "review.task.running": "Worker 开始处理",
@@ -193,17 +184,6 @@ const eventLabels: Record<string, string> = {
   "review.manual.cancel": "管理员取消任务",
   "review.manual.rerun_requested": "管理员发起重新审查",
   "review.finding.decided": "管理员更新问题裁决",
-};
-
-const fileDecisionLabels: Record<string, string> = {
-  planned: "已送 AI",
-  binary: "二进制",
-  generated: "生成文件",
-  unsupported: "不支持的类型",
-  patch_missing: "Diff 缺失",
-  patch_too_large: "Diff 过大",
-  rules_incomplete: "规则不完整",
-  omitted_by_budget: "历史范围记录",
 };
 
 function ReviewDetailPage({
@@ -588,6 +568,9 @@ function ReviewDetailPage({
     (item) => item.key === "summary",
   )!.progress;
   const hasBranchRoute = Boolean(details.head_ref || details.base_ref);
+  const completedStageCount = details.stages.filter(
+    (stage) => stage.status === "completed",
+  ).length;
   const headBranchLabel = branchLabel(
     details.head_repository ?? details.repository,
     details.head_ref,
@@ -633,8 +616,10 @@ function ReviewDetailPage({
   ];
   return (
     <div className="review-detail-shell">
-      <header className="review-detail-navbar">
-        <button type="button" className="review-back-btn" onClick={onBack} aria-label="返回任务列表" title="返回任务列表">←</button>
+      <header className="console-topbar review-topbar">
+        <button type="button" className="console-icon-btn" onClick={onBack} aria-label="返回任务列表" title="返回任务列表">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
+        </button>
         <div className="review-detail-brand">
           <strong>审查任务详情</strong>
           <span>OpenReviewer / {details.repository}</span>
@@ -650,8 +635,14 @@ function ReviewDetailPage({
             />
             <span className="review-live-dot" />自动刷新
           </label>
-          <button type="button" className="review-refresh-btn" onClick={() => void loadDetails()} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
-          <span className="review-user-chip">{user.username} · {roleLabels[user.role]}</span>
+          <button type="button" className="btn-ghost" onClick={() => void loadDetails()} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
+          <div className="console-user-pill">
+            <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
+            <span className="user-identity">
+              <span className="user-username">{user.username}</span>
+              <small>{roleLabels[user.role]}</small>
+            </span>
+          </div>
         </div>
       </header>
 
@@ -712,6 +703,10 @@ function ReviewDetailPage({
             <span className="review-current-stage-label">当前节点</span>
             <strong>{stageLabels[details.current_stage] ?? details.current_stage}</strong>
             <span className="review-current-phase">{workflowReadout(details, retryPending)}</span>
+            <div className="review-hero-stage-progress" aria-hidden="true">
+              <span style={{ width: `${details.stages.length > 0 ? (completedStageCount / details.stages.length) * 100 : 0}%` }} />
+            </div>
+            <small>{completedStageCount}/{details.stages.length} 阶段已完成</small>
           </div>
         </section>
 
@@ -761,11 +756,11 @@ function ReviewDetailPage({
         )}
 
         <section className="review-summary-strip" aria-label="任务关键指标">
-          <div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div>
-          <div><span>CI 检查</span><strong>{ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div>
-          <div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div>
-          <div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/4</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div>
-          <div><span>候选问题</span><strong>{details.findings.length}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div>
+          <div><span className="review-metric-icon is-state" aria-hidden="true">◈</span><div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div></div>
+          <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div></div>
+          <div><span className="review-metric-icon is-cover" aria-hidden="true">▦</span><div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div></div>
+          <div><span className="review-metric-icon is-agent" aria-hidden="true">🤖</span><div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/4</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div></div>
+          <div><span className="review-metric-icon is-finding" aria-hidden="true">⚑</span><div><span>候选问题</span><strong>{details.findings.length}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div></div>
         </section>
 
         <nav className="review-detail-tabs" aria-label="详情视图">
@@ -780,7 +775,7 @@ function ReviewDetailPage({
           <div className="review-detail-primary">
             <StageTimeline details={details} />
 
-            <section className="review-panel">
+            <section className="review-panel review-retrieval-panel">
               <div className="review-panel-heading"><h2>检索上下文</h2>
                 {hasPermission(user, "knowledge:manage") && <button type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</button>}
               </div>
@@ -926,52 +921,22 @@ function ReviewDetailPage({
             </section>
           </div>
 
-          <aside className="review-detail-sidebar">
-            <section className="review-panel review-summary-panel">
-              <div className="review-panel-heading"><div><span className="review-eyebrow">RUN SUMMARY</span><h2>运行信息</h2></div></div>
-              <dl className="review-summary-list">
-                <div><dt>运行 ID</dt><dd><code title={details.review_run_id}>{details.review_run_id.slice(0, 12)}…</code></dd></div>
-                <div><dt>任务 ID</dt><dd><code title={details.review_task_id}>{details.review_task_id.slice(0, 12)}…</code></dd></div>
-                <div><dt>版本 SHA</dt><dd><code>{shortSha(details.head_sha)}</code></dd></div>
-                <div><dt>覆盖状态</dt><dd>{details.coverage_status === "complete" ? "完整" : details.coverage_status === "partial" ? "部分" : details.coverage_status}</dd></div>
-                <div><dt>创建时间</dt><dd>{formatDate(details.created_at)}</dd></div>
-                <div><dt>{retryPending ? "自动重试" : "可用时间"}</dt><dd>{retryPending ? retryStatus ?? formatDate(details.available_at) : formatDate(details.available_at)}</dd></div>
-              </dl>
-            </section>
-
-            <section className="review-panel review-model-panel">
-              <div className="review-panel-heading"><div><span className="review-eyebrow">MODEL CALL</span><h2>AI 调用</h2></div><span className={`review-model-state ${modelStateClass}`}>{modelDisplayState}</span></div>
-              <dl className="review-metric-grid">
-                <div><dt>模型</dt><dd>{modelDisplayName || "—"}</dd></div>
-                <div><dt>供应商</dt><dd>{details.model_provider ?? payloadString(latestBatchPlan, "provider") ?? "—"}</dd></div>
-                <div><dt>接口</dt><dd>{details.model_protocol ?? payloadString(latestBatchPlan, "api_protocol") ?? "—"}</dd></div>
-                <div><dt>推理档位</dt><dd>{reasoningEffortLabels[payloadString(latestBatchPlan, "reasoning_effort") ?? ""] ?? payloadString(latestBatchPlan, "reasoning_effort") ?? "—"}</dd></div>
-                <div><dt>响应</dt><dd>{details.model_response_status ?? failureStatus ?? "—"}</dd></div>
-                <div><dt>耗时</dt><dd>{formatDuration(details.model_duration_ms ?? failureDuration)}</dd></div>
-                <div><dt>候选问题</dt><dd>{details.model_finding_count ?? "—"}</dd></div>
-                {failureCode && <div><dt>错误码</dt><dd>{failureCode}</dd></div>}
-                {failureRequestId && <div><dt>请求 ID</dt><dd><code title={failureRequestId}>{failureRequestId}</code></dd></div>}
-              </dl>
-            </section>
-
-            <section className="review-panel review-context-panel">
-              <div className="review-panel-heading"><div><span className="review-eyebrow">GITHUB CONTEXT</span><h2>代码与 CI</h2></div><span className={`review-ci-state ci-${details.ci_state ?? "unknown"}`}>{ciStateLabels[details.ci_state ?? ""] ?? "未知"}</span></div>
-              <dl className="review-context-list">
-                <div><dt>PR 状态</dt><dd>{details.pr_state ?? "—"}{details.pr_is_draft ? " · Draft" : ""}</dd></div>
-                <div><dt>提起人</dt><dd>{details.pr_author_login ? `@${details.pr_author_login}` : "历史任务未记录"}</dd></div>
-                <div><dt>来源分支</dt><dd><code>{hasBranchRoute ? headBranchLabel : "历史任务未记录"}</code></dd></div>
-                <div><dt>目标分支</dt><dd><code>{hasBranchRoute ? baseBranchLabel : "历史任务未记录"}</code></dd></div>
-                <div><dt>变更文件</dt><dd>{details.changed_files_count ?? "—"} 个</dd></div>
-                <div><dt>文件快照</dt><dd>{details.files_complete === null ? "—" : details.files_complete ? "完整" : "部分"}</dd></div>
-                <div><dt>Diff 快照</dt><dd>{details.diff_complete === null ? "—" : details.diff_complete ? "完整" : "部分"}</dd></div>
-                <div><dt>CI 检查</dt><dd>{details.ci_checks.length} 项 · {details.ci_checks_complete ? "完整" : "持续刷新"}</dd></div>
-                {details.pr_html_url && <div><dt>Pull Request</dt><dd><a href={details.pr_html_url} target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></dd></div>}
-              </dl>
-              {details.ci_checks.length > 0 && <div className="review-ci-check-list">{details.ci_checks.slice(0, 8).map((check) => <div key={`${check.kind}:${check.name}`}><span className={`ci-check-dot ci-check-${check.conclusion ?? check.status}`} /><span>{check.name}</span><small>{check.conclusion ?? check.status}</small></div>)}</div>}
-            </section>
-
-            {details.review_plan_id && <section className="review-panel review-plan-panel"><div className="review-panel-heading"><div><span className="review-eyebrow">REVIEW COVERAGE</span><h2>文件覆盖</h2></div></div><div className="review-plan-stats"><div><strong>{details.plan_file_count ?? 0}</strong><span>变更文件</span></div><div><strong>{details.plan_unit_count ?? 0}</strong><span>送入 AI</span></div><div><strong>{details.plan_rule_count ?? 0}</strong><span>规则</span></div></div><div className="review-decision-list">{Object.entries(details.plan_file_decisions).map(([decision, count]) => <div key={decision}><span>{fileDecisionLabels[decision] ?? decision}</span><strong>{count}</strong></div>)}</div><div className="review-plan-bytes">可审查输入 {formatBytes(details.plan_input_bytes)} · 超长内容自动分批</div></section>}
-          </aside>
+          <ReviewSidebar
+            details={details}
+            retryPending={retryPending}
+            retryStatus={retryStatus}
+            modelDisplayState={modelDisplayState}
+            modelStateClass={modelStateClass}
+            modelDisplayName={modelDisplayName}
+            latestBatchPlan={latestBatchPlan}
+            failureStatus={failureStatus}
+            failureDuration={failureDuration}
+            failureCode={failureCode}
+            failureRequestId={failureRequestId}
+            hasBranchRoute={hasBranchRoute}
+            headBranchLabel={headBranchLabel}
+            baseBranchLabel={baseBranchLabel}
+          />
         </div>
       </main>
     </div>
