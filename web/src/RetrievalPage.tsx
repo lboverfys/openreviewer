@@ -3,14 +3,14 @@ import { api, ApiError } from "./api";
 import RetrievalTracePanel, { retrievalStrategyLabels, vectorSearchLabel } from "./RetrievalTracePanel";
 import CodeIndexPanel from "./CodeIndexPanel";
 import { formatDuration } from "./review-details";
-import type { AuthUser, CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettings, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
+import type { CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettings, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
 import { errorMessage, formatDate } from "./utils";
 
 type Tab = "search" | "evaluations" | "settings";
 const annotationLabels: Record<string, string> = { synthetic_contract: "合成契约样本", agent_annotated: "代理标注 · 非独立人工金标", independent_human: "独立人工标注" };
 
-export default function RetrievalPage({ user, onBack, onSignedOut, initialReviewRunId }: {
-  user: AuthUser; onBack: () => void; onSignedOut: (message?: string) => void; initialReviewRunId?: string;
+export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
+  onSignedOut: (message?: string) => void; initialReviewRunId?: string;
 }) {
   const [tab, setTab] = useState<Tab>("search");
   const [indexes, setIndexes] = useState<CodeIndexView[]>([]);
@@ -93,24 +93,9 @@ export default function RetrievalPage({ user, onBack, onSignedOut, initialReview
   }
 
   return <main className="retrieval-shell">
-    <header className="console-topbar retrieval-topbar">
-      <button type="button" className="console-icon-btn" onClick={onBack} title="返回控制台" aria-label="返回控制台">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
-      </button>
-      <div className="retrieval-brand-lockup"><strong>代码检索</strong><span>OpenReviewer / Code Intelligence</span></div>
-      <div className="retrieval-topbar-right">
-        <div className="console-user-pill">
-          <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
-          <span className="user-identity"><span className="user-username">{user.username}</span></span>
-        </div>
-        <button type="button" className="btn-ghost" onClick={onBack}>返回控制台</button>
-      </div>
-    </header>
-
     <div className="retrieval-main">
     <section className="retrieval-hero">
       <div className="retrieval-hero-copy">
-        <span className="eyebrow">CODE INTELLIGENCE</span>
         <h1>让每一次判断，都有代码依据</h1>
         <p>版本化索引、跨文件检索与效果对比，汇集到一个工作区。</p>
       </div>

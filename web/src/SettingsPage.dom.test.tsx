@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./api";
 import SettingsPage from "./SettingsPage";
-import type { AiSettings, AuthUser } from "./types";
+import type { AiSettings } from "./types";
 
 vi.mock("./AgentSettingsPanel", () => ({
   default: ({ onRevisionChange }: { onRevisionChange: (revision: number) => void }) => {
@@ -30,14 +30,6 @@ vi.mock("./api", async (importOriginal) => {
     },
   };
 });
-
-const user: AuthUser = {
-  authenticated: true,
-  username: "admin",
-  role: "administrator",
-  permissions: ["settings:manage", "reviews:view", "reviews:manage"],
-  expires_at: "2026-09-01T00:00:00Z",
-};
 
 function settings(revision: number): AiSettings {
   return {
@@ -120,8 +112,6 @@ describe("设置页初始 revision 同步", () => {
 
     render(
       <SettingsPage
-        user={user}
-        onBack={vi.fn()}
         onSignedOut={vi.fn()}
       />,
     );

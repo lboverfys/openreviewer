@@ -4,33 +4,10 @@
    ========================================================== */
 
 .knowledge-shell {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.knowledge-topbar {
-  gap: 13px;
-}
-.knowledge-brand {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-.knowledge-brand strong {
-  font-size: 14px;
-  font-weight: 800;
-}
-.knowledge-brand span {
-  color: var(--text-faint);
-  font-size: 10px;
-  letter-spacing: 0.05em;
-}
-.knowledge-nav-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 11px;
 }
 
 .knowledge-main {
@@ -38,54 +15,58 @@
   width: 100%;
   max-width: 1560px;
   margin: 0 auto;
-  padding: 24px 28px 40px;
+  padding: 14px 28px 30px;
   display: flex;
   flex-direction: column;
-  gap: 17px;
+  gap: 12px;
 }
 
-/* ---------------- Hero ---------------- */
+/* ---------------- Hero（单行紧凑） ---------------- */
 .knowledge-hero {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 14px;
   flex-wrap: wrap;
   animation: rise-in 0.4s var(--ease-smooth);
 }
+.knowledge-hero-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .knowledge-hero-copy h1 {
-  margin-top: 8px;
-  font-size: clamp(21px, 2.3vw, 29px);
+  font-size: 17px;
   font-weight: 830;
   letter-spacing: -0.02em;
 }
 .knowledge-hero-copy p {
-  margin-top: 5px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 12px;
   max-width: 560px;
 }
 .knowledge-stats {
   display: flex;
-  gap: 9px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .knowledge-stat-chip {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  padding: 8px 14px;
-  border-radius: 12px;
+  padding: 6px 12px;
+  border-radius: 10px;
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-card);
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
 }
 .knowledge-stat-chip b {
   color: var(--text-main);
-  font-size: 15px;
+  font-size: 13.5px;
   font-weight: 830;
 }
 .knowledge-stat-chip.is-enabled b {

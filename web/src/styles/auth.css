@@ -1,15 +1,13 @@
 /* ==========================================================
    登录页（Auth）· 晨曦白瓷
-   居中 Hero + 白瓷登录卡 + 特性栅格 + 流程示意条
+   左品牌简介 + 右登录卡，桌面端一屏呈现
    ========================================================== */
 
 .auth-page {
   position: relative;
-  min-height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 0 24px 34px;
   overflow: hidden;
 }
 
@@ -48,16 +46,36 @@
   -webkit-mask-image: radial-gradient(ellipse 90% 62% at 50% 0%, #000 30%, transparent 78%);
 }
 
-/* 顶栏 */
-.auth-topbar {
+/* 左右分栏布局 */
+.auth-layout {
   position: relative;
   z-index: 2;
+  flex: 1;
+  min-height: 0;
   width: 100%;
   max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  align-items: center;
+  gap: 44px;
+}
+
+/* 左侧品牌简介 */
+.auth-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+  animation: rise-in 0.5s var(--ease-smooth);
+}
+.auth-intro-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 4px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .auth-topbar-note {
   display: inline-flex;
@@ -81,35 +99,30 @@
   animation: beacon-pulse 1.8s infinite;
 }
 
-/* Hero */
+/* Hero（左对齐紧凑版） */
 .auth-hero {
-  position: relative;
-  z-index: 2;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  text-align: center;
-  margin-top: 26px;
-  animation: rise-in 0.5s var(--ease-smooth);
+  align-items: flex-start;
 }
 .auth-eyebrow-chip {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 15px;
+  padding: 5px 13px;
   border-radius: 999px;
   background: var(--accent-soft);
   border: 1px solid var(--border-glow);
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 750;
 }
 .auth-hero h1 {
-  margin-top: 20px;
-  font-size: clamp(30px, 4.6vw, 46px);
+  margin-top: 14px;
+  font-size: clamp(26px, 2.9vw, 38px);
   font-weight: 850;
   letter-spacing: -0.02em;
-  line-height: 1.28;
+  line-height: 1.26;
 }
 .auth-gradient-text {
   font-style: normal;
@@ -119,20 +132,19 @@
   color: transparent;
 }
 .auth-hero p {
-  margin-top: 15px;
-  max-width: 520px;
+  margin-top: 11px;
+  max-width: 480px;
   color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1.8;
+  font-size: 13px;
+  line-height: 1.75;
 }
 
 /* 登录卡舞台 */
 .auth-card-stage {
   position: relative;
-  z-index: 2;
-  margin-top: 34px;
   width: 100%;
-  max-width: 432px;
+  max-width: 420px;
+  justify-self: center;
   animation: rise-in 0.55s var(--ease-smooth) 0.06s backwards;
 }
 .auth-card-stage::before {
@@ -147,8 +159,8 @@
 .auth-card {
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  padding: 32px 32px 24px;
+  gap: 18px;
+  padding: 26px 28px 20px;
   border-radius: var(--radius-xl);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
@@ -159,41 +171,41 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   text-align: center;
 }
 .auth-avatar-box {
   display: flex;
-  width: 52px;
-  height: 52px;
+  width: 44px;
+  height: 44px;
   align-items: center;
   justify-content: center;
-  border-radius: 17px;
+  border-radius: 15px;
   background: var(--gradient-aurora);
   color: #fff;
   box-shadow: 0 10px 22px -8px rgba(79, 70, 229, 0.55);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .auth-card-top h2 {
-  font-size: 21px;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: -0.01em;
 }
 .auth-card-top p {
   color: var(--text-muted);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 /* 表单 */
 .auth-form-body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 13px;
 }
 .auth-field {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
 }
 .auth-field-title {
   color: var(--text-secondary);
@@ -359,68 +371,62 @@
   font-size: 11px;
 }
 
-/* 特性栅格 */
+/* 特性列表（左侧紧凑版） */
 .auth-feature-grid {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
-  max-width: 920px;
-  margin-top: 40px;
+  max-width: 480px;
   animation: rise-in 0.6s var(--ease-smooth) 0.12s backwards;
 }
 .auth-feature-card {
   display: flex;
-  align-items: flex-start;
-  gap: 13px;
-  padding: 18px 20px;
-  border-radius: var(--radius-lg);
+  align-items: center;
+  gap: 11px;
+  padding: 9px 13px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-card);
   transition: transform 0.2s var(--ease-smooth), box-shadow 0.2s;
 }
 .auth-feature-card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-2px);
   box-shadow: var(--shadow-lift);
 }
 .auth-feature-icon {
   display: flex;
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 12.5px;
+  border-radius: 9px;
   background: var(--accent-softer);
   border: 1px solid var(--border-glow);
-  font-size: 18px;
+  font-size: 14px;
 }
 .auth-feature-card strong {
-  font-size: 13.5px;
+  font-size: 12px;
   font-weight: 750;
 }
 .auth-feature-card p {
-  margin-top: 3px;
+  margin-top: 1px;
   color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.65;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
-/* 流程示意条 */
+/* 流程示意条（左侧紧凑版） */
 .auth-flow-strip {
-  position: relative;
-  z-index: 2;
   display: flex;
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  max-width: 920px;
-  margin-top: 16px;
-  padding: 15px 18px;
-  border-radius: var(--radius-lg);
+  max-width: 480px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-card);
@@ -431,65 +437,79 @@
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
   min-width: 0;
 }
 .auth-flow-badge {
   display: flex;
-  width: 34px;
-  height: 34px;
+  width: 25px;
+  height: 25px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 11px;
+  border-radius: 8px;
   background: var(--gradient-aurora-soft);
   border: 1px solid var(--border-glow);
   color: var(--accent);
-  font-size: 11.5px;
+  font-size: 10px;
   font-weight: 850;
 }
 .auth-flow-item strong {
   display: block;
-  font-size: 12.5px;
+  font-size: 10.5px;
   font-weight: 750;
   white-space: nowrap;
 }
 .auth-flow-item small {
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 9px;
   white-space: nowrap;
 }
 .auth-flow-arrow {
   margin-left: auto;
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: 11px;
   flex-shrink: 0;
 }
 
 .auth-footnote {
-  position: relative;
-  z-index: 2;
-  margin-top: 30px;
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: 10.5px;
 }
 
 /* 响应式 */
-@media (max-width: 860px) {
-  .auth-feature-grid {
-    grid-template-columns: 1fr;
+@media (max-width: 1020px) {
+  .auth-page {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+  .auth-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 26px;
+    padding: 22px 20px 30px;
+    align-items: start;
+  }
+  .auth-intro {
+    gap: 16px;
+  }
+  .auth-card-stage {
+    justify-self: center;
+  }
+  .auth-feature-grid,
+  .auth-flow-strip {
+    max-width: none;
   }
   .auth-flow-strip {
-    flex-direction: column;
-    gap: 13px;
+    flex-wrap: wrap;
   }
-  .auth-flow-arrow {
-    display: none;
+  .auth-flow-item {
+    flex: 1 1 40%;
   }
 }
 @media (max-width: 520px) {
   .auth-card {
-    padding: 26px 20px 20px;
+    padding: 22px 18px 18px;
   }
   .auth-topbar-note {
     display: none;

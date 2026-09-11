@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError, DASHBOARD_CACHE_TTL_MS, peekReadCache, primeReadCache } from "./api";
-import { Brand } from "./Auth";
 import CreateReviewForm from "./CreateReviewForm";
 import {
   appendReviewPage,
@@ -11,7 +10,7 @@ import {
   DASHBOARD_STATUS_ORDER,
 } from "./dashboard";
 import type { DashboardRefreshOptions, DashboardStreamState } from "./dashboard";
-import { hasPermission, roleLabels } from "./rbac";
+import { hasPermission } from "./rbac";
 import type {
   AuthUser,
   DashboardSnapshot,
@@ -169,13 +168,10 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
 interface DashboardProps {
   user: AuthUser;
   onSignedOut: (message?: string) => void;
-  onOpenSettings: () => void;
-  onOpenKnowledge: () => void;
-  onOpenRetrieval?: () => void;
   onOpenReview: (reviewRunId: string) => void;
 }
 
-function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenRetrieval, onOpenReview }: DashboardProps) {
+function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
   const cachedSnapshot = peekReadCache<DashboardSnapshot>("dashboard:first:50");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(cachedSnapshot ?? null);
   const [streamState, setStreamState] = useState<DashboardStreamState>("connecting");
@@ -371,14 +367,6 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
     });
   }, [snapshot, activeFilter, searchKeyword]);
 
-  async function logout() {
-    try {
-      await api.logout();
-    } finally {
-      onSignedOut();
-    }
-  }
-
   async function loadMoreReviews() {
     const cursor = snapshot?.next_cursor;
     if (!cursor || loadingMore) return;
@@ -407,77 +395,9 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
   const worker = onlineWorkers[0] ?? workers[0] ?? snapshot?.worker;
   const workerHealthy = onlineWorkers.length > 0;
   const canManageReviews = hasPermission(user, "reviews:manage");
-  const canManageSettings = hasPermission(user, "settings:manage");
-  const canManageKnowledge = hasPermission(user, "knowledge:manage");
 
   return (
     <div className="dash-shell">
-      {/* 顶栏：品牌 + 工作区切换 + 状态与用户 */}
-      <header className="console-topbar dash-topbar">
-        <div className="dash-topbar-left">
-          <Brand />
-        </div>
-
-        <nav className="dash-workspace-switch" aria-label="工作区导航">
-          <span className="switch-item is-current" aria-current="page">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
-            审查控制台
-          </span>
-          {canManageKnowledge && onOpenRetrieval && (
-            <button type="button" className="switch-item" onClick={onOpenRetrieval}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              代码检索
-            </button>
-          )}
-          {canManageKnowledge && (
-            <button type="button" className="switch-item" onClick={onOpenKnowledge} title="管理 RAG 知识库" aria-label="管理 RAG 知识库">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-              知识库
-            </button>
-          )}
-          {canManageSettings && (
-            <button type="button" className="switch-item" onClick={onOpenSettings} title="AI 运行设置" aria-label="打开 AI 运行设置">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.6.67 1.02 1.29 1.03H21v4h-.31c-.62 0-1.15.42-1.29 1.03Z" />
-              </svg>
-              AI 设置
-            </button>
-          )}
-        </nav>
-
-        <div className="dash-topbar-right">
-          <div className={`dash-stream-pill state-${streamState}`}>
-            <span className="beacon-circle" />
-            <span className="beacon-label">
-              {streamState === "live"
-                ? "实时同步中"
-                : streamState === "connecting"
-                  ? "建立连接中"
-                  : "正在重连"}
-            </span>
-          </div>
-
-          <div className="console-user-pill">
-            <div className="user-avatar-sun">
-              {user.username.slice(0, 1).toUpperCase()}
-            </div>
-            <span className="user-identity">
-              <span className="user-username">{user.username}</span>
-              <small>{roleLabels[user.role]}</small>
-            </span>
-          </div>
-
-          <button type="button" className="console-icon-btn" onClick={logout} title="退出登录" aria-label="退出登录">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-              <polyline points="16 17 21 12 16 7"/>
-              <line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-          </button>
-        </div>
-      </header>
-
       <main className="dash-main">
         {pageMessage && (
           <div className="toast-banner" role="alert">
@@ -490,14 +410,23 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
           </div>
         )}
 
-        {/* 问候 Hero：问候语 + 快照操作 */}
+        {/* 概览条：问候 + 任务概况 + 同步状态与刷新，单行紧凑 */}
         <section className="dash-hero">
           <div className="dash-hero-copy">
-            <span className="eyebrow">REVIEW PIPELINE</span>
             <h1>{greetingByHour()}，{user.username}</h1>
-            <p>这里是今天的审查流水线，共 {snapshot?.total_reviews ?? 0} 个任务，{onlineWorkers.length} 个 Worker 节点在线。</p>
+            <p>共 {snapshot?.total_reviews ?? 0} 个任务 · {onlineWorkers.length} 个 Worker 节点在线</p>
           </div>
           <div className="dash-hero-actions">
+            <div className={`dash-stream-pill state-${streamState}`}>
+              <span className="beacon-circle" />
+              <span className="beacon-label">
+                {streamState === "live"
+                  ? "实时同步中"
+                  : streamState === "connecting"
+                    ? "建立连接中"
+                    : "正在重连"}
+              </span>
+            </div>
             <div className="dash-snapshot-chip" title="最近快照同步时间">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="12" cy="12" r="10" />
@@ -562,50 +491,6 @@ function Dashboard({ user, onSignedOut, onOpenSettings, onOpenKnowledge, onOpenR
             <div className="dash-table-toolbar">
               <div className="toolbar-left-group">
                 <h3>实时审查流水线</h3>
-                <div className="filter-pill-capsules">
-                  <button
-                    type="button"
-                    className={`pill-btn ${activeFilter === "all" ? "active" : ""}`}
-                    onClick={() => setActiveFilter("all")}
-                  >
-                    全部 ({snapshot?.total_reviews ?? 0})
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill-btn ${activeFilter === "running" ? "active" : ""}`}
-                    onClick={() => setActiveFilter("running")}
-                  >
-                    处理中 ({snapshot?.status_counts.running ?? 0})
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill-btn ${activeFilter === "waiting_for_ci" ? "active" : ""}`}
-                    onClick={() => setActiveFilter("waiting_for_ci")}
-                  >
-                    等待 CI ({snapshot?.status_counts.waiting_for_ci ?? 0})
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill-btn ${activeFilter === "ready_for_review" ? "active" : ""}`}
-                    onClick={() => setActiveFilter("ready_for_review")}
-                  >
-                    等待 AI ({snapshot?.status_counts.ready_for_review ?? 0})
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill-btn ${activeFilter === "queued" ? "active" : ""}`}
-                    onClick={() => setActiveFilter("queued")}
-                  >
-                    排队中 ({snapshot?.status_counts.queued ?? 0})
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill-btn ${activeFilter === "completed" ? "active" : ""}`}
-                    onClick={() => setActiveFilter("completed")}
-                  >
-                    已完成 ({snapshot?.status_counts.completed ?? 0})
-                  </button>
-                </div>
               </div>
 
               <div className="toolbar-right-group">

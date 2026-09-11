@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError } from "./api";
-import { allowedReviewActions, hasPermission, roleLabels } from "./rbac";
+import { allowedReviewActions, hasPermission } from "./rbac";
 import FindingCard from "./ReviewFindingCard";
 import RetrievalTracePanel from "./RetrievalTracePanel";
 import "./styles/retrieval.css";
@@ -616,37 +616,26 @@ function ReviewDetailPage({
   ];
   return (
     <div className="review-detail-shell">
-      <header className="console-topbar review-topbar">
-        <button type="button" className="console-icon-btn" onClick={onBack} aria-label="返回任务列表" title="返回任务列表">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
-        </button>
-        <div className="review-detail-brand">
-          <strong>审查任务详情</strong>
-          <span>OpenReviewer / {details.repository}</span>
-        </div>
-        <div className="review-detail-nav-actions">
-          <label className="review-live-toggle">
-            <input
-              id="review-auto-refresh"
-              name="review-auto-refresh"
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(event) => setAutoRefresh(event.target.checked)}
-            />
-            <span className="review-live-dot" />自动刷新
-          </label>
-          <button type="button" className="btn-ghost" onClick={() => void loadDetails()} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
-          <div className="console-user-pill">
-            <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
-            <span className="user-identity">
-              <span className="user-username">{user.username}</span>
-              <small>{roleLabels[user.role]}</small>
-            </span>
+      <main className="review-detail-main">
+        <div className="review-detail-toolbar">
+          <button type="button" className="review-back-link" onClick={onBack}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
+            返回控制台
+          </button>
+          <div className="review-detail-toolbar-actions">
+            <label className="review-live-toggle">
+              <input
+                id="review-auto-refresh"
+                name="review-auto-refresh"
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(event) => setAutoRefresh(event.target.checked)}
+              />
+              <span className="review-live-dot" />自动刷新
+            </label>
+            <button type="button" className="btn-ghost" onClick={() => void loadDetails()} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
           </div>
         </div>
-      </header>
-
-      <main className="review-detail-main">
         {error && <div className="review-inline-error" role="alert">{error}</div>}
         <section className={`review-hero review-hero-${details.phase}`}>
           <div className="review-hero-copy">

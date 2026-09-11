@@ -4,57 +4,66 @@
    ========================================================== */
 
 .dash-shell {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* ---------------- 顶栏 ---------------- */
-.dash-topbar {
-  gap: 18px;
-}
-.dash-topbar-left {
+/* ---------------- 主区域 ---------------- */
+.dash-main {
+  flex: 1;
+  width: 100%;
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 14px 28px 30px;
   display: flex;
-  align-items: center;
-  flex-shrink: 0;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.dash-workspace-switch {
+/* 概览条：问候 + 同步状态，单行紧凑 */
+.dash-hero {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 13px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border-soft);
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  animation: rise-in 0.4s var(--ease-smooth);
 }
-.dash-workspace-switch .switch-item {
+.dash-hero-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.dash-hero-copy h1 {
+  font-size: 17px;
+  font-weight: 830;
+  letter-spacing: -0.02em;
+}
+.dash-hero-copy p {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.dash-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.dash-snapshot-chip {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 14px;
+  padding: 6px 12px;
   border-radius: 10px;
-  color: var(--text-muted);
-  font-size: 12.5px;
-  font-weight: 700;
-  white-space: nowrap;
-  transition: color 0.18s, background 0.18s, box-shadow 0.18s;
-}
-.dash-workspace-switch .switch-item:hover {
-  color: var(--text-secondary);
-}
-.dash-workspace-switch .switch-item.is-current {
   background: var(--bg-card);
-  color: var(--accent);
-  box-shadow: 0 3px 10px -3px rgba(16, 31, 56, 0.18);
-  cursor: default;
-}
-
-.dash-topbar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 11px;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 650;
+  box-shadow: var(--shadow-card);
 }
 
 /* 实时状态胶囊 */
@@ -62,9 +71,9 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 13px;
+  padding: 6px 12px;
   border-radius: 999px;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 750;
   border: 1px solid transparent;
 }
@@ -102,71 +111,20 @@
   color: rgba(194, 65, 12, 0.3);
 }
 
-/* ---------------- 主区域 ---------------- */
-.dash-main {
-  flex: 1;
-  width: 100%;
-  max-width: 1560px;
-  margin: 0 auto;
-  padding: 24px 28px 44px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-/* 问候 Hero */
-.dash-hero {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  flex-wrap: wrap;
-  animation: rise-in 0.4s var(--ease-smooth);
-}
-.dash-hero-copy h1 {
-  margin-top: 8px;
-  font-size: clamp(22px, 2.4vw, 30px);
-  font-weight: 830;
-  letter-spacing: -0.02em;
-}
-.dash-hero-copy p {
-  margin-top: 5px;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-.dash-hero-actions {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
-.dash-snapshot-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 14px;
-  border-radius: 11px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-soft);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 650;
-  box-shadow: var(--shadow-card);
-}
-
-/* ---------------- 状态统计轨道 ---------------- */
+/* ---------------- 状态统计轨道（兼任筛选器） ---------------- */
 .dash-stat-rail {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 13px;
+  gap: 10px;
   animation: rise-in 0.45s var(--ease-smooth) 0.05s backwards;
 }
 .dash-stat-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 15px 16px 13px;
-  border-radius: var(--radius-lg);
+  gap: 5px;
+  padding: 10px 12px 9px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-card);
@@ -176,7 +134,7 @@
   transition: transform 0.2s var(--ease-smooth), box-shadow 0.2s, border-color 0.2s;
 }
 .dash-stat-card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-2px);
   box-shadow: var(--shadow-lift);
   border-color: var(--border-glow);
 }
@@ -196,34 +154,35 @@
 .stat-card-top {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
 }
 .stat-icon-chip {
   display: flex;
-  width: 28px;
-  height: 28px;
+  width: 23px;
+  height: 23px;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
+  border-radius: 7px;
   background: var(--accent-softer);
   border: 1px solid var(--border-glow);
   color: var(--accent);
-  font-size: 13px;
+  font-size: 11.5px;
   font-weight: 800;
 }
 .stat-card-name {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
+  white-space: nowrap;
 }
 .stat-card-number {
-  font-size: 27px;
+  font-size: 21px;
   font-weight: 830;
   letter-spacing: -0.02em;
-  line-height: 1;
+  line-height: 1.05;
 }
 .stat-card-bar {
-  height: 4px;
+  height: 3px;
   border-radius: 999px;
   background: var(--bg-inset);
   overflow: hidden;
@@ -276,9 +235,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
   flex-wrap: wrap;
-  padding: 17px 20px 14px;
+  padding: 12px 16px 10px;
   border-bottom: 1px solid var(--border-soft);
 }
 .toolbar-left-group {
@@ -289,35 +248,10 @@
   min-width: 0;
 }
 .toolbar-left-group h3 {
-  font-size: 15.5px;
+  font-size: 14.5px;
   font-weight: 800;
   letter-spacing: -0.01em;
   white-space: nowrap;
-}
-.filter-pill-capsules {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-.filter-pill-capsules .pill-btn {
-  padding: 5px 11px;
-  border-radius: 999px;
-  border: 1px solid var(--border-soft);
-  background: var(--bg-card-soft);
-  color: var(--text-muted);
-  font-size: 11.5px;
-  font-weight: 700;
-  transition: color 0.18s, border-color 0.18s, background 0.18s;
-}
-.filter-pill-capsules .pill-btn:hover {
-  color: var(--text-secondary);
-  border-color: var(--border-glow);
-}
-.filter-pill-capsules .pill-btn.active {
-  background: var(--accent-soft);
-  border-color: var(--border-glow);
-  color: var(--accent);
 }
 
 .dash-search-box {
@@ -373,7 +307,7 @@
   min-width: 900px;
 }
 .dash-data-table thead th {
-  padding: 11px 16px;
+  padding: 8px 14px;
   background: var(--bg-card-soft);
   border-bottom: 1px solid var(--border-soft);
   color: var(--text-muted);
@@ -384,7 +318,7 @@
   white-space: nowrap;
 }
 .dash-data-table tbody td {
-  padding: 14px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft);
   vertical-align: middle;
 }
@@ -644,13 +578,13 @@
 .dash-side-rail {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
 }
 
 /* Worker 节点卡 */
 .dash-worker-card {
-  padding: 18px;
+  padding: 14px;
   position: relative;
   overflow: hidden;
 }
@@ -670,16 +604,16 @@
 .worker-header-bar {
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: 10px;
 }
 .worker-core-badge {
   display: flex;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 14px;
+  border-radius: 11px;
   background: var(--gradient-aurora);
   color: #fff;
   box-shadow: 0 10px 20px -8px rgba(79, 70, 229, 0.5);
@@ -743,15 +677,15 @@
 .worker-specs-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 9px;
-  margin-top: 15px;
+  gap: 7px;
+  margin-top: 11px;
 }
 .spec-cell {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 11px;
-  border-radius: 11px;
+  gap: 3px;
+  padding: 7px 9px;
+  border-radius: 9px;
   background: var(--bg-card-soft);
   border: 1px solid var(--border-soft);
   min-width: 0;
@@ -775,17 +709,17 @@
   font-size: 10.5px;
 }
 .worker-node-list {
-  margin-top: 12px;
+  margin-top: 9px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 .worker-node-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 11px;
-  border-radius: 9px;
+  gap: 8px;
+  padding: 5px 9px;
+  border-radius: 8px;
   background: var(--bg-card-soft);
   border: 1px solid var(--border-soft);
   font-size: 11px;
@@ -821,8 +755,8 @@
 .bento-launchpad-card {
   display: flex;
   flex-direction: column;
-  gap: 15px;
-  padding: 18px;
+  gap: 11px;
+  padding: 14px;
   border-radius: var(--radius-lg);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
@@ -831,36 +765,36 @@
 .launchpad-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 .icon-badge-warm {
   display: flex;
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 13px;
+  border-radius: 11px;
   background: var(--gradient-aurora);
   color: #fff;
   box-shadow: 0 8px 18px -8px rgba(79, 70, 229, 0.5);
 }
 .launchpad-head h3 {
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 800;
 }
 .launchpad-head p {
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .preset-quick-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex-wrap: wrap;
-  padding: 9px 11px;
-  border-radius: 11px;
+  padding: 7px 10px;
+  border-radius: 10px;
   background: var(--bg-card-soft);
   border: 1px dashed var(--border-strong);
 }
@@ -886,31 +820,31 @@
 .launchpad-form-grid {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 9px;
 }
 .two-cols-inputs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 8px;
 }
 .compact-input-control {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 .compact-input-control > span {
   color: var(--text-secondary);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
 }
 .compact-input-control input {
   width: 100%;
-  padding: 8.5px 12px;
-  border-radius: 10px;
+  padding: 7px 10px;
+  border-radius: 9px;
   border: 1px solid var(--border-strong);
   background: var(--bg-card-soft);
-  font-size: 12.5px;
+  font-size: 12px;
   transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
 }
 .compact-input-control input:focus {
@@ -929,11 +863,11 @@
   justify-content: center;
   gap: 8px;
   width: 100%;
-  padding: 11px;
-  border-radius: 12px;
+  padding: 9px;
+  border-radius: 11px;
   background: var(--gradient-aurora);
   color: #fff;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 800;
   box-shadow: 0 10px 22px -10px rgba(79, 70, 229, 0.55);
   transition: transform 0.18s var(--ease-smooth), box-shadow 0.18s, opacity 0.18s;
@@ -979,14 +913,6 @@
   }
 }
 @media (max-width: 900px) {
-  .dash-workspace-switch {
-    order: 3;
-    width: 100%;
-    overflow-x: auto;
-  }
-  .dash-topbar {
-    flex-wrap: wrap;
-  }
   .dash-stat-rail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

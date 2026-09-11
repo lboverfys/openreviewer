@@ -41,15 +41,12 @@ import type {
   AiProviderUpdate,
   AiReasoningEffort,
   AiSettings,
-  AuthUser,
   ConfigurationAudit,
   ReviewPolicyUpdate,
 } from "./types";
 import { errorMessage, formatDate } from "./utils";
 
 interface SettingsPageProps {
-  user: AuthUser;
-  onBack: () => void;
   onSignedOut: (message?: string) => void;
 }
 
@@ -142,14 +139,13 @@ function ProviderStatus({ settings }: { settings: AiProviderSettings }) {
 }
 
 export default function SettingsPage({
-  user,
-  onBack,
   onSignedOut,
 }: SettingsPageProps) {
   // 复用未过期快照，后台 refresh 校验最新版本，避免路由切换时整页 loading。
   const cachedSettings = peekReadCache<AiSettings>("ai-settings");
   const initialSettings = cachedSettings ? normalizeAiSettings(cachedSettings) : null;
   const [settings, setSettings] = useState<AiSettings | null>(initialSettings);
+  const [activeTab, setActiveTab] = useState<"provider" | "agents" | "policy">("provider");
   const [policyDraft, setPolicyDraft] = useState<ReviewPolicyDraft | null>(
     initialSettings ? reviewPolicyDraft(initialSettings) : null,
   );
@@ -612,14 +608,6 @@ export default function SettingsPage({
     }
   }
 
-  async function logout() {
-    try {
-      await api.logout();
-    } finally {
-      onSignedOut();
-    }
-  }
-
   const providerDirty = Boolean(
     selectedSettings && draft && providerHasChanges(selectedSettings, draft),
   );
@@ -628,50 +616,28 @@ export default function SettingsPage({
   );
   return (
     <div className="settings-shell">
-      <header className="console-topbar settings-topbar">
-        <div className="settings-nav-start">
-          <button type="button" className="console-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
-          </button>
-          <div className="settings-heading-lockup">
-            <div className="settings-heading-icon">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.6.67 1.02 1.29 1.03H21v4h-.31c-.62 0-1.15.42-1.29 1.03Z" /></svg>
-            </div>
-            <div><strong>AI 设置</strong><span>OpenReviewer</span></div>
-          </div>
-        </div>
-        <div className="settings-nav-end">
-          <button type="button" className="console-icon-btn" onClick={() => void refreshAllSettings()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
-          </button>
-          <div className="console-user-pill">
-            <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
-            <span className="user-identity"><span className="user-username">{user.username}</span></span>
-          </div>
-          <button type="button" className="console-icon-btn" onClick={logout} title="退出登录" aria-label="退出登录">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
-          </button>
-        </div>
-      </header>
-
       <main className="settings-main">
+        {/* 页头：标题 + 版本信息 + 运行状态 + 刷新，单行紧凑 */}
         <section className="settings-hero">
           <div className="settings-hero-copy">
-            <span className="eyebrow">MODEL CONNECTION</span>
-            <h1>模型服务</h1>
-            <p className="settings-intro">支持官方接口和兼容中转站，日常只需配置地址、模型和密钥。</p>
+            <h1>AI 设置</h1>
             <div className="settings-meta-line">
               <span>配置版本 {settings?.revision ?? "--"}</span>
               <span>更新于 {formatDate(settings?.updated_at ?? null)}</span>
               <span>修改人 {settings?.updated_by ?? "--"}</span>
             </div>
           </div>
-          <div className={`settings-runtime-card ${settings?.active_provider ? "is-active" : "is-idle"}`}>
-            <span className="settings-status-dot" />
-            <div>
-              <small>当前运行服务</small>
-              <strong>{settings?.active_provider ? `${providerShortLabels[settings.active_provider]} 运行中` : "还未启用模型"}</strong>
+          <div className="settings-hero-side">
+            <div className={`settings-runtime-card ${settings?.active_provider ? "is-active" : "is-idle"}`}>
+              <span className="settings-status-dot" />
+              <div>
+                <small>当前运行服务</small>
+                <strong>{settings?.active_provider ? `${providerShortLabels[settings.active_provider]} 运行中` : "还未启用模型"}</strong>
+              </div>
             </div>
+            <button type="button" className="console-icon-btn" onClick={() => void refreshAllSettings()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
+            </button>
           </div>
         </section>
 
@@ -680,8 +646,25 @@ export default function SettingsPage({
         {loading || !settings || !selectedSettings || !draft ? (
           <div className="settings-loading">正在读取设置...</div>
         ) : (
-          <>
-            <section className="settings-provider-switch" aria-label="接口类型">
+          <div className="settings-layout">
+            <nav className="settings-tab-nav" aria-label="设置分区">
+              <button type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => setActiveTab("provider")}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+                模型服务
+              </button>
+              <button type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => setActiveTab("agents")}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+                Agent 配置
+              </button>
+              <button type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => setActiveTab("policy")}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                审查范围
+              </button>
+            </nav>
+
+            <div className="settings-tab-content">
+              <div className="settings-tab-panel" hidden={activeTab !== "provider"}>
+                <section className="settings-provider-switch" aria-label="接口类型">
               {settings.providers.map((provider) => (
                 <button key={provider.provider} type="button" className={`settings-provider-card ${selectedProvider === provider.provider ? "is-selected" : ""}`} onClick={() => setSelectedProvider(provider.provider)}>
                   <span className={`provider-mark is-${provider.provider}`}>{provider.provider === "openai" ? "O" : "A"}</span>
@@ -839,41 +822,6 @@ export default function SettingsPage({
               </div>
             </section>
 
-            {policyDraft && (
-              <section className="settings-policy-section">
-              <form onSubmit={saveReviewPolicy}>
-                <div className="settings-section-heading settings-policy-heading">
-                  <div>
-                    <span className="settings-eyebrow">REVIEW GUARDRAILS</span>
-                    <h2>审查范围</h2>
-                    <p>系统会自动管理模型上下文、分批和输出长度，避免遗漏可审查内容。</p>
-                  </div>
-                  {policyDirty && <span className="settings-unsaved-badge">有修改待保存</span>}
-                </div>
-                <fieldset disabled={Boolean(busyAction)}>
-                  <div className="settings-policy-group">
-                    <div className="settings-inline-heading">
-                      <strong>代码范围</strong>
-                      <small>控制一次审查最多接收多少文件、规则层级和文本体积。</small>
-                    </div>
-                    <div className="settings-form-grid settings-policy-grid">
-                      <NumberField name="policy-max-units" label="最多审查单元" value={policyDraft.maxUnits} min="1" max="3000" onChange={(value) => updatePolicyDraft("maxUnits", value)} />
-                      <NumberField name="policy-scope-depth" label="规则目录深度" value={policyDraft.maxScopeDepth} min="1" max="64" onChange={(value) => updatePolicyDraft("maxScopeDepth", value)} />
-                      <NumberField name="policy-unit-kib" label="单文件输入上限" value={policyDraft.maxUnitInputKib} min="4" max="10240" suffix="KiB" onChange={(value) => updatePolicyDraft("maxUnitInputKib", value)} />
-                      <NumberField name="policy-total-mib" label="总输入上限" value={policyDraft.maxTotalInputMib} min="0.00390625" max="100" step="0.00390625" suffix="MiB" onChange={(value) => updatePolicyDraft("maxTotalInputMib", value)} />
-                    </div>
-                  </div>
-                </fieldset>
-                <div className="settings-action-bar settings-policy-action">
-                  <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || !policyDirty}>
-                    {busyAction === "save-policy" ? "保存中..." : "保存审查策略"}
-                  </button>
-                  {policyMessage && <div className={`settings-inline-feedback is-${policyMessageKind}`} role="status">{policyMessage}</div>}
-                </div>
-              </form>
-              </section>
-            )}
-
             <details
               className="settings-audit-section"
               onToggle={(event) => {
@@ -899,9 +847,51 @@ export default function SettingsPage({
                 {!auditsLoading && auditsLoaded && audits.length === 0 && <div className="settings-empty-audit">暂无配置变更</div>}
               </div>
             </details>
-          </>
+              </div>
+
+              <div className="settings-tab-panel" hidden={activeTab !== "policy"}>
+                {policyDraft && (
+                  <section className="settings-policy-section">
+                  <form onSubmit={saveReviewPolicy}>
+                    <div className="settings-section-heading settings-policy-heading">
+                      <div>
+                        <span className="settings-eyebrow">REVIEW GUARDRAILS</span>
+                        <h2>审查范围</h2>
+                        <p>系统会自动管理模型上下文、分批和输出长度，避免遗漏可审查内容。</p>
+                      </div>
+                      {policyDirty && <span className="settings-unsaved-badge">有修改待保存</span>}
+                    </div>
+                    <fieldset disabled={Boolean(busyAction)}>
+                      <div className="settings-policy-group">
+                        <div className="settings-inline-heading">
+                          <strong>代码范围</strong>
+                          <small>控制一次审查最多接收多少文件、规则层级和文本体积。</small>
+                        </div>
+                        <div className="settings-form-grid settings-policy-grid">
+                          <NumberField name="policy-max-units" label="最多审查单元" value={policyDraft.maxUnits} min="1" max="3000" onChange={(value) => updatePolicyDraft("maxUnits", value)} />
+                          <NumberField name="policy-scope-depth" label="规则目录深度" value={policyDraft.maxScopeDepth} min="1" max="64" onChange={(value) => updatePolicyDraft("maxScopeDepth", value)} />
+                          <NumberField name="policy-unit-kib" label="单文件输入上限" value={policyDraft.maxUnitInputKib} min="4" max="10240" suffix="KiB" onChange={(value) => updatePolicyDraft("maxUnitInputKib", value)} />
+                          <NumberField name="policy-total-mib" label="总输入上限" value={policyDraft.maxTotalInputMib} min="0.00390625" max="100" step="0.00390625" suffix="MiB" onChange={(value) => updatePolicyDraft("maxTotalInputMib", value)} />
+                        </div>
+                      </div>
+                    </fieldset>
+                    <div className="settings-action-bar settings-policy-action">
+                      <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || !policyDirty}>
+                        {busyAction === "save-policy" ? "保存中..." : "保存审查策略"}
+                      </button>
+                      {policyMessage && <div className={`settings-inline-feedback is-${policyMessageKind}`} role="status">{policyMessage}</div>}
+                    </div>
+                  </form>
+                  </section>
+                )}
+              </div>
+            </div>
+          </div>
         )}
-        <AgentSettingsPanel parentRevision={settings?.revision ?? null} refreshRequest={agentRefreshRequest} onRevisionChange={handleAgentRevisionChange} onSignedOut={onSignedOut} />
+        {/* Agent 面板始终挂载（hidden 切换），保留未保存草稿并维持其懒加载 */}
+        <div className="settings-tab-panel" hidden={activeTab !== "agents" || loading || !settings || !selectedSettings || !draft}>
+          <AgentSettingsPanel parentRevision={settings?.revision ?? null} refreshRequest={agentRefreshRequest} onRevisionChange={handleAgentRevisionChange} onSignedOut={onSignedOut} />
+        </div>
       </main>
     </div>
   );

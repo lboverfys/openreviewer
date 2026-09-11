@@ -1,6 +1,7 @@
-import { lazy, useCallback, useEffect, useState } from "react";
+import { lazy, useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { api, ApiError } from "./api";
+import AppShell from "./AppShell";
 import { LoadingScreen, Login } from "./Auth";
 import PageBoundary from "./PageBoundary";
 import { hasPermission } from "./rbac";
@@ -63,13 +64,6 @@ function AppContent() {
   const onBack = useCallback(() => {
     window.location.hash = "";
   }, []);
-  const onOpenSettings = useCallback(() => {
-    window.location.hash = "settings";
-  }, []);
-  const onOpenKnowledge = useCallback(() => {
-    window.location.hash = "knowledge";
-  }, []);
-  const onOpenRetrieval = useCallback(() => { window.location.hash = "retrieval"; }, []);
   const onOpenReview = useCallback((reviewRunId: string) => {
     window.location.hash = `review/${encodeURIComponent(reviewRunId)}`;
   }, []);
@@ -123,30 +117,16 @@ function AppContent() {
       />
     );
   }
+
+  let page: ReactNode;
   if (view.kind === "settings" && hasPermission(session.user, "settings:manage")) {
-    return (
-      <SettingsPage
-        user={session.user}
-        onBack={onBack}
-        onSignedOut={onSignedOut}
-      />
-    );
-  }
-  if (view.kind === "knowledge" && hasPermission(session.user, "knowledge:manage")) {
-    return (
-      <KnowledgePage
-        user={session.user}
-        onBack={onBack}
-        onOpenSettings={onOpenSettings}
-        onSignedOut={onSignedOut}
-      />
-    );
-  }
-  if (view.kind === "retrieval" && hasPermission(session.user, "knowledge:manage")) {
-    return <RetrievalPage user={session.user} onBack={onBack} onSignedOut={onSignedOut} initialReviewRunId={view.reviewRunId} />;
-  }
-  if (view.kind === "review") {
-    return (
+    page = <SettingsPage onSignedOut={onSignedOut} />;
+  } else if (view.kind === "knowledge" && hasPermission(session.user, "knowledge:manage")) {
+    page = <KnowledgePage onSignedOut={onSignedOut} />;
+  } else if (view.kind === "retrieval" && hasPermission(session.user, "knowledge:manage")) {
+    page = <RetrievalPage onSignedOut={onSignedOut} initialReviewRunId={view.reviewRunId} />;
+  } else if (view.kind === "review") {
+    page = (
       <ReviewDetailPage
         user={session.user}
         reviewRunId={view.reviewRunId}
@@ -155,15 +135,18 @@ function AppContent() {
         onSignedOut={onSignedOut}
       />
     );
+  } else {
+    page = (
+      <DashboardPage
+        user={session.user}
+        onSignedOut={onSignedOut}
+        onOpenReview={onOpenReview}
+      />
+    );
   }
   return (
-    <DashboardPage
-      user={session.user}
-      onSignedOut={onSignedOut}
-      onOpenSettings={onOpenSettings}
-      onOpenKnowledge={onOpenKnowledge}
-      onOpenRetrieval={onOpenRetrieval}
-      onOpenReview={onOpenReview}
-    />
+    <AppShell user={session.user} view={view} onSignedOut={onSignedOut}>
+      {page}
+    </AppShell>
   );
 }

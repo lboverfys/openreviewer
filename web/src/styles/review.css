@@ -5,7 +5,8 @@
    ========================================================== */
 
 .review-detail-shell {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -62,38 +63,55 @@
 .review-quiet-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--border-glow); }
 .review-quiet-btn:disabled { opacity: 0.5; }
 
-/* ---------------- 顶栏 ---------------- */
-.review-topbar { gap: 13px; }
-.review-detail-brand {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-.review-detail-brand strong { font-size: 14px; font-weight: 800; }
-.review-detail-brand span { color: var(--text-faint); font-size: 10px; letter-spacing: 0.04em; }
-.review-detail-nav-actions {
-  margin-left: auto;
+/* ---------------- 页内工具行（返回 + 实时控制） ---------------- */
+.review-detail-toolbar {
   display: flex;
   align-items: center;
-  gap: 11px;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.review-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: var(--shadow-card);
+  transition: color 0.18s, border-color 0.18s;
+}
+.review-back-link:hover {
+  color: var(--accent);
+  border-color: var(--border-glow);
+}
+.review-detail-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
 }
 .review-live-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 13px;
+  padding: 6px 12px;
   border-radius: 999px;
   border: 1px solid var(--border-soft);
   background: var(--bg-card);
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
   user-select: none;
   transition: border-color 0.18s, color 0.18s;
 }
 .review-live-toggle:hover { border-color: var(--border-glow); color: var(--text-secondary); }
-.review-live-toggle input { width: 14px; height: 14px; accent-color: var(--accent); }
+.review-live-toggle input { width: 13px; height: 13px; accent-color: var(--accent); }
 .review-live-dot {
   width: 7px;
   height: 7px;
@@ -109,10 +127,10 @@
   width: 100%;
   max-width: 1500px;
   margin: 0 auto;
-  padding: 22px 26px 42px;
+  padding: 14px 26px 32px;
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 12px;
 }
 .review-inline-error {
   padding: 12px 16px;

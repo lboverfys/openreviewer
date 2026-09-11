@@ -8,7 +8,6 @@ import {
   subscribeReadCache,
 } from "./api";
 import type {
-  AuthUser,
   KnowledgeCitation,
   KnowledgeDocument,
   KnowledgeLibrary,
@@ -17,9 +16,6 @@ import type {
 import { errorMessage, formatDate } from "./utils";
 
 interface KnowledgePageProps {
-  user: AuthUser;
-  onBack: () => void;
-  onOpenSettings: () => void;
   onSignedOut: (message?: string) => void;
 }
 
@@ -60,9 +56,6 @@ function documentDraftIsDirty(
 }
 
 export default function KnowledgePage({
-  user,
-  onBack,
-  onOpenSettings,
   onSignedOut,
 }: KnowledgePageProps) {
   // 左侧列表是短时缓存数据；先同步绘制它，详情请求会在后台继续校验，
@@ -342,24 +335,9 @@ export default function KnowledgePage({
 
   return (
     <div className="knowledge-shell">
-      <header className="console-topbar knowledge-topbar">
-        <button type="button" className="console-icon-btn" onClick={onBack} title="返回审查控制台" aria-label="返回审查控制台">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
-        </button>
-        <div className="knowledge-brand"><strong>知识库</strong><span>OpenReviewer / Markdown RAG</span></div>
-        <div className="knowledge-nav-actions">
-          <button type="button" className="btn-ghost" onClick={onOpenSettings}>AI 设置</button>
-          <div className="console-user-pill">
-            <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
-            <span className="user-identity"><span className="user-username">{user.username}</span></span>
-          </div>
-        </div>
-      </header>
-
       <main className="knowledge-main">
         <section className="knowledge-hero">
           <div className="knowledge-hero-copy">
-            <span className="eyebrow">RAG KNOWLEDGE BASE</span>
             <h1>审查知识文档</h1>
             <p>维护新的审查规则时会生成不可变版本，已开始的任务继续使用原知识快照。</p>
           </div>

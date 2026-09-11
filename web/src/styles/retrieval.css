@@ -5,33 +5,10 @@
    ========================================================== */
 
 .retrieval-shell {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.retrieval-topbar {
-  gap: 13px;
-}
-.retrieval-brand-lockup {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-.retrieval-brand-lockup strong {
-  font-size: 14px;
-  font-weight: 800;
-}
-.retrieval-brand-lockup span {
-  color: var(--text-faint);
-  font-size: 10px;
-  letter-spacing: 0.05em;
-}
-.retrieval-topbar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 11px;
 }
 
 .retrieval-main {
@@ -39,46 +16,50 @@
   width: 100%;
   max-width: 1460px;
   margin: 0 auto;
-  padding: 24px 28px 44px;
+  padding: 14px 28px 30px;
   display: flex;
   flex-direction: column;
-  gap: 17px;
+  gap: 12px;
 }
 
-/* ---------------- Hero ---------------- */
+/* ---------------- Hero（单行紧凑） ---------------- */
 .retrieval-hero {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 14px;
   flex-wrap: wrap;
   animation: rise-in 0.4s var(--ease-smooth);
 }
+.retrieval-hero-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .retrieval-hero-copy h1 {
-  margin-top: 8px;
-  font-size: clamp(21px, 2.3vw, 29px);
+  font-size: 17px;
   font-weight: 830;
   letter-spacing: -0.02em;
 }
 .retrieval-hero-copy p {
-  margin-top: 5px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 /* ---------------- 概览统计 ---------------- */
 .retrieval-overview {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 13px;
+  gap: 10px;
   animation: rise-in 0.45s var(--ease-smooth) 0.05s backwards;
 }
 .retrieval-overview-card {
   display: flex;
   align-items: center;
-  gap: 13px;
-  padding: 16px 17px;
-  border-radius: var(--radius-lg);
+  gap: 11px;
+  padding: 11px 13px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-card);
@@ -90,13 +71,13 @@
 }
 .retrieval-overview-icon {
   display: flex;
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 13px;
-  font-size: 17px;
+  border-radius: 10px;
+  font-size: 15px;
 }
 .retrieval-overview-icon.is-base { background: var(--accent-softer); border: 1px solid var(--border-glow); color: var(--accent); }
 .retrieval-overview-icon.is-queue { background: var(--color-queued-bg); border: 1px solid var(--color-queued-border); color: var(--color-queued); }

@@ -301,6 +301,76 @@ code, pre {
   -webkit-backdrop-filter: blur(18px);
 }
 
+/* ---------------- 统一应用外壳（AppShell） ---------------- */
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.app-shell > *:not(.app-shell-topbar) {
+  flex: 1;
+  min-height: 0;
+}
+.app-shell-topbar {
+  gap: 18px;
+}
+.app-shell-brand {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.app-shell-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+}
+.app-shell-nav .switch-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: color 0.18s, background 0.18s, box-shadow 0.18s;
+}
+.app-shell-nav .switch-item:hover {
+  color: var(--text-secondary);
+}
+.app-shell-nav .switch-item.is-current {
+  background: var(--bg-card);
+  color: var(--accent);
+  box-shadow: 0 3px 10px -3px rgba(16, 31, 56, 0.18);
+  cursor: default;
+}
+.app-shell-topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+@media (max-width: 900px) {
+  .app-shell-topbar {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 8px 14px;
+  }
+  .app-shell-nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+  }
+  .app-shell-brand small {
+    display: none;
+  }
+}
+
 .console-icon-btn {
   display: inline-flex;
   width: 35px;
