@@ -109,10 +109,38 @@
   animation: beacon-pulse 1.8s infinite;
 }
 
+/* 刷新反馈：页头提示胶囊 + 按钮旋转 */
+.settings-refresh-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  animation: rise-in 0.25s var(--ease-smooth);
+}
+.settings-refresh-notice.is-loading {
+  background: var(--accent-soft);
+  border: 1px solid var(--border-glow);
+  color: var(--accent);
+}
+.settings-refresh-notice.is-success {
+  background: var(--color-completed-bg);
+  border: 1px solid var(--color-completed-border);
+  color: var(--color-completed);
+}
+.settings-refresh-btn.is-spinning > svg {
+  animation: settings-spin 0.9s linear infinite;
+}
+@keyframes settings-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ---------------- 分区 Tab 布局 ---------------- */
 .settings-layout {
   display: grid;
-  grid-template-columns: 188px minmax(0, 1fr);
+  grid-template-columns: 208px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
   animation: rise-in 0.45s var(--ease-smooth) 0.05s backwards;
@@ -122,8 +150,8 @@
   top: 72px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px;
+  gap: 6px;
+  padding: 8px;
   border-radius: var(--radius-lg);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
@@ -132,23 +160,60 @@
 .settings-tab-nav button {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 9px 12px;
-  border-radius: 10px;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid transparent;
   color: var(--text-muted);
-  font-size: 12.5px;
-  font-weight: 700;
   text-align: left;
-  transition: color 0.18s, background 0.18s, box-shadow 0.18s;
+  transition: color 0.18s, background 0.18s, box-shadow 0.18s, border-color 0.18s;
 }
 .settings-tab-nav button:hover {
   color: var(--text-secondary);
   background: var(--bg-card-soft);
+  border-color: var(--border-soft);
 }
 .settings-tab-nav button.is-active {
   background: var(--accent-soft);
+  border-color: var(--border-glow);
   color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--border-glow);
+  box-shadow: 0 8px 18px -10px rgba(79, 70, 229, 0.45);
+}
+.settings-tab-nav button > svg {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  box-sizing: border-box;
+  border-radius: 9px;
+  background: var(--bg-inset);
+  transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+}
+.settings-tab-nav button.is-active > svg {
+  background: var(--gradient-aurora);
+  color: #fff;
+  box-shadow: 0 6px 12px -5px rgba(79, 70, 229, 0.55);
+}
+.settings-tab-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.35;
+}
+.settings-tab-copy strong {
+  font-size: 12.5px;
+  font-weight: 800;
+}
+.settings-tab-copy small {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-tab-nav button.is-active .settings-tab-copy small {
+  color: var(--accent);
+  opacity: 0.72;
 }
 .settings-tab-content {
   min-width: 0;
@@ -1159,32 +1224,82 @@
 .agent-settings-check {
   grid-column: 1 / -1;
 }
-.agent-settings-shared-toggle {
+.agent-settings-fields > .agent-settings-shared-toggle {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: row;
   align-items: center;
-  gap: 9px;
-  padding: 11px 14px;
+  gap: 11px;
+  padding: 9px 12px;
   border-radius: 11px;
-  background: var(--accent-softer);
-  border: 1px solid var(--border-glow);
+  background: var(--bg-card-soft);
+  border: 1px solid var(--border-soft);
   cursor: pointer;
+  transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
+}
+.agent-settings-fields > .agent-settings-shared-toggle:hover {
+  border-color: var(--border-glow);
+}
+.agent-settings-fields > .agent-settings-shared-toggle.is-on {
+  background: var(--accent-softer);
+  border-color: var(--border-glow);
+  box-shadow: inset 0 0 0 1px var(--border-glow);
 }
 .agent-settings-shared-toggle input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--accent);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
-.agent-settings-shared-toggle > span {
+.agent-settings-shared-toggle .agent-shared-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background 0.18s;
+}
+.agent-settings-shared-toggle .agent-shared-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 31, 56, 0.28);
+  transition: transform 0.18s var(--ease-smooth);
+}
+.agent-settings-shared-toggle input:checked + .agent-shared-switch {
+  background: var(--accent);
+}
+.agent-settings-shared-toggle input:checked + .agent-shared-switch::after {
+  transform: translateX(14px);
+}
+.agent-settings-shared-toggle input:focus-visible + .agent-shared-switch {
+  box-shadow: var(--shadow-glow);
+}
+.agent-settings-shared-toggle .agent-shared-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.4;
+}
+.agent-settings-shared-toggle .agent-shared-copy strong {
+  color: var(--text-secondary);
   font-size: 12.5px;
   font-weight: 800;
+}
+.agent-settings-shared-toggle.is-on .agent-shared-copy strong {
   color: var(--accent);
 }
-.agent-settings-shared-toggle small {
-  flex-basis: 100%;
-  color: var(--text-muted);
-  font-size: 11px;
-  padding-left: 24px;
+.agent-settings-shared-toggle .agent-shared-copy small {
+  color: var(--text-faint);
+  font-size: 10.5px;
 }
 .agent-settings-key small {
   color: var(--text-faint);
@@ -1254,7 +1369,12 @@
     overflow-x: auto;
   }
   .settings-tab-nav button {
+    flex: 1 0 auto;
+    justify-content: center;
     white-space: nowrap;
+  }
+  .settings-tab-copy small {
+    display: none;
   }
   .agent-settings-grid {
     grid-template-columns: minmax(0, 1fr);

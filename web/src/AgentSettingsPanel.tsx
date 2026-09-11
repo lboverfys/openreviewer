@@ -534,10 +534,17 @@ export default function AgentSettingsPanel({
                 <span>截断恢复：自动拆批</span>
               </div>
               <div className="agent-settings-fields">
-                <label className="agent-settings-shared-toggle"><input type="checkbox" checked={sharedConnection} onChange={(event) => {
-                  updateDraft(agent, "useSharedConnection", event.target.checked);
-                  if (event.target.checked) updateDraft(agent, "apiKey", "");
-                }} /><span>使用公共连接配置</span><small>{item.shared_connection_configured ? "使用 AI 设置页当前已启用的提供商、地址、协议和密钥" : "请先在 AI 设置页保存、测试并启用公共连接"}</small></label>
+                <label className={`agent-settings-shared-toggle${sharedConnection ? " is-on" : ""}`}>
+                  <input type="checkbox" checked={sharedConnection} onChange={(event) => {
+                    updateDraft(agent, "useSharedConnection", event.target.checked);
+                    if (event.target.checked) updateDraft(agent, "apiKey", "");
+                  }} />
+                  <span className="agent-shared-switch" aria-hidden="true" />
+                  <span className="agent-shared-copy">
+                    <strong>使用公共连接配置</strong>
+                    <small>{item.shared_connection_configured ? "沿用「模型服务」中已启用的提供商、地址、协议和密钥" : "公共连接未就绪，请先在「模型服务」保存、测试并启用"}</small>
+                  </span>
+                </label>
                 <label><span>提供商</span><select value={draft.provider} disabled={sharedConnection} onChange={(event) => {
                   const provider = event.target.value as AiAgentSettings["provider"];
                   updateDraft(agent, "provider", provider);

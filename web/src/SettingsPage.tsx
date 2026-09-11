@@ -171,6 +171,8 @@ export default function SettingsPage({
   const [loading, setLoading] = useState(initialSettings === null);
   const [busyAction, setBusyAction] = useState("");
   const [agentRefreshRequest, setAgentRefreshRequest] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNotice, setRefreshNotice] = useState<"loading" | "success" | null>(null);
   const [showApiKey, setShowApiKey] = useState<Record<AiProvider, boolean>>({
     openai: false,
     anthropic: false,
@@ -300,9 +302,10 @@ export default function SettingsPage({
   }, []);
 
   const refresh = useCallback(
-    async (showLoading = true, signal?: AbortSignal, force = false) => {
+    async (showLoading = true, signal?: AbortSignal, force = false): Promise<boolean> => {
       const sequence = ++refreshSequence.current;
       if (showLoading) setLoading(true);
+      let succeeded = false;
       const reportError = (error: unknown) => {
         if (signal?.aborted || sequence !== refreshSequence.current) return;
         if (error instanceof ApiError && error.status === 401) {
@@ -316,7 +319,10 @@ export default function SettingsPage({
       // 审计记录默认折叠，首屏只请求主配置。
       const settingsRequest = api.aiSettings(signal, force)
         .then((next) => {
-          if (sequence === refreshSequence.current) applySettings(next);
+          if (sequence === refreshSequence.current) {
+            applySettings(next);
+            succeeded = true;
+          }
         })
         .catch(reportError)
         .finally(() => {
@@ -327,6 +333,7 @@ export default function SettingsPage({
           ) setLoading(false);
         });
       await settingsRequest;
+      return succeeded;
     },
     [applySettings, onSignedOut],
   );
@@ -354,12 +361,25 @@ export default function SettingsPage({
     return () => window.clearTimeout(timer);
   }, [message, messageKind]);
 
+  useEffect(() => {
+    if (refreshNotice !== "success") return undefined;
+    const timer = window.setTimeout(() => setRefreshNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [refreshNotice]);
+
   async function refreshAllSettings() {
+    if (refreshing || loading) return;
+    setRefreshing(true);
+    setRefreshNotice("loading");
     clearSettingsCache();
     invalidateAudits();
     setAgentRefreshRequest((current) => current + 1);
-    await refresh();
+    // 手动刷新不再整页闪 loading；用页头提示胶囊和按钮旋转反馈进度。
+    const succeeded = await refresh(false, undefined, true);
     if (auditExpanded) await loadAudits(true);
+    setRefreshing(false);
+    // 失败时的错误文案由全局 message 展示，这里只保留成功提示。
+    setRefreshNotice(succeeded ? "success" : null);
   }
 
   const selectedSettings = useMemo(
@@ -614,6 +634,7 @@ export default function SettingsPage({
   const policyDirty = Boolean(
     settings && policyDraft && reviewPolicyHasChanges(settings, policyDraft),
   );
+  const formReady = Boolean(!loading && settings && selectedSettings && draft);
   return (
     <div className="settings-shell">
       <main className="settings-main">
@@ -635,34 +656,38 @@ export default function SettingsPage({
                 <strong>{settings?.active_provider ? `${providerShortLabels[settings.active_provider]} 运行中` : "还未启用模型"}</strong>
               </div>
             </div>
-            <button type="button" className="console-icon-btn" onClick={() => void refreshAllSettings()} disabled={loading || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置">
+            {refreshNotice && (
+              <span className={`settings-refresh-notice is-${refreshNotice}`} role="status">
+                {refreshNotice === "loading" ? "正在刷新设置…" : "已刷新到最新配置"}
+              </span>
+            )}
+            <button type="button" className={`console-icon-btn settings-refresh-btn${refreshing ? " is-spinning" : ""}`} onClick={() => void refreshAllSettings()} disabled={loading || refreshing || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置" aria-busy={refreshing}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
             </button>
           </div>
         </section>
 
-        {message && (loading || !settings || !selectedSettings || !draft) && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
+        {message && (!formReady || activeTab !== "provider") && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
 
-        {loading || !settings || !selectedSettings || !draft ? (
-          <div className="settings-loading">正在读取设置...</div>
-        ) : (
-          <div className="settings-layout">
-            <nav className="settings-tab-nav" aria-label="设置分区">
-              <button type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => setActiveTab("provider")}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
-                模型服务
-              </button>
-              <button type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => setActiveTab("agents")}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-                Agent 配置
-              </button>
-              <button type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => setActiveTab("policy")}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                审查范围
-              </button>
-            </nav>
+        <div className="settings-layout">
+          <nav className="settings-tab-nav" aria-label="设置分区">
+            <button type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => setActiveTab("provider")}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+              <span className="settings-tab-copy"><strong>模型服务</strong><small>连接、密钥与启用</small></span>
+            </button>
+            <button type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => setActiveTab("agents")}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+              <span className="settings-tab-copy"><strong>Agent 配置</strong><small>四路审查独立调整</small></span>
+            </button>
+            <button type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => setActiveTab("policy")}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <span className="settings-tab-copy"><strong>审查范围</strong><small>输入规模与层级上限</small></span>
+            </button>
+          </nav>
 
-            <div className="settings-tab-content">
+          <div className="settings-tab-content">
+            {!loading && settings && selectedSettings && draft ? (
+              <>
               <div className="settings-tab-panel" hidden={activeTab !== "provider"}>
                 <section className="settings-provider-switch" aria-label="接口类型">
               {settings.providers.map((provider) => (
@@ -885,13 +910,16 @@ export default function SettingsPage({
                   </section>
                 )}
               </div>
+              </>
+            ) : (
+              <div className="settings-loading">正在读取设置...</div>
+            )}
+              {/* Agent 面板始终挂载（hidden 切换），保留未保存草稿并维持其懒加载 */}
+              <div className="settings-tab-panel" hidden={activeTab !== "agents" || !formReady}>
+                <AgentSettingsPanel parentRevision={settings?.revision ?? null} refreshRequest={agentRefreshRequest} onRevisionChange={handleAgentRevisionChange} onSignedOut={onSignedOut} />
+              </div>
             </div>
           </div>
-        )}
-        {/* Agent 面板始终挂载（hidden 切换），保留未保存草稿并维持其懒加载 */}
-        <div className="settings-tab-panel" hidden={activeTab !== "agents" || loading || !settings || !selectedSettings || !draft}>
-          <AgentSettingsPanel parentRevision={settings?.revision ?? null} refreshRequest={agentRefreshRequest} onRevisionChange={handleAgentRevisionChange} onSignedOut={onSignedOut} />
-        </div>
       </main>
     </div>
   );
