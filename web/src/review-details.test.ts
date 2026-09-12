@@ -268,6 +268,17 @@ describe("审查详情事件解释", () => {
     expect(progress.errorMessage).toBeNull();
   });
 
+  it("优先使用完整批次汇总，日志截断不会减少进度和Token用量", () => {
+    const progress = agentProgress([], "security", {
+      total: 150, completed: 150, failed: 0, running: 0,
+      input_tokens: 15000, output_tokens: 1500, reasoning_tokens: 300, duration_ms: 3000,
+    });
+    expect(progress.batchCount).toBe(150);
+    expect(progress.completedCount).toBe(150);
+    expect(progress.inputTokens).toBe(15000);
+    expect(progress.status).toBe("completed");
+  });
+
   it("同一批次的迟到完成事件覆盖先到的失败事件", () => {
     const progress = agentProgress([
       event("plan", "review.model.batches_planned", {

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import Pagination, { PAGE_SIZE } from "./Pagination";
 import {
   formatBytes,
   formatDuration,
@@ -59,6 +61,7 @@ export function ReviewSidebar({
   headBranchLabel,
   baseBranchLabel,
 }: ReviewSidebarProps) {
+  const [ciPage, setCiPage] = useState(1);
   return (
     <aside className="review-detail-sidebar">
       <section className="review-panel review-summary-panel">
@@ -101,7 +104,8 @@ export function ReviewSidebar({
           <div><dt>CI 检查</dt><dd>{details.ci_checks.length} 项 · {details.ci_checks_complete ? "完整" : "持续刷新"}</dd></div>
           {details.pr_html_url && <div><dt>Pull Request</dt><dd><a href={details.pr_html_url} target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></dd></div>}
         </dl>
-        {details.ci_checks.length > 0 && <div className="review-ci-check-list">{details.ci_checks.slice(0, 8).map((check) => <div key={`${check.kind}:${check.name}`}><span className={`ci-check-dot ci-check-${check.conclusion ?? check.status}`} /><span>{check.name}</span><small>{check.conclusion ?? check.status}</small></div>)}</div>}
+        {details.ci_checks.length > 0 && <div className="review-ci-check-list">{details.ci_checks.slice((ciPage - 1) * PAGE_SIZE, ciPage * PAGE_SIZE).map((check) => <div key={`${check.kind}:${check.name}`}><span className={`ci-check-dot ci-check-${check.conclusion ?? check.status}`} /><span>{check.name}</span><small>{check.conclusion ?? check.status}</small></div>)}</div>}
+        {details.ci_checks.length > PAGE_SIZE && <Pagination page={ciPage} count={Math.min(PAGE_SIZE, details.ci_checks.length - (ciPage - 1) * PAGE_SIZE)} total={details.ci_checks.length} hasNext={ciPage * PAGE_SIZE < details.ci_checks.length} onPrevious={() => setCiPage(value => value - 1)} onNext={() => setCiPage(value => value + 1)} label="CI检查分页" />}
       </section>
 
       {details.review_plan_id && <section className="review-panel review-plan-panel"><div className="review-panel-heading"><div><span className="review-eyebrow">REVIEW COVERAGE</span><h2>文件覆盖</h2></div></div><div className="review-plan-stats"><div><strong>{details.plan_file_count ?? 0}</strong><span>变更文件</span></div><div><strong>{details.plan_unit_count ?? 0}</strong><span>送入 AI</span></div><div><strong>{details.plan_rule_count ?? 0}</strong><span>规则</span></div></div><div className="review-decision-list">{Object.entries(details.plan_file_decisions).map(([decision, count]) => <div key={decision}><span>{fileDecisionLabels[decision] ?? decision}</span><strong>{count}</strong></div>)}</div><div className="review-plan-bytes">可审查输入 {formatBytes(details.plan_input_bytes)} · 超长内容自动分批</div></section>}

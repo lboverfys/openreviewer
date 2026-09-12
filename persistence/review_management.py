@@ -25,6 +25,8 @@ from domain.evaluation import (
 )
 from domain.github import PullRequestSnapshot
 from domain.identifiers import build_review_version_key, normalize_sha
+from domain.pagination import CursorPage, decode_cursor, encode_cursor
+from domain.review_progress import BatchSnapshot
 from domain.security import redact_sensitive
 from domain.workflow import (
     WorkflowAction,
@@ -50,6 +52,7 @@ from persistence.models import (
     ReviewUnitRecord,
 )
 from persistence.resource_scope import resource_predicate
+from persistence.review_progress import load_batch_progress, load_progress_events
 from services.rbac import ResourceScope
 from services.review_management import (
     FindingCursor,
@@ -69,6 +72,8 @@ from services.review_management import (
     StoredFindingCounts,
     StoredReviewDetails,
     StoredReviewEvent,
+    decode_finding_cursor,
+    encode_finding_cursor,
 )
 from services.task_queue import ReviewTarget
 
@@ -305,6 +310,59 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         self._uuid_factory = uuid_factory or uuid4
         self._publisher = publisher
 
+    def batch_page(self, review_run_id: str, agent: str, *, after: int = 0,
+                   limit: int = 10, scope: ResourceScope | None = None) -> CursorPage[BatchSnapshot]:
+        self.change_token(review_run_id, scope=scope)
+        batch = ModelReviewBatchRecord
+        with self._sessions() as session:
+            rows = session.execute(select(batch.batch_number, batch.status, batch.duration_ms,
+                batch.error_code, batch.error_message).join(ReviewPlanRecord,
+                    ReviewPlanRecord.id == batch.review_plan_id).where(
+                        ReviewPlanRecord.review_run_id == review_run_id, batch.agent == agent,
+                        batch.batch_number > after,
+                    ).order_by(batch.batch_number).limit(limit + 1)).mappings().all()
+        return CursorPage(items=tuple(BatchSnapshot.model_validate(redact_sensitive(dict(row)))
+            for row in rows[:limit]),
+            next_cursor=str(rows[limit - 1]["batch_number"]) if len(rows) > limit else None)
+
+    def finding_page(self, review_run_id: str, *, limit: int = 10, cursor: str | None = None,
+                     severity: str | None = None, adjudication_status: str | None = None,
+                     query: str = "", scope: ResourceScope | None = None) -> CursorPage[StoredFinding]:
+        self.change_token(review_run_id, scope=scope)
+        with self._sessions() as session:
+            items, has_more = self._load_findings(session, review_run_id, limit=limit,
+                cursor=decode_finding_cursor(cursor) if cursor else None,
+                adjudication_status=adjudication_status, severity=severity, search=query)
+        return CursorPage(items=items, next_cursor=encode_finding_cursor(items[-1].created_at, items[-1].id) if has_more else None)
+
+    def event_page(self, review_run_id: str, *, limit: int = 10, cursor: str | None = None,
+                   event_filter: str = "all", scope: ResourceScope | None = None) -> CursorPage[StoredReviewEvent]:
+        self.change_token(review_run_id, scope=scope)
+        query = select(OutboxEventRecord.id, OutboxEventRecord.event_type, OutboxEventRecord.payload, OutboxEventRecord.occurred_at).where(
+            OutboxEventRecord.aggregate_type == "review_run", OutboxEventRecord.aggregate_id == review_run_id,
+            OutboxEventRecord.event_type.not_in(("review.model.budget_exhausted", "review.model.budget_observed")),
+        )
+        if cursor:
+            date, identifier = decode_cursor(cursor)
+            query = query.where(or_(OutboxEventRecord.occurred_at < date,
+                and_(OutboxEventRecord.occurred_at == date, OutboxEventRecord.id < identifier)))
+        if event_filter == "model":
+            query = query.where(OutboxEventRecord.event_type.startswith("review.model."))
+        elif event_filter == "workflow":
+            query = query.where(~OutboxEventRecord.event_type.startswith("review.model."))
+        elif event_filter == "errors":
+            query = query.where(or_(OutboxEventRecord.event_type.contains("failed"), OutboxEventRecord.event_type.contains("timed_out")))
+        with self._sessions() as session:
+            rows = session.execute(query.order_by(OutboxEventRecord.occurred_at.desc(), OutboxEventRecord.id.desc()).limit(limit + 1)).all()
+        events = []
+        for row in rows[:limit]:
+            payload = _safe_payload(row.payload)
+            events.append(StoredReviewEvent(id=row.id, event_type=row.event_type,
+                payload=payload if isinstance(payload, dict) else {},
+                occurred_at=_required_utc(row.occurred_at, "outbox_event.occurred_at")))
+        items = tuple(events)
+        return CursorPage(items=items, next_cursor=encode_cursor(items[-1].occurred_at, items[-1].id) if len(rows) > limit else None)
+
     def change_token(
         self,
         review_run_id: str,
@@ -367,6 +425,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         finding_cursor: FindingCursor | None = None,
         finding_adjudication_status: str | None = None,
         scope: ResourceScope | None = None,
+        view: str = "full",
     ) -> StoredReviewDetails:
         """读取一条运行、计划、模型调用及其有界子资源快照。
 
@@ -508,19 +567,22 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     limit=finding_limit,
                     cursor=finding_cursor,
                     adjudication_status=finding_adjudication_status,
-                )
+                ) if view == "full" else ((), False)
                 finding_counts = self._load_finding_counts(session, review_run_id)
                 evaluation_gates = self._load_evaluation_gates(
                     session,
                     row["repository_id"],
-                )
+                ) if view in {"full", "findings"} else ()
                 version_id = row["pr_version_id"]
                 ci_checks = self._load_ci_checks(session, version_id)
                 plan_file_decisions = self._load_plan_file_decisions(
                     session,
                     row["review_plan_id"],
                 )
-                events = self._load_events(session, review_run_id)
+                events = (self._load_events(session, review_run_id) if view == "full"
+                          else load_progress_events(session, review_run_id))
+                batch_progress = (load_batch_progress(session, row["review_plan_id"])
+                                  if view != "full" else {})
                 safe_error = redact_sensitive(row["last_error"])
                 safe_code = redact_sensitive(row["last_error_code"])
                 safe_details = _safe_payload(row["last_error_details"])
@@ -640,6 +702,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     partial_result=partial_result,
                     failed_agents=failed_agents,
                     failed_batches=failed_batches,
+                    batch_progress=batch_progress,
                 )
             except ReviewNotFoundError:
                 raise
@@ -888,6 +951,8 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         limit: int,
         cursor: FindingCursor | None,
         adjudication_status: str | None,
+        severity: str | None = None,
+        search: str = "",
     ) -> tuple[tuple[StoredFinding, ...], bool]:
         query = select(
                 ReviewFindingRecord.id,
@@ -926,6 +991,14 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
             query = query.where(
                 ReviewFindingRecord.adjudication_status == adjudication_status
             )
+        if severity:
+            query = query.where(ReviewFindingRecord.severity == severity)
+        if search:
+            pattern = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            query = query.where(or_(*(column.ilike(pattern, escape="\\") for column in (
+                ReviewFindingRecord.title, ReviewFindingRecord.category,
+                ReviewFindingRecord.location_file, ReviewFindingRecord.evidence,
+            ))))
         if cursor is not None:
             query = query.where(
                 or_(

@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import select
+from sqlalchemy import select, true
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -720,13 +720,14 @@ class AiSettingsService:
                 raise AiSettingsPersistenceError("AI 供应商暂时无法激活") from exc
         return self.get()
 
-    def audits(self, limit: int = 50) -> tuple[ConfigurationAuditView, ...]:
-        if not 1 <= limit <= 100:
+    def audits(self, limit: int = 50, before_revision: int | None = None) -> tuple[ConfigurationAuditView, ...]:
+        if not 1 <= limit <= 101:
             raise ValueError("audit limit must be between 1 and 100")
         with self._sessions() as session:
             try:
                 rows = session.scalars(
                     select(ConfigurationAuditRecord)
+                    .where(ConfigurationAuditRecord.revision < before_revision if before_revision is not None else true())
                     .order_by(ConfigurationAuditRecord.revision.desc())
                     .limit(limit)
                 ).all()

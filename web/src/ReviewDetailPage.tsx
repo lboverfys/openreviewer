@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, ApiError } from "./api";
+import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
 import { allowedReviewActions, hasPermission } from "./rbac";
 import FindingCard from "./ReviewFindingCard";
+import Pagination from "./Pagination";
+import { useCursorPage } from "./useCursorPage";
 import RetrievalTracePanel from "./RetrievalTracePanel";
 import "./styles/retrieval.css";
 import {
@@ -15,8 +17,6 @@ import {
   actionKey,
   agentDefinitions,
   agentProgress,
-  appendFindingPage,
-  applyRefreshedFindingPage,
   branchLabel,
   eventDetail,
   formatDuration,
@@ -37,6 +37,7 @@ import type {
   ReviewAction,
   ReviewDetails,
   ReviewFinding,
+  ReviewEvent,
 } from "./types";
 import {
   errorMessage,
@@ -193,7 +194,11 @@ function ReviewDetailPage({
   onOpenReview,
   onSignedOut,
 }: ReviewDetailPageProps) {
-  const [details, setDetails] = useState<ReviewDetails | null>(null);
+  const [activeTab, setActiveTab] = useState<ReviewDetailTab>("overview");
+  const detailView = activeTab === "findings" ? "findings" : "overview";
+  const detailsKey = `review-details:${reviewRunId}:first:10:${detailView}`;
+  const cachedDetails = peekReadCache<ReviewDetails>(detailsKey);
+  const [details, setDetails] = useState<ReviewDetails | null>(cachedDetails ?? null);
 
   const [retrievalTraces, setRetrievalTraces] = useState<RetrievalTrace[]>([]);
   const [retrievalLoadError, setRetrievalLoadError] = useState("");
@@ -201,25 +206,13 @@ function ReviewDetailPage({
     () => Object.fromEntries(retrievalTraces.flatMap(trace => trace.candidates).map(item => [item.reference_id, item])),
     [retrievalTraces],
   );
-  useEffect(() => {
-    if (!details) return;
-    const controller = new AbortController();
-    api.reviewRetrieval(reviewRunId, controller.signal).then(items => {
-      if (!controller.signal.aborted) { setRetrievalTraces(items); setRetrievalLoadError(""); }
-    }).catch(failure => {
-      if (!controller.signal.aborted) setRetrievalLoadError(errorMessage(failure));
-    });
-    return () => controller.abort();
-  }, [reviewRunId, details?.events.length]);
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cachedDetails === undefined);
   const [error, setError] = useState("");
   const [actionBusy, setActionBusy] = useState<ReviewAction | null>(null);
   const [findingBusy, setFindingBusy] = useState<string | null>(null);
-  const [findingPageBusy, setFindingPageBusy] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [retryTargetStage, setRetryTargetStage] = useState<RetryTargetStage>("agent_batches");
-  const [activeTab, setActiveTab] = useState<ReviewDetailTab>("overview");
   const [findingSeverity, setFindingSeverity] = useState("all");
   const [findingStatus, setFindingStatus] = useState("all");
   const [findingQuery, setFindingQuery] = useState("");
@@ -231,12 +224,48 @@ function ReviewDetailPage({
   const canAdjudicate = hasPermission(user, "findings:adjudicate");
   const canManageReviews = hasPermission(user, "reviews:manage");
 
-  const loadDetails = useCallback(async (signal?: AbortSignal) => {
+  const handlePageError = useCallback((reason: unknown) => {
+    if (reason instanceof ApiError && reason.status === 401) onSignedOut("登录状态已失效，请重新登录");
+    else setError(errorMessage(reason));
+  }, [onSignedOut]);
+  const [debouncedFindingQuery, setDebouncedFindingQuery] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedFindingQuery(findingQuery.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [findingQuery]);
+  const loadFindings = useCallback((cursor?: string, signal?: AbortSignal, force = false) =>
+    api.findingPage(reviewRunId, cursor, signal, force, findingSeverity, findingStatus, debouncedFindingQuery),
+  [reviewRunId, findingSeverity, findingStatus, debouncedFindingQuery]);
+  const loadEvents = useCallback((cursor?: string, signal?: AbortSignal, force = false) =>
+    api.eventPage(reviewRunId, cursor, signal, force, eventFilter), [reviewRunId, eventFilter]);
+  const findingPage = useCursorPage<ReviewFinding>({cacheKey: `findings:${reviewRunId}:${findingSeverity}:${findingStatus}:${debouncedFindingQuery}`, load: loadFindings, onError: handlePageError, enabled: activeTab === "findings"});
+  const eventPage = useCursorPage<ReviewEvent>({cacheKey: `events:${reviewRunId}:${eventFilter}`, load: loadEvents, onError: handlePageError, enabled: activeTab === "logs"});
+  const previousPageToken = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const token = details?.change_token;
+    const previous = previousPageToken.current;
+    previousPageToken.current = token;
+    if (!token || !previous || token === previous) return;
+    const controller = new AbortController();
+    if (activeTab === "findings") void findingPage.refresh(true, controller.signal);
+    if (activeTab === "logs") void eventPage.refresh(true, controller.signal);
+    return () => controller.abort();
+  }, [details?.change_token, activeTab, findingPage.refresh, eventPage.refresh]);
+  useEffect(() => {
+    if (!details || (activeTab !== "overview" && activeTab !== "findings")) return;
+    const controller = new AbortController();
+    api.reviewRetrieval(reviewRunId, controller.signal).then(items => {
+      if (!controller.signal.aborted) {setRetrievalTraces(items); setRetrievalLoadError("");}
+    }).catch(failure => {if (!controller.signal.aborted) setRetrievalLoadError(errorMessage(failure));});
+    return () => controller.abort();
+  }, [reviewRunId, details?.change_token, activeTab]);
+
+  const loadDetails = useCallback(async (signal?: AbortSignal, force = true) => {
     const sequence = ++detailsRequestSequence.current;
     try {
-      const next = await api.reviewDetails(reviewRunId, undefined, 50, signal);
+      const next = await api.reviewDetails(reviewRunId, undefined, 10, signal, force, detailView);
       if (signal?.aborted || sequence !== detailsRequestSequence.current) return null;
-      setDetails((current) => applyRefreshedFindingPage(current, next));
+      setDetails(next);
       setError("");
       return next.change_token;
     } catch (reason) {
@@ -252,14 +281,16 @@ function ReviewDetailPage({
         setLoading(false);
       }
     }
-  }, [onSignedOut, reviewRunId]);
+  }, [onSignedOut, reviewRunId, detailView]);
 
   useEffect(() => {
     const controller = new AbortController();
-    setDetails(null);
-    setLoading(true);
-    void loadDetails(controller.signal);
-    return () => controller.abort();
+    const cached = peekReadCache<ReviewDetails>(detailsKey);
+    setDetails(cached ?? null);
+    setLoading(!cached);
+    const unsubscribe = subscribeReadCache<ReviewDetails>(detailsKey, setDetails);
+    void loadDetails(controller.signal, false);
+    return () => {controller.abort(); unsubscribe();};
   }, [loadDetails]);
 
   useReviewAutoRefresh({
@@ -293,7 +324,7 @@ function ReviewDetailPage({
         details.review_run_id,
         `ui:identity:${details.review_run_id}`,
       );
-      setDetails((current) => applyRefreshedFindingPage(current, next));
+      setDetails(next);
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
@@ -420,23 +451,8 @@ function ReviewDetailPage({
         decision,
         actionKey(),
       );
-      const reviewedAt = new Date().toISOString();
-      setDetails((current) => {
-        const merged = applyRefreshedFindingPage(current, next);
-        return {
-          ...merged,
-          findings: merged.findings.map((item) => (
-            item.id === finding.id
-              ? {
-                  ...item,
-                  adjudication_status: decision,
-                  reviewed_at: reviewedAt,
-                  reviewed_by: user.username,
-                }
-              : item
-          )),
-        };
-      });
+      setDetails(next);
+      await findingPage.refresh();
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
@@ -448,28 +464,6 @@ function ReviewDetailPage({
     }
   }
 
-  async function loadMoreFindings() {
-    if (!details?.finding_next_cursor || findingPageBusy) return;
-    setFindingPageBusy(true);
-    try {
-      const next = await api.reviewDetails(
-        details.review_run_id,
-        details.finding_next_cursor,
-      );
-      setDetails((current) => (
-        current ? appendFindingPage(current, next) : next
-      ));
-      setError("");
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.status === 401) {
-        onSignedOut("登录状态已失效，请重新登录");
-      } else {
-        setError(errorMessage(reason));
-      }
-    } finally {
-      setFindingPageBusy(false);
-    }
-  }
 
   if (loading && !details) {
     return (
@@ -556,7 +550,7 @@ function ReviewDetailPage({
   const failureRequestId = payloadString(currentModelFailure, "provider_request_id");
   const agentSummaries = agentDefinitions.map((definition) => ({
     ...definition,
-    progress: agentProgress(details.events, definition.key),
+    progress: agentProgress(details.events, definition.key, details.batch_progress?.[definition.key]),
   }));
   const completedAgentCount = agentSummaries.filter(
     (item) => item.progress.status === "completed",
@@ -579,40 +573,19 @@ function ReviewDetailPage({
     details.base_repository ?? details.repository,
     details.base_ref,
   );
-  const normalizedFindingQuery = findingQuery.trim().toLocaleLowerCase();
-  const filteredFindings = details.findings.filter((finding) => (
-    (findingSeverity === "all" || finding.severity === findingSeverity)
-    && (findingStatus === "all" || finding.adjudication_status === findingStatus)
-    && (!normalizedFindingQuery || [
-      finding.title,
-      finding.category,
-      finding.location_file ?? "",
-      finding.evidence,
-    ].some((value) => value.toLocaleLowerCase().includes(normalizedFindingQuery)))
-  ));
+  const filteredFindings = findingPage.data?.items ?? [];
   const evaluatedGates = details.evaluation_gates.filter(
     (gate) => gate.sample_count > 0,
   );
   const admittedGateCount = details.evaluation_gates.filter(
     (gate) => gate.admitted,
   ).length;
-  const filteredEvents = details.events.filter((event) => {
-    // 历史版本可能留下旧预算事件；它们不再是当前产品语义，也不应在
-    // 详情页重新显示成可操作的阻断原因。
-    if (
-      event.event_type === "review.model.budget_exhausted"
-      || event.event_type === "review.model.budget_observed"
-    ) return false;
-    if (eventFilter === "errors") return isErrorEvent(event);
-    if (eventFilter === "model") return event.event_type.startsWith("review.model.");
-    if (eventFilter === "workflow") return !event.event_type.startsWith("review.model.");
-    return true;
-  }).reverse();
+  const filteredEvents = eventPage.data?.items ?? [];
   const tabs: ReadonlyArray<[ReviewDetailTab, string, string]> = [
     ["overview", "任务概览", details.current_stage],
     ["agents", "Agent 进度", `${completedAgentCount}/4`],
-    ["findings", "审查问题", String(details.findings.length)],
-    ["logs", "运行日志", String(details.events.length)],
+    ["findings", "审查问题", String(details.finding_total_count)],
+    ["logs", "运行日志", "按页查看"],
   ];
   return (
     <div className="review-detail-shell">
@@ -633,7 +606,11 @@ function ReviewDetailPage({
               />
               <span className="review-live-dot" />自动刷新
             </label>
-            <button type="button" className="btn-ghost" onClick={() => void loadDetails()} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
+            <button type="button" className="btn-ghost" onClick={() => void loadDetails().then(token => {
+              if (token !== details.change_token) return;
+              if (activeTab === "findings") void findingPage.refresh();
+              if (activeTab === "logs") void eventPage.refresh();
+            })} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
           </div>
         </div>
         {error && <div className="review-inline-error" role="alert">{error}</div>}
@@ -749,7 +726,7 @@ function ReviewDetailPage({
           <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div></div>
           <div><span className="review-metric-icon is-cover" aria-hidden="true">▦</span><div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div></div>
           <div><span className="review-metric-icon is-agent" aria-hidden="true">🤖</span><div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/4</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div></div>
-          <div><span className="review-metric-icon is-finding" aria-hidden="true">⚑</span><div><span>候选问题</span><strong>{details.findings.length}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div></div>
+          <div><span className="review-metric-icon is-finding" aria-hidden="true">⚑</span><div><span>候选问题</span><strong>{details.finding_total_count}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div></div>
         </section>
 
         <nav className="review-detail-tabs" aria-label="详情视图">
@@ -762,6 +739,7 @@ function ReviewDetailPage({
 
         <div className={`review-detail-grid active-${activeTab}`}>
           <div className="review-detail-primary">
+            {activeTab === "overview" && <>
             <StageTimeline details={details} />
 
             <section className="review-panel review-retrieval-panel">
@@ -770,6 +748,8 @@ function ReviewDetailPage({
               </div>
               {retrievalLoadError ? <p className="retrieval-warning">{retrievalLoadError}</p> : <RetrievalTracePanel traces={retrievalTraces} compact />}
             </section>
+            </>}
+            {activeTab === "agents" && <>
             <ModelBatchPanel
               details={details}
               onRetry={canManageReviews ? retryNode : undefined}
@@ -779,10 +759,12 @@ function ReviewDetailPage({
               <section className="review-panel review-agent-tab-empty"><DetailIcon>◌</DetailIcon><div><strong>Agent 尚未开始执行</strong><p>完成 CI 和审查规划后，四路 Agent 的实时进度会显示在这里。</p></div></section>
             )}
 
+            </>}
+            {activeTab === "findings" && <>
             <section className="review-panel review-result-panel">
               <div className="review-panel-heading">
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
-                <div className="review-result-counts"><span className="result-count result-count-total">{details.findings.length} 条候选</span>{details.new_finding_count > 0 && <span className="result-count result-count-new">{details.new_finding_count} 条新增</span>}{details.fixed_finding_count > 0 && <span className="result-count result-count-fixed">{details.fixed_finding_count} 条已修复</span>}{details.unreviewed_finding_count > 0 && <span className="result-count result-count-pending">{details.unreviewed_finding_count} 待裁决</span>}</div>
+                <div className="review-result-counts"><span className="result-count result-count-total">{details.finding_total_count} 条候选</span>{details.new_finding_count > 0 && <span className="result-count result-count-new">{details.new_finding_count} 条新增</span>}{details.fixed_finding_count > 0 && <span className="result-count result-count-fixed">{details.fixed_finding_count} 条已修复</span>}{details.unreviewed_finding_count > 0 && <span className="result-count result-count-pending">{details.unreviewed_finding_count} 待裁决</span>}</div>
               </div>
               {details.summary_status === "skipped" && details.coverage_status === "partial" && (
                 <div className="review-summary-status is-warning"><strong>上游 Agent 未完成，汇总未执行</strong><span>已保留可用的部分结果</span></div>
@@ -857,7 +839,7 @@ function ReviewDetailPage({
               {details.model_review_completed_at && details.finding_total_count === 0 && (
                 <div className={`review-result-empty ${finalAgentProgress.verdict === "no_actionable_issue" ? "result-empty-positive" : finalAgentProgress.verdict === "insufficient_context" ? "result-empty-limited" : ""}`}><DetailIcon>{finalAgentProgress.verdict === "insufficient_context" ? "!" : "✓"}</DetailIcon><div><strong>本次没有候选问题</strong><p>{finalAgentProgress.hasStructuredConclusion ? "具体判断、依据范围和限制见上方汇总 Agent 结论。" : "这条历史记录没有保存结论摘要，不能仅凭候选问题数量推断分析结果。"}</p></div></div>
               )}
-              {details.findings.length > 0 && filteredFindings.length === 0 && (
+              {!findingPage.loading && details.finding_total_count > 0 && filteredFindings.length === 0 && (
                 <div className="review-result-empty"><DetailIcon>⌕</DetailIcon><div><strong>没有符合筛选条件的问题</strong><p>调整严重程度、状态或搜索关键词后再查看。</p></div></div>
               )}
               {filteredFindings.length > 0 && (
@@ -874,20 +856,11 @@ function ReviewDetailPage({
                   ))}
                 </div>
               )}
-              {details.finding_next_cursor && (
-                <div className="review-finding-pagination">
-                  <button
-                    type="button"
-                    className="review-quiet-btn"
-                    disabled={findingPageBusy}
-                    onClick={() => void loadMoreFindings()}
-                  >
-                    {findingPageBusy ? "正在加载" : "加载更多"}
-                  </button>
-                </div>
-              )}
+              <Pagination page={findingPage.page} count={filteredFindings.length} hasNext={Boolean(findingPage.data?.next_cursor)} busy={findingPage.loading} onPrevious={findingPage.previous} onNext={findingPage.next} label="审查问题分页" />
             </section>
 
+            </>}
+            {activeTab === "logs" && <>
             <section className="review-panel review-log-panel">
               <div className="review-panel-heading">
                 <div><span className="review-eyebrow">EVENT LOG</span><h2>运行日志</h2></div>
@@ -907,10 +880,12 @@ function ReviewDetailPage({
                   ))}
                 </div>
               )}
+              <Pagination page={eventPage.page} count={filteredEvents.length} hasNext={Boolean(eventPage.data?.next_cursor)} busy={eventPage.loading} onPrevious={eventPage.previous} onNext={eventPage.next} label="运行日志分页" />
             </section>
+            </>}
           </div>
 
-          <ReviewSidebar
+          {activeTab === "overview" && <ReviewSidebar
             details={details}
             retryPending={retryPending}
             retryStatus={retryStatus}
@@ -925,7 +900,7 @@ function ReviewDetailPage({
             hasBranchRoute={hasBranchRoute}
             headBranchLabel={headBranchLabel}
             baseBranchLabel={baseBranchLabel}
-          />
+          />}
         </div>
       </main>
     </div>

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
 import RetrievalTracePanel, { retrievalStrategyLabels, vectorSearchLabel } from "./RetrievalTracePanel";
 import CodeIndexPanel from "./CodeIndexPanel";
+import Pagination from "./Pagination";
+import { useCursorPage } from "./useCursorPage";
 import { formatDuration } from "./review-details";
 import type { CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettings, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
 import { errorMessage, formatDate } from "./utils";
@@ -13,12 +15,10 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
   onSignedOut: (message?: string) => void; initialReviewRunId?: string;
 }) {
   const [tab, setTab] = useState<Tab>("search");
-  const [indexes, setIndexes] = useState<CodeIndexView[]>([]);
-  const [targets, setTargets] = useState<IndexTarget[]>([]);
-  const [operations, setOperations] = useState<RetrievalOperations | null>(null);
-  const [view, setView] = useState<RetrievalSettingsView | null>(null);
-  const [draft, setDraft] = useState<RetrievalSettings | null>(null);
-  const [reports, setReports] = useState<RetrievalEvaluationReport[]>([]);
+  const [operations, setOperations] = useState<RetrievalOperations | null>(() => peekReadCache<RetrievalOperations>("retrieval-operations") ?? null);
+  const cachedSettings = peekReadCache<RetrievalSettingsView>("retrieval-settings");
+  const [view, setView] = useState<RetrievalSettingsView | null>(cachedSettings ?? null);
+  const [draft, setDraft] = useState<RetrievalSettings | null>(cachedSettings?.settings ?? null);
   const [selectedId, setSelectedId] = useState("");
   const [reviewRunId, setReviewRunId] = useState(initialReviewRunId ?? "");
   const [query, setQuery] = useState("");
@@ -27,58 +27,78 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
   const [trace, setTrace] = useState<RetrievalTrace | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState("");
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const searchController = useRef<AbortController | null>(null);
-  const selected = indexes.find(item => item.id === selectedId);
 
   const handleError = useCallback((failure: unknown) => {
     if (failure instanceof ApiError && failure.status === 401) onSignedOut("登录已过期");
     else setError(errorMessage(failure));
   }, [onSignedOut]);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const [nextIndexes, nextSettings, nextReports, nextTargets, nextOperations] = await Promise.all([
-        api.retrievalIndexes(signal), api.retrievalSettings(signal), api.retrievalEvaluations(signal),
-        api.retrievalTargets(signal), api.retrievalOperations(signal),
-      ]);
-      if (signal?.aborted) return;
-      setIndexes(nextIndexes); setView(nextSettings); setDraft(nextSettings.settings);
-      setTargets(nextTargets); setOperations(nextOperations);
-      setReports(nextReports.map(report => report.strategies.some(item => item.strategy !== "bm25" && item.strategy !== "lexical_relations") ? report : {...report, query_cache_mode: "not_used", vector_search_mode: "not_used"}));
-      setSelectedId(current => current || nextIndexes.find(item => item.status === "ready")?.id || nextIndexes[0]?.id || "");
-    } catch (failure) {
-      if (!signal?.aborted) handleError(failure);
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }, [handleError]);
+  const loadIndexes = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalIndexes(signal, cursor, force), []);
+  const loadTargets = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalTargets(signal, cursor, force), []);
+  const loadReports = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalEvaluations(signal, cursor, force), []);
+  const indexPage = useCursorPage<CodeIndexView>({cacheKey: "retrieval-indexes", load: loadIndexes, onError: handleError, enabled: tab === "search"});
+  const targetPage = useCursorPage<IndexTarget>({cacheKey: "retrieval-targets", load: loadTargets, onError: handleError, enabled: tab === "search"});
+  const reportPage = useCursorPage<RetrievalEvaluationReport>({cacheKey: "retrieval-evaluations", load: loadReports, onError: handleError, enabled: tab === "evaluations"});
+  const indexes = indexPage.data?.items ?? [];
+  const targets = targetPage.data?.items ?? [];
+  const reports = (reportPage.data?.items ?? []).map(report => report.strategies.some(item => item.strategy !== "bm25" && item.strategy !== "lexical_relations") ? report : {...report, query_cache_mode: "not_used", vector_search_mode: "not_used"});
+  const selected = indexes.find(item => item.id === selectedId);
 
+  const settingsRef = useRef(view);
+  const draftRef = useRef(draft);
+  settingsRef.current = view;
+  draftRef.current = draft;
+  const applySettings = useCallback((next: RetrievalSettingsView) => {
+    // 后台校验更新版本，但保留用户尚未保存的配置草稿。
+    if (!draftRef.current || JSON.stringify(draftRef.current) === JSON.stringify(settingsRef.current?.settings)) setDraft(next.settings);
+    setView(next);
+  }, []);
+  const loadOverview = useCallback(async (signal?: AbortSignal, force = false) => {
+    // 每块数据独立显示，慢请求或失败不会阻塞索引列表。
+    await Promise.allSettled([
+      api.retrievalSettings(signal, force).then(next => {
+        if (!signal?.aborted) applySettings(next);
+      }).catch(failure => {if (!signal?.aborted) handleError(failure);}),
+      api.retrievalOperations(signal, force).then(next => {
+        if (!signal?.aborted) setOperations(next);
+      }).catch(failure => {if (!signal?.aborted) handleError(failure);}),
+    ]);
+  }, [handleError, applySettings]);
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal);
-    return () => { controller.abort(); searchController.current?.abort(); };
-  }, [refresh]);
-
-  const pending = indexes.some(item => item.status === "queued" || item.status === "building");
+    const unsubscribe = subscribeReadCache<RetrievalOperations>("retrieval-operations", setOperations);
+    const unsubscribeSettings = subscribeReadCache<RetrievalSettingsView>("retrieval-settings", applySettings);
+    void loadOverview(controller.signal);
+    return () => {controller.abort(); unsubscribe(); unsubscribeSettings(); searchController.current?.abort();};
+  }, [loadOverview, applySettings]);
+  useEffect(() => {
+    const items = indexPage.data?.items;
+    if (items) setSelectedId(current => items.some(item => item.id === current) ? current : items.find(item => item.lexical_ready)?.id ?? items[0]?.id ?? "");
+  }, [indexPage.data]);
+  const refresh = async () => {
+    await Promise.allSettled([loadOverview(undefined, true), ...(tab === "search" ? [indexPage.refresh(), targetPage.refresh()] : tab === "evaluations" ? [reportPage.refresh()] : [])]);
+  };
+  const pending = tab === "search" && indexes.some(item => item.status === "queued" || item.status === "building");
   useEffect(() => {
     if (!pending) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      try {
-        const [items, metrics] = await Promise.all([api.retrievalIndexes(controller.signal), api.retrievalOperations(controller.signal)]);
-        if (!controller.signal.aborted) {setIndexes(items); setOperations(metrics);}
-      } catch (failure) {
-        if (!controller.signal.aborted) handleError(failure);
+      if (document.visibilityState !== "hidden") {
+        await indexPage.refresh(true, controller.signal);
+        try {
+          const metrics = await api.retrievalOperations(controller.signal, true);
+          if (!controller.signal.aborted) setOperations(metrics);
+        } catch (failure) {if (!controller.signal.aborted) handleError(failure);}
       }
       if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 5000);
     };
     timer = setTimeout(() => void poll(), 3000);
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [pending, handleError]);
+    return () => {controller.abort(); clearTimeout(timer);};
+  }, [pending, indexPage.refresh, handleError]);
 
   async function action(name: string, operation: () => Promise<void>) {
     setBusy(name); setError(""); setMessage("");
@@ -128,11 +148,14 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
     {error && <div role="alert" className="toast-banner is-error">{error}</div>}
     {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>真实模型调用已暂停</strong><p>可以建立基础索引，使用关键词和代码关系检索。已有向量会保留。</p></div></div>}
     {message && <div role="status" className="toast-banner is-success">{message}</div>}
-    {loading ? <div className="retrieval-empty">正在加载检索数据…</div> : <>
+    {<>
       {tab === "search" && <div className="retrieval-workspace">
-        <CodeIndexPanel indexes={indexes} selectedId={selectedId} targets={targets} reviewRunId={reviewRunId} paused={Boolean(view?.external_calls_paused)} busy={Boolean(busy)}
+        <CodeIndexPanel
+          indexPagination={<Pagination page={indexPage.page} count={indexes.length} hasNext={Boolean(indexPage.data?.next_cursor)} busy={indexPage.loading} onPrevious={indexPage.previous} onNext={indexPage.next} label="代码索引分页" />}
+          targetPagination={<Pagination page={targetPage.page} count={targets.length} hasNext={Boolean(targetPage.data?.next_cursor)} busy={targetPage.loading} onPrevious={targetPage.previous} onNext={targetPage.next} label="审查提交分页" />}
+          indexes={indexes} selectedId={selectedId} targets={targets} reviewRunId={reviewRunId} paused={Boolean(view?.external_calls_paused)} busy={Boolean(busy)}
           onSelect={id => {setSelectedId(id); setTrace(null); searchController.current?.abort();}} onTarget={setReviewRunId}
-          onBuild={() => void action("index", async () => {const created = await api.createCodeIndex(reviewRunId); setSelectedId(created.id); await refresh(); setMessage("基础索引已提交，不会调用模型");})}
+          onBuild={() => void action("index", async () => {const created = await api.createCodeIndex(reviewRunId); setSelectedId(created.id); indexPage.reset(); await refresh(); setMessage("基础索引已提交，不会调用模型");})}
           onRetry={id => void action("retry", async () => {await api.retryCodeIndex(id); await refresh();})}
           onEnrich={id => void action("enrich", async () => {await api.enrichCodeIndex(id); await refresh(); setMessage("向量补全已排队，受已保存的数量与请求上限控制");})} />
         <section className="retrieval-card retrieval-search-area">
@@ -174,7 +197,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
             <p className="retrieval-muted">真实审查准确率：{report.real_review_accuracy == null ? "未评测" : `${(report.real_review_accuracy * 100).toFixed(1)}%`}。标注来源和样本规模是解释结果的必要条件。</p>
           </article>;
         })}
-      </section>}
+      <Pagination page={reportPage.page} count={reports.length} hasNext={Boolean(reportPage.data?.next_cursor)} busy={reportPage.loading} onPrevious={reportPage.previous} onNext={reportPage.next} label="评测报告分页" /></section>}
       {tab === "settings" && view && draft && <section className="retrieval-card">
         <h2>检索模型配置</h2><p className="retrieval-muted">向量与精排使用百炼接口。更换向量模型或接入域名后，需要建立对应的新索引。索引在请求前检查新增向量数量，超过上限会停止，已有缓存不计入新增数量。</p>
         <form onSubmit={event => { event.preventDefault(); void action("save", async () => { const next = await api.updateRetrievalSettings(draft, view.revision, apiKey.trim() || undefined); setView(next); setDraft(next.settings); setApiKey(""); setMessage("检索配置已保存"); }); }}>

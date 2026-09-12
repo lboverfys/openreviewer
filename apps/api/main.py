@@ -34,6 +34,7 @@ from apps.api.schemas import (
     ReadinessResponse,
     WebhookReceiptResponse,
 )
+from domain.enums import ExecutionStatus
 from domain.security import (
     ErrorCode,
     SafeApplicationError,
@@ -891,12 +892,16 @@ def create_app(
         limit: int,
         cursor: str | None = None,
         scope: ResourceScope | None = None,
+        *,
+        execution_status: ExecutionStatus | None = None,
+        query: str = "",
+        include_overview: bool = True,
     ) -> DashboardResponse:
         """读取 Dashboard 快照并把持久化故障转换为统一的 503。
 
         参数：
             limit: 最近任务数量，路由层的 ``Query`` 已限制为 1 到 100；SSE 使用
-                固定值 50。
+                固定值 10。
 
         返回：
             由服务层生成并映射后的 ``DashboardResponse``。
@@ -906,7 +911,10 @@ def create_app(
             错误。不会把数据库连接串、堆栈或凭据放入响应体。
         """
         try:
-            snapshot = get_dashboard_service().snapshot(limit, cursor, scope)
+            snapshot = get_dashboard_service().snapshot(
+                limit, cursor, scope, execution_status=execution_status,
+                query=query, include_overview=include_overview,
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -949,7 +957,7 @@ def create_app(
             cache_key,
             lambda: DashboardStreamCoordinator(
                 lambda: dashboard_change_token(scope),
-                lambda: dashboard_snapshot(50, scope=scope),
+                lambda: dashboard_snapshot(10, scope=scope),
             ),
         )
 

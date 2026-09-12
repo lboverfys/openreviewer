@@ -1,3 +1,4 @@
+import type { CursorPage } from "./useCursorPage";
 import type {
   CodeIndexView, RetrievalSettingsView, RetrievalSettings, RetrievalTrace, RetrievalEvaluationReport, RetrievalSearchQuery,
   AuthUser,
@@ -50,6 +51,7 @@ export class ApiTimeoutError extends Error {
 const DEFAULT_API_TIMEOUT_MS = 30_000;
 const CONNECTION_TEST_TIMEOUT_MS = 210_000;
 export const DASHBOARD_CACHE_TTL_MS = 3_000;
+export const reviewListKey = (status = "all", query = "", limit = 10) => `reviews:${status}:${query}:${limit}`;
 
 // 管理页会在路由切换时重新挂载。短时缓存既能让返回页面立即显示，也能把
 // StrictMode/重复挂载产生的并发 GET 合并成一次；写入操作和显式刷新会清空它。
@@ -536,30 +538,27 @@ async function request<T>(
 }
 
 export const api = {
-  retrievalTargets: (signal?: AbortSignal) => request<import("./types").IndexTarget[]>("/api/v1/retrieval/targets", {signal}),
-  retrievalOperations: (signal?: AbortSignal) => request<import("./types").RetrievalOperations>("/api/v1/retrieval/operations", {signal}),
-  enrichCodeIndex: (indexId: string) => request<{status: string}>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/enrich`, {method: "POST"}),
-
-  retrievalSettings: (signal?: AbortSignal) =>
-    request<RetrievalSettingsView>("/api/v1/retrieval/settings", { signal }),
-  updateRetrievalSettings: (settings: RetrievalSettings, revision: number, apiKey?: string) =>
-    request<RetrievalSettingsView>("/api/v1/retrieval/settings", {
-      method: "PUT", body: JSON.stringify({settings, expected_revision: revision, api_key: apiKey}),
-    }),
-  testRetrievalSettings: () =>
-    request<RetrievalSettingsView>("/api/v1/retrieval/settings/test", {method: "POST"}, CONNECTION_TEST_TIMEOUT_MS),
-  retrievalIndexes: (signal?: AbortSignal) =>
-    request<CodeIndexView[]>("/api/v1/retrieval/indexes", {signal}),
-  createCodeIndex: (reviewRunId: string) =>
-    request<CodeIndexView>("/api/v1/retrieval/indexes", {method: "POST", body: JSON.stringify({review_run_id: reviewRunId})}),
-  retryCodeIndex: (indexId: string) =>
-    request<{status: string}>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/retry`, {method: "POST"}),
+  retrievalTargets: (signal?: AbortSignal, cursor?: string, force = false) =>
+    cachedGet(`retrieval-targets:${cursor ?? "first"}`, (cacheSignal) => request<CursorPage<import("./types").IndexTarget>>(`/api/v1/retrieval/targets?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})})}`, {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  retrievalOperations: (signal?: AbortSignal, force = false) =>
+    cachedGet("retrieval-operations", (cacheSignal) => request<import("./types").RetrievalOperations>("/api/v1/retrieval/operations", {signal: cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  enrichCodeIndex: (indexId: string) => mutation(() => request<{status: string}>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/enrich`, {method: "POST"})),
+  retrievalSettings: (signal?: AbortSignal, force = false) =>
+    cachedGet("retrieval-settings", (cacheSignal) => request<RetrievalSettingsView>("/api/v1/retrieval/settings", {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  updateRetrievalSettings: (settings: RetrievalSettings, revision: number, apiKey?: string) => mutation(() =>
+    request<RetrievalSettingsView>("/api/v1/retrieval/settings", {method: "PUT", body: JSON.stringify({settings, expected_revision: revision, api_key: apiKey})})),
+  testRetrievalSettings: () => mutation(() => request<RetrievalSettingsView>("/api/v1/retrieval/settings/test", {method: "POST"}, CONNECTION_TEST_TIMEOUT_MS)),
+  retrievalIndexes: (signal?: AbortSignal, cursor?: string, force = false) =>
+    cachedGet(`retrieval-indexes:${cursor ?? "first"}`, (cacheSignal) => request<CursorPage<CodeIndexView>>(`/api/v1/retrieval/indexes?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})})}`, {signal: cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  codeIndex: (id: string, signal?: AbortSignal) => request<CodeIndexView>(`/api/v1/retrieval/indexes/${encodeURIComponent(id)}`, {signal}),
+  createCodeIndex: (reviewRunId: string) => mutation(() => request<CodeIndexView>("/api/v1/retrieval/indexes", {method: "POST", body: JSON.stringify({review_run_id: reviewRunId})})),
+  retryCodeIndex: (indexId: string) => mutation(() => request<{status: string}>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/retry`, {method: "POST"})),
   searchCodeIndex: (indexId: string, query: RetrievalSearchQuery, signal?: AbortSignal) =>
     request<RetrievalTrace>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/search`, {method: "POST", body: JSON.stringify(query), signal}, 150_000),
-  reviewRetrieval: (reviewRunId: string, signal?: AbortSignal) =>
-    request<RetrievalTrace[]>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/retrieval`, {signal}),
-  retrievalEvaluations: (signal?: AbortSignal) =>
-    request<RetrievalEvaluationReport[]>("/api/v1/retrieval/evaluations", {signal}),
+  reviewRetrieval: (reviewRunId: string, signal?: AbortSignal, force = false) =>
+    cachedGet(`review-retrieval:${reviewRunId}`, (cacheSignal) => request<RetrievalTrace[]>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/retrieval`, {signal: cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  retrievalEvaluations: (signal?: AbortSignal, cursor?: string, force = false) =>
+    cachedGet(`retrieval-evaluations:${cursor ?? "first"}`, (cacheSignal) => request<CursorPage<RetrievalEvaluationReport>>(`/api/v1/retrieval/evaluations?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})})}`, {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
 
   /**
    * 读取当前管理员会话。
@@ -611,7 +610,7 @@ export const api = {
    */
   dashboard: (
     cursor?: string,
-    limit = 50,
+    limit = 10,
     signal?: AbortSignal,
     force = false,
   ) => {
@@ -630,21 +629,23 @@ export const api = {
       force,
     );
   },
-  reviews: (cursor: string, limit = 50, signal?: AbortSignal) => {
-    const query = new URLSearchParams({
-      cursor,
-      limit: String(limit),
-    });
-    return cachedGet(
-      `reviews:${cursor}:${limit}`,
-      (cacheSignal) => request<ReviewListPage>(
-        `/api/v1/reviews?${query.toString()}`,
-        { cache: "no-store", signal: cacheSignal },
-      ),
-      signal,
-      DASHBOARD_CACHE_TTL_MS,
+  reviews: (cursor?: string, limit = 10, signal?: AbortSignal, status = "all", search = "", force = false) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set("cursor", cursor);
+    if (status !== "all") query.set("execution_status", status);
+    if (search) query.set("q", search);
+    return cachedGet<ReviewListPage>(
+      `${reviewListKey(status, search, limit)}:${cursor ?? "first"}`,
+      async (cacheSignal) => {
+        if (!cursor && status === "all" && !search) {
+          const snapshot = await api.dashboard(undefined, limit, cacheSignal, force);
+          return {items: snapshot.recent_reviews, total: snapshot.total_reviews, next_cursor: snapshot.next_cursor};
+        }
+        return request<ReviewListPage>(`/api/v1/reviews?${query}`, {signal: cacheSignal});
+      }, signal, DASHBOARD_CACHE_TTL_MS, force,
     );
   },
+
   /**
    * 创建一个幂等的审查任务。
    *
@@ -664,15 +665,33 @@ export const api = {
   reviewDetails: (
     reviewRunId: string,
     findingCursor?: string,
-    findingLimit = 50,
+    findingLimit = 10,
     signal?: AbortSignal,
+    force = false,
+    view = "full",
   ) => {
     const query = new URLSearchParams({ finding_limit: String(findingLimit) });
+    if (view !== "full") query.set("view", view);
     if (findingCursor) query.set("finding_cursor", findingCursor);
-    return request<ReviewDetails>(
-      `/api/v1/reviews/${encodeURIComponent(reviewRunId)}?${query.toString()}`,
-      { signal },
-    );
+    return cachedGet(`review-details:${reviewRunId}:${findingCursor ?? "first"}:${findingLimit}${view === "full" ? "" : `:${view}`}`,
+      (cacheSignal) => request<ReviewDetails>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}?${query}`, {signal: cacheSignal}),
+      signal, DASHBOARD_CACHE_TTL_MS, force);
+  },
+  findingPage: (reviewRunId: string, cursor?: string, signal?: AbortSignal, force = false, severity = "all", status = "all", search = "") => {
+    const query = new URLSearchParams({limit: "10"});
+    if (cursor) query.set("cursor", cursor);
+    if (severity !== "all") query.set("severity", severity);
+    if (status !== "all") query.set("adjudication_status", status);
+    if (search) query.set("q", search);
+    return cachedGet(`findings:${reviewRunId}:${severity}:${status}:${search}:${cursor ?? "first"}`,
+      (cacheSignal) => request<CursorPage<import("./types").ReviewFinding>>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/findings?${query}`, {signal: cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force);
+  },
+  batchPage: (reviewRunId: string, agent: string, after: number, signal?: AbortSignal) =>
+    request<CursorPage<import("./types").BatchSnapshot>>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/batches?${new URLSearchParams({agent, after: String(after), limit: "10"})}`, {signal}),
+  eventPage: (reviewRunId: string, cursor?: string, signal?: AbortSignal, force = false, filter = "all") => {
+    const query = new URLSearchParams({limit: "10", event_filter: filter, ...(cursor ? {cursor} : {})});
+    return cachedGet(`events:${reviewRunId}:${filter}:${cursor ?? "first"}`,
+      (cacheSignal) => request<CursorPage<import("./types").ReviewEvent>>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/events?${query}`, {signal: cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force);
   },
   reviewChangeToken: (reviewRunId: string, signal?: AbortSignal) =>
     request<ReviewChangeToken>(
@@ -777,11 +796,11 @@ export const api = {
         body: JSON.stringify(payload),
       },
     )),
-  configurationAudits: (signal?: AbortSignal, force = false) =>
+  configurationAudits: (signal?: AbortSignal, force = false, cursor?: string) =>
     cachedGet(
-      "configuration-audits",
+      `configuration-audits:${cursor ?? "first"}`,
       (cacheSignal) => request<ConfigurationAuditList>(
-        "/api/v1/settings/audits?limit=20",
+        `/api/v1/settings/audits?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})})}`,
         { cache: "no-store", signal: cacheSignal },
       ),
       signal,
@@ -832,11 +851,13 @@ export const api = {
     includeArchived = false,
     signal?: AbortSignal,
     force = false,
+    offset = 0,
+    query = "",
   ) =>
     cachedGet(
-      `knowledge-documents:${includeArchived ? "archived" : "active"}`,
+      `knowledge-documents:${includeArchived ? "archived" : "active"}:${offset}:${query}`,
       (cacheSignal) => request<KnowledgeLibrary>(
-        `/api/v1/knowledge/documents?include_archived=${includeArchived ? "true" : "false"}&limit=128`,
+        `/api/v1/knowledge/documents?${new URLSearchParams({include_archived: String(includeArchived), limit: "10", offset: String(offset), q: query})}`,
         { cache: "no-store", signal: cacheSignal },
       ),
       signal,
@@ -847,11 +868,12 @@ export const api = {
     documentId: string,
     signal?: AbortSignal,
     force = false,
+    versionCursor?: string,
   ) =>
     cachedGet(
-      `knowledge-document:${documentId}`,
+      `knowledge-document:${documentId}${versionCursor ? `:versions:${versionCursor}` : ""}`,
       (cacheSignal) => request<KnowledgeDocument>(
-        `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}`,
+        `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}?${new URLSearchParams({version_limit: "10", ...(versionCursor ? {version_cursor: versionCursor} : {})})}`,
         { cache: "no-store", signal: cacheSignal },
       ),
       signal,

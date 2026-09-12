@@ -315,7 +315,7 @@ function stringArrayPayload(event: ReviewEvent | undefined, key: string): string
     : [];
 }
 
-export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
+export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey, summary?: import("./types").BatchProgress) {
   const scoped = latestAgentEvents(events, agent);
   const planned = latestAgentEvent(scoped, "review.model.batches_planned");
   const completedEvent = latestAgentEvent(scoped, "review.model.agent_completed");
@@ -420,15 +420,19 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey) {
     events: scoped,
     planned,
     batches,
-    batchCount,
+    batchCount: summary?.total ?? batchCount,
+    completedCount: summary?.completed ?? completedBatches.length,
+    failedCount: summary?.failed ?? failedBatches.length,
     completedBatches,
     failedBatches,
-    status,
+    status: summary && summary.failed > 0 ? "failed"
+      : summary && summary.running > 0 ? "running"
+      : summary && summary.completed === summary.total && status !== "failed" ? "completed" : status,
     findingCount,
-    duration,
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
+    duration: summary?.duration_ms ?? duration,
+    inputTokens: summary?.input_tokens ?? inputTokens,
+    outputTokens: summary?.output_tokens ?? outputTokens,
+    reasoningTokens: summary?.reasoning_tokens ?? reasoningTokens,
     requestIds,
     errorCode,
     errorMessage,

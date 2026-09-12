@@ -70,6 +70,9 @@ jobs:
           --cov=apps --cov=domain --cov=persistence --cov=services
           --cov-report=term-missing
 
+      - name: Verify management queries at 10k and 100k rows
+        run: python -m pytest tests/performance/management_scale.py -q -s -W error
+
   web-test:
     name: Test React on Node 22.19
     runs-on: ubuntu-24.04

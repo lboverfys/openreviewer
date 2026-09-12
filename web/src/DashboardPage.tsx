@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, ApiError, DASHBOARD_CACHE_TTL_MS, peekReadCache, primeReadCache } from "./api";
+import { api, ApiError, DASHBOARD_CACHE_TTL_MS, peekReadCache, primeReadCache, subscribeReadCache, reviewListKey } from "./api";
 import CreateReviewForm from "./CreateReviewForm";
+import Pagination, { PAGE_SIZE } from "./Pagination";
+import { useCursorPage } from "./useCursorPage";
+import { preloadPage } from "./page-loaders";
 import {
-  appendReviewPage,
   applyLiveDashboardSnapshot,
   DASHBOARD_FALLBACK_REFRESH_MS,
   DASHBOARD_INITIAL_FALLBACK_MS,
@@ -155,6 +157,8 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
         <button
           type="button"
           className="review-open-row-btn"
+          onPointerEnter={() => preloadPage("review")}
+          onFocus={() => preloadPage("review")}
           onClick={() => onOpen(review.review_run_id)}
           title="查看任务详情、结果和日志"
         >
@@ -172,12 +176,11 @@ interface DashboardProps {
 }
 
 function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
-  const cachedSnapshot = peekReadCache<DashboardSnapshot>("dashboard:first:50");
+  const cachedSnapshot = peekReadCache<DashboardSnapshot>("dashboard:first:10");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(cachedSnapshot ?? null);
   const [streamState, setStreamState] = useState<DashboardStreamState>("connecting");
   const [pageMessage, setPageMessage] = useState("");
   const [loading, setLoading] = useState(cachedSnapshot === undefined);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const [searchKeyword, setSearchKeyword] = useState<string>("");
   const refreshSequence = useRef(0);
@@ -189,7 +192,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
   }: DashboardRefreshOptions = {}) => {
     const sequence = ++refreshSequence.current;
     try {
-      const next = await api.dashboard(undefined, 50, signal, force);
+      const next = await api.dashboard(undefined, PAGE_SIZE, signal, force);
       // SSE 首次事件可能比 HTTP 快；不要让较晚返回的旧快照覆盖实时数据。
       if (signal?.aborted || sequence !== refreshSequence.current) return;
       if (!preserveLiveSnapshot || !streamLiveRef.current) {
@@ -274,9 +277,10 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
           initialSnapshotReceived = true;
           clearFallback();
           streamLiveRef.current = true;
-          const cachedBeforeEvent = peekReadCache<DashboardSnapshot>("dashboard:first:50");
+          const cachedBeforeEvent = peekReadCache<DashboardSnapshot>("dashboard:first:10");
           if (!cachedBeforeEvent || incoming.generated_at >= cachedBeforeEvent.generated_at) {
-            primeReadCache("dashboard:first:50", incoming, DASHBOARD_CACHE_TTL_MS);
+            primeReadCache("dashboard:first:10", incoming, DASHBOARD_CACHE_TTL_MS);
+            primeReadCache(`${reviewListKey()}:first`, {items: incoming.recent_reviews, total: incoming.total_reviews, next_cursor: incoming.next_cursor}, DASHBOARD_CACHE_TTL_MS);
           }
           setSnapshot((current) => applyLiveDashboardSnapshot(current, incoming));
           setStreamState("live");
@@ -345,46 +349,27 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
     [snapshot],
   );
 
-  const filteredReviews = useMemo(() => {
-    if (!snapshot?.recent_reviews) return [];
-    const keyword = searchKeyword.trim().toLocaleLowerCase();
-    return snapshot.recent_reviews.filter((review) => {
-      const matchStatus =
-        activeFilter === "all" || review.execution_status === activeFilter;
-      const matchKeyword =
-        !keyword || [
-          review.repository,
-          String(review.pull_request_number),
-          review.head_sha,
-          review.pr_title ?? "",
-          review.pr_author_login ?? "",
-          review.head_repository ?? "",
-          review.head_ref ?? "",
-          review.base_repository ?? "",
-          review.base_ref ?? "",
-        ].some((value) => value.toLocaleLowerCase().includes(keyword));
-      return matchStatus && matchKeyword;
-    });
-  }, [snapshot, activeFilter, searchKeyword]);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(searchKeyword.trim().length >= 3 || /^\d+$/.test(searchKeyword.trim()) ? searchKeyword.trim() : ""), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchKeyword]);
+  const handleListError = useCallback((error: unknown) => {
+    if (error instanceof ApiError && error.status === 401) onSignedOut("登录状态已失效，请重新登录");
+    else setPageMessage(errorMessage(error));
+  }, [onSignedOut]);
+  const loadReviewPage = useCallback((cursor?: string, signal?: AbortSignal, force = false) =>
+    api.reviews(cursor, PAGE_SIZE, signal, activeFilter, debouncedSearch, force),
+  [activeFilter, debouncedSearch]);
+  const reviewPage = useCursorPage<ReviewItem>({
+    cacheKey: reviewListKey(activeFilter, debouncedSearch), load: loadReviewPage, onError: handleListError,
+  });
+  const filteredReviews = reviewPage.data?.items ?? [];
 
-  async function loadMoreReviews() {
-    const cursor = snapshot?.next_cursor;
-    if (!cursor || loadingMore) return;
-    setLoadingMore(true);
-    try {
-      const page = await api.reviews(cursor);
-      setSnapshot((current) => (current ? appendReviewPage(current, page) : current));
-      setPageMessage("");
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        onSignedOut("登录状态已失效，请重新登录");
-        return;
-      }
-      setPageMessage("暂时无法加载更多审查任务，请稍后重试");
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  useEffect(() => subscribeReadCache<DashboardSnapshot>("dashboard:first:10", (next) => {
+    setSnapshot((current) => applyLiveDashboardSnapshot(current, next));
+    setLoading(false);
+  }), []);
 
   const workers = snapshot?.workers?.length
     ? snapshot.workers
@@ -437,7 +422,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
             <button
               type="button"
               className="btn-ghost"
-              onClick={() => void refresh({ force: true })}
+              onClick={() => { void reviewPage.refresh(); if (reviewPage.cursor || activeFilter !== "all" || debouncedSearch) void refresh({ force: true }); }}
               title="刷新数据快照"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
@@ -503,7 +488,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                     id="review-search"
                     name="review-search"
                     type="text"
-                    placeholder="搜索标题、作者、仓库或分支…"
+                    placeholder="标题、作者、分支（至少3字）或 PR 编号"
                     value={searchKeyword}
                     onChange={(e) => setSearchKeyword(e.target.value)}
                   />
@@ -539,7 +524,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                 </tbody>
               </table>
 
-              {!loading && filteredReviews.length === 0 && (
+              {!loading && !reviewPage.loading && filteredReviews.length === 0 && (
                 <div className="empty-block">
                   <div className="empty-icon-bubble">
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -569,22 +554,10 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                   )}
                 </div>
               )}
-              {!loading && snapshot && snapshot.recent_reviews.length > 0 && (
-                <div className="dash-pagination-bar">
-                  <span>
-                    已加载 {snapshot.recent_reviews.length} / {snapshot.total_reviews}
-                  </span>
-                  {snapshot.next_cursor && (
-                    <button
-                      type="button"
-                      disabled={loadingMore}
-                      onClick={() => void loadMoreReviews()}
-                    >
-                      {loadingMore ? "加载中..." : "加载更多"}
-                    </button>
-                  )}
-                </div>
-              )}
+              <Pagination page={reviewPage.page} count={filteredReviews.length} total={reviewPage.data?.total}
+                hasNext={Boolean(reviewPage.data?.next_cursor)} busy={reviewPage.loading}
+                onPrevious={reviewPage.previous} onNext={reviewPage.next} label="审查任务分页" />
+
             </div>
           </section>
 
@@ -664,7 +637,8 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
               <CreateReviewForm
                 onCreated={(message) => {
                   setPageMessage(message);
-                  void refresh({ force: true });
+                  reviewPage.reset();
+                  void reviewPage.refresh();
                 }}
                 onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
               />

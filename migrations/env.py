@@ -8,12 +8,20 @@ from sqlalchemy import URL, create_engine, make_url, pool
 from persistence.database import database_url_from_environment
 from persistence.models import Base
 
-
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+
+def include_object(obj, _name, object_type, _reflected, _compare_to):
+    """SQLite 回归不要求 PostgreSQL 专用 GIN 索引；生产仍完整比较。"""
+    return not (
+        object_type == "index"
+        and obj.info.get("postgresql_only")
+        and context.get_context().dialect.name != "postgresql"
+    )
 
 
 def migration_url() -> URL:
@@ -55,6 +63,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -80,6 +89,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
         )
 
         with context.begin_transaction():

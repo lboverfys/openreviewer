@@ -1,8 +1,6 @@
 import type {
   DashboardSnapshot,
   ExecutionStatus,
-  ReviewItem,
-  ReviewListPage,
 } from "./types";
 
 export type DashboardStreamState = "connecting" | "live" | "reconnecting";
@@ -13,7 +11,7 @@ export interface DashboardRefreshOptions {
   preserveLiveSnapshot?: boolean;
 }
 
-export const DASHBOARD_INITIAL_FALLBACK_MS = 3_500;
+export const DASHBOARD_INITIAL_FALLBACK_MS = 0;
 export const DASHBOARD_FALLBACK_REFRESH_MS = 15_000;
 
 export const DASHBOARD_STATUS_ORDER: ExecutionStatus[] = [
@@ -24,19 +22,6 @@ export const DASHBOARD_STATUS_ORDER: ExecutionStatus[] = [
   "completed",
   "failed",
 ];
-
-function uniqueReviews(groups: readonly (readonly ReviewItem[])[]): ReviewItem[] {
-  const seen = new Set<string>();
-  const merged: ReviewItem[] = [];
-  for (const group of groups) {
-    for (const review of group) {
-      if (seen.has(review.review_run_id)) continue;
-      seen.add(review.review_run_id);
-      merged.push(review);
-    }
-  }
-  return merged;
-}
 
 export function applyLiveDashboardSnapshot(
   current: DashboardSnapshot | null,
@@ -57,28 +42,5 @@ export function applyLiveDashboardSnapshot(
     return current;
   }
 
-  const recentReviews = uniqueReviews([
-    incoming.recent_reviews,
-    current.recent_reviews,
-  ]);
-  return {
-    ...incoming,
-    recent_reviews: recentReviews,
-    next_cursor:
-      recentReviews.length >= incoming.total_reviews
-        ? null
-        : current.next_cursor ?? incoming.next_cursor,
-  };
-}
-
-export function appendReviewPage(
-  current: DashboardSnapshot,
-  page: ReviewListPage,
-): DashboardSnapshot {
-  return {
-    ...current,
-    total_reviews: page.total,
-    recent_reviews: uniqueReviews([current.recent_reviews, page.items]),
-    next_cursor: page.next_cursor,
-  };
+  return incoming;
 }

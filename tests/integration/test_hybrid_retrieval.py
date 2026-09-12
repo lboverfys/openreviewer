@@ -232,6 +232,34 @@ def test_review_retries_reuse_frozen_context_after_configuration_changes(retriev
     assert second.context_evidence == first.context_evidence
 
 
+def test_identical_agent_queries_share_search_and_batch_vectors(retrieval, monkeypatch):
+    from domain.enums import ReviewAgent
+    from domain.models import ReviewRequest
+    from persistence.repositories import SqlAlchemyReviewRepository
+    from services.reviews import ReviewService
+    from tests.unit.test_model_review import make_model_input
+
+    service, sessions, _ = retrieval
+    original = make_model_input()
+    target = {"installation_id": 10, "repository_id": original.repository_id,
+              "repository": original.repository, "head_sha": original.head_sha}
+    run = ReviewService(SqlAlchemyReviewRepository(sessions)).submit(
+        ReviewRequest(**target, pull_request_number=original.pull_request_number), "dedup-agents")
+    service.index_sources(target, sources())
+    unit = original.units[0].model_copy(update={"review_domains": (ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC)})
+    model_input = original.model_copy(update={"review_run_id": run.review_run_id, "units": (unit,)})
+    searches = []
+    search = service._search
+    def capture(*args):
+        searches.append(args[1].query)
+        return search(*args)
+    monkeypatch.setattr(service, "_search", capture)
+    result = service.review_context(model_input, lambda: None)
+    assert result.context_evidence
+    assert len(searches) == 1
+    assert {item.agent for item in result.context_evidence} == {ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC}
+
+
 def test_pause_allows_basic_index_but_blocks_explicit_vector_enrichment(retrieval, monkeypatch):
     service, _, _ = retrieval
     ready = service.index_sources(TARGET, sources())

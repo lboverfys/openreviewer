@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from apps.api.schemas import DashboardResponse, ReviewListResponse
+from domain.enums import ExecutionStatus
 from services.auth import (
     AuthPersistenceError,
     AuthService,
@@ -57,14 +58,14 @@ def register_dashboard_routes(
     )
     def get_dashboard(
         principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
         cursor: Annotated[str | None, Query(max_length=512)] = None,
     ) -> DashboardResponse:
         """返回认证后的任务统计、最近任务和 Worker 状态。
 
         参数：
             _: 仅用于触发管理员会话校验的依赖结果。
-            limit: 最近任务数量，范围 1 到 100，默认 50。
+            limit: 最近任务数量，范围 1 到 100，默认 10。
 
         返回：
             当前数据库快照；Worker 没有心跳时会明确标记为未配置/离线，而不是
@@ -82,14 +83,16 @@ def register_dashboard_routes(
     )
     def list_reviews(
         principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
         cursor: Annotated[str | None, Query(max_length=512)] = None,
+        execution_status: ExecutionStatus | None = None,
+        q: Annotated[str, Query(max_length=200)] = "",
     ) -> ReviewListResponse:
         """返回认证后的最近审查任务列表。
 
         参数：
             _: 管理员会话依赖。
-            limit: 返回条数，范围 1 到 100，默认 50。
+            limit: 返回条数，范围 1 到 100，默认 10。
 
         返回：
             包含数据库中的总运行数和按创建时间倒序排列的最近任务；任务状态、
@@ -99,7 +102,10 @@ def register_dashboard_routes(
             HTTPException(401): 会话无效。
             HTTPException(503): 查询失败。
         """
-        snapshot = load_snapshot(principal, limit, cursor)
+        snapshot = dashboard_snapshot(
+            limit, cursor, principal.resource_scope,
+            execution_status=execution_status, query=q.strip(), include_overview=False,
+        )
         return ReviewListResponse(
             total=snapshot.total_reviews,
             items=snapshot.recent_reviews,

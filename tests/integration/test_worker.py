@@ -110,6 +110,23 @@ def submit_review(database: Database, key: str = "worker-test") -> str:
     return result.review_task_id
 
 
+def test_continuous_review_queue_gives_index_a_turn(database, monkeypatch):
+    from unittest.mock import Mock
+
+    queue = SqlAlchemyReviewTaskQueue(database.sessions)
+    runtime = WorkerRuntime(queue, WorkerSettings(worker_id="fair-worker",
+        poll_interval=timedelta(seconds=1), lease_duration=timedelta(seconds=30)), retrieval_service=Mock())
+    runtime._reviews_since_index = 4
+    index_turn = Mock(return_value=True)
+    monkeypatch.setattr(runtime, "_process_retrieval_index", index_turn)
+    claim = Mock(side_effect=AssertionError("索引轮次不得继续抢审查任务"))
+    monkeypatch.setattr(queue, "claim_next", claim)
+    assert runtime.run_once()
+    index_turn.assert_called_once()
+    assert runtime._reviews_since_index == 0
+    claim.assert_not_called()
+
+
 def test_worker_claims_one_task_and_stops_at_waiting_for_ci(
     database: Database,
 ) -> None:

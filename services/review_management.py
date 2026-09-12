@@ -11,6 +11,8 @@ from typing import Protocol
 
 from domain.enums import ExecutionStatus, VerificationStatus
 from domain.github import PullRequestSnapshot
+from domain.pagination import CursorPage
+from domain.review_progress import BatchProgress, BatchSnapshot
 from services.rbac import ResourceScope
 from services.task_queue import ReviewTarget
 
@@ -319,6 +321,7 @@ class StoredReviewDetails:
     partial_result: bool = False
     failed_agents: tuple[str, ...] = ()
     failed_batches: tuple[Mapping[str, object], ...] = ()
+    batch_progress: Mapping[str, BatchProgress] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +368,19 @@ class PullRequestIdentityLoader(Protocol):
 
 
 class ReviewManagementRepository(Protocol):
+    def batch_page(self, review_run_id: str, agent: str, *, after: int = 0,
+                   limit: int = 10, scope: ResourceScope | None = None) -> CursorPage[BatchSnapshot]:
+        ...
+
+    def finding_page(self, review_run_id: str, *, limit: int = 10, cursor: str | None = None,
+                     severity: str | None = None, adjudication_status: str | None = None,
+                     query: str = "", scope: ResourceScope | None = None) -> CursorPage[StoredFinding]:
+        ...
+
+    def event_page(self, review_run_id: str, *, limit: int = 10, cursor: str | None = None,
+                   event_filter: str = "all", scope: ResourceScope | None = None) -> CursorPage[StoredReviewEvent]:
+        ...
+
     def get(
         self,
         review_run_id: str,
@@ -373,6 +389,7 @@ class ReviewManagementRepository(Protocol):
         finding_cursor: FindingCursor | None = None,
         finding_adjudication_status: str | None = None,
         scope: ResourceScope | None = None,
+        view: str = "full",
     ) -> StoredReviewDetails:
         """返回单条任务及其有界事件、CI 和 Finding 快照。"""
 
@@ -455,6 +472,24 @@ class ReviewManagementService:
         self._repository = repository
         self._identity_loader = identity_loader
 
+    def batch_page(self, review_run_id: str, agent: str, *, after: int = 0,
+                   limit: int = 10, scope: ResourceScope | None = None) -> CursorPage[BatchSnapshot]:
+        if agent not in {"security", "convention", "logic", "summary"} or not 0 <= after <= 3000 or not 1 <= limit <= 100:
+            raise ValueError("批次分页参数无效")
+        return self._repository.batch_page(review_run_id, agent, after=after,
+            limit=limit, scope=_effective_scope(scope))
+
+    def finding_page(self, review_run_id: str, *, limit: int = 10, cursor: str | None = None,
+                     severity: str | None = None, adjudication_status: str | None = None,
+                     query: str = "", scope: ResourceScope | None = None) -> CursorPage[StoredFinding]:
+        return self._repository.finding_page(review_run_id, limit=limit, cursor=cursor,
+            severity=severity, adjudication_status=adjudication_status, query=query, scope=_effective_scope(scope))
+
+    def event_page(self, review_run_id: str, *, limit: int = 10, cursor: str | None = None,
+                   event_filter: str = "all", scope: ResourceScope | None = None) -> CursorPage[StoredReviewEvent]:
+        return self._repository.event_page(review_run_id, limit=limit, cursor=cursor,
+            event_filter=event_filter, scope=_effective_scope(scope))
+
     def change_token(
         self,
         review_run_id: str,
@@ -520,6 +555,7 @@ class ReviewManagementService:
         finding_limit: int = 50,
         finding_cursor: str | None = None,
         scope: ResourceScope | None = None,
+        view: str = "full",
     ) -> ReviewDetails:
         if not 1 <= finding_limit <= 100:
             raise ValueError("finding limit must be between 1 and 100")
@@ -529,7 +565,12 @@ class ReviewManagementService:
             else None
         )
         effective_scope = _effective_scope(scope)
-        if effective_scope is None:
+        if view != "full":
+            stored = self._repository.get(
+                review_run_id, finding_limit=finding_limit, finding_cursor=decoded_cursor,
+                scope=effective_scope, view=view,
+            )
+        elif effective_scope is None:
             stored = self._repository.get(
                 review_run_id,
                 finding_limit=finding_limit,

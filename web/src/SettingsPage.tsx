@@ -1,3 +1,4 @@
+import Pagination from "./Pagination";
 import {
   FormEvent,
   useCallback,
@@ -152,6 +153,9 @@ export default function SettingsPage({
   const [policyMessage, setPolicyMessage] = useState("");
   const [policyMessageKind, setPolicyMessageKind] = useState<"success" | "error">("success");
   const [audits, setAudits] = useState<ConfigurationAudit[]>([]);
+  const [auditCursors, setAuditCursors] = useState<(string | undefined)[]>([undefined]);
+  const [auditNextCursor, setAuditNextCursor] = useState<string | null>(null);
+  const auditCursor = auditCursors.at(-1);
   const [auditsLoaded, setAuditsLoaded] = useState(false);
   const [auditsLoading, setAuditsLoading] = useState(false);
   const [auditError, setAuditError] = useState("");
@@ -275,9 +279,10 @@ export default function SettingsPage({
     setAuditsLoading(true);
     setAuditError("");
     try {
-      const response = await api.configurationAudits(signal, force);
+      const response = await api.configurationAudits(signal, force, auditCursor);
       if (sequence !== auditRequestSequence.current || signal?.aborted) return;
       setAudits(response.items);
+      setAuditNextCursor(response.next_cursor ?? null);
       setAuditsLoaded(true);
     } catch (error) {
       if (signal?.aborted || sequence !== auditRequestSequence.current) return;
@@ -291,12 +296,21 @@ export default function SettingsPage({
         setAuditsLoading(false);
       }
     }
-  }, [auditsLoaded, onSignedOut]);
+  }, [auditsLoaded, auditCursor, onSignedOut]);
+
+  useEffect(() => {
+    if (!auditExpanded) return;
+    const controller = new AbortController();
+    void loadAudits(true, controller.signal);
+    return () => controller.abort();
+  }, [auditCursor]); // 翻页刷新，展开动作沿用现有处理。
 
   const invalidateAudits = useCallback(() => {
     auditRequestSequence.current += 1;
     setAuditsLoaded(false);
     setAudits([]);
+    setAuditCursors([undefined]);
+    setAuditNextCursor(null);
     setAuditError("");
     setAuditsLoading(false);
   }, []);
@@ -870,6 +884,7 @@ export default function SettingsPage({
                 </table>
                 {auditsLoading && <div className="settings-loading">正在读取配置变更...</div>}
                 {!auditsLoading && auditsLoaded && audits.length === 0 && <div className="settings-empty-audit">暂无配置变更</div>}
+                <Pagination page={auditCursors.length} count={audits.length} hasNext={Boolean(auditNextCursor)} busy={auditsLoading} onPrevious={() => setAuditCursors(items => items.slice(0, -1))} onNext={() => {if (auditNextCursor) setAuditCursors(items => [...items, auditNextCursor]);}} label="配置变更分页" />
               </div>
             </details>
               </div>

@@ -301,14 +301,16 @@ def register_settings_routes(
     )
     def list_configuration_audits(
         _: Annotated[SessionPrincipal, Depends(require_settings_manager)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        cursor: Annotated[int | None, Query(ge=1)] = None,
     ) -> ConfigurationAuditListResponse:
         try:
-            audits = get_ai_settings_service().audits(limit)
+            audits = get_ai_settings_service().audits(limit + 1, cursor)
         except AiSettingsPersistenceError as exc:
             raise translate_ai_settings_error(exc) from exc
         return ConfigurationAuditListResponse(
+            next_cursor=str(audits[limit-1].revision) if len(audits) > limit else None,
             items=tuple(
-                ConfigurationAuditResponse.from_view(item) for item in audits
+                ConfigurationAuditResponse.from_view(item) for item in audits[:limit]
             )
         )

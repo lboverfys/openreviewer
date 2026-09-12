@@ -1396,6 +1396,7 @@ class WorkerRuntime:
         if not 1 <= len(self._instance_id) <= 64:
             raise ValueError("worker instance ID must contain 1 to 64 characters")
         self._heartbeat_started = False
+        self._reviews_since_index = 0
         # 极端情况下数据库调用可能超过 stop() 的有限等待窗口。保留这些
         # 线程引用，下一轮先等它们彻底退出，避免旧 BUSY 写入覆盖新任务状态。
         self._lingering_heartbeats: list[_BusyHeartbeat] = []
@@ -1672,6 +1673,11 @@ class WorkerRuntime:
         # 又启动一条新任务。当前已领取的任务仍由本轮安全边界负责完成或续租。
         if self._stop_event.is_set():
             return False
+        # 每四次审查领取给索引一次机会，避免持续排队的审查饿死其依赖索引。
+        if self._retrieval_service is not None and self._reviews_since_index >= 4:
+            self._reviews_since_index = 0
+            if self._process_retrieval_index():
+                return True
         ai_runtime = (
             self._ai_runtime_provider.current()
             if self._ai_runtime_provider is not None
@@ -1692,8 +1698,11 @@ class WorkerRuntime:
         )
         if lease is None:
             if self._retrieval_service is not None:
+                self._reviews_since_index = 0
                 return self._process_retrieval_index()
             return False
+
+        self._reviews_since_index += 1
 
         # 心跳线程可能在领取事务期间发现本进程已被新实例接管。此时任务
         # 留给租约恢复流程，不再用旧 token 启动处理或写入状态。

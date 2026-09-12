@@ -1,7 +1,7 @@
 """审查详情、人工动作与任务创建路由。"""
 
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 
@@ -11,9 +11,13 @@ from apps.api.schemas import (
     ReviewActionResponse,
     ReviewChangeTokenResponse,
     ReviewDetailsResponse,
+    ReviewEventResponse,
     ReviewFindingDecisionRequest,
+    ReviewFindingResponse,
 )
 from domain.models import ReviewRequest
+from domain.pagination import CursorPage
+from domain.review_progress import BatchSnapshot
 from services.auth import SessionPrincipal
 from services.github_access import GitHubAccessPolicy
 from services.rbac import Permission
@@ -53,8 +57,9 @@ def register_review_routes(
     def review_details_response(
         review_run_id: str,
         principal: SessionPrincipal,
-        finding_limit: int = 50,
+        finding_limit: int = 10,
         finding_cursor: str | None = None,
+        view: str = "full",
     ) -> ReviewDetailsResponse:
         """读取单条任务详情并统一转换存储异常。"""
 
@@ -64,6 +69,7 @@ def register_review_routes(
                 finding_limit=finding_limit,
                 finding_cursor=finding_cursor,
                 scope=principal.resource_scope,
+                view=view,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -81,6 +87,39 @@ def register_review_routes(
                 detail="review details are temporarily unavailable",
             ) from exc
         return ReviewDetailsResponse.from_details(details)
+
+    @application.get("/api/v1/reviews/{review_run_id}/findings", response_model=CursorPage[ReviewFindingResponse])
+    def list_findings(review_run_id: str, principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
+                      limit: Annotated[int, Query(ge=1, le=100)] = 10,
+                      cursor: Annotated[str | None, Query(max_length=512)] = None,
+                      severity: str | None = None, adjudication_status: str | None = None,
+                      q: Annotated[str, Query(max_length=200)] = "") -> CursorPage[ReviewFindingResponse]:
+        try:
+            page = get_review_management_service().finding_page(review_run_id, limit=limit, cursor=cursor,
+                severity=severity, adjudication_status=adjudication_status, query=q.strip(), scope=principal.resource_scope)
+        except ReviewNotFoundError as exc:
+            raise HTTPException(404, "review task not found") from exc
+        except ValueError as exc:
+            raise HTTPException(422, "finding cursor is invalid") from exc
+        except ReviewManagementPersistenceError as exc:
+            raise HTTPException(503, "review findings are temporarily unavailable") from exc
+        return CursorPage(items=tuple(ReviewFindingResponse(**{name: getattr(item, name) for name in ReviewFindingResponse.model_fields}) for item in page.items), next_cursor=page.next_cursor)
+
+    @application.get("/api/v1/reviews/{review_run_id}/events", response_model=CursorPage[ReviewEventResponse])
+    def list_events(review_run_id: str, principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
+                    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+                    cursor: Annotated[str | None, Query(max_length=512)] = None,
+                    event_filter: Literal["all", "model", "workflow", "errors"] = "all") -> CursorPage[ReviewEventResponse]:
+        try:
+            page = get_review_management_service().event_page(review_run_id, limit=limit, cursor=cursor,
+                event_filter=event_filter, scope=principal.resource_scope)
+        except ReviewNotFoundError as exc:
+            raise HTTPException(404, "review task not found") from exc
+        except ValueError as exc:
+            raise HTTPException(422, "event cursor is invalid") from exc
+        except ReviewManagementPersistenceError as exc:
+            raise HTTPException(503, "review events are temporarily unavailable") from exc
+        return CursorPage(items=tuple(ReviewEventResponse(**{name: getattr(item, name) for name in ReviewEventResponse.model_fields}) for item in page.items), next_cursor=page.next_cursor)
 
     @application.get(
         "/api/v1/reviews/{review_run_id}/change-token",
@@ -109,6 +148,20 @@ def register_review_routes(
             ) from exc
         return ReviewChangeTokenResponse(change_token=change_token)
 
+    @application.get("/api/v1/reviews/{review_run_id}/batches", response_model=CursorPage[BatchSnapshot])
+    def list_batches(review_run_id: str,
+                     principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
+                     agent: Literal["security", "convention", "logic", "summary"],
+                     after: Annotated[int, Query(ge=0, le=3000)] = 0,
+                     limit: Annotated[int, Query(ge=1, le=100)] = 10) -> CursorPage[BatchSnapshot]:
+        try:
+            return get_review_management_service().batch_page(review_run_id, agent,
+                after=after, limit=limit, scope=principal.resource_scope)
+        except ReviewNotFoundError as exc:
+            raise HTTPException(404, "review task not found") from exc
+        except ReviewManagementPersistenceError as exc:
+            raise HTTPException(503, "review batches are temporarily unavailable") from exc
+
     @application.get(
         "/api/v1/reviews/{review_run_id}",
         response_model=ReviewDetailsResponse,
@@ -116,8 +169,9 @@ def register_review_routes(
     def get_review_details(
         review_run_id: str,
         principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
-        finding_limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        finding_limit: Annotated[int, Query(ge=1, le=100)] = 10,
         finding_cursor: Annotated[str | None, Query(max_length=512)] = None,
+        view: Literal["full", "overview", "findings", "agents"] = "full",
     ) -> ReviewDetailsResponse:
         """返回任务的阶段、模型结果、Finding、CI 和结构化事件日志。"""
 
@@ -126,6 +180,7 @@ def register_review_routes(
             principal,
             finding_limit,
             finding_cursor,
+            view,
         )
 
     @application.post(

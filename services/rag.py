@@ -5,16 +5,17 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from threading import RLock
 from uuid import uuid4
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, defer, sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from persistence.models import (
     KnowledgeDocumentRecord,
@@ -95,6 +96,7 @@ class KnowledgeDocumentSummary:
 class KnowledgeDocumentView(KnowledgeDocumentSummary):
     content: str
     versions: tuple[KnowledgeVersionView, ...]
+    version_next_cursor: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +106,8 @@ class KnowledgeLibraryView:
     enabled_count: int
     total_enabled_bytes: int
     items: tuple[KnowledgeDocumentSummary, ...]
+    offset: int = 0
+    has_more: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,7 +444,9 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         self,
         *,
         include_archived: bool = False,
-        limit: int = 128,
+        limit: int = 10,
+        offset: int = 0,
+        query: str = "",
     ) -> KnowledgeLibraryView:
         if not 1 <= limit <= self.max_files:
             raise KnowledgeValidationError("知识文档数量必须在 1 到 128 之间")
@@ -450,9 +456,12 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                 state = session.get(KnowledgeLibraryRecord, 1)
                 if state is None:
                     raise KnowledgePersistenceError("知识库版本暂时无法读取")
-                filters = () if include_archived else (
+                filters: tuple[ColumnElement[bool], ...] = () if include_archived else (
                     KnowledgeDocumentRecord.archived_at.is_(None),
                 )
+                if query:
+                    pattern = "%" + query.replace("%", "\\%").replace("_", "\\_") + "%"
+                    filters += (or_(KnowledgeDocumentRecord.source.ilike(pattern, escape="\\"), KnowledgeDocumentVersionRecord.content.ilike(pattern, escape="\\")),)
                 rows = session.execute(
                     select(
                         KnowledgeDocumentRecord,
@@ -471,15 +480,18 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                     .order_by(
                         KnowledgeDocumentRecord.archived_at.asc(),
                         KnowledgeDocumentRecord.source.asc(),
+                        KnowledgeDocumentRecord.id.asc(),
                     )
+                    .offset(offset)
                     .limit(limit)
                 ).all()
                 total = session.scalar(
-                    select(func.count(KnowledgeDocumentRecord.id)).where(*filters)
+                    select(func.count(KnowledgeDocumentRecord.id)).join(KnowledgeDocumentVersionRecord, and_(KnowledgeDocumentVersionRecord.document_id == KnowledgeDocumentRecord.id, KnowledgeDocumentVersionRecord.version == KnowledgeDocumentRecord.current_version)).where(*filters)
                 ) or 0
                 enabled_count, enabled_bytes = self._enabled_totals(session)
                 return KnowledgeLibraryView(
                     revision=state.revision,
+                    offset=offset, has_more=offset + len(rows) < int(total),
                     total=int(total),
                     enabled_count=enabled_count,
                     total_enabled_bytes=enabled_bytes,
@@ -492,7 +504,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         except SQLAlchemyError as exc:
             raise KnowledgePersistenceError("知识文档暂时无法读取") from exc
 
-    def get_document(self, document_id: str) -> KnowledgeDocumentView:
+    def get_document(self, document_id: str, version_limit: int = 10, version_cursor: int | None = None) -> KnowledgeDocumentView:
         self._ensure_seeded()
         try:
             with self._sessions() as session:
@@ -514,21 +526,14 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                 ).one_or_none()
                 if row is None:
                     raise KnowledgeNotFoundError("知识文档不存在")
-                versions = tuple(
-                    _version_view(version)
-                    for version in session.scalars(
-                        select(KnowledgeDocumentVersionRecord)
-                        .where(
-                            KnowledgeDocumentVersionRecord.document_id
-                            == document_id
-                        )
-                        .order_by(
-                            KnowledgeDocumentVersionRecord.version.desc()
-                        )
-                        .limit(50)
-                    )
-                )
-                return _document_view(row[0], row[1], versions)
+                history_query = select(KnowledgeDocumentVersionRecord).options(defer(KnowledgeDocumentVersionRecord.content)).where(KnowledgeDocumentVersionRecord.document_id == document_id)
+                if version_cursor is not None:
+                    history_query = history_query.where(KnowledgeDocumentVersionRecord.version < version_cursor)
+                history_rows = session.scalars(history_query.order_by(KnowledgeDocumentVersionRecord.version.desc()).limit(version_limit + 1)).all()
+                versions = tuple(_version_view(version) for version in history_rows[:version_limit])
+                return replace(_document_view(row[0], row[1], versions),
+                    version_next_cursor=str(versions[-1].version) if len(history_rows) > version_limit else None)
+
         except KnowledgeNotFoundError:
             raise
         except SQLAlchemyError as exc:

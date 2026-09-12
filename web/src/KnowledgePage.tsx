@@ -1,5 +1,4 @@
-import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   api,
@@ -14,6 +13,11 @@ import type {
   KnowledgeMutation,
 } from "./types";
 import { errorMessage, formatDate } from "./utils";
+import Pagination, { PAGE_SIZE } from "./Pagination";
+import { useCursorPage } from "./useCursorPage";
+import type { KnowledgeVersion } from "./types";
+
+const ReactMarkdown = lazy(() => import("react-markdown"));
 
 interface KnowledgePageProps {
   onSignedOut: (message?: string) => void;
@@ -61,8 +65,11 @@ export default function KnowledgePage({
   // 左侧列表是短时缓存数据；先同步绘制它，详情请求会在后台继续校验，
   // 避免从设置页/仪表盘返回时知识库整栏先显示空状态。
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [listQuery, setListQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const cachedLibrary = peekReadCache<KnowledgeLibrary>(
-    `knowledge-documents:${includeArchived ? "archived" : "active"}`,
+    `knowledge-documents:${includeArchived ? "archived" : "active"}:${offset}:${debouncedQuery}`,
   );
   const cachedFirstDocumentId = cachedLibrary?.items[0]?.id;
   const cachedFirstDocument = cachedFirstDocumentId
@@ -82,7 +89,6 @@ export default function KnowledgePage({
   documentRef.current = document;
   draftRef.current = draft;
   const [creating, setCreating] = useState(false);
-  const [listQuery, setListQuery] = useState("");
   const [editorMode, setEditorMode] = useState<"edit" | "preview">("edit");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
@@ -102,11 +108,11 @@ export default function KnowledgePage({
     ));
 
   useEffect(() => subscribeReadCache<KnowledgeLibrary>(
-    `knowledge-documents:${includeArchived ? "archived" : "active"}`,
+    `knowledge-documents:${includeArchived ? "archived" : "active"}:${offset}:${debouncedQuery}`,
     (next) => {
       setLibrary(next);
     },
-  ), [includeArchived]);
+  ), [includeArchived, offset, debouncedQuery]);
 
   useEffect(() => {
     const documentId = document?.id;
@@ -161,7 +167,8 @@ export default function KnowledgePage({
   ) => {
     setBusy((current) => current || "refresh");
     try {
-      const next = await api.knowledgeDocuments(includeArchived, signal);
+      const next = await api.knowledgeDocuments(includeArchived, signal, false, offset, debouncedQuery);
+      if (signal?.aborted) return;
       setLibrary(next);
       if (!openTarget) return;
       const target = preferredId
@@ -169,7 +176,7 @@ export default function KnowledgePage({
         : next.items.find((item) => item.id === document?.id) ?? next.items[0];
       if (target) {
         await openDocument(target.id, false, signal);
-      } else {
+      } else if (!documentRef.current) {
         setDocument(null);
       }
     } catch (reason) {
@@ -178,13 +185,13 @@ export default function KnowledgePage({
     } finally {
       if (!signal?.aborted) setBusy("");
     }
-  }, [document?.id, handleError, includeArchived, openDocument]);
+  }, [document?.id, handleError, includeArchived, offset, debouncedQuery, openDocument]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void refreshLibrary(undefined, controller.signal);
+    void refreshLibrary(undefined, controller.signal, !documentRef.current);
     return () => controller.abort();
-  }, [includeArchived]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [includeArchived, offset, debouncedQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!message || messageKind !== "success") return undefined;
@@ -201,14 +208,16 @@ export default function KnowledgePage({
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [dirty]);
 
-  const visibleItems = useMemo(() => {
-    const query = listQuery.trim().toLocaleLowerCase();
-    if (!query) return library?.items ?? [];
-    return (library?.items ?? []).filter((item) => (
-      item.title.toLocaleLowerCase().includes(query)
-      || item.source.toLocaleLowerCase().includes(query)
-    ));
-  }, [library, listQuery]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {setDebouncedQuery(listQuery.trim()); setOffset(0);}, 300);
+    return () => window.clearTimeout(timer);
+  }, [listQuery]);
+  const visibleItems = library?.items ?? [];
+  const loadHistory = useCallback(async (cursor?: string, signal?: AbortSignal, force = false) => {
+    const next = await api.knowledgeDocument(document!.id, signal, force, cursor);
+    return {items: next.versions, next_cursor: next.version_next_cursor};
+  }, [document?.id]);
+  const history = useCursorPage<KnowledgeVersion>({cacheKey: `knowledge-history:${document?.id ?? "none"}:${document?.current_version ?? 0}`, load: loadHistory, onError: handleError, enabled: Boolean(document)});
 
   function applyMutation(result: KnowledgeMutation, successMessage: string) {
     setDocument(result.document);
@@ -353,12 +362,13 @@ export default function KnowledgePage({
           <aside className="knowledge-document-pane">
             <div className="knowledge-pane-heading"><div><strong>文档</strong><small>{visibleItems.length} 条</small></div><button type="button" onClick={startNewDocument} title="新建 Markdown 文档">＋</button></div>
             <div className="knowledge-list-tools">
-              <input id="knowledge-list-query" name="knowledge-list-query" value={listQuery} onChange={(event) => setListQuery(event.target.value)} placeholder="搜索名称或路径" />
-              <label><input id="knowledge-include-archived" name="knowledge-include-archived" type="checkbox" checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />显示归档</label>
+              <input id="knowledge-list-query" name="knowledge-list-query" value={listQuery} onChange={(event) => setListQuery(event.target.value)} placeholder="搜索文档名称或内容" />
+              <label><input id="knowledge-include-archived" name="knowledge-include-archived" type="checkbox" checked={includeArchived} onChange={(event) => {setIncludeArchived(event.target.checked); setOffset(0);}} />显示归档</label>
             </div>
             <div className="knowledge-document-list">
               {visibleItems.map((item) => <button key={item.id} type="button" className={`${document?.id === item.id ? "is-selected" : ""} ${item.archived ? "is-archived" : ""}`} onClick={() => void openDocument(item.id)}><span><strong>{item.title}</strong><small>{item.source}</small></span><i className={item.enabled ? "is-enabled" : ""}>{item.archived ? "归档" : item.enabled ? "启用" : "停用"}</i></button>)}
               {!busy && visibleItems.length === 0 && <div className="knowledge-list-empty">没有符合条件的文档</div>}
+              <Pagination page={Math.floor(offset / PAGE_SIZE) + 1} count={visibleItems.length} total={library?.total} busy={Boolean(busy)} hasNext={Boolean(library?.has_more)} onPrevious={() => setOffset(value => Math.max(0, value - PAGE_SIZE))} onNext={() => setOffset(value => value + PAGE_SIZE)} label="知识文档分页" />
             </div>
             <div className="knowledge-list-actions">
               <button type="button" onClick={() => uploadRef.current?.click()}>上传 .md</button>
@@ -373,7 +383,7 @@ export default function KnowledgePage({
                 <div className="knowledge-editor-status"><label><input id="knowledge-enabled" name="knowledge-enabled" type="checkbox" checked={draft.enabled} disabled={Boolean(busy) || Boolean(document?.archived)} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} />参与审查</label><span>{creating ? "新文档" : `第 ${document?.current_version} 版`}</span></div>
               </div>
               <div className="knowledge-editor-tabs"><button type="button" className={editorMode === "edit" ? "is-active" : ""} onClick={() => setEditorMode("edit")}>编辑</button><button type="button" className={editorMode === "preview" ? "is-active" : ""} onClick={() => setEditorMode("preview")}>预览</button><small>{formatSize(new TextEncoder().encode(draft.content).length)} / 512 KiB</small></div>
-              {editorMode === "edit" ? <textarea id="knowledge-content" name="knowledge-content" className="knowledge-editor" value={draft.content} disabled={Boolean(busy) || Boolean(document?.archived)} spellCheck={false} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /> : <article className="knowledge-markdown-preview"><ReactMarkdown skipHtml>{draft.content}</ReactMarkdown></article>}
+              {editorMode === "edit" ? <textarea id="knowledge-content" name="knowledge-content" className="knowledge-editor" value={draft.content} disabled={Boolean(busy) || Boolean(document?.archived)} spellCheck={false} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /> : <article className="knowledge-markdown-preview"><Suspense fallback={<p role="status">正在加载预览…</p>}><ReactMarkdown skipHtml>{draft.content}</ReactMarkdown></Suspense></article>}
               <div className="knowledge-editor-actions">
                 <button type="button" className="knowledge-primary-btn" disabled={Boolean(busy) || Boolean(document?.archived) || (!creating && !dirty)} onClick={() => void saveDocument()}>{busy === "save" ? "保存中..." : creating ? "创建文档" : "保存新版本"}</button>
                 {document && !document.archived && <button type="button" className="knowledge-secondary-btn" disabled={Boolean(busy)} onClick={() => void setArchived(true)}>归档</button>}
@@ -385,7 +395,7 @@ export default function KnowledgePage({
 
           <aside className="knowledge-inspector-pane">
             <section className="knowledge-search-test"><div><span className="eyebrow">RETRIEVAL TEST</span><h2>检索测试</h2></div><form onSubmit={(event) => { event.preventDefault(); void testSearch(); }}><input id="knowledge-search-query" name="knowledge-search-query" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="输入代码或规则关键词" /><button type="submit" disabled={!searchQuery.trim() || busy === "search"}>{busy === "search" ? "检索中" : "检索"}</button></form><div className="knowledge-citations">{citations.map((item, index) => <article key={`${item.source}-${item.heading}-${index}`}><div><strong>{item.heading}</strong><b>{item.score.toFixed(3)}</b></div><small>{item.source} · {item.version}</small><p>{item.excerpt}</p></article>)}{citations.length === 0 && <p className="knowledge-no-citation">输入关键词可验证当前已启用文档的召回结果。</p>}</div></section>
-            {document && <section className="knowledge-history"><div><span className="eyebrow">VERSION HISTORY</span><h2>版本记录</h2></div><dl><div><dt>当前版本</dt><dd>v{document.current_version}</dd></div><div><dt>内容指纹</dt><dd><code>{document.content_sha256.slice(0, 12)}</code></dd></div><div><dt>更新人</dt><dd>{document.updated_by}</dd></div><div><dt>更新时间</dt><dd>{formatDate(document.updated_at)}</dd></div></dl><div className="knowledge-version-list">{document.versions.map((version) => <div key={version.version}><span><strong>v{version.version}</strong><small>{formatDate(version.created_at)} · {version.created_by}</small></span>{version.version === document.current_version ? <b>当前</b> : <button type="button" disabled={Boolean(busy) || document.archived} onClick={() => void restoreVersion(version.version)}>恢复</button>}</div>)}</div></section>}
+            {document && <section className="knowledge-history"><div><span className="eyebrow">VERSION HISTORY</span><h2>版本记录</h2></div><dl><div><dt>当前版本</dt><dd>v{document.current_version}</dd></div><div><dt>内容指纹</dt><dd><code>{document.content_sha256.slice(0, 12)}</code></dd></div><div><dt>更新人</dt><dd>{document.updated_by}</dd></div><div><dt>更新时间</dt><dd>{formatDate(document.updated_at)}</dd></div></dl><div className="knowledge-version-list">{(history.data?.items ?? document.versions).map((version) => <div key={version.version}><span><strong>v{version.version}</strong><small>{formatDate(version.created_at)} · {version.created_by}</small></span>{version.version === document.current_version ? <b>当前</b> : <button type="button" disabled={Boolean(busy) || document.archived} onClick={() => void restoreVersion(version.version)}>恢复</button>}</div>)}</div><Pagination page={history.page} count={(history.data?.items ?? document.versions).length} hasNext={Boolean(history.data ? history.data.next_cursor : document.version_next_cursor)} busy={history.loading} onPrevious={history.previous} onNext={history.next} label="文档版本分页" /></section>}
           </aside>
         </div>
       </main>

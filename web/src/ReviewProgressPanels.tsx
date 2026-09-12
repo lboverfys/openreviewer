@@ -1,9 +1,9 @@
+import { useMemo } from "react";
+import ReviewBatchList from "./ReviewBatchList";
 import {
   agentDefinitions,
   agentProgress,
   formatDuration,
-  payloadNumber,
-  payloadString,
   verdictLabels,
 } from "./review-details";
 import type { ReviewDetails } from "./types";
@@ -68,10 +68,10 @@ export function ModelBatchPanel({
   onRetry?: (agent: string, batchNumber?: number) => void;
   retryBusy?: boolean;
 }) {
-  const activeAgents = agentDefinitions.map((definition) => ({
+  const activeAgents = useMemo(() => agentDefinitions.map((definition) => ({
     ...definition,
-    progress: agentProgress(details.events, definition.key),
-  }));
+    progress: agentProgress(details.events, definition.key, details.batch_progress?.[definition.key]),
+  })), [details.events, details.batch_progress]);
   const hasModelEvents = activeAgents.some((item) => item.progress.events.length > 0);
   if (!hasModelEvents && !details.model_review_completed_at) return null;
 
@@ -83,8 +83,8 @@ export function ModelBatchPanel({
       </div>
       <div className="review-agent-grid">
         {activeAgents.map(({ key, label, description, progress }) => {
-          const completeCount = progress.completedBatches.length;
-          const failedCount = progress.failedBatches.length;
+          const completeCount = progress.completedCount;
+          const failedCount = progress.failedCount;
           const progressPercent = progress.batchCount > 0
             ? Math.min(100, (completeCount / progress.batchCount) * 100)
             : progress.status === "completed" ? 100 : 0;
@@ -195,34 +195,8 @@ export function ModelBatchPanel({
                   <ul>{progress.references.map((reference, index) => <li key={`${reference}-${index}`}>{reference}</li>)}</ul>
                 </details>
               )}
-              {progress.batchCount > 0 && (
-                <div className="review-agent-batches">
-                  {Array.from({ length: progress.batchCount }, (_, offset) => offset + 1).map((number) => {
-                    const event = progress.batches.get(number);
-                    const completed = event?.event_type === "review.model.batch_completed";
-                    const failed = event?.event_type === "review.model.batch_failed";
-                    const requestStarted = event?.event_type === "review.model.request_started";
-                    const started = event?.event_type === "review.model.batch_started";
-                    const batchStatus = completed ? "已完成" : failed ? "失败" : requestStarted ? "请求中" : started ? "准备发送" : "等待发送";
-                    return (
-                      <div className={`review-agent-batch-row ${completed ? "is-completed" : failed ? "is-failed" : requestStarted ? "is-running" : ""}`} key={number}>
-                        <span>第 {number}/{progress.batchCount} 批</span><b>{batchStatus}</b>
-                        {event && <small>{completed ? `输入 ${payloadNumber(event, "input_tokens")?.toLocaleString() ?? "—"} · 输出 ${payloadNumber(event, "output_tokens")?.toLocaleString() ?? "—"} · 推理 ${payloadNumber(event, "reasoning_tokens")?.toLocaleString() ?? "—"} · ${formatDuration(payloadNumber(event, "duration_ms"))}` : failed ? `${payloadString(event, "error_code") ?? "错误"} · ${payloadString(event, "error_message") ?? "模型请求失败"}` : `预计输入 ${payloadNumber(event, "estimated_input_tokens")?.toLocaleString() ?? "—"} Token`}</small>}
-                        {failed && onRetry && (
-                          <button
-                            type="button"
-                            className="review-agent-retry-btn"
-                            disabled={retryBusy}
-                            onClick={() => onRetry(key, number)}
-                          >
-                            {retryBusy ? "处理中…" : `重试第 ${number} 批`}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              {progress.batchCount > 0 && <ReviewBatchList runId={details.review_run_id} agent={key}
+                total={progress.batchCount} changeToken={details.change_token} onRetry={onRetry} busy={retryBusy} />}
             </article>
           );
         })}

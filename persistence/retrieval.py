@@ -7,11 +7,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, insert, or_, select, update
+from sqlalchemy import delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.orm import Session, aliased, sessionmaker
+from sqlalchemy.orm import Session, aliased, load_only, sessionmaker
 
+from domain.pagination import CursorPage, decode_cursor, encode_cursor
 from domain.retrieval import (
     MAX_INDEX_CHUNKS,
     MAX_INDEX_FILES,
@@ -117,14 +118,21 @@ class RetrievalRepository:
             return dict(row)
 
     def targets(self, scope: ResourceScope | None) -> tuple[IndexTarget, ...]:
+        return self.target_page(scope, 50).items
+
+    def target_page(self, scope: ResourceScope | None, limit: int = 10,
+                    cursor: str | None = None) -> CursorPage[IndexTarget]:
+        query = select(
+            ReviewRunRecord.id.label("review_run_id"), ReviewRunRecord.repository,
+            ReviewRunRecord.pull_request_number, ReviewRunRecord.head_sha, ReviewRunRecord.created_at,
+        ).where(resource_predicate(scope, installation_column=ReviewRunRecord.installation_id,
+            repository_column=ReviewRunRecord.repository, repository_key_column=ReviewRunRecord.repository_key))
+        if cursor:
+            query = query.where(tuple_(ReviewRunRecord.created_at, ReviewRunRecord.id) < decode_cursor(cursor))
         with self.sessions() as session:
-            rows = session.execute(select(
-                ReviewRunRecord.id.label("review_run_id"), ReviewRunRecord.repository,
-                ReviewRunRecord.pull_request_number, ReviewRunRecord.head_sha,
-            ).where(resource_predicate(scope, installation_column=ReviewRunRecord.installation_id,
-                repository_column=ReviewRunRecord.repository, repository_key_column=ReviewRunRecord.repository_key),
-            ).order_by(ReviewRunRecord.created_at.desc()).limit(50)).mappings()
-            return tuple(IndexTarget.model_validate(dict(row)) for row in rows)
+            rows = session.execute(query.order_by(ReviewRunRecord.created_at.desc(), ReviewRunRecord.id.desc()).limit(limit + 1)).mappings().all()
+        items = tuple(IndexTarget.model_validate({key: row[key] for key in IndexTarget.model_fields}) for row in rows[:limit])
+        return CursorPage(items=items, next_cursor=encode_cursor(rows[limit-1]["created_at"], rows[limit-1]["review_run_id"]) if len(rows) > limit else None)
 
     def operations(self, scope: ResourceScope | None) -> RetrievalOperations:
         with self.sessions() as session:
@@ -149,11 +157,21 @@ class RetrievalRepository:
             return _view(row)
 
     def list_indexes(self, scope: ResourceScope | None = None, limit: int = 20) -> tuple[IndexView, ...]:
+        return self.index_page(scope, limit).items
+
+    def index_page(self, scope: ResourceScope | None, limit: int = 10,
+                   cursor: str | None = None) -> CursorPage[IndexView]:
         if not 1 <= limit <= 50:
             raise ValueError("索引列表上限无效")
+        # 只读展示列，排除构建源目标、租约和缓存字段；映射阶段不触发懒加载。
+        fields = [getattr(CodeIndexRecord, name) for name in IndexView.model_fields if hasattr(CodeIndexRecord, name)]
+        fields.append(CodeIndexRecord.parse_errors)
+        query = select(CodeIndexRecord).options(load_only(*fields)).where(_scope(scope))
+        if cursor:
+            query = query.where(tuple_(CodeIndexRecord.created_at, CodeIndexRecord.id) < decode_cursor(cursor))
         with self.sessions() as session:
-            rows = session.scalars(select(CodeIndexRecord).where(_scope(scope)).order_by(CodeIndexRecord.created_at.desc(), CodeIndexRecord.id.desc()).limit(limit)).all()
-            return tuple(_view(row) for row in rows)
+            rows = session.scalars(query.order_by(CodeIndexRecord.created_at.desc(), CodeIndexRecord.id.desc()).limit(limit + 1)).all()
+            return CursorPage(items=tuple(_view(row) for row in rows[:limit]), next_cursor=encode_cursor(rows[limit-1].created_at, rows[limit-1].id) if len(rows) > limit else None)
 
     def claim(self, index_id: str | None = None) -> tuple[str, str, dict[str, Any], str] | None:
         now = datetime.now(UTC)
@@ -416,8 +434,16 @@ class RetrievalRepository:
             session.add(RetrievalEvaluationRecord(id=report.id, index_id=report.index_id, report=report.model_dump(mode="json")))
 
     def evaluations(self, scope: ResourceScope | None, limit: int = 20) -> tuple[RetrievalEvaluationReport, ...]:
+        return self.evaluation_page(scope, limit).items
+
+    def evaluation_page(self, scope: ResourceScope | None, limit: int = 10,
+                        cursor: str | None = None) -> CursorPage[RetrievalEvaluationReport]:
+        query = select(RetrievalEvaluationRecord.id, RetrievalEvaluationRecord.created_at, RetrievalEvaluationRecord.report).join(
+            CodeIndexRecord, CodeIndexRecord.id == RetrievalEvaluationRecord.index_id,
+        ).where(_scope(scope))
+        if cursor:
+            query = query.where(tuple_(RetrievalEvaluationRecord.created_at, RetrievalEvaluationRecord.id) < decode_cursor(cursor))
         with self.sessions() as session:
-            rows = session.scalars(select(RetrievalEvaluationRecord.report).join(
-                CodeIndexRecord, CodeIndexRecord.id == RetrievalEvaluationRecord.index_id,
-            ).where(_scope(scope)).order_by(RetrievalEvaluationRecord.created_at.desc()).limit(min(limit, 50))).all()
-            return tuple(RetrievalEvaluationReport.model_validate(row) for row in rows)
+            rows = session.execute(query.order_by(RetrievalEvaluationRecord.created_at.desc(), RetrievalEvaluationRecord.id.desc()).limit(limit + 1)).all()
+        return CursorPage(items=tuple(RetrievalEvaluationReport.model_validate(row.report) for row in rows[:limit]),
+            next_cursor=encode_cursor(rows[limit-1].created_at, rows[limit-1].id) if len(rows) > limit else None)

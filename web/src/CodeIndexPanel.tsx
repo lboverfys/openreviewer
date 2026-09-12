@@ -1,9 +1,11 @@
+import type { ReactNode } from "react";
 import type { CodeIndexView, IndexTarget } from "./types";
 import { formatDate } from "./utils";
 
 const vectorLabels: Record<string, string> = {pending: "待补全", paused: "已暂停", limited: "达到上限", failed: "补全失败", ready: "已就绪"};
 
-export default function CodeIndexPanel({ indexes, selectedId, targets, reviewRunId, paused, busy, onSelect, onTarget, onBuild, onRetry, onEnrich }: {
+export default function CodeIndexPanel({indexPagination, targetPagination,  indexes, selectedId, targets, reviewRunId, paused, busy, onSelect, onTarget, onBuild, onRetry, onEnrich }: {
+  indexPagination?: ReactNode; targetPagination?: ReactNode;
   indexes: CodeIndexView[]; selectedId: string; targets: IndexTarget[]; reviewRunId: string;
   paused: boolean; busy: boolean; onSelect: (id: string) => void; onTarget: (id: string) => void;
   onBuild: () => void; onRetry: (id: string) => void; onEnrich: (id: string) => void;
@@ -20,6 +22,7 @@ export default function CodeIndexPanel({ indexes, selectedId, targets, reviewRun
         {reviewRunId && !targets.some(item => item.review_run_id === reviewRunId) && <option value={reviewRunId}>当前审查提交</option>}
         {targets.map(item => <option key={item.review_run_id} value={item.review_run_id}>{item.repository} · PR #{item.pull_request_number} · {item.head_sha.slice(0, 7)}</option>)}
       </select></label>
+      {targetPagination}
       <button className="primary retrieval-full-button" disabled={busy || !reviewRunId}>建立基础索引</button>
       <p className="retrieval-form-hint">只解析代码，基础索引不调用模型。</p>
     </form>
@@ -28,6 +31,7 @@ export default function CodeIndexPanel({ indexes, selectedId, targets, reviewRun
       <option value="">请选择索引</option>
       {indexes.map(item => <option value={item.id} key={item.id}>{item.repository} · {item.head_sha.slice(0, 7)}</option>)}
     </select></label>
+    {indexPagination}
     {selected ? <>
       <div className="retrieval-repository-name"><span className="retrieval-repository-icon" aria-hidden="true">⌘</span><div><strong>{selected.repository}</strong><code>{selected.head_sha.slice(0, 12)}</code></div></div>
       <ol className="retrieval-stages" aria-label="索引阶段">

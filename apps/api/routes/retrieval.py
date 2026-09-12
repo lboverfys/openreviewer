@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from domain.pagination import CursorPage
 from domain.retrieval import (
     IndexTarget,
     IndexView,
@@ -54,10 +55,14 @@ def register_retrieval_routes(
 ) -> None:
     errors = (RetrievalError, LookupError, ValueError, SQLAlchemyError, AiSettingsConfigurationError)
 
-    @application.get("/api/v1/retrieval/targets", response_model=tuple[IndexTarget, ...])
-    def targets(principal: Annotated[SessionPrincipal, Depends(require_manager)]) -> tuple[IndexTarget, ...]:
+    @application.get("/api/v1/retrieval/targets", response_model=CursorPage[IndexTarget])
+    def targets(
+        principal: Annotated[SessionPrincipal, Depends(require_manager)],
+        limit: Annotated[int, Query(ge=1, le=50)] = 10,
+        cursor: Annotated[str | None, Query(max_length=512)] = None,
+    ) -> CursorPage[IndexTarget]:
         try:
-            return get_service().repository.targets(principal.resource_scope)
+            return get_service().repository.target_page(principal.resource_scope, limit, cursor)
         except errors as exc:
             raise _translate(exc) from exc
 
@@ -100,13 +105,14 @@ def register_retrieval_routes(
         except errors as exc:
             raise _translate(exc) from exc
 
-    @application.get("/api/v1/retrieval/indexes", response_model=tuple[IndexView, ...])
+    @application.get("/api/v1/retrieval/indexes", response_model=CursorPage[IndexView])
     def indexes(
         principal: Annotated[SessionPrincipal, Depends(require_manager)],
-        limit: Annotated[int, Query(ge=1, le=50)] = 20,
-    ) -> tuple[IndexView, ...]:
+        limit: Annotated[int, Query(ge=1, le=50)] = 10,
+        cursor: Annotated[str | None, Query(max_length=512)] = None,
+    ) -> CursorPage[IndexView]:
         try:
-            return get_service().repository.list_indexes(principal.resource_scope, limit)
+            return get_service().repository.index_page(principal.resource_scope, limit, cursor)
         except errors as exc:
             raise _translate(exc) from exc
 
@@ -173,9 +179,13 @@ def register_retrieval_routes(
         except errors as exc:
             raise _translate(exc) from exc
 
-    @application.get("/api/v1/retrieval/evaluations", response_model=tuple[RetrievalEvaluationReport, ...])
-    def evaluations(principal: Annotated[SessionPrincipal, Depends(require_manager)]) -> tuple[RetrievalEvaluationReport, ...]:
+    @application.get("/api/v1/retrieval/evaluations", response_model=CursorPage[RetrievalEvaluationReport])
+    def evaluations(
+        principal: Annotated[SessionPrincipal, Depends(require_manager)],
+        limit: Annotated[int, Query(ge=1, le=50)] = 10,
+        cursor: Annotated[str | None, Query(max_length=512)] = None,
+    ) -> CursorPage[RetrievalEvaluationReport]:
         try:
-            return get_service().repository.evaluations(principal.resource_scope)
+            return get_service().repository.evaluation_page(principal.resource_scope, limit, cursor)
         except errors as exc:
             raise _translate(exc) from exc

@@ -1,18 +1,19 @@
-import { lazy, useCallback, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { api, ApiError } from "./api";
 import AppShell from "./AppShell";
 import { LoadingScreen, Login } from "./Auth";
 import PageBoundary from "./PageBoundary";
+import { pageLoaders } from "./page-loaders";
 import { hasPermission } from "./rbac";
 import type { AuthUser } from "./types";
 import "./styles/workspace-polish.css";
 
-const DashboardPage = lazy(() => import("./DashboardPage"));
-const KnowledgePage = lazy(() => import("./KnowledgePage"));
-const ReviewDetailPage = lazy(() => import("./ReviewDetailPage"));
-const SettingsPage = lazy(() => import("./SettingsPage"));
-const RetrievalPage = lazy(() => import("./RetrievalPage"));
+const DashboardPage = lazy(pageLoaders.dashboard);
+const KnowledgePage = lazy(pageLoaders.knowledge);
+const ReviewDetailPage = lazy(pageLoaders.review);
+const SettingsPage = lazy(pageLoaders.settings);
+const RetrievalPage = lazy(pageLoaders.retrieval);
 
 type SessionState =
   | { phase: "checking" }
@@ -128,6 +129,7 @@ function AppContent() {
   } else if (view.kind === "review") {
     page = (
       <ReviewDetailPage
+        key={view.reviewRunId}
         user={session.user}
         reviewRunId={view.reviewRunId}
         onBack={onBack}
@@ -146,7 +148,9 @@ function AppContent() {
   }
   return (
     <AppShell user={session.user} view={view} onSignedOut={onSignedOut}>
-      {page}
+      <Suspense fallback={<main className="page-loading" role="status">正在加载页面…</main>}>
+        {page}
+      </Suspense>
     </AppShell>
   );
 }

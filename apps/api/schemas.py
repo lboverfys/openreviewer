@@ -17,6 +17,7 @@ from domain.enums import (
     VerificationStatus,
     WorkerStatus,
 )
+from domain.review_progress import BatchProgress
 from services.agent_settings import AgentConfigDraft, AgentSettingsView
 from services.ai_settings import (
     AiProviderDraft,
@@ -360,6 +361,7 @@ class ReviewDetailsResponse(BaseModel):
     # 每次响应都创建独立字典，避免不同请求之间共享可变状态。
     agent_statuses: dict[str, str] = Field(default_factory=dict)
     agent_summaries: dict[str, dict[str, object]] = Field(default_factory=dict)
+    batch_progress: dict[str, BatchProgress] = Field(default_factory=dict)
     aggregation_status: str = "not_started"
     summary_status: str = "not_executed"
     partial_result: bool = False
@@ -772,6 +774,7 @@ class KnowledgeDocumentSummaryResponse(BaseModel):
 class KnowledgeDocumentResponse(KnowledgeDocumentSummaryResponse):
     content: str
     versions: tuple[KnowledgeVersionResponse, ...]
+    version_next_cursor: str | None = None
 
     @classmethod
     def from_document_view(
@@ -783,6 +786,7 @@ class KnowledgeDocumentResponse(KnowledgeDocumentSummaryResponse):
                 name: getattr(view, name)
                 for name in KnowledgeDocumentSummaryResponse.model_fields
             },
+            version_next_cursor=view.version_next_cursor,
             content=view.content,
             versions=tuple(
                 KnowledgeVersionResponse.from_view(item) for item in view.versions
@@ -798,6 +802,8 @@ class KnowledgeDocumentListResponse(BaseModel):
     enabled_count: int
     total_enabled_bytes: int
     items: tuple[KnowledgeDocumentSummaryResponse, ...]
+    offset: int = 0
+    has_more: bool = False
 
     @classmethod
     def from_view(
@@ -806,6 +812,7 @@ class KnowledgeDocumentListResponse(BaseModel):
     ) -> "KnowledgeDocumentListResponse":
         return cls(
             revision=view.revision,
+            offset=view.offset, has_more=view.has_more,
             total=view.total,
             enabled_count=view.enabled_count,
             total_enabled_bytes=view.total_enabled_bytes,
@@ -934,6 +941,7 @@ class ConfigurationAuditResponse(BaseModel):
 
 
 class ConfigurationAuditListResponse(BaseModel):
+    next_cursor: str | None = None
     model_config = ConfigDict(frozen=True)
 
     items: tuple[ConfigurationAuditResponse, ...]

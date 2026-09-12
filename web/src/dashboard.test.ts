@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { appendReviewPage, applyLiveDashboardSnapshot } from "./dashboard";
+import { applyLiveDashboardSnapshot } from "./dashboard";
 import type {
   DashboardSnapshot,
   ExecutionStatus,
@@ -84,25 +84,8 @@ function dashboard(
   };
 }
 
-describe("dashboard pagination merging", () => {
-  it("appends a page without duplicating its boundary item", () => {
-    const current = dashboard([review("run-3"), review("run-2")], 3, "page-2");
-
-    const merged = appendReviewPage(current, {
-      total: 3,
-      items: [review("run-2"), review("run-1")],
-      next_cursor: null,
-    });
-
-    expect(merged.recent_reviews.map((item) => item.review_run_id)).toEqual([
-      "run-3",
-      "run-2",
-      "run-1",
-    ]);
-    expect(merged.next_cursor).toBeNull();
-  });
-
-  it("keeps loaded older pages while live data replaces current rows", () => {
+describe("控制台实时快照", () => {
+  it("实时更新只替换首页，不把历史页累积进列表", () => {
     const current = dashboard(
       [review("run-3"), review("run-2"), review("run-1")],
       4,
@@ -119,20 +102,18 @@ describe("dashboard pagination merging", () => {
     expect(merged.recent_reviews.map((item) => item.review_run_id)).toEqual([
       "run-4",
       "run-3",
-      "run-2",
-      "run-1",
     ]);
     expect(merged.recent_reviews[1].execution_status).toBe("running");
-    expect(merged.next_cursor).toBeNull();
+    expect(merged.next_cursor).toBe("page-2");
   });
 
-  it("preserves the deepest loaded cursor when more rows remain", () => {
+  it("实时快照使用对应首页的下一页游标", () => {
     const current = dashboard([review("run-3"), review("run-2")], 5, "page-3");
     const incoming = dashboard([review("run-4"), review("run-3")], 5, "page-2");
 
     const merged = applyLiveDashboardSnapshot(current, incoming);
 
-    expect(merged.next_cursor).toBe("page-3");
+    expect(merged.next_cursor).toBe("page-2");
   });
 
   it("ignores an older live snapshot that arrives after a newer refresh", () => {

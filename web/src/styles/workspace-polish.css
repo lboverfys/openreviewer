@@ -24,3 +24,11 @@ select option {
   background: var(--bg-card-solid);
   color: var(--text-main);
 }
+
+
+/* 只显示当前页，导航保持可用；分页按钮不会提交外层表单。 */
+.list-pagination { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 12px; font-size: 12px; color: var(--text-secondary, #64748b); }
+.list-pagination > div { display: flex; gap: 8px; }
+.list-pagination button { padding: 6px 12px; border: 1px solid var(--border-color, #e2e8f0); border-radius: 7px; background: var(--surface, #fff); cursor: pointer; color: inherit; }
+.list-pagination button:disabled { opacity: .45; cursor: default; }
+.page-loading { padding: 32px; color: var(--text-secondary, #64748b); }

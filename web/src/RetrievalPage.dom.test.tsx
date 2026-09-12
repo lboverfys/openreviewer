@@ -16,15 +16,23 @@ const settings: RetrievalSettingsView = {revision: 1, key_configured: true, test
   rerank_model: "qwen3.7-text-rerank", dimensions: 1024, strategy: "reranked", candidate_k: 20, context_k: 8, timeout_seconds: 60, max_new_vectors_per_index: 100, max_requests_per_operation: 12,
 }};
 beforeEach(() => {
-  vi.mocked(api.retrievalTargets).mockResolvedValue([]);
+  vi.mocked(api.retrievalTargets).mockResolvedValue({items: [], next_cursor: null});
   vi.mocked(api.retrievalOperations).mockResolvedValue({pending_indexes: 0, available_indexes: 0, oldest_pending_seconds: 0, partial_indexes: 0, provider_busy: false, circuit_open: false});
   vi.mocked(api.retrievalSettings).mockResolvedValue(settings);
-  vi.mocked(api.retrievalIndexes).mockResolvedValue([]);
-  vi.mocked(api.retrievalEvaluations).mockResolvedValue([]);
+  vi.mocked(api.retrievalIndexes).mockResolvedValue({items: [], next_cursor: null});
+  vi.mocked(api.retrievalEvaluations).mockResolvedValue({items: [], next_cursor: null});
 });
 afterEach(() => {cleanup(); vi.clearAllMocks();});
 
 describe("代码检索页面", () => {
+  it("慢配置和未打开的评测不阻塞索引区域，评测只在点击标签时读取", async () => {
+    vi.mocked(api.retrievalSettings).mockReturnValue(new Promise(() => undefined));
+    render(<RetrievalPage onSignedOut={vi.fn()} />);
+    expect(screen.getByRole("button", {name: "执行检索"})).toBeInTheDocument();
+    expect(api.retrievalEvaluations).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", {name: "评测对比"}));
+    await waitFor(() => expect(api.retrievalEvaluations).toHaveBeenCalledTimes(1));
+  });
   it("无索引和无评测时明确展示未就绪状态", async () => {
     render(<RetrievalPage onSignedOut={vi.fn()} />);
     await screen.findByText("建立索引后即可检索对应提交的代码。");

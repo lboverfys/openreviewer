@@ -70,12 +70,14 @@ def register_knowledge_routes(
     def list_knowledge_documents(
         _: Annotated[SessionPrincipal, Depends(require_knowledge_manager)],
         include_archived: bool = False,
-        limit: Annotated[int, Query(ge=1, le=128)] = 128,
+        limit: Annotated[int, Query(ge=1, le=128)] = 10,
+        offset: Annotated[int, Query(ge=0, le=10000)] = 0,
+        q: Annotated[str, Query(max_length=200)] = "",
     ) -> KnowledgeDocumentListResponse:
         try:
             view = get_managed_knowledge_base().list_documents(
                 include_archived=include_archived,
-                limit=limit,
+                limit=limit, offset=offset, query=q.strip(),
             )
         except (
             KnowledgeConflictError,
@@ -121,9 +123,11 @@ def register_knowledge_routes(
     def get_knowledge_document(
         document_id: str,
         _: Annotated[SessionPrincipal, Depends(require_knowledge_manager)],
+        version_limit: Annotated[int, Query(ge=1, le=50)] = 10,
+        version_cursor: Annotated[int | None, Query(ge=1)] = None,
     ) -> KnowledgeDocumentResponse:
         try:
-            view = get_managed_knowledge_base().get_document(document_id)
+            view = get_managed_knowledge_base().get_document(document_id, version_limit, version_cursor)
         except (KnowledgeNotFoundError, KnowledgePersistenceError) as exc:
             raise translate_knowledge_error(exc) from exc
         return KnowledgeDocumentResponse.from_document_view(view)

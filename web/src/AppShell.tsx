@@ -4,6 +4,7 @@ import { api } from "./api";
 import type { AppView } from "./App";
 import { Brand } from "./Auth";
 import { hasPermission, roleLabels } from "./rbac";
+import { preloadPage } from "./page-loaders";
 import type { AuthUser } from "./types";
 
 interface ShellNavItem {
@@ -112,7 +113,10 @@ export default function AppShell({ user, view, onSignedOut, children }: AppShell
                 key={item.key}
                 type="button"
                 className="switch-item"
+                onPointerEnter={() => preloadPage(item.key)}
+                onFocus={() => preloadPage(item.key)}
                 onClick={() => {
+                  preloadPage(item.key);
                   window.location.hash = item.hash;
                 }}
               >

@@ -1,3 +1,5 @@
+import { useState } from "react";
+import Pagination, { PAGE_SIZE } from "./Pagination";
 import type { ContextEvidence, RetrievalTrace } from "./types";
 import { formatDuration } from "./review-details";
 
@@ -37,6 +39,14 @@ export function EvidenceSnippet({ evidence }: { evidence: ContextEvidence }) {
   </details>;
 }
 
+function EvidenceList({items}: {items: ContextEvidence[]}) {
+  const [page, setPage] = useState(1);
+  return <>
+    {items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(evidence => <EvidenceSnippet key={evidence.reference_id} evidence={evidence} />)}
+    {items.length > PAGE_SIZE && <Pagination page={page} count={Math.min(PAGE_SIZE, items.length - (page - 1) * PAGE_SIZE)} total={items.length} hasNext={page * PAGE_SIZE < items.length} onPrevious={() => setPage(value => value - 1)} onNext={() => setPage(value => value + 1)} label="代码证据分页" />}
+  </>;
+}
+
 export default function RetrievalTracePanel({ traces, compact = false }: { traces: RetrievalTrace[]; compact?: boolean }) {
   if (!traces.length) return <div className="retrieval-empty">暂无检索记录。启用混合检索后，审查会保存使用的代码上下文。</div>;
   return <div className="retrieval-traces">
@@ -63,7 +73,7 @@ export default function RetrievalTracePanel({ traces, compact = false }: { trace
         <span>精排 Token：{trace.rerank_tokens?.toLocaleString() ?? "—"}</span>
       </div>
       {(trace.warnings ?? []).map(warning => <p className="retrieval-warning" key={warning}>{warning}</p>)}
-      {(compact ? trace.candidates.filter(item => item.selected) : trace.candidates).map(evidence => <EvidenceSnippet key={evidence.reference_id} evidence={evidence} />)}
+      <EvidenceList key={trace.id} items={compact ? trace.candidates.filter(item => item.selected) : trace.candidates} />
     </section>)}
   </div>;
 }

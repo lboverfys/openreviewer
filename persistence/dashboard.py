@@ -1,10 +1,14 @@
 """运维 Dashboard 只读模型使用的 SQLAlchemy 查询。"""
 
+import time
+from collections import OrderedDict
 from datetime import datetime
+from threading import RLock
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, union
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.sql.elements import ColumnElement
 
 from domain.enums import ExecutionStatus, WorkerStatus
 from domain.security import redact_sensitive
@@ -42,12 +46,20 @@ class SqlAlchemyDashboardRepository:
                 连接，实际会话由 :meth:`load` 创建并在退出上下文后释放。
         """
         self._sessions = sessions
+        self._count_cache: OrderedDict[
+            tuple[ResourceScope | None, ExecutionStatus | None, str], tuple[float, int]
+        ] = OrderedDict()
+        self._count_lock = RLock()
 
     def load(
         self,
         limit: int,
         cursor: ReviewCursor | None = None,
         scope: ResourceScope | None = None,
+        *,
+        execution_status: ExecutionStatus | None = None,
+        query: str = "",
+        include_overview: bool = True,
     ) -> DashboardData:
         """从数据库读取 Dashboard 所需的聚合数据。
 
@@ -78,284 +90,106 @@ class SqlAlchemyDashboardRepository:
                 # 总数和状态分组原本是两次扫描；条件聚合在同一次索引/表扫描中
                 # 返回两者。使用 CASE 而不是方言专属的 FILTER，兼容 SQLite 和
                 # PostgreSQL 的测试/生产数据库。
-                stats_columns = tuple(
-                    func.sum(
-                        case(
-                            (
-                                ReviewRunRecord.execution_status == status.value,
-                                1,
-                            ),
-                            else_=0,
-                        )
-                    ).label(f"status_{status.value}")
-                    for status in ExecutionStatus
-                )
-                stats_row = session.execute(
-                    select(
-                        func.count(ReviewRunRecord.id).label("total_reviews"),
-                        *stats_columns,
-                    )
-                    .select_from(ReviewRunRecord)
-                    .where(
-                        resource_predicate(
-                            scope,
-                            installation_column=ReviewRunRecord.installation_id,
-                            repository_column=ReviewRunRecord.repository,
-                            repository_key_column=ReviewRunRecord.repository_key,
-                        )
-                    )
-                ).one()
-                total_reviews = int(stats_row.total_reviews or 0)
-                status_counts = {
-                    status: int(getattr(stats_row, f"status_{status.value}") or 0)
-                    for status in ExecutionStatus
-                }
-
-                reviews_query = (
-                    select(
-                        ReviewRunRecord.id.label("review_run_id"),
-                        ReviewTaskRecord.id.label("review_task_id"),
-                        ReviewRunRecord.repository,
-                        ReviewRunRecord.pull_request_number,
-                        ReviewRunRecord.head_sha,
-                        PullRequestVersionRecord.title.label("pr_title"),
-                        PullRequestVersionRecord.author_login.label(
-                            "pr_author_login"
-                        ),
-                        PullRequestVersionRecord.html_url.label("pr_html_url"),
-                        PullRequestVersionRecord.head_repository,
-                        PullRequestVersionRecord.head_ref,
-                        PullRequestVersionRecord.base_repository,
-                        PullRequestVersionRecord.base_ref,
-                        ReviewRunRecord.execution_status,
-                        ReviewRunRecord.workflow_status,
-                        ReviewTaskRecord.attempt_count,
-                        ReviewTaskRecord.max_attempts,
-                        ReviewTaskRecord.last_error,
-                        ReviewTaskRecord.last_error_code,
-                        ReviewTaskRecord.last_error_retryable,
-                        ReviewTaskRecord.last_error_details,
-                        ReviewRunRecord.review_conclusion,
-                        ReviewRunRecord.coverage_status,
-                        ReviewTaskRecord.model_attempt_count,
-                        ReviewRunRecord.created_at,
-                        ReviewRunRecord.updated_at,
-                    )
-                    .join(
-                        ReviewTaskRecord,
-                        ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
-                    )
-                    .outerjoin(
-                        PullRequestVersionRecord,
-                        PullRequestVersionRecord.review_version_key
-                        == ReviewRunRecord.review_version_key,
-                    )
-                    .order_by(
-                        ReviewRunRecord.created_at.desc(),
-                        ReviewRunRecord.id.desc(),
-                    )
-                    .where(
-                        resource_predicate(
-                            scope,
-                            installation_column=ReviewRunRecord.installation_id,
-                            repository_column=ReviewRunRecord.repository,
-                            repository_key_column=ReviewRunRecord.repository_key,
-                        )
-                    )
-                )
-                if cursor is not None:
-                    reviews_query = reviews_query.where(
-                        or_(
-                            ReviewRunRecord.created_at < cursor.created_at,
-                            and_(
-                                ReviewRunRecord.created_at == cursor.created_at,
-                                ReviewRunRecord.id < cursor.review_run_id,
-                            ),
-                        )
-                    )
-                raw_rows = session.execute(
-                    reviews_query.limit(limit + 1)
-                ).all()
-                has_more = len(raw_rows) > limit
-                rows = raw_rows[:limit]
-
-                # 只对当前页的运行批量读取模型完成时间和 Finding 计数。这样既
-                # 避免每行两个相关子查询，也不会为了第一页而聚合整张 findings
-                # 表；本页最多 100 个 ID，查询次数始终为 O(1)。
-                review_metrics: dict[str, tuple[datetime | None, int, int]] = {}
-                review_ids = tuple(row.review_run_id for row in rows)
-                if review_ids:
-                    metrics_rows = session.execute(
-                        select(
-                            ReviewRunRecord.id.label("review_run_id"),
-                            func.max(
-                                ReviewPlanRecord.model_review_completed_at
-                            ).label("model_review_completed_at"),
-                            func.count(ReviewFindingRecord.id).label("finding_count"),
-                            func.coalesce(
-                                func.sum(
-                                    case(
-                                        (
-                                            ReviewFindingRecord.adjudication_status
-                                            == "unreviewed",
-                                            1,
-                                        ),
-                                        else_=0,
-                                    )
+                if include_overview:
+                    stats_columns = tuple(
+                        func.sum(
+                            case(
+                                (
+                                    ReviewRunRecord.execution_status == status.value,
+                                    1,
                                 ),
-                                0,
-                            ).label("unreviewed_finding_count"),
+                                else_=0,
+                            )
+                        ).label(f"status_{status.value}")
+                        for status in ExecutionStatus
+                    )
+                    stats_row = session.execute(
+                        select(
+                            func.count(ReviewRunRecord.id).label("total_reviews"),
+                            *stats_columns,
                         )
                         .select_from(ReviewRunRecord)
-                        .outerjoin(
-                            ReviewPlanRecord,
-                            ReviewPlanRecord.review_run_id == ReviewRunRecord.id,
+                        .where(
+                            resource_predicate(
+                                scope,
+                                installation_column=ReviewRunRecord.installation_id,
+                                repository_column=ReviewRunRecord.repository,
+                                repository_key_column=ReviewRunRecord.repository_key,
+                            )
                         )
-                        .outerjoin(
-                            ReviewFindingRecord,
-                            ReviewFindingRecord.review_run_id == ReviewRunRecord.id,
-                        )
-                        .where(ReviewRunRecord.id.in_(review_ids))
-                        .group_by(ReviewRunRecord.id)
-                    ).all()
-                    review_metrics = {
-                        metric.review_run_id: (
-                            metric.model_review_completed_at,
-                            int(metric.finding_count or 0),
-                            int(metric.unreviewed_finding_count or 0),
-                        )
-                        for metric in metrics_rows
+                    ).one()
+                    total_reviews = int(stats_row.total_reviews or 0)
+                    status_counts = {
+                        status: int(getattr(stats_row, f"status_{status.value}") or 0)
+                        for status in ExecutionStatus
                     }
+                else:
+                    total_reviews = self._review_count(
+                        session, scope, execution_status, query, reuse=cursor is not None,
+                    )
+                    status_counts = {}
 
-                review_items: list[ReviewListItem] = []
-                for row in rows:
-                    (
-                        model_review_completed_at,
-                        finding_count,
-                        unreviewed_finding_count,
-                    ) = review_metrics.get(row.review_run_id, (None, 0, 0))
-                    safe_last_error = (
-                        redact_sensitive(row.last_error)
-                        if row.last_error is not None
-                        else None
-                    )
-                    safe_error_code = (
-                        redact_sensitive(row.last_error_code)
-                        if row.last_error_code is not None
-                        else None
-                    )
-                    safe_error_details = (
-                        redact_sensitive(row.last_error_details)
-                        if row.last_error_details is not None
-                        else None
-                    )
-                    review_items.append(
-                        ReviewListItem(
-                            review_run_id=row.review_run_id,
-                            review_task_id=row.review_task_id,
-                            repository=row.repository,
-                            pull_request_number=row.pull_request_number,
-                            head_sha=row.head_sha,
-                            pr_title=row.pr_title,
-                            pr_author_login=row.pr_author_login,
-                            pr_html_url=row.pr_html_url,
-                            head_repository=row.head_repository,
-                            head_ref=row.head_ref,
-                            base_repository=row.base_repository,
-                            base_ref=row.base_ref,
-                            execution_status=ExecutionStatus(
-                                row.execution_status
-                            ),
-                            workflow_status=ExecutionStatus(
-                                row.workflow_status or row.execution_status
-                            ),
-                            attempt_count=row.attempt_count,
-                            max_attempts=row.max_attempts,
-                            last_error=(
-                                safe_last_error
-                                if isinstance(safe_last_error, str)
-                                else None
-                            ),
-                            last_error_code=(
-                                safe_error_code
-                                if isinstance(safe_error_code, str)
-                                else None
-                            ),
-                            last_error_retryable=row.last_error_retryable,
-                            last_error_details=(
-                                safe_error_details
-                                if isinstance(safe_error_details, dict)
-                                else None
-                            ),
-                            review_conclusion=row.review_conclusion,
-                            coverage_status=row.coverage_status,
-                            model_review_completed_at=as_utc(
-                                model_review_completed_at
-                            ),
-                            finding_count=finding_count,
-                            unreviewed_finding_count=unreviewed_finding_count,
-                            model_attempt_count=row.model_attempt_count,
-                            created_at=required_utc(row.created_at, "review.created_at"),
-                            updated_at=required_utc(row.updated_at, "review.updated_at"),
+                reviews, has_more = self._load_reviews(
+                    session, limit, cursor, scope, execution_status, query
+                )
+
+                workers: tuple[StoredWorkerHeartbeat, ...] = ()
+                if include_overview:
+                    heartbeat_rows = session.execute(
+                        select(
+                            WorkerHeartbeatRecord.worker_id,
+                            WorkerHeartbeatRecord.status,
+                            WorkerHeartbeatRecord.current_task_id,
+                            WorkerHeartbeatRecord.started_at,
+                            WorkerHeartbeatRecord.last_seen_at,
+                            ReviewRunRecord.installation_id.label("task_installation_id"),
+                            ReviewRunRecord.repository.label("task_repository"),
                         )
-                    )
-                reviews = tuple(review_items)
-
-                heartbeat_rows = session.execute(
-                    select(
-                        WorkerHeartbeatRecord.worker_id,
-                        WorkerHeartbeatRecord.status,
-                        WorkerHeartbeatRecord.current_task_id,
-                        WorkerHeartbeatRecord.started_at,
-                        WorkerHeartbeatRecord.last_seen_at,
-                        ReviewRunRecord.installation_id.label("task_installation_id"),
-                        ReviewRunRecord.repository.label("task_repository"),
-                    )
-                    .outerjoin(
-                        ReviewTaskRecord,
-                        WorkerHeartbeatRecord.current_task_id == ReviewTaskRecord.id,
-                    )
-                    .outerjoin(
-                        ReviewRunRecord,
-                        ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
-                    )
-                    .order_by(
-                        WorkerHeartbeatRecord.last_seen_at.desc(),
-                        WorkerHeartbeatRecord.worker_id.asc(),
-                    )
-                    .limit(_MAX_DASHBOARD_WORKERS)
-                ).all()
-                workers = tuple(
-                    StoredWorkerHeartbeat(
-                        worker_id=heartbeat.worker_id,
-                        status=WorkerStatus(heartbeat.status),
-                        current_task_id=(
-                            heartbeat.current_task_id
-                            if (
-                                scope is None
-                                or scope.unrestricted
-                                or (
-                                    heartbeat.task_installation_id is not None
-                                    and heartbeat.task_repository is not None
-                                    and scope.allows(
-                                        heartbeat.task_installation_id,
-                                        heartbeat.task_repository,
+                        .outerjoin(
+                            ReviewTaskRecord,
+                            WorkerHeartbeatRecord.current_task_id == ReviewTaskRecord.id,
+                        )
+                        .outerjoin(
+                            ReviewRunRecord,
+                            ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
+                        )
+                        .order_by(
+                            WorkerHeartbeatRecord.last_seen_at.desc(),
+                            WorkerHeartbeatRecord.worker_id.asc(),
+                        )
+                        .limit(_MAX_DASHBOARD_WORKERS)
+                    ).all()
+                    workers = tuple(
+                        StoredWorkerHeartbeat(
+                            worker_id=heartbeat.worker_id,
+                            status=WorkerStatus(heartbeat.status),
+                            current_task_id=(
+                                heartbeat.current_task_id
+                                if (
+                                    scope is None
+                                    or scope.unrestricted
+                                    or (
+                                        heartbeat.task_installation_id is not None
+                                        and heartbeat.task_repository is not None
+                                        and scope.allows(
+                                            heartbeat.task_installation_id,
+                                            heartbeat.task_repository,
+                                        )
                                     )
                                 )
-                            )
-                            else None
-                        ),
-                        started_at=required_utc(
-                            heartbeat.started_at,
-                            "worker.started_at",
-                        ),
-                        last_seen_at=required_utc(
-                            heartbeat.last_seen_at,
-                            "worker.last_seen_at",
-                        ),
+                                else None
+                            ),
+                            started_at=required_utc(
+                                heartbeat.started_at,
+                                "worker.started_at",
+                            ),
+                            last_seen_at=required_utc(
+                                heartbeat.last_seen_at,
+                                "worker.last_seen_at",
+                            ),
+                        )
+                        for heartbeat in heartbeat_rows
                     )
-                    for heartbeat in heartbeat_rows
-                )
                 return DashboardData(
                     total_reviews=total_reviews,
                     status_counts=status_counts,
@@ -367,6 +201,26 @@ class SqlAlchemyDashboardRepository:
                 raise DashboardPersistenceError(
                     "dashboard data could not be loaded"
                 ) from exc
+
+    def _review_count(self, session: Session, scope: ResourceScope | None,
+                      execution_status: ExecutionStatus | None, query: str,
+                      *, reuse: bool) -> int:
+        # 首页总是刷新；后续页在五秒内复用同一权限范围和筛选条件的计数。
+        # 只缓存整数，不缓存记录；上限128项，查询仍使用原有过滤索引。
+        key = (scope, execution_status, query)
+        with self._count_lock:
+            cached = self._count_cache.get(key)
+            if reuse and cached is not None and cached[0] > time.monotonic():
+                self._count_cache.move_to_end(key)
+                return cached[1]
+            count = int(session.scalar(select(func.count(ReviewRunRecord.id)).where(
+                *self._review_filters(scope, execution_status, query)
+            )) or 0)
+            self._count_cache[key] = (time.monotonic() + 5, count)
+            self._count_cache.move_to_end(key)
+            while len(self._count_cache) > 128:
+                self._count_cache.popitem(last=False)
+            return count
 
     def change_state(
         self,
@@ -468,3 +322,237 @@ class SqlAlchemyDashboardRepository:
                 raise DashboardPersistenceError(
                     "dashboard change state could not be loaded"
                 ) from exc
+
+    def _load_reviews(self, session: Session, limit: int, cursor: ReviewCursor | None,
+                      scope: ResourceScope | None, execution_status: ExecutionStatus | None,
+                      query: str) -> tuple[tuple[ReviewListItem, ...], bool]:
+        reviews_query = (
+            select(
+                ReviewRunRecord.id.label("review_run_id"),
+                ReviewTaskRecord.id.label("review_task_id"),
+                ReviewRunRecord.repository,
+                ReviewRunRecord.pull_request_number,
+                ReviewRunRecord.head_sha,
+                PullRequestVersionRecord.title.label("pr_title"),
+                PullRequestVersionRecord.author_login.label(
+                    "pr_author_login"
+                ),
+                PullRequestVersionRecord.html_url.label("pr_html_url"),
+                PullRequestVersionRecord.head_repository,
+                PullRequestVersionRecord.head_ref,
+                PullRequestVersionRecord.base_repository,
+                PullRequestVersionRecord.base_ref,
+                ReviewRunRecord.execution_status,
+                ReviewRunRecord.workflow_status,
+                ReviewTaskRecord.attempt_count,
+                ReviewTaskRecord.max_attempts,
+                ReviewTaskRecord.last_error,
+                ReviewTaskRecord.last_error_code,
+                ReviewTaskRecord.last_error_retryable,
+                ReviewTaskRecord.last_error_details,
+                ReviewRunRecord.review_conclusion,
+                ReviewRunRecord.coverage_status,
+                ReviewTaskRecord.model_attempt_count,
+                ReviewRunRecord.created_at,
+                ReviewRunRecord.updated_at,
+            )
+            .join(
+                ReviewTaskRecord,
+                ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
+            )
+            .outerjoin(
+                PullRequestVersionRecord,
+                PullRequestVersionRecord.review_version_key
+                == ReviewRunRecord.review_version_key,
+            )
+            .order_by(
+                ReviewRunRecord.created_at.desc(),
+                ReviewRunRecord.id.desc(),
+            )
+            .where(
+                resource_predicate(
+                    scope,
+                    installation_column=ReviewRunRecord.installation_id,
+                    repository_column=ReviewRunRecord.repository,
+                    repository_key_column=ReviewRunRecord.repository_key,
+                )
+            )
+        )
+        reviews_query = reviews_query.where(
+            *self._review_filters(scope, execution_status, query)
+        )
+        if cursor is not None:
+            reviews_query = reviews_query.where(
+                or_(
+                    ReviewRunRecord.created_at < cursor.created_at,
+                    and_(
+                        ReviewRunRecord.created_at == cursor.created_at,
+                        ReviewRunRecord.id < cursor.review_run_id,
+                    ),
+                )
+            )
+        raw_rows = session.execute(
+            reviews_query.limit(limit + 1)
+        ).all()
+        has_more = len(raw_rows) > limit
+        rows = raw_rows[:limit]
+
+        # 只对当前页的运行批量读取模型完成时间和 Finding 计数。这样既
+        # 避免每行两个相关子查询，也不会为了第一页而聚合整张 findings
+        # 表；本页最多 100 个 ID，查询次数始终为 O(1)。
+        review_metrics: dict[str, tuple[datetime | None, int, int]] = {}
+        review_ids = tuple(row.review_run_id for row in rows)
+        if review_ids:
+            metrics_rows = session.execute(
+                select(
+                    ReviewRunRecord.id.label("review_run_id"),
+                    func.max(
+                        ReviewPlanRecord.model_review_completed_at
+                    ).label("model_review_completed_at"),
+                    func.count(ReviewFindingRecord.id).label("finding_count"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    ReviewFindingRecord.adjudication_status
+                                    == "unreviewed",
+                                    1,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("unreviewed_finding_count"),
+                )
+                .select_from(ReviewRunRecord)
+                .outerjoin(
+                    ReviewPlanRecord,
+                    ReviewPlanRecord.review_run_id == ReviewRunRecord.id,
+                )
+                .outerjoin(
+                    ReviewFindingRecord,
+                    ReviewFindingRecord.review_run_id == ReviewRunRecord.id,
+                )
+                .where(ReviewRunRecord.id.in_(review_ids))
+                .group_by(ReviewRunRecord.id)
+            ).all()
+            review_metrics = {
+                metric.review_run_id: (
+                    metric.model_review_completed_at,
+                    int(metric.finding_count or 0),
+                    int(metric.unreviewed_finding_count or 0),
+                )
+                for metric in metrics_rows
+            }
+
+        review_items: list[ReviewListItem] = []
+        for row in rows:
+            (
+                model_review_completed_at,
+                finding_count,
+                unreviewed_finding_count,
+            ) = review_metrics.get(row.review_run_id, (None, 0, 0))
+            safe_last_error = (
+                redact_sensitive(row.last_error)
+                if row.last_error is not None
+                else None
+            )
+            safe_error_code = (
+                redact_sensitive(row.last_error_code)
+                if row.last_error_code is not None
+                else None
+            )
+            safe_error_details = (
+                redact_sensitive(row.last_error_details)
+                if row.last_error_details is not None
+                else None
+            )
+            review_items.append(
+                ReviewListItem(
+                    review_run_id=row.review_run_id,
+                    review_task_id=row.review_task_id,
+                    repository=row.repository,
+                    pull_request_number=row.pull_request_number,
+                    head_sha=row.head_sha,
+                    pr_title=row.pr_title,
+                    pr_author_login=row.pr_author_login,
+                    pr_html_url=row.pr_html_url,
+                    head_repository=row.head_repository,
+                    head_ref=row.head_ref,
+                    base_repository=row.base_repository,
+                    base_ref=row.base_ref,
+                    execution_status=ExecutionStatus(
+                        row.execution_status
+                    ),
+                    workflow_status=ExecutionStatus(
+                        row.workflow_status or row.execution_status
+                    ),
+                    attempt_count=row.attempt_count,
+                    max_attempts=row.max_attempts,
+                    last_error=(
+                        safe_last_error
+                        if isinstance(safe_last_error, str)
+                        else None
+                    ),
+                    last_error_code=(
+                        safe_error_code
+                        if isinstance(safe_error_code, str)
+                        else None
+                    ),
+                    last_error_retryable=row.last_error_retryable,
+                    last_error_details=(
+                        safe_error_details
+                        if isinstance(safe_error_details, dict)
+                        else None
+                    ),
+                    review_conclusion=row.review_conclusion,
+                    coverage_status=row.coverage_status,
+                    model_review_completed_at=as_utc(
+                        model_review_completed_at
+                    ),
+                    finding_count=finding_count,
+                    unreviewed_finding_count=unreviewed_finding_count,
+                    model_attempt_count=row.model_attempt_count,
+                    created_at=required_utc(row.created_at, "review.created_at"),
+                    updated_at=required_utc(row.updated_at, "review.updated_at"),
+                )
+            )
+        reviews = tuple(review_items)
+        return reviews, has_more
+
+    @staticmethod
+    def _review_filters(scope, execution_status=None, query=""):
+        filters = [resource_predicate(
+            scope, installation_column=ReviewRunRecord.installation_id,
+            repository_column=ReviewRunRecord.repository,
+            repository_key_column=ReviewRunRecord.repository_key,
+        )]
+        if execution_status is not None:
+            filters.append(ReviewRunRecord.execution_status == execution_status.value)
+        if query and len(query) < 3 and not query.isdecimal():
+            raise ValueError("搜索请输入至少3个字符，PR编号可直接输入数字")
+        if query:
+            # 各表独立检索再 UNION 主键，避免跨表 OR 迫使整个 JOIN 扫描。
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            run_matches: list[ColumnElement[bool]] = [column.ilike(pattern, escape="\\") for column in (
+                ReviewRunRecord.repository, ReviewRunRecord.head_sha,
+            )]
+            if query.isdecimal() and len(query) <= 18:
+                run_matches.append(ReviewRunRecord.pull_request_number == int(query))
+                if len(query) < 3:
+                    filters.append(ReviewRunRecord.pull_request_number == int(query))
+                    return filters
+            pr_matches = [column.ilike(pattern, escape="\\") for column in (
+                PullRequestVersionRecord.title, PullRequestVersionRecord.author_login,
+                PullRequestVersionRecord.head_ref, PullRequestVersionRecord.base_ref,
+                PullRequestVersionRecord.head_repository, PullRequestVersionRecord.base_repository,
+            )]
+            matching_ids = union(
+                select(ReviewRunRecord.id).where(or_(*run_matches)),
+                select(ReviewRunRecord.id).join(PullRequestVersionRecord,
+                    PullRequestVersionRecord.review_version_key == ReviewRunRecord.review_version_key,
+                ).where(or_(*pr_matches)),
+            )
+            filters.append(ReviewRunRecord.id.in_(matching_ids))
+        return filters

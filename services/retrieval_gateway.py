@@ -70,3 +70,15 @@ class RetrievalGateway:
             result = self.client.rerank(query, texts)
             self.runtime.cache_rerank(key, result.ranking)
             return result
+
+    def prefetch_queries(self, texts: tuple[str, ...]) -> tuple[int, int | None]:
+        # 复用现有向量缓存与请求额度；四条一批兼容查询的UTF-8字节上限。
+        unique = tuple(dict.fromkeys(texts))
+        duration = 0
+        tokens: int | None = None
+        for offset in range(0, len(unique), 4):
+            result = self.embed(unique[offset:offset + 4], purpose="query")
+            duration += result.duration_ms
+            if result.input_tokens is not None:
+                tokens = (tokens or 0) + result.input_tokens
+        return duration, tokens

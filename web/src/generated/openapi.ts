@@ -137,7 +137,7 @@ export interface paths {
          *
          *     参数：
          *         _: 仅用于触发管理员会话校验的依赖结果。
-         *         limit: 最近任务数量，范围 1 到 100，默认 50。
+         *         limit: 最近任务数量，范围 1 到 100，默认 10。
          *
          *     返回：
          *         当前数据库快照；Worker 没有心跳时会明确标记为未配置/离线，而不是
@@ -445,7 +445,7 @@ export interface paths {
          *
          *     参数：
          *         _: 管理员会话依赖。
-         *         limit: 返回条数，范围 1 到 100，默认 50。
+         *         limit: 返回条数，范围 1 到 100，默认 10。
          *
          *     返回：
          *         包含数据库中的总运行数和按创建时间倒序排列的最近任务；任务状态、
@@ -563,6 +563,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reviews/{review_run_id}/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Batches */
+        get: operations["list_batches_api_v1_reviews__review_run_id__batches_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{review_run_id}/change-token": {
         parameters: {
             query?: never;
@@ -575,6 +592,40 @@ export interface paths {
          * @description 用一次索引查询返回详情变化令牌，不加载子资源。
          */
         get: operations["get_review_change_token_api_v1_reviews__review_run_id__change_token_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{review_run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Events */
+        get: operations["list_events_api_v1_reviews__review_run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{review_run_id}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Findings */
+        get: operations["list_findings_api_v1_reviews__review_run_id__findings_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1127,6 +1178,38 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** BatchProgress */
+        BatchProgress: {
+            /** Completed */
+            completed: number;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Failed */
+            failed: number;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Reasoning Tokens */
+            reasoning_tokens?: number | null;
+            /** Running */
+            running: number;
+            /** Total */
+            total: number;
+        };
+        /** BatchSnapshot */
+        BatchSnapshot: {
+            /** Batch Number */
+            batch_number: number;
+            /** Duration Ms */
+            duration_ms: number | null;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Message */
+            error_message: string | null;
+            /** Status */
+            status: string;
+        };
         /** CodeIndexCreate */
         CodeIndexCreate: {
             /** Review Run Id */
@@ -1136,6 +1219,8 @@ export interface components {
         ConfigurationAuditListResponse: {
             /** Items */
             items: components["schemas"]["ConfigurationAuditResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** ConfigurationAuditResponse */
         ConfigurationAuditResponse: {
@@ -1206,6 +1291,48 @@ export interface components {
              * @default []
              */
             unit_keys: string[];
+        };
+        /** CursorPage[BatchSnapshot] */
+        CursorPage_BatchSnapshot_: {
+            /** Items */
+            items: components["schemas"]["BatchSnapshot"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[IndexTarget] */
+        CursorPage_IndexTarget_: {
+            /** Items */
+            items: components["schemas"]["IndexTarget"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[IndexView] */
+        CursorPage_IndexView_: {
+            /** Items */
+            items: components["schemas"]["IndexView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[RetrievalEvaluationReport] */
+        CursorPage_RetrievalEvaluationReport_: {
+            /** Items */
+            items: components["schemas"]["RetrievalEvaluationReport"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[ReviewEventResponse] */
+        CursorPage_ReviewEventResponse_: {
+            /** Items */
+            items: components["schemas"]["ReviewEventResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[ReviewFindingResponse] */
+        CursorPage_ReviewFindingResponse_: {
+            /** Items */
+            items: components["schemas"]["ReviewFindingResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** DashboardResponse */
         DashboardResponse: {
@@ -1360,8 +1487,18 @@ export interface components {
         KnowledgeDocumentListResponse: {
             /** Enabled Count */
             enabled_count: number;
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
             /** Items */
             items: components["schemas"]["KnowledgeDocumentSummaryResponse"][];
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
             /** Revision */
             revision: number;
             /** Total */
@@ -1403,6 +1540,8 @@ export interface components {
             updated_at: string;
             /** Updated By */
             updated_by: string;
+            /** Version Next Cursor */
+            version_next_cursor?: string | null;
             /** Versions */
             versions: components["schemas"]["KnowledgeVersionResponse"][];
         };
@@ -1869,6 +2008,10 @@ export interface components {
             base_ref: string | null;
             /** Base Repository */
             base_repository: string | null;
+            /** Batch Progress */
+            batch_progress?: {
+                [key: string]: components["schemas"]["BatchProgress"];
+            };
             /** Change Token */
             change_token: string;
             /** Changed Files Count */
@@ -2578,6 +2721,8 @@ export interface operations {
             query?: {
                 include_archived?: boolean;
                 limit?: number;
+                offset?: number;
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -2640,7 +2785,10 @@ export interface operations {
     };
     get_knowledge_document_api_v1_knowledge_documents__document_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                version_limit?: number;
+                version_cursor?: number | null;
+            };
             header?: never;
             path: {
                 document_id: string;
@@ -2844,7 +2992,10 @@ export interface operations {
     };
     evaluations_api_v1_retrieval_evaluations_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2857,7 +3008,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RetrievalEvaluationReport"][];
+                    "application/json": components["schemas"]["CursorPage_RetrievalEvaluationReport_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -2866,6 +3026,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -2879,7 +3040,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IndexView"][];
+                    "application/json": components["schemas"]["CursorPage_IndexView_"];
                 };
             };
             /** @description Validation Error */
@@ -3153,7 +3314,10 @@ export interface operations {
     };
     targets_api_v1_retrieval_targets_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3166,7 +3330,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IndexTarget"][];
+                    "application/json": components["schemas"]["CursorPage_IndexTarget_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3176,6 +3349,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string | null;
+                execution_status?: components["schemas"]["ExecutionStatus"] | null;
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -3263,6 +3438,7 @@ export interface operations {
             query?: {
                 finding_limit?: number;
                 finding_cursor?: string | null;
+                view?: "full" | "overview" | "findings" | "agents";
             };
             header?: never;
             path: {
@@ -3329,6 +3505,41 @@ export interface operations {
             };
         };
     };
+    list_batches_api_v1_reviews__review_run_id__batches_get: {
+        parameters: {
+            query: {
+                agent: "security" | "convention" | "logic" | "summary";
+                after?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                review_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_BatchSnapshot_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_review_change_token_api_v1_reviews__review_run_id__change_token_get: {
         parameters: {
             query?: never;
@@ -3347,6 +3558,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewChangeTokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_events_api_v1_reviews__review_run_id__events_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                event_filter?: "all" | "model" | "workflow" | "errors";
+            };
+            header?: never;
+            path: {
+                review_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_ReviewEventResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_findings_api_v1_reviews__review_run_id__findings_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                severity?: string | null;
+                adjudication_status?: string | null;
+                q?: string;
+            };
+            header?: never;
+            path: {
+                review_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_ReviewFindingResponse_"];
                 };
             };
             /** @description Validation Error */
@@ -3749,6 +4032,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                cursor?: number | null;
             };
             header?: never;
             path?: never;

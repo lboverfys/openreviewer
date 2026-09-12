@@ -346,22 +346,50 @@ class HybridRetrievalService:
         budget = RequestBudget(view.settings.max_requests_per_operation, charge=lambda: governance.charge_request(budget_key, view.settings.max_requests_per_operation))
         runtime, key = self.settings.runtime()
         client = self._client(runtime, key, budget) if key and not runtime.external_calls_paused else None
+        units_by_agent = {agent: tuple(unit for unit in model_input.units if agent in unit.review_domains)
+                          for agent in purposes}
+        grouped_by_agent = {agent: review_queries(units, view.settings.strategy, view.settings.context_k)
+                            for agent, units in units_by_agent.items() if units and agent.value not in cached}
+        traces_by_agent: dict[ReviewAgent, list[tuple[RetrievalTrace, tuple[str, ...]]]] = defaultdict(list)
+        calls_by_agent: dict[ReviewAgent, int] = defaultdict(int)
+        prefetch_ms = 0
+        prefetch_tokens: int | None = None
         try:
+            # 先生成有界查询计划；各角色轮流取一组，同样的检索只执行一次。
+            scheduled = [(agent, grouped[number])
+                for number in range(max((len(items) for items in grouped_by_agent.values()), default=0))
+                for agent, grouped in grouped_by_agent.items() if number < len(grouped)]
+            if client is not None and index.vector_count and view.settings.strategy not in {"bm25", "lexical_relations"}:
+                before = budget.used
+                try:
+                    prefetch_ms, prefetch_tokens = client.prefetch_queries(tuple(query.query for _, (query, _) in scheduled))
+                except RetrievalError:
+                    # 仍由每次检索报告基础召回和额度降级，已生成的向量继续复用。
+                    pass
+                if scheduled:
+                    calls_by_agent[scheduled[0][0]] += budget.used - before
+            by_key = {unit.unit_key: unit for unit in model_input.units}
+            lexical = self._lexical(index.id)
+            shared_searches: dict[str, RetrievalTrace] = {}
+            for agent, (query, keys) in scheduled:
+                selected_units = tuple(by_key[key] for key in keys)
+                query = query.model_copy(update={"symbols": changed_symbols(
+                    lexical.documents_for_files(tuple(unit.file for unit in selected_units)), selected_units)})
+                search_key = stable_key(index.id, query.model_dump(mode="json"))
+                if search_key not in shared_searches:
+                    before = budget.used
+                    shared_searches[search_key] = self._search(index, query, view.settings, client)
+                    calls_by_agent[agent] += budget.used - before
+                traces_by_agent[agent].append((shared_searches[search_key], keys))
+                on_progress()
             for agent in purposes:
-                requests_before = budget.used
-                units = tuple(unit for unit in model_input.units if agent in unit.review_domains)
+                units = units_by_agent[agent]
                 if not units:
                     continue
                 trace = cached.get(agent.value)
                 if trace is None:
-                    grouped = review_queries(units, view.settings.strategy, view.settings.context_k)
-                    traces = []
-                    for query, keys in grouped:
-                        selected_keys = set(keys)
-                        selected_units = tuple(unit for unit in units if unit.unit_key in selected_keys)
-                        query = query.model_copy(update={"symbols": changed_symbols(self._lexical(index.id).documents_for_files(tuple(unit.file for unit in selected_units)), selected_units)})
-                        traces.append((self._search(index, query, view.settings, client), keys))
-                        on_progress()
+                    grouped = grouped_by_agent[agent]
+                    traces = traces_by_agent[agent]
                     first = traces[0][0]
                     candidates = merge_contexts(traces, view.settings.context_k)
                     trace = first.model_copy(update={
@@ -373,16 +401,17 @@ class HybridRetrievalService:
                         "query_cache_hit": all(item.query_cache_hit for item, _ in traces),
                         "rerank_cache_hit": all(item.rerank_cache_hit for item, _ in traces),
                         "covered_units": len({key for item in candidates if item.selected for key in item.unit_keys}),
-                        "duration_ms": sum(item.duration_ms for item, _ in traces),
+                        "duration_ms": sum(item.duration_ms for item, _ in traces) + prefetch_ms,
                         "warnings": tuple(dict.fromkeys(warning for item, _ in traces for warning in item.warnings)),
-                        "model_requests": budget.used - requests_before,
-                        "embedding_ms": sum(item.embedding_ms for item, _ in traces),
+                        "model_requests": calls_by_agent[agent],
+                        "embedding_ms": sum(item.embedding_ms for item, _ in traces) + prefetch_ms,
                         "rerank_ms": sum(item.rerank_ms for item, _ in traces),
-                        "input_tokens": sum(item.input_tokens or 0 for item, _ in traces) or None,
+                        "input_tokens": (sum(item.input_tokens or 0 for item, _ in traces) + (prefetch_tokens or 0)) or None,
                         "rerank_tokens": sum(item.rerank_tokens or 0 for item, _ in traces) or None,
                         "routes": tuple(RouteMetric(route=cast(RetrievalRoute, route), candidate_count=sum(metric.candidate_count for item, _ in traces for metric in item.routes if metric.route == route), duration_ms=sum(metric.duration_ms for item, _ in traces for metric in item.routes if metric.route == route)) for route in ("bm25", "vector", "relation") if any(metric.route == route for item, _ in traces for metric in item.routes)),
                     })
                     trace = self.repository.save_trace(trace, model_input.review_run_id, agent.value)
+                    prefetch_ms, prefetch_tokens = 0, None
                 if trace.index_id != index.id:
                     raise RetrievalError("部分审查已保存旧配置的上下文，请恢复原配置后重试")
                 contexts.extend(item.model_copy(update={"agent": agent}) for item in trace.selected)

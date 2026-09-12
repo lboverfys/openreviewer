@@ -2161,3 +2161,18 @@ class RetrievalRequestBudgetRecord(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+
+
+# 管理列表按排序键翻页；全文片段搜索由各表独立的 trigram 索引召回。
+Index("ix_outbox_events_aggregate_occurred_id", OutboxEventRecord.aggregate_type, OutboxEventRecord.aggregate_id, OutboxEventRecord.occurred_at, OutboxEventRecord.id)
+Index("ix_code_indexes_created_id", CodeIndexRecord.created_at, CodeIndexRecord.id)
+Index("ix_retrieval_evaluations_created_id", RetrievalEvaluationRecord.created_at, RetrievalEvaluationRecord.id)
+Index("ix_review_runs_status_created_id", ReviewRunRecord.execution_status, ReviewRunRecord.created_at, ReviewRunRecord.id)
+Index("ix_review_runs_pr_number", ReviewRunRecord.pull_request_number)
+for _search_model, _search_fields in (
+    (ReviewRunRecord, ("repository", "head_sha")),
+    (PullRequestVersionRecord, ("title", "author_login", "head_ref", "base_ref", "head_repository", "base_repository")),
+):
+    for _search_field in _search_fields:
+        Index(f"ix_{_search_model.__tablename__}_{_search_field}_trgm", getattr(_search_model, _search_field),
+              postgresql_using="gin", postgresql_ops={_search_field: "gin_trgm_ops"}, info={"postgresql_only": True}).ddl_if(dialect="postgresql")

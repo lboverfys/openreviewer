@@ -188,6 +188,10 @@ class DashboardRepository(Protocol):
         limit: int,
         cursor: ReviewCursor | None = None,
         scope: ResourceScope | None = None,
+        *,
+        execution_status: ExecutionStatus | None = None,
+        query: str = "",
+        include_overview: bool = True,
     ) -> DashboardData:
         """从持久化层一次性读取 Dashboard 所需的原始数据。
 
@@ -271,6 +275,10 @@ class DashboardService:
         limit: int = 50,
         cursor: str | None = None,
         scope: ResourceScope | None = None,
+        *,
+        execution_status: ExecutionStatus | None = None,
+        query: str = "",
+        include_overview: bool = True,
     ) -> DashboardSnapshot:
         """组装一个可直接返回给 API 和 SSE 的完整 Dashboard 快照。
 
@@ -297,11 +305,18 @@ class DashboardService:
         now = self._clock().astimezone(UTC)
         decoded_cursor = decode_review_cursor(cursor) if cursor is not None else None
         effective_scope = _effective_scope(scope)
-        data = (
-            self._repository.load(limit, decoded_cursor)
-            if effective_scope is None
-            else self._repository.load(limit, decoded_cursor, effective_scope)
-        )
+        if not include_overview or execution_status is not None or query:
+            data = self._repository.load(
+                limit, decoded_cursor, effective_scope,
+                execution_status=execution_status, query=query,
+                include_overview=include_overview,
+            )
+        else:
+            data = (
+                self._repository.load(limit, decoded_cursor)
+                if effective_scope is None
+                else self._repository.load(limit, decoded_cursor, effective_scope)
+            )
         workers = tuple(
             WorkerSnapshot(
                 configured=True,

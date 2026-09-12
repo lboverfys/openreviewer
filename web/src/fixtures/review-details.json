@@ -1,0 +1,757 @@
+{
+  "review_run_id": "run-page-25-awaiting_approval",
+  "review_task_id": "task-page-25-awaiting_approval",
+  "change_token": "edad81d2d8d15f3befaa64f2",
+  "review_version_key": "42:88:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "installation_id": 10,
+  "repository_id": 42,
+  "repository": "lboverfys/NiuMa",
+  "pull_request_number": 88,
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "execution_status": "completed",
+  "workflow_status": "awaiting_approval",
+  "review_conclusion": "findings_present",
+  "coverage_status": "complete",
+  "priority": 100,
+  "attempt_count": 1,
+  "model_attempt_count": 1,
+  "max_attempts": 3,
+  "ci_poll_count": 0,
+  "available_at": "2026-08-28T12:00:00Z",
+  "claimed_from_status": null,
+  "lease_owner": null,
+  "lease_expires_at": null,
+  "last_error": null,
+  "last_error_code": null,
+  "last_error_retryable": null,
+  "last_error_details": null,
+  "created_at": "2026-08-28T12:00:00Z",
+  "updated_at": "2026-08-28T12:00:00Z",
+  "pr_title": null,
+  "pr_author_login": null,
+  "pr_html_url": null,
+  "head_repository": null,
+  "head_ref": null,
+  "base_repository": null,
+  "base_ref": null,
+  "identity_fetched_at": "2026-09-12T00:00:00Z",
+  "pr_state": null,
+  "pr_is_draft": null,
+  "changed_files_count": null,
+  "files_complete": null,
+  "diff_complete": null,
+  "context_fetched_at": null,
+  "ci_state": null,
+  "ci_checks_complete": null,
+  "ci_checked_at": null,
+  "review_plan_id": "plan-page-25-awaiting_approval",
+  "plan_created_at": "2026-08-28T12:00:00Z",
+  "plan_file_count": 1,
+  "plan_unit_count": 1,
+  "plan_rule_count": 0,
+  "plan_input_bytes": 10,
+  "plan_rules_complete": true,
+  "plan_file_decisions": {},
+  "model_review_completed_at": "2026-08-28T12:00:00Z",
+  "model_call_id": "call-page-25-awaiting_approval",
+  "model_provider": "openai",
+  "model_protocol": "responses",
+  "model_name": "test-model",
+  "model_status": "succeeded",
+  "model_response_status": 200,
+  "model_duration_ms": 100,
+  "model_input_tokens": 10,
+  "model_output_tokens": 5,
+  "model_cache_read_tokens": 0,
+  "model_cache_write_tokens": 0,
+  "model_reasoning_tokens": 0,
+  "model_cost_microusd": 0,
+  "model_finding_count": 25,
+  "model_created_at": "2026-08-28T12:00:00Z",
+  "current_stage": "approval",
+  "phase": "awaiting_finding_adjudication",
+  "stages": [
+    {
+      "key": "intake",
+      "status": "completed",
+      "started_at": "2026-08-28T12:00:00Z",
+      "completed_at": "2026-08-28T12:00:00Z",
+      "detail_code": null
+    },
+    {
+      "key": "context",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": null,
+      "detail_code": null
+    },
+    {
+      "key": "ci",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": null,
+      "detail_code": null
+    },
+    {
+      "key": "planning",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-08-28T12:00:00Z",
+      "detail_code": null
+    },
+    {
+      "key": "model",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-08-28T12:00:00Z",
+      "detail_code": null
+    },
+    {
+      "key": "agent_batches",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-08-28T12:00:00Z",
+      "detail_code": null
+    },
+    {
+      "key": "aggregating",
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-08-28T12:00:00Z",
+      "detail_code": null
+    },
+    {
+      "key": "approval",
+      "status": "current",
+      "started_at": null,
+      "completed_at": "2026-08-28T12:00:00Z",
+      "detail_code": "awaiting_finding_adjudication"
+    },
+    {
+      "key": "publish",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null,
+      "detail_code": null
+    },
+    {
+      "key": "result",
+      "status": "pending",
+      "started_at": null,
+      "completed_at": "2026-08-28T12:00:00Z",
+      "detail_code": null
+    }
+  ],
+  "available_actions": [
+    "reject",
+    "pause"
+  ],
+  "finding_total_count": 25,
+  "finding_next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOC0yOFQxMjowMDowMC4wMDAwMDArMDA6MDAiLCJmaW5kaW5nX2lkIjoiZmluZGluZy0wMDAwMDAiLCJ2IjoxfQ",
+  "location_verified_finding_count": 8,
+  "location_rejected_finding_count": 8,
+  "location_unverified_finding_count": 9,
+  "valid_finding_count": 4,
+  "false_positive_finding_count": 4,
+  "duplicate_finding_count": 4,
+  "out_of_scope_finding_count": 4,
+  "known_issue_finding_count": 4,
+  "unreviewed_finding_count": 5,
+  "new_finding_count": 9,
+  "still_present_finding_count": 8,
+  "reintroduced_finding_count": 8,
+  "fixed_finding_count": 0,
+  "evaluation_gates": [
+    {
+      "category": "architecture",
+      "sample_count": 0,
+      "valid_count": 0,
+      "false_positive_count": 0,
+      "duplicate_count": 0,
+      "out_of_scope_count": 0,
+      "known_issue_count": 0,
+      "rejected_count": 0,
+      "high_severity_sample_count": 0,
+      "high_severity_false_positive_count": 0,
+      "high_severity_rejected_count": 0,
+      "precision": 0,
+      "high_severity_false_positive_rate": 0,
+      "admitted": false,
+      "reason": "insufficient_samples"
+    },
+    {
+      "category": "authorization",
+      "sample_count": 0,
+      "valid_count": 0,
+      "false_positive_count": 0,
+      "duplicate_count": 0,
+      "out_of_scope_count": 0,
+      "known_issue_count": 0,
+      "rejected_count": 0,
+      "high_severity_sample_count": 0,
+      "high_severity_false_positive_count": 0,
+      "high_severity_rejected_count": 0,
+      "precision": 0,
+      "high_severity_false_positive_rate": 0,
+      "admitted": false,
+      "reason": "insufficient_samples"
+    },
+    {
+      "category": "business_contract",
+      "sample_count": 0,
+      "valid_count": 0,
+      "false_positive_count": 0,
+      "duplicate_count": 0,
+      "out_of_scope_count": 0,
+      "known_issue_count": 0,
+      "rejected_count": 0,
+      "high_severity_sample_count": 0,
+      "high_severity_false_positive_count": 0,
+      "high_severity_rejected_count": 0,
+      "precision": 0,
+      "high_severity_false_positive_rate": 0,
+      "admitted": false,
+      "reason": "insufficient_samples"
+    },
+    {
+      "category": "database",
+      "sample_count": 0,
+      "valid_count": 0,
+      "false_positive_count": 0,
+      "duplicate_count": 0,
+      "out_of_scope_count": 0,
+      "known_issue_count": 0,
+      "rejected_count": 0,
+      "high_severity_sample_count": 0,
+      "high_severity_false_positive_count": 0,
+      "high_severity_rejected_count": 0,
+      "precision": 0,
+      "high_severity_false_positive_rate": 0,
+      "admitted": false,
+      "reason": "insufficient_samples"
+    },
+    {
+      "category": "reliability",
+      "sample_count": 0,
+      "valid_count": 0,
+      "false_positive_count": 0,
+      "duplicate_count": 0,
+      "out_of_scope_count": 0,
+      "known_issue_count": 0,
+      "rejected_count": 0,
+      "high_severity_sample_count": 0,
+      "high_severity_false_positive_count": 0,
+      "high_severity_rejected_count": 0,
+      "precision": 0,
+      "high_severity_false_positive_rate": 0,
+      "admitted": false,
+      "reason": "insufficient_samples"
+    },
+    {
+      "category": "security",
+      "sample_count": 0,
+      "valid_count": 0,
+      "false_positive_count": 0,
+      "duplicate_count": 0,
+      "out_of_scope_count": 0,
+      "known_issue_count": 0,
+      "rejected_count": 0,
+      "high_severity_sample_count": 0,
+      "high_severity_false_positive_count": 0,
+      "high_severity_rejected_count": 0,
+      "precision": 0,
+      "high_severity_false_positive_rate": 0,
+      "admitted": false,
+      "reason": "insufficient_samples"
+    },
+    {
+      "category": "test_gap",
+      "sample_count": 0,
+      "valid_count": 0,
+      "false_positive_count": 0,
+      "duplicate_count": 0,
+      "out_of_scope_count": 0,
+      "known_issue_count": 0,
+      "rejected_count": 0,
+      "high_severity_sample_count": 0,
+      "high_severity_false_positive_count": 0,
+      "high_severity_rejected_count": 0,
+      "precision": 0,
+      "high_severity_false_positive_rate": 0,
+      "admitted": false,
+      "reason": "insufficient_samples"
+    }
+  ],
+  "findings": [
+    {
+      "context_references": [],
+      "id": "finding-000000",
+      "fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "severity": "high",
+      "category": "security",
+      "title": "测试问题 0",
+      "evidence": "证据",
+      "impact": "影响",
+      "suggestion": "建议",
+      "required_test": null,
+      "confidence": 0.9,
+      "verification_status": "unverified",
+      "location_verification_status": "unverified",
+      "evidence_verification_status": "unverified",
+      "evidence_verification_reason": "not_checked",
+      "evidence_verified_at": null,
+      "adjudication_status": "unreviewed",
+      "lifecycle_status": "new",
+      "occurrence_count": 1,
+      "previous_review_run_id": null,
+      "location_file": null,
+      "location_start_line": null,
+      "location_end_line": null,
+      "location_side": null,
+      "location_in_diff": false,
+      "location_symbol": null,
+      "rule_reference": null,
+      "reviewed_at": null,
+      "reviewed_by": null,
+      "created_at": "2026-08-28T12:00:00Z"
+    }
+  ],
+  "ci_checks": [],
+  "events": [],
+  "agent_statuses": {
+    "security": "partial",
+    "convention": "waiting",
+    "logic": "waiting",
+    "summary": "not_executed"
+  },
+  "agent_summaries": {},
+  "aggregation_status": "completed",
+  "summary_status": "skipped",
+  "partial_result": false,
+  "failed_agents": [
+    "security"
+  ],
+  "failed_batches": [
+    {
+      "agent": "security",
+      "batch_number": 1,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 3,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 5,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 7,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 9,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 11,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 13,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 15,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 17,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 19,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 21,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 23,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 25,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 27,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 29,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 31,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 33,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 35,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 37,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 39,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 41,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 43,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 45,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 47,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 49,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 51,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 53,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 55,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 57,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 59,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 61,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 63,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 65,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 67,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 69,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 71,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 73,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 75,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 77,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 79,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 81,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 83,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 85,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 87,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 89,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 91,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 93,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 95,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 97,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 99,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 101,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 103,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 105,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 107,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 109,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 111,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 113,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 115,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 117,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    },
+    {
+      "agent": "security",
+      "batch_number": 119,
+      "error_code": null,
+      "error_message": null,
+      "retryable": null
+    }
+  ]
+}
