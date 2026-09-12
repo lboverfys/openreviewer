@@ -1,6 +1,7 @@
 """OpenAI 与 Anthropic 官方 API 的严格结构化输出适配器。"""
 
 import json
+import os
 import re
 import time
 from collections.abc import Callable
@@ -22,6 +23,7 @@ from domain.model_review import (
     ModelReviewOutput,
     ModelReviewResult,
     ModelTokenUsage,
+    ReviewExecutionProvenance,
     model_review_output_schema,
 )
 from domain.security import ErrorCode, SafeApplicationError, SafeError
@@ -382,7 +384,17 @@ class _StructuredModelReviewer(ModelReviewer):
             if self._settings.pricing is not None
             else None
         )
+        revision = os.environ.get("OPENREVIEWER_DEPLOYMENT_IMAGE", "").rpartition(":")[2]
+        provenance = ReviewExecutionProvenance(
+            application_revision=revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None,
+            knowledge_versions=(
+                dict(review_input.knowledge_versions)
+                if review_input.knowledge_versions or not review_input.knowledge_references
+                else None
+            ),
+        )
         return ModelReviewResult(
+            provenance=provenance,
             provider=self.provider,
             api_protocol=self.api_protocol,
             model=self._settings.model,

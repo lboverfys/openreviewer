@@ -4,6 +4,9 @@ import { readAppView } from "./App";
 
 describe("应用 Hash 路由", () => {
   it("解析固定管理页面", () => {
+    expect(readAppView("#evaluations")).toEqual({kind:"evaluations", datasetId:undefined, caseId:undefined, reviewRunId:undefined});
+    expect(readAppView("#evaluations/set-1?case=case-1")).toEqual({kind:"evaluations", datasetId:"set-1", caseId:"case-1", reviewRunId:undefined});
+    expect(readAppView("#evaluations?review=run-1")).toEqual({kind:"evaluations", datasetId:undefined, caseId:undefined, reviewRunId:"run-1"});
     expect(readAppView("#team")).toEqual({ kind: "team" });
     expect(readAppView("#settings")).toEqual({ kind: "settings" });
     expect(readAppView("#knowledge")).toEqual({ kind: "knowledge" });

@@ -538,6 +538,48 @@ async function request<T>(
 }
 
 export const api = {
+  evaluationDatasets: (includeArchived = false, cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("evaluation-datasets:" + includeArchived + ":" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").EvaluationDataset>>("/api/v1/evaluations/datasets?" + new URLSearchParams({limit: "10", include_archived: String(includeArchived), ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  evaluationSources: (datasetId?: string, caseId?: string, cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("evaluation-sources:" + (datasetId ?? "all") + ":" + (caseId ?? "all") + ":" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").EvaluationRunOption>>("/api/v1/evaluations/sources?" + new URLSearchParams({limit: "10", ...(datasetId ? {dataset_id:datasetId} : {}), ...(caseId ? {case_id:caseId} : {}), ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  createEvaluationDataset: (body: import("./types").EvaluationDatasetCreate, key: string) =>
+    mutation(() => request<import("./types").EvaluationDataset>("/api/v1/evaluations/datasets", {method:"POST", headers:{"Idempotency-Key":key}, body:JSON.stringify(body)})),
+  evaluationDataset: (id: string, signal?: AbortSignal) =>
+    request<import("./types").EvaluationDataset>("/api/v1/evaluations/datasets/" + encodeURIComponent(id), {signal}),
+  archiveEvaluationDataset: (id: string, revision: number, archived: boolean) =>
+    mutation(() => request<import("./types").EvaluationDataset>("/api/v1/evaluations/datasets/" + encodeURIComponent(id) + "/archive", {method:"POST", body:JSON.stringify({expected_revision:revision, archived})})),
+  evaluationCases: (id: string, split?: import("./types").EvaluationSplit, cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("evaluation-cases:" + id + ":" + (split ?? "all") + ":" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").EvaluationCase>>("/api/v1/evaluations/datasets/" + encodeURIComponent(id) + "/cases?" + new URLSearchParams({limit:"10", ...(split ? {split} : {}), ...(cursor ? {cursor} : {})}), {signal:cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  evaluationAudits: (id: string, cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("evaluation-audits:" + id + ":" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").EvaluationAudit>>("/api/v1/evaluations/datasets/" + encodeURIComponent(id) + "/audits?" + new URLSearchParams({limit:"10", ...(cursor ? {cursor} : {})}), {signal:cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  importEvaluationObservations: (id: string, body: import("./types").EvaluationImport) =>
+    mutation(() => request<import("./types").EvaluationImportResult>("/api/v1/evaluations/datasets/" + encodeURIComponent(id) + "/observations", {method:"POST", body:JSON.stringify(body)})),
+  evaluationCase: (id: string, signal?: AbortSignal) =>
+    request<import("./types").EvaluationCaseDetail>("/api/v1/evaluations/cases/" + encodeURIComponent(id), {signal}),
+  updateEvaluationReference: (id: string, body: import("./types").EvaluationReferenceUpdate) =>
+    mutation(() => request<import("./types").EvaluationCaseDetail>("/api/v1/evaluations/cases/" + encodeURIComponent(id) + "/reference", {method:"PUT", body:JSON.stringify(body)})),
+  reviewEvaluationReference: (id: string, revision: number, agrees: boolean, note: string) =>
+    mutation(() => request<import("./types").EvaluationCaseDetail>("/api/v1/evaluations/cases/" + encodeURIComponent(id) + "/reference/reviews", {method:"POST", body:JSON.stringify({expected_revision:revision, agrees, note})})),
+  evaluationObservation: (caseId: string, variant: import("./types").EvaluationVariant, signal?: AbortSignal) =>
+    request<import("./types").EvaluationObservationDetail>("/api/v1/evaluations/cases/" + encodeURIComponent(caseId) + "/observations/" + variant, {signal}),
+  evaluationFindings: (caseId: string, variant: import("./types").EvaluationVariant, snapshot: string, cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("evaluation-findings:" + caseId + ":" + variant + ":" + snapshot + ":" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").EvaluationFinding>>("/api/v1/evaluations/cases/" + encodeURIComponent(caseId) + "/observations/" + variant + "/findings?" + new URLSearchParams({limit:"10", ...(cursor ? {cursor} : {})}), {signal:cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  evaluationChanges: (caseId: string, variant: import("./types").EvaluationVariant, snapshot: string, cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("evaluation-changes:" + caseId + ":" + variant + ":" + snapshot + ":" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").EvaluationChange>>("/api/v1/evaluations/cases/" + encodeURIComponent(caseId) + "/observations/" + variant + "/changes?" + new URLSearchParams({limit:"10", ...(cursor ? {cursor} : {})}), {signal:cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  saveEvaluationFindingReview: (caseId: string, variant: import("./types").EvaluationVariant, findingId: string, revision: number, decision: import("./types").EvaluationDecision) =>
+    mutation(() => request<import("./types").EvaluationObservationDetail>("/api/v1/evaluations/cases/" + encodeURIComponent(caseId) + "/observations/" + variant + "/findings/" + encodeURIComponent(findingId) + "/review", {method:"PUT",body:JSON.stringify({expected_revision:revision, decision})})),
+  submitEvaluationReview: (caseId: string, variant: import("./types").EvaluationVariant, revision: number) =>
+    mutation(() => request<import("./types").EvaluationObservationDetail>("/api/v1/evaluations/cases/" + encodeURIComponent(caseId) + "/observations/" + variant + "/submit", {method:"POST",body:JSON.stringify({expected_revision:revision})})),
+  replaceEvaluationObservation: (caseId: string, variant: import("./types").EvaluationVariant, runId: string, revision: number, resetReviews: boolean) =>
+    mutation(() => request<import("./types").EvaluationObservationDetail>("/api/v1/evaluations/cases/" + encodeURIComponent(caseId) + "/observations/" + variant + "/source", {method:"PUT",body:JSON.stringify({expected_revision:revision,review_run_id:runId,reset_reviews:resetReviews})})),
+  evaluationReport: (id: string, split: import("./types").EvaluationSplit, signal?: AbortSignal) =>
+    request<import("./types").EvaluationReport>("/api/v1/evaluations/datasets/" + encodeURIComponent(id) + "/report?split=" + split, {signal}),
   teamMembers: (cursor?: string, signal?: AbortSignal, force = false) =>
     cachedGet("team-members:" + (cursor ?? "first"), (cacheSignal) =>
       request<import("./types").TeamMemberPage>("/api/v1/team/members?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),

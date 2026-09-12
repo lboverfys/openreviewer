@@ -12,6 +12,8 @@ Worker 的领取、租约、恢复和 PR/CI 状态边界见 [review-worker.md](r
 
 团队成员、仓库权限、版本化策略与请求上限见 [team-management.md](team-management.md)。
 
+真实 PR 的样本收录、双人复核与配对效果报告见 [evaluation-workbench.md](evaluation-workbench.md)。
+
 GitHub Webhook 的验签、过滤、去重和原子入库见 [github-webhook.md](github-webhook.md)。
 
 GitHub App 短期身份、PR/diff/CI 读取和版本保护见 [github-context.md](github-context.md)。

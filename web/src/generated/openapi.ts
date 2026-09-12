@@ -156,6 +156,296 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/evaluations/cases/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Case Detail */
+        get: operations["case_detail_api_v1_evaluations_cases__case_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/observations/{variant}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Observation */
+        get: operations["observation_api_v1_evaluations_cases__case_id__observations__variant__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/observations/{variant}/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Changes */
+        get: operations["changes_api_v1_evaluations_cases__case_id__observations__variant__changes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/observations/{variant}/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Findings */
+        get: operations["findings_api_v1_evaluations_cases__case_id__observations__variant__findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/observations/{variant}/findings/{finding_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Review Finding */
+        put: operations["review_finding_api_v1_evaluations_cases__case_id__observations__variant__findings__finding_id__review_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/observations/{variant}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace Observation */
+        put: operations["replace_observation_api_v1_evaluations_cases__case_id__observations__variant__source_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/observations/{variant}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Review */
+        post: operations["submit_review_api_v1_evaluations_cases__case_id__observations__variant__submit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/reference": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Reference */
+        put: operations["update_reference_api_v1_evaluations_cases__case_id__reference_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/cases/{case_id}/reference/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Review Reference */
+        post: operations["review_reference_api_v1_evaluations_cases__case_id__reference_reviews_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/datasets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Datasets */
+        get: operations["datasets_api_v1_evaluations_datasets_get"];
+        put?: never;
+        /** Create Dataset */
+        post: operations["create_dataset_api_v1_evaluations_datasets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/datasets/{dataset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dataset */
+        get: operations["dataset_api_v1_evaluations_datasets__dataset_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/datasets/{dataset_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive */
+        post: operations["archive_api_v1_evaluations_datasets__dataset_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/datasets/{dataset_id}/audits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Audits */
+        get: operations["audits_api_v1_evaluations_datasets__dataset_id__audits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/datasets/{dataset_id}/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Cases */
+        get: operations["cases_api_v1_evaluations_datasets__dataset_id__cases_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/datasets/{dataset_id}/observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Observations */
+        post: operations["import_observations_api_v1_evaluations_datasets__dataset_id__observations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/datasets/{dataset_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report */
+        get: operations["report_api_v1_evaluations_datasets__dataset_id__report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluations/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sources */
+        get: operations["sources_api_v1_evaluations_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/knowledge/documents": {
         parameters: {
             query?: never;
@@ -1264,6 +1554,20 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** BallotSummary */
+        BallotSummary: {
+            /** Decision Count */
+            decision_count: number;
+            /** Reviewer */
+            reviewer: string;
+            /** Submitted At */
+            submitted_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** BatchProgress */
         BatchProgress: {
             /** Completed */
@@ -1385,6 +1689,48 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** CursorPage[EvaluationAuditView] */
+        CursorPage_EvaluationAuditView_: {
+            /** Items */
+            items: components["schemas"]["EvaluationAuditView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[EvaluationCaseView] */
+        CursorPage_EvaluationCaseView_: {
+            /** Items */
+            items: components["schemas"]["EvaluationCaseView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[EvaluationChange] */
+        CursorPage_EvaluationChange_: {
+            /** Items */
+            items: components["schemas"]["EvaluationChange"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[EvaluationDatasetView] */
+        CursorPage_EvaluationDatasetView_: {
+            /** Items */
+            items: components["schemas"]["EvaluationDatasetView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[EvaluationFindingView] */
+        CursorPage_EvaluationFindingView_: {
+            /** Items */
+            items: components["schemas"]["EvaluationFindingView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[EvaluationRunOption] */
+        CursorPage_EvaluationRunOption_: {
+            /** Items */
+            items: components["schemas"]["EvaluationRunOption"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** CursorPage[IndexTarget] */
         CursorPage_IndexTarget_: {
             /** Items */
@@ -1455,6 +1801,472 @@ export interface components {
             /** Workers */
             workers: components["schemas"]["WorkerResponse"][];
         };
+        /** EvaluationArchive */
+        EvaluationArchive: {
+            /** Archived */
+            archived: boolean;
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** EvaluationAuditView */
+        EvaluationAuditView: {
+            /** Event Type */
+            event_type: string;
+            /** Id */
+            id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+        };
+        /** EvaluationCaseDetail */
+        EvaluationCaseDetail: {
+            baseline: components["schemas"]["ObservationView"] | null;
+            candidate: components["schemas"]["ObservationView"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Dataset Id */
+            dataset_id: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "normal" | "known_defect" | "cross_file";
+            /** Pull Request Number */
+            pull_request_number: number;
+            /** Reference Count */
+            reference_count: number | null;
+            /** Reference Defects */
+            reference_defects: components["schemas"]["ReferenceDefect"][] | null;
+            /** Reference Reviews */
+            reference_reviews: components["schemas"]["ReferenceReview"][];
+            /** Reference Status */
+            reference_status: string;
+            /** Repository */
+            repository: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Split
+             * @enum {string}
+             */
+            split: "tuning" | "validation";
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** EvaluationCaseView */
+        EvaluationCaseView: {
+            baseline: components["schemas"]["ObservationView"] | null;
+            candidate: components["schemas"]["ObservationView"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Dataset Id */
+            dataset_id: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "normal" | "known_defect" | "cross_file";
+            /** Pull Request Number */
+            pull_request_number: number;
+            /** Reference Count */
+            reference_count: number | null;
+            /** Reference Status */
+            reference_status: string;
+            /** Repository */
+            repository: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Split
+             * @enum {string}
+             */
+            split: "tuning" | "validation";
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** EvaluationChange */
+        EvaluationChange: {
+            /** Blob Sha */
+            blob_sha: string;
+            /** File */
+            file: string;
+            /** Patch */
+            patch: string;
+        };
+        /** EvaluationComparisonReport */
+        EvaluationComparisonReport: {
+            baseline: components["schemas"]["EvaluationScore"];
+            candidate: components["schemas"]["EvaluationScore"];
+            /** Case Count */
+            case_count: number;
+            /** Cross File Count */
+            cross_file_count: number;
+            /** Data Version */
+            data_version: string;
+            /** Dataset Id */
+            dataset_id: string;
+            /** Dataset Name */
+            dataset_name: string;
+            /** Deltas */
+            deltas: {
+                [key: string]: number | null;
+            };
+            /** Disputed Pairs */
+            disputed_pairs: number;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Identical Run Pairs */
+            identical_run_pairs: number;
+            /** Known Defect Count */
+            known_defect_count: number;
+            /**
+             * Metric Scope
+             * @default paired_review_workflow
+             * @constant
+             */
+            metric_scope: "paired_review_workflow";
+            /** Missing Baseline */
+            missing_baseline: number;
+            /** Missing Candidate */
+            missing_candidate: number;
+            /** Normal Count */
+            normal_count: number;
+            /** Notices */
+            notices: string[];
+            /** Pending Pairs */
+            pending_pairs: number;
+            /** Performance Pairs */
+            performance_pairs: number;
+            /** Priced Pairs */
+            priced_pairs: number;
+            /** Provenance Missing Pairs */
+            provenance_missing_pairs: number;
+            /** Quality Pairs */
+            quality_pairs: number;
+            /** Reference Pairs */
+            reference_pairs: number;
+            /** Repository */
+            repository: string;
+            /**
+             * Split
+             * @enum {string}
+             */
+            split: "tuning" | "validation";
+        };
+        /** EvaluationDatasetCreate */
+        EvaluationDatasetCreate: {
+            /**
+             * Kind
+             * @default normal
+             * @enum {string}
+             */
+            kind: "normal" | "known_defect" | "cross_file";
+            /** Name */
+            name: string;
+            /** Review Run Ids */
+            review_run_ids: string[];
+            /**
+             * Split
+             * @default tuning
+             * @enum {string}
+             */
+            split: "tuning" | "validation";
+            /**
+             * Variant
+             * @default baseline
+             * @enum {string}
+             */
+            variant: "baseline" | "candidate";
+        };
+        /** EvaluationDatasetView */
+        EvaluationDatasetView: {
+            /** Archived At */
+            archived_at: string | null;
+            /** Case Count */
+            case_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Repository */
+            repository: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** EvaluationDecision */
+        EvaluationDecision: {
+            /** Location Correct */
+            location_correct?: boolean | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Reference Key */
+            reference_key?: string | null;
+            verdict: components["schemas"]["FindingEvaluationVerdict"];
+        };
+        /** EvaluationFinding */
+        EvaluationFinding: {
+            category: components["schemas"]["FindingCategory"];
+            /** Confidence */
+            confidence: number;
+            /**
+             * Context References
+             * @default []
+             */
+            context_references: string[];
+            /** End Line */
+            end_line: number | null;
+            /** Evidence */
+            evidence: string;
+            /** Evidence Status */
+            evidence_status: string;
+            /** File */
+            file: string | null;
+            /** Fingerprint */
+            fingerprint: string;
+            /** Id */
+            id: string;
+            /** Impact */
+            impact: string;
+            /** Location Status */
+            location_status: string;
+            severity: components["schemas"]["Severity"];
+            /** Start Line */
+            start_line: number | null;
+            /** Suggestion */
+            suggestion: string;
+            /** Title */
+            title: string;
+        };
+        /** EvaluationFindingView */
+        EvaluationFindingView: {
+            finding: components["schemas"]["EvaluationFinding"];
+            /** Reviews */
+            reviews: components["schemas"]["FindingReview"][];
+        };
+        /** EvaluationImportResult */
+        EvaluationImportResult: {
+            /** Case Ids */
+            case_ids: string[];
+            /** Dataset Id */
+            dataset_id: string;
+            /** Imported */
+            imported: number;
+        };
+        /** EvaluationRevision */
+        EvaluationRevision: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** EvaluationRunOption */
+        EvaluationRunOption: {
+            /**
+             * Completed At
+             * Format: date-time
+             */
+            completed_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Finding Count */
+            finding_count: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Model */
+            model: string;
+            /** Pull Request Number */
+            pull_request_number: number;
+            /** Repository */
+            repository: string;
+            /** Review Run Id */
+            review_run_id: string;
+            /** Title */
+            title: string | null;
+        };
+        /** EvaluationScore */
+        EvaluationScore: {
+            /** Configuration Count */
+            configuration_count: number;
+            /** Duplicate Count */
+            duplicate_count: number;
+            /** Duplicate Rate */
+            duplicate_rate: number | null;
+            /** False Positive Count */
+            false_positive_count: number;
+            /** Finding Count */
+            finding_count: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Known Issue Count */
+            known_issue_count: number;
+            /** Location Accuracy */
+            location_accuracy: number | null;
+            /** Mean Estimated Cost Usd */
+            mean_estimated_cost_usd: number | null;
+            /** Mean Model Duration Ms */
+            mean_model_duration_ms: number | null;
+            /** Mean Turnaround Ms */
+            mean_turnaround_ms: number | null;
+            /** Out Of Scope Count */
+            out_of_scope_count: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Precision */
+            precision: number | null;
+            /** Precision Ci95 */
+            precision_ci95: {
+                [key: string]: number;
+            } | null;
+            /** Recall */
+            recall: number | null;
+            /** Recall Ci95 */
+            recall_ci95: {
+                [key: string]: number;
+            } | null;
+            /** Reference Expected Count */
+            reference_expected_count: number;
+            /** Reference False Negative Count */
+            reference_false_negative_count: number;
+            /** Reference True Positive Count */
+            reference_true_positive_count: number;
+            /** Reference Unexpected Valid Count */
+            reference_unexpected_valid_count: number;
+            /** Sample Count */
+            sample_count: number;
+            /** Valid Count */
+            valid_count: number;
+        };
+        /** EvaluationSourceMetadata */
+        EvaluationSourceMetadata: {
+            /**
+             * Captured At
+             * Format: date-time
+             */
+            captured_at: string;
+            /**
+             * Change Count
+             * @default 0
+             */
+            change_count: number;
+            /**
+             * Completed At
+             * Format: date-time
+             */
+            completed_at: string;
+            /** Configuration Revision */
+            configuration_revision: number | null;
+            /** Estimated Cost Microusd */
+            estimated_cost_microusd: number | null;
+            /** Head Sha */
+            head_sha: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Installation Id */
+            installation_id: number;
+            /**
+             * Limitations
+             * @default []
+             */
+            limitations: string[];
+            /** Model Duration Ms */
+            model_duration_ms: number;
+            /**
+             * Models
+             * @default []
+             */
+            models: components["schemas"]["ModelVersion"][];
+            /** Output Tokens */
+            output_tokens: number;
+            /** Plan Fingerprint */
+            plan_fingerprint: string;
+            /** Planner Version */
+            planner_version: string;
+            /** Pull Request Number */
+            pull_request_number: number;
+            /** Repository */
+            repository: string;
+            /** Repository Id */
+            repository_id: number;
+            /** Repository Key */
+            repository_key: string;
+            /** Repository Policy */
+            repository_policy: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Retrieval
+             * @default []
+             */
+            retrieval: components["schemas"]["RetrievalVersion"][];
+            /** Review Run Id */
+            review_run_id: string;
+            /**
+             * Rule Versions
+             * @default []
+             */
+            rule_versions: {
+                [key: string]: string;
+            }[];
+            /**
+             * Source Kind
+             * @default normalized_review_run
+             * @constant
+             */
+            source_kind: "normalized_review_run";
+            /** Title */
+            title: string;
+            /** Turnaround Ms */
+            turnaround_ms: number;
+        };
         /**
          * EvidenceVerificationStatus
          * @description 平台回读源码后得到的自动证据核验状态，不代表人工事实裁决。
@@ -1467,10 +2279,35 @@ export interface components {
          */
         ExecutionStatus: "queued" | "ci" | "planning" | "agent_batches" | "aggregating" | "awaiting_approval" | "approved" | "rejected" | "awaiting_publish" | "publishing" | "paused" | "waiting_for_ci" | "running" | "ready_for_review" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
         /**
+         * FindingCategory
+         * @enum {string}
+         */
+        FindingCategory: "architecture" | "authorization" | "security" | "database" | "business_contract" | "test_gap" | "reliability";
+        /**
          * FindingDecision
          * @enum {string}
          */
         FindingDecision: "valid" | "false_positive" | "duplicate" | "out_of_scope" | "known_issue";
+        /**
+         * FindingEvaluationVerdict
+         * @description 人工裁决转换成的真实评测标签。
+         * @enum {string}
+         */
+        FindingEvaluationVerdict: "valid" | "false_positive" | "duplicate" | "out_of_scope" | "known_issue";
+        /** FindingReview */
+        FindingReview: {
+            decision: components["schemas"]["EvaluationDecision"];
+            /** Reviewer */
+            reviewer: string;
+            /** Submitted At */
+            submitted_at: string | null;
+        };
+        /** FindingReviewWrite */
+        FindingReviewWrite: {
+            decision: components["schemas"]["EvaluationDecision"];
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1824,11 +2661,171 @@ export interface components {
          * @enum {string}
          */
         ModelReasoningEffort: "none" | "low" | "medium" | "high" | "max";
+        /** ModelVersion */
+        ModelVersion: {
+            /** Agent */
+            agent: string;
+            /** Application Revision */
+            application_revision?: string | null;
+            /**
+             * Context Recorded
+             * @default false
+             */
+            context_recorded: boolean;
+            /** Knowledge Versions */
+            knowledge_versions?: {
+                [key: string]: string;
+            };
+            /** Model */
+            model: string;
+            /** Prompt Version */
+            prompt_version: string;
+            /** Protocol */
+            protocol: string;
+            /** Provider */
+            provider: string;
+        };
+        /** ObservationDetail */
+        ObservationDetail: {
+            /** Ballots */
+            ballots: components["schemas"]["BallotSummary"][];
+            observation: components["schemas"]["ObservationView"];
+            source: components["schemas"]["EvaluationSourceMetadata"];
+        };
+        /** ObservationImport */
+        ObservationImport: {
+            /**
+             * Kind
+             * @default normal
+             * @enum {string}
+             */
+            kind: "normal" | "known_defect" | "cross_file";
+            /** Review Run Ids */
+            review_run_ids: string[];
+            /**
+             * Split
+             * @default tuning
+             * @enum {string}
+             */
+            split: "tuning" | "validation";
+            /**
+             * Variant
+             * @default baseline
+             * @enum {string}
+             */
+            variant: "baseline" | "candidate";
+        };
+        /** ObservationReplace */
+        ObservationReplace: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Reset Reviews
+             * @default false
+             */
+            reset_reviews: boolean;
+            /** Review Run Id */
+            review_run_id: string;
+        };
+        /** ObservationView */
+        ObservationView: {
+            /**
+             * Assessment Status
+             * @enum {string}
+             */
+            assessment_status: "pending" | "partial" | "disputed" | "complete";
+            /** Captured By */
+            captured_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Finding Count */
+            finding_count: number;
+            /** Id */
+            id: string;
+            /** Model Label */
+            model_label: string;
+            /** Provenance Complete */
+            provenance_complete: boolean;
+            /** Revision */
+            revision: number;
+            /** Snapshot Sha256 */
+            snapshot_sha256: string;
+            /** Source Run Id */
+            source_run_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * Variant
+             * @enum {string}
+             */
+            variant: "baseline" | "candidate";
+        };
         /**
          * Permission
          * @enum {string}
          */
         Permission: "reviews:view" | "findings:adjudicate" | "reviews:approve" | "reviews:publish" | "reviews:manage" | "settings:manage" | "knowledge:manage";
+        /** ReferenceDefect */
+        ReferenceDefect: {
+            category: components["schemas"]["FindingCategory"];
+            /** File */
+            file?: string | null;
+            /** Key */
+            key: string;
+            /** Start Line */
+            start_line?: number | null;
+            /** Title */
+            title: string;
+        };
+        /** ReferenceReview */
+        ReferenceReview: {
+            /** Agrees */
+            agrees: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Reviewed At
+             * Format: date-time
+             */
+            reviewed_at: string;
+            /** Reviewer */
+            reviewer: string;
+        };
+        /** ReferenceReviewWrite */
+        ReferenceReviewWrite: {
+            /** Agrees */
+            agrees: boolean;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** ReferenceUpdate */
+        ReferenceUpdate: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Kind */
+            kind?: ("normal" | "known_defect" | "cross_file") | null;
+            /** Reference Defects */
+            reference_defects?: components["schemas"]["ReferenceDefect"][] | null;
+            /**
+             * Reset Reviews
+             * @default false
+             */
+            reset_reviews: boolean;
+        };
         /** RepositoryPolicy */
         RepositoryPolicy: {
             /** Approver */
@@ -2142,6 +3139,19 @@ export interface components {
              * @default []
              */
             warnings: string[];
+        };
+        /** RetrievalVersion */
+        RetrievalVersion: {
+            /** Agent */
+            agent: string | null;
+            /** Embedding Model */
+            embedding_model: string;
+            /** Index Head Sha */
+            index_head_sha: string;
+            /** Index Id */
+            index_id: string;
+            /** Strategy */
+            strategy?: string | null;
         };
         /**
          * ReviewAcceptedResponse
@@ -2742,6 +3752,11 @@ export interface components {
              */
             symbols: string[];
         };
+        /**
+         * Severity
+         * @enum {string}
+         */
+        Severity: "critical" | "high" | "medium" | "low";
         /** StrategyEvaluation */
         StrategyEvaluation: {
             /** Cases */
@@ -2963,6 +3978,623 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DashboardResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    case_detail_api_v1_evaluations_cases__case_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationCaseDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    observation_api_v1_evaluations_cases__case_id__observations__variant__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                variant: "baseline" | "candidate";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    changes_api_v1_evaluations_cases__case_id__observations__variant__changes_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+                variant: "baseline" | "candidate";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_EvaluationChange_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    findings_api_v1_evaluations_cases__case_id__observations__variant__findings_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+                variant: "baseline" | "candidate";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_EvaluationFindingView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_finding_api_v1_evaluations_cases__case_id__observations__variant__findings__finding_id__review_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                variant: "baseline" | "candidate";
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FindingReviewWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_observation_api_v1_evaluations_cases__case_id__observations__variant__source_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                variant: "baseline" | "candidate";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ObservationReplace"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_review_api_v1_evaluations_cases__case_id__observations__variant__submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                variant: "baseline" | "candidate";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluationRevision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_reference_api_v1_evaluations_cases__case_id__reference_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReferenceUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationCaseDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_reference_api_v1_evaluations_cases__case_id__reference_reviews_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReferenceReviewWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationCaseDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    datasets_api_v1_evaluations_datasets_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_EvaluationDatasetView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_dataset_api_v1_evaluations_datasets_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluationDatasetCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationDatasetView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dataset_api_v1_evaluations_datasets__dataset_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationDatasetView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_api_v1_evaluations_datasets__dataset_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluationArchive"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationDatasetView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audits_api_v1_evaluations_datasets__dataset_id__audits_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_EvaluationAuditView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cases_api_v1_evaluations_datasets__dataset_id__cases_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                split?: ("tuning" | "validation") | null;
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_EvaluationCaseView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_observations_api_v1_evaluations_datasets__dataset_id__observations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ObservationImport"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationImportResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_api_v1_evaluations_datasets__dataset_id__report_get: {
+        parameters: {
+            query?: {
+                split?: "tuning" | "validation";
+            };
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationComparisonReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sources_api_v1_evaluations_sources_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                dataset_id?: string | null;
+                case_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_EvaluationRunOption_"];
                 };
             };
             /** @description Validation Error */

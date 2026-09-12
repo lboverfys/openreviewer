@@ -7,6 +7,7 @@ export const pageLoaders = {
   settings: () => import("./SettingsPage"),
   retrieval: () => import("./RetrievalPage"),
   team: () => import("./TeamPage"),
+  evaluations: () => import("./EvaluationPage"),
 };
 
 export function preloadPage(page: keyof typeof pageLoaders) {
@@ -19,6 +20,7 @@ export function preloadPage(page: keyof typeof pageLoaders) {
     knowledge: () => api.knowledgeDocuments(),
     retrieval: () => api.retrievalIndexes(),
     team: () => api.teamRepositories(),
+    evaluations: () => api.evaluationDatasets(),
   };
   if (page !== "review") void reads[page]().catch(() => undefined);
 }

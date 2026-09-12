@@ -1045,6 +1045,10 @@ def combine_model_review_results(
         selected_findings,
     )
     return ModelReviewResult(
+        provenance=(
+            first.provenance if all(result.provenance == first.provenance for result in results)
+            else None
+        ),
         provider=first.provider,
         api_protocol=first.api_protocol,
         model=first.model,
@@ -1189,6 +1193,7 @@ def _copy_model_input(
         total_estimated_input_bytes=total_bytes,
         context_evidence=tuple(item for item in source.context_evidence if not item.unit_keys or selected_unit_keys.intersection(item.unit_keys)),
         knowledge_references=source.knowledge_references,
+        knowledge_versions=source.knowledge_versions,
         prior_agent_results=source.prior_agent_results,
         review_agent=source.review_agent,
         connection_test=source.connection_test,

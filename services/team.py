@@ -5,11 +5,11 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from argon2 import PasswordHasher
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from domain.pagination import CursorPage, decode_cursor, encode_cursor
+from domain.pagination import CursorPage, encode_cursor
 from domain.repository_policy import RepositoryPolicy
 from persistence.models import (
     AdminSessionRecord,
@@ -18,6 +18,7 @@ from persistence.models import (
     RepositoryPolicyRecord,
     TeamMemberRecord,
 )
+from persistence.pagination import apply_cursor as _page_after
 from services.rbac import AccessRole, Permission, ResourceScope, has_permission
 
 
@@ -110,16 +111,6 @@ _REPOSITORY_COLUMNS = (
     RepositoryPolicyRecord.created_at, RepositoryPolicyRecord.updated_at,
     RepositoryPolicyRecord.updated_by,
 )
-
-
-def _page_after(statement, time_column, id_column, cursor: str | None):
-    if cursor:
-        created_at, identifier = decode_cursor(cursor)
-        statement = statement.where(or_(
-            time_column < created_at,
-            and_(time_column == created_at, id_column < identifier),
-        ))
-    return statement.order_by(time_column.desc(), id_column.desc())
 
 
 class TeamService:

@@ -184,6 +184,7 @@ class ModelReviewInput(ModelContract):
 
     context_evidence: tuple[ContextEvidence, ...] = Field(default=(), max_length=60, exclude=True)
     repository_policy: RepositoryPolicySnapshot | None = Field(default=None, exclude=True)
+    knowledge_versions: dict[str, str] = Field(default_factory=dict, exclude=True)
     review_plan_id: str = Field(min_length=1, max_length=36)
     review_run_id: str = Field(min_length=1, max_length=36)
     plan_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -288,6 +289,11 @@ class ModelReviewInput(ModelContract):
         return self
 
 
+class ReviewExecutionProvenance(ModelContract):
+    application_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    knowledge_versions: dict[str, str] | None = None
+
+
 class ModelReviewResult(ModelContract):
     """模型适配器完成一次调用后交给持久化层的统一结果。"""
 
@@ -308,6 +314,7 @@ class ModelReviewResult(ModelContract):
         le=POSTGRES_BIGINT_MAX,
     )
     output: ModelReviewOutput
+    provenance: ReviewExecutionProvenance | None = None
 
     @model_validator(mode="after")
     def validate_status_shape(self) -> Self:

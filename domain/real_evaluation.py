@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
 from math import sqrt
@@ -304,6 +305,24 @@ def summarize_real_evaluation(dataset: RealEvaluationDataset) -> dict[str, objec
             for key in sorted(grouped)
         ],
     }
+
+
+def summarize_evaluation_counts(counts: Mapping[str, int]) -> dict[str, object]:
+    """让数据库聚合复用离线评测的比例、分母和 Wilson 区间口径。"""
+    accumulator = _MetricsAccumulator()
+    for name in (
+        "sample_count", "finding_count", "adjudicated_count", "unadjudicated_count",
+        "disagreement_count", "location_assessed_count", "location_correct_count",
+        "reference_sample_count", "reference_expected_count",
+        "reference_true_positive_count", "reference_false_negative_count",
+        "reference_unexpected_valid_count",
+    ):
+        setattr(accumulator, name, counts.get(name, 0))
+    accumulator.verdicts.update({
+        verdict: counts.get(f"{verdict.value}_count", 0)
+        for verdict in FindingEvaluationVerdict
+    })
+    return accumulator.report()
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:

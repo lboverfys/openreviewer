@@ -2425,6 +2425,7 @@ class WorkerRuntime:
         reference_map: dict[ReviewAgent, tuple[str, ...]] = {
             agent: () for agent in ReviewAgent
         }
+        reference_versions: dict[ReviewAgent, dict[str, str]] = {}
         if self._knowledge_base is not None:
             # 首次调用在循环外完成有界文件读取并缓存；下面四次检索只做内存匹配。
             knowledge_chunks = self._knowledge_base.chunks()
@@ -2460,6 +2461,7 @@ class WorkerRuntime:
                     limit=8,
                     chunks=knowledge_chunks,
                 )
+                reference_versions[agent] = {item.source: item.version for item in citations}
                 reference_map[agent] = tuple(
                     (
                         f"{item.source}#{item.heading}@{item.version}: "
@@ -2470,6 +2472,7 @@ class WorkerRuntime:
         execution = workflow.run(
             model_input,
             references=reference_map,
+            reference_versions=reference_versions,
             on_aggregating=lambda: self._queue.mark_model_aggregating(
                 cursor.lease
             ),

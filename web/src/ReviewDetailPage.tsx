@@ -596,6 +596,9 @@ function ReviewDetailPage({
             返回控制台
           </button>
           <div className="review-detail-toolbar-actions">
+            {hasPermission(user, "findings:adjudicate") && details.model_status === "succeeded" && details.coverage_status === "complete" && (
+              <button type="button" className="btn-ghost" onClick={() => {window.location.hash="evaluations?review="+encodeURIComponent(reviewRunId);}}>加入评测</button>
+            )}
             <label className="review-live-toggle">
               <input
                 id="review-auto-refresh"

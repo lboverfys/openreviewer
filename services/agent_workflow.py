@@ -189,6 +189,7 @@ class FixedAgentWorkflow:
         review_input: ModelReviewInput,
         *,
         references: Mapping[ReviewAgent, tuple[str, ...]] | None = None,
+        reference_versions: Mapping[ReviewAgent, dict[str, str]] | None = None,
         on_aggregating: Callable[[], None] | None = None,
         # 生产 Worker 开启增强模式；默认关闭是为了让升级过程中的旧调用方
         # 继续得到原有的 failed/不调用汇总行为。
@@ -200,6 +201,7 @@ class FixedAgentWorkflow:
     ) -> WorkflowExecution:
         started_at = self._clock()
         refs = references or {}
+        versions = reference_versions or {}
         executions: dict[ReviewAgent, AgentExecution] = {}
         # 当一个并行 Agent 发现租约已失效时，阻止尚未开始的 Future 再进入
         # reviewer；ThreadPoolExecutor 只能取消排队任务，正在进行的 HTTP
@@ -236,7 +238,10 @@ class FixedAgentWorkflow:
             begin = time.monotonic()
             try:
                 agent_input = agent_input.model_copy(
-                    update={"knowledge_references": refs.get(agent, ())}
+                    update={
+                        "knowledge_references": refs.get(agent, ()),
+                        "knowledge_versions": versions.get(agent, {}),
+                    }
                 )
                 result = reviewer.review(agent_input)
                 if (
@@ -401,6 +406,7 @@ class FixedAgentWorkflow:
                     "units": (),
                     "total_estimated_input_bytes": 0,
                     "knowledge_references": refs.get(ReviewAgent.SUMMARY, ()),
+                    "knowledge_versions": versions.get(ReviewAgent.SUMMARY, {}),
                     "prior_agent_results": _execution_context(ordered),
                     "review_agent": ReviewAgent.SUMMARY,
                 }

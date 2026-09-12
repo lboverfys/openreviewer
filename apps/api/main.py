@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from apps.api.routes.dashboard import register_dashboard_routes
+from apps.api.routes.evaluations import register_evaluation_routes
 from apps.api.routes.knowledge import register_knowledge_routes
 from apps.api.routes.retrieval import register_retrieval_routes
 from apps.api.routes.reviews import register_review_routes
@@ -81,6 +82,7 @@ from services.dashboard_stream import (
     DashboardStreamCoordinator,
     DashboardStreamRegistry,
 )
+from services.evaluation_workbench import EvaluationWorkbench
 from services.github import GitHubApiClient
 from services.github_access import (
     GitHubAccessConfigurationError,
@@ -200,6 +202,7 @@ def create_app(
     telemetry_registry: TelemetryRegistry | None = None,
     retrieval_service: HybridRetrievalService | None = None,
     team_service: TeamService | None = None,
+    evaluation_service: EvaluationWorkbench | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -431,6 +434,9 @@ def create_app(
         return TeamService(
             get_database().sessions, get_auth_service().settings.username,
         )
+
+    def get_evaluation_service() -> EvaluationWorkbench:
+        return evaluation_service or EvaluationWorkbench(get_database().sessions)
 
     def get_login_limiter() -> LoginLimiter:
         """返回注入的限流器，或懒加载数据库共享实现。"""
@@ -1370,6 +1376,12 @@ def create_app(
         application,
         get_service=get_team_service,
         require_manager=require_settings_manager,
+        require_same_origin=require_same_origin,
+    )
+
+    register_evaluation_routes(
+        application, get_service=get_evaluation_service,
+        require_viewer=require_review_viewer, require_editor=require_adjudicator,
         require_same_origin=require_same_origin,
     )
 

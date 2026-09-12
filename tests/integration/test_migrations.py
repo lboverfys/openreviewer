@@ -86,6 +86,9 @@ def test_initial_migration_creates_durable_review_task_schema(
             "worker_heartbeats",
             "review_quota_buckets",
             "team_members",
+            "evaluation_datasets",
+            "evaluation_cases",
+            "evaluation_observations",
             "repository_policies",
         }
         assert {
