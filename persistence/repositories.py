@@ -19,6 +19,7 @@ from persistence.models import (
     ReviewRunRecord,
     ReviewTaskRecord,
 )
+from persistence.repository_policy import repository_policy_snapshot
 from services.review_quota import (
     ReviewQuotaExceededError,
     ReviewQuotaPolicy,
@@ -102,6 +103,7 @@ class SqlAlchemyReviewRepository:
                     return self._existing_result(existing, request_fingerprint)
 
                 now = self._clock()
+                policy = repository_policy_snapshot(session, request.repository)
                 self._reserve_quota(session, actor, request.repository, now)
                 review_run_id = str(self._uuid_factory())
                 review_task_id = str(self._uuid_factory())
@@ -115,6 +117,7 @@ class SqlAlchemyReviewRepository:
                             installation_id=request.installation_id,
                             repository_id=request.repository_id,
                             repository=request.repository,
+                            repository_policy=policy,
                             pull_request_number=request.pull_request_number,
                             head_sha=request.head_sha,
                             execution_status=ExecutionStatus.QUEUED.value,

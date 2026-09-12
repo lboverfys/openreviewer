@@ -25,6 +25,7 @@ from apps.api.routes.knowledge import register_knowledge_routes
 from apps.api.routes.retrieval import register_retrieval_routes
 from apps.api.routes.reviews import register_review_routes
 from apps.api.routes.settings import register_settings_routes
+from apps.api.routes.team import register_team_routes
 from apps.api.schemas import (
     AiSettingsResponse,
     AuthResponse,
@@ -49,6 +50,7 @@ from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.retrieval import RetrievalRepository
 from persistence.review_management import SqlAlchemyReviewManagementRepository
+from persistence.team import SqlAlchemyMemberStore
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
 from services.agent_settings import AgentSettingsService
 from services.ai_settings import (
@@ -115,6 +117,7 @@ from services.review_management import (
 from services.reviews import (
     ReviewService,
 )
+from services.team import TeamService
 from services.telemetry import GLOBAL_TELEMETRY, TelemetryRegistry
 from services.webhooks import (
     GitHubWebhookService,
@@ -196,6 +199,7 @@ def create_app(
     github_access_policy: GitHubAccessPolicy | None = None,
     telemetry_registry: TelemetryRegistry | None = None,
     retrieval_service: HybridRetrievalService | None = None,
+    team_service: TeamService | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -405,17 +409,28 @@ def create_app(
             configured_service = application.state.auth_service
             if configured_service is None:
                 try:
+                    settings = AuthSettings.from_environment()
+                    member_store = SqlAlchemyMemberStore(get_database().sessions)
+                    member_store.bootstrap(settings)
                     configured_service = AuthService(
-                        AuthSettings.from_environment(),
+                        settings,
                         session_store=SqlAlchemySessionStore(get_database().sessions),
+                        member_store=member_store,
                     )
-                except (AuthConfigurationError, HTTPException) as exc:
+                except (AuthConfigurationError, AuthPersistenceError, HTTPException) as exc:
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail="administrator authentication is not configured",
                     ) from exc
                 application.state.auth_service = configured_service
             return configured_service
+
+    def get_team_service() -> TeamService:
+        if team_service is not None:
+            return team_service
+        return TeamService(
+            get_database().sessions, get_auth_service().settings.username,
+        )
 
     def get_login_limiter() -> LoginLimiter:
         """返回注入的限流器，或懒加载数据库共享实现。"""
@@ -1215,10 +1230,15 @@ def create_app(
                 headers={"Cache-Control": "no-store"},
             ) from exc
 
-        authenticated_user = service.authenticate(
-            credentials.username,
-            credentials.password,
-        )
+        try:
+            authenticated_user = service.authenticate(
+                credentials.username, credentials.password,
+            )
+        except AuthPersistenceError as exc:
+            raise HTTPException(
+                status_code=503, detail="authentication state is temporarily unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from exc
         if authenticated_user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1228,6 +1248,11 @@ def create_app(
         try:
             limiter.reset(limiter_key)
             token, principal = service.create_session(authenticated_user)
+        except InvalidSessionError as exc:
+            raise HTTPException(
+                status_code=401, detail="账号已变化，请重新登录",
+                headers={"Cache-Control": "no-store"},
+            ) from exc
         except AuthPersistenceError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1340,6 +1365,13 @@ def create_app(
             permissions=tuple(sorted(permissions_for(principal.role), key=str)),
             expires_at=principal.expires_at,
         )
+
+    register_team_routes(
+        application,
+        get_service=get_team_service,
+        require_manager=require_settings_manager,
+        require_same_origin=require_same_origin,
+    )
 
     register_settings_routes(
         application,

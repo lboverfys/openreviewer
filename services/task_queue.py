@@ -492,6 +492,10 @@ class ReviewTaskQueue(Protocol):
         """按批次号读取一个 Agent 的有界批次结果。"""
         ...
 
+    def reserve_repository_request(self, lease: ReviewTaskLease, limit: int) -> None:
+        """为显式设置仓库上限的任务原子预占一次模型 HTTP 请求。"""
+        ...
+
     def reserve_model_budget(
         self,
         lease: ReviewTaskLease,

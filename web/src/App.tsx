@@ -14,6 +14,7 @@ const KnowledgePage = lazy(pageLoaders.knowledge);
 const ReviewDetailPage = lazy(pageLoaders.review);
 const SettingsPage = lazy(pageLoaders.settings);
 const RetrievalPage = lazy(pageLoaders.retrieval);
+const TeamPage = lazy(pageLoaders.team);
 
 type SessionState =
   | { phase: "checking" }
@@ -23,11 +24,13 @@ type SessionState =
 export type AppView =
   | { kind: "dashboard" }
   | { kind: "settings" }
+  | { kind: "team" }
   | { kind: "knowledge" }
   | { kind: "retrieval"; reviewRunId?: string }
   | { kind: "review"; reviewRunId: string };
 
 export function readAppView(hash = window.location.hash): AppView {
+  if (hash === "#team") return { kind: "team" };
   if (hash === "#settings") return { kind: "settings" };
   if (hash === "#knowledge") return { kind: "knowledge" };
   if (hash === "#retrieval") return {kind: "retrieval"};
@@ -104,7 +107,7 @@ function AppContent() {
   useEffect(() => {
     if (session.phase !== "authenticated") return;
     const denied =
-      (view.kind === "settings" && !hasPermission(session.user, "settings:manage"))
+      ((view.kind === "settings" || view.kind === "team") && !hasPermission(session.user, "settings:manage"))
       || ((view.kind === "knowledge" || view.kind === "retrieval") && !hasPermission(session.user, "knowledge:manage"));
     if (denied) window.location.hash = "";
   }, [session, view]);
@@ -120,7 +123,9 @@ function AppContent() {
   }
 
   let page: ReactNode;
-  if (view.kind === "settings" && hasPermission(session.user, "settings:manage")) {
+  if (view.kind === "team" && hasPermission(session.user, "settings:manage")) {
+    page = <TeamPage onSignedOut={onSignedOut} />;
+  } else if (view.kind === "settings" && hasPermission(session.user, "settings:manage")) {
     page = <SettingsPage onSignedOut={onSignedOut} />;
   } else if (view.kind === "knowledge" && hasPermission(session.user, "knowledge:manage")) {
     page = <KnowledgePage onSignedOut={onSignedOut} />;

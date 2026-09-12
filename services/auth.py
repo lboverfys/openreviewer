@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
+from typing import Protocol
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -259,6 +260,7 @@ class UserCredential:
     resource_scope: ResourceScope = field(
         default_factory=ResourceScope.deny_all,
     )
+    revision: int = 0
 
     def __post_init__(self) -> None:
         if not 1 <= len(self.username) <= 100 or self.username != self.username.strip():
@@ -495,6 +497,10 @@ class SessionPrincipal:
     )
 
 
+class MemberStore(Protocol):
+    def find_user(self, username: str) -> UserCredential | None: ...
+
+
 class AuthService:
     def __init__(
         self,
@@ -503,6 +509,7 @@ class AuthService:
         password_hasher: PasswordHasher | None = None,
         clock: Callable[[], datetime] | None = None,
         session_store: SessionStore | None = None,
+        member_store: MemberStore | None = None,
     ) -> None:
         """创建认证服务。
 
@@ -521,6 +528,7 @@ class AuthService:
         self._password_hasher = password_hasher or PasswordHasher()
         self._clock = clock or (lambda: datetime.now(UTC))
         self._session_store = session_store or InMemorySessionStore()
+        self._member_store = member_store
 
     def verify_credentials(self, username: str, password: str) -> bool:
         """同时校验管理员用户名和密码，不暴露哪一项不匹配。
@@ -543,10 +551,7 @@ class AuthService:
     def authenticate(self, username: str, password: str) -> UserCredential | None:
         """验证账号并返回可信角色；失败时不区分用户名或密码错误。"""
 
-        selected: UserCredential | None = None
-        for configured_user in self.settings.users:
-            if hmac.compare_digest(username, configured_user.username):
-                selected = configured_user
+        selected = self._configured_user(username)
         candidate = selected or self.settings.users[0]
         password_matches: bool
         try:
@@ -574,8 +579,8 @@ class AuthService:
         负载中的随机 ``sid`` 让同一用户在同一秒登录两次也得到不同 Token。
         """
         authenticated_user = user or self.settings.users[0]
-        if authenticated_user not in self.settings.users:
-            raise ValueError("session user is not configured")
+        if authenticated_user != self._configured_user(authenticated_user.username):
+            raise InvalidSessionError("account changed during login")
         issued_at = self._clock().astimezone(UTC)
         expires_at = issued_at + self.settings.session_ttl
         session_id = secrets.token_urlsafe(32)
@@ -586,6 +591,7 @@ class AuthService:
             "iat": int(issued_at.timestamp()),
             "exp": int(expires_at.timestamp()),
             "sid": session_id,
+            "user_revision": authenticated_user.revision,
         }
         encoded_payload = self._encode(
             json.dumps(
@@ -682,6 +688,7 @@ class AuthService:
             if (
                 configured_user is None
                 or configured_user.role is not role
+                or payload.get("user_revision", 0) != configured_user.revision
                 or not isinstance(payload.get("iat"), int)
                 or not isinstance(payload.get("exp"), int)
                 or not isinstance(payload.get("sid"), str)
@@ -748,6 +755,14 @@ class AuthService:
     def _configured_user(self, username: object) -> UserCredential | None:
         if not isinstance(username, str):
             return None
+        primary = self.settings.users[0]
+        if username == primary.username:
+            return primary
+        if self._member_store is not None:
+            # 配置管理员始终由配置管理；普通成员每次请求读取当前权限版本。
+            if username.casefold() == primary.username.casefold():
+                return None
+            return self._member_store.find_user(username)
         return next(
             (
                 user

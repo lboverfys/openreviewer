@@ -77,6 +77,15 @@ export function ReviewSidebar({
       </section>
 
       <section className="review-panel review-model-panel">
+        {details.repository_policy && <div className="review-panel-heading">
+          <div>
+            <h2>仓库策略 · v{details.repository_policy.revision}</h2>
+            <p>目标分支：{details.repository_policy.target_branches?.join("、") || "全部"}</p>
+            <p>审批负责人：{details.repository_policy.approver || "有审批权限的成员"}</p>
+            <p>知识规则：{details.repository_policy.knowledge_sources == null ? "继承知识库" : details.repository_policy.knowledge_sources.join("、") || "不使用知识库"}</p>
+            {details.repository_policy.max_model_requests != null && <p>请求额度已用：{details.model_request_count ?? 0} / {details.repository_policy.max_model_requests} 次</p>}
+          </div>
+        </div>}
         <div className="review-panel-heading"><div><span className="review-eyebrow">MODEL CALL</span><h2>AI 调用</h2></div><span className={`review-model-state ${modelStateClass}`}>{modelDisplayState}</span></div>
         <dl className="review-metric-grid">
           <div><dt>模型</dt><dd>{modelDisplayName || "—"}</dd></div>

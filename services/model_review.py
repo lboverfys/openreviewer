@@ -1181,6 +1181,7 @@ def _copy_model_input(
         review_version_key=source.review_version_key,
         repository_id=source.repository_id,
         repository=source.repository,
+        repository_policy=source.repository_policy,
         pull_request_number=source.pull_request_number,
         head_sha=source.head_sha,
         rules=rules,

@@ -22,6 +22,7 @@ from persistence.models import (
     ReviewRunRecord,
     ReviewTaskRecord,
 )
+from persistence.repository_policy import repository_policy_snapshot
 from services.webhooks import (
     WebhookDeliveryConflictError,
     WebhookPersistenceError,
@@ -55,6 +56,7 @@ class SqlAlchemyGitHubWebhookRepository:
                     )
 
                 now = self._clock()
+                policy = repository_policy_snapshot(session, event.repository)
                 review_run_id = str(self._uuid_factory())
                 review_task_id = str(self._uuid_factory())
                 outbox_event_id = str(self._uuid_factory())
@@ -71,6 +73,7 @@ class SqlAlchemyGitHubWebhookRepository:
                         installation_id=event.installation_id,
                         repository_id=event.repository_id,
                         repository=event.repository,
+                        repository_policy=policy,
                         pull_request_number=event.pull_request_number,
                         head_sha=event.head_sha,
                         execution_status=ExecutionStatus.QUEUED.value,

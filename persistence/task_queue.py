@@ -36,6 +36,10 @@ from domain.model_review import (
     ModelReviewResult,
     materialize_findings,
 )
+from domain.repository_policy import (
+    RepositoryPolicySnapshot,
+    RepositoryRequestLimitError,
+)
 from domain.review_planning import (
     DEFAULT_REVIEW_DOMAINS,
     RepositoryRule,
@@ -823,6 +827,24 @@ class SqlAlchemyReviewTaskQueue:
 
                 version = self._get_or_create_version(session, run, now)
                 self._update_pull_request_snapshot(version, context, now)
+                policy = (
+                    RepositoryPolicySnapshot.model_validate(run.repository_policy)
+                    if run.repository_policy is not None else None
+                )
+                if policy is not None and not policy.allows_branch(pull_request.base_ref):
+                    self._set_owned_status(task, run, ExecutionStatus.CANCELLED, now)
+                    self._set_workflow_status(task, run, ExecutionStatus.CANCELLED, now)
+                    self._add_event(
+                        session, task, "review.policy_skipped",
+                        f"policy:{policy.revision}", now,
+                        extra_payload={
+                            "reason": "目标分支不在仓库审查范围内",
+                            "base_ref": pull_request.base_ref,
+                            "repository_policy_revision": policy.revision,
+                        },
+                    )
+                    session.commit()
+                    return ExecutionStatus.CANCELLED
                 if (
                     pull_request.state is PullRequestState.CLOSED
                     or pull_request.draft
@@ -1438,6 +1460,7 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewPlanRecord.unit_count,
                 ReviewPlanRecord.total_estimated_input_bytes,
                 ReviewPlanRecord.model_review_completed_at,
+                ReviewRunRecord.repository_policy,
                 ReviewRunRecord.repository_id,
                 ReviewRunRecord.repository,
                 ReviewRunRecord.pull_request_number,
@@ -1559,6 +1582,7 @@ class SqlAlchemyReviewTaskQueue:
                 review_version_key=plan_row.review_version_key,
                 repository_id=plan_row.repository_id,
                 repository=plan_row.repository,
+                repository_policy=plan_row.repository_policy,
                 pull_request_number=plan_row.pull_request_number,
                 head_sha=plan_row.plan_head_sha,
                 rules=rules,
@@ -2996,6 +3020,38 @@ class SqlAlchemyReviewTaskQueue:
             error_message=row.error_message,
             checkpoint=checkpoint,
         )
+
+    def reserve_repository_request(self, lease: ReviewTaskLease, limit: int) -> None:
+        """一条条件 UPDATE 在真实请求前预占额度；失败请求也计入次数。"""
+        if not 1 <= limit <= 10_000:
+            raise ValueError("repository request limit is invalid")
+        now = self._clock()
+        owned_task = select(ReviewTaskRecord.id).where(
+            ReviewTaskRecord.id == lease.task_id,
+            ReviewTaskRecord.review_run_id == lease.review_run_id,
+            ReviewTaskRecord.execution_status == ExecutionStatus.RUNNING.value,
+            ReviewTaskRecord.lease_owner == lease.worker_id,
+            ReviewTaskRecord.attempt_count == lease.attempt_count,
+            ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
+            ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+            ReviewTaskRecord.lease_expires_at > now,
+        ).exists()
+        with self._sessions() as session:
+            try:
+                used = session.scalar(update(ReviewRunRecord).where(
+                    ReviewRunRecord.id == lease.review_run_id,
+                    ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
+                    ReviewRunRecord.model_request_count < limit,
+                    owned_task,
+                ).values(
+                    model_request_count=ReviewRunRecord.model_request_count + 1,
+                ).returning(ReviewRunRecord.model_request_count))
+                if used is None:
+                    self._locked_owned_task_with_run(session, lease, now)
+                    raise RepositoryRequestLimitError()
+                session.commit()
+            except SQLAlchemyError as exc:
+                raise TaskQueueError("模型请求额度暂时无法预占") from exc
 
     def reserve_model_budget(
         self,

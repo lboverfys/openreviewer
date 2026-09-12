@@ -8,7 +8,7 @@ import { preloadPage } from "./page-loaders";
 import type { AuthUser } from "./types";
 
 interface ShellNavItem {
-  key: "dashboard" | "retrieval" | "knowledge" | "settings";
+  key: "dashboard" | "retrieval" | "knowledge" | "settings" | "team";
   label: string;
   hash: string;
   permission?: "knowledge:manage" | "settings:manage";
@@ -63,9 +63,14 @@ const NAV_ITEMS: ReadonlyArray<ShellNavItem> = [
       </svg>
     ),
   },
+  {
+    key: "team", label: "团队管理", hash: "team", permission: "settings:manage",
+    icon: <svg {...iconProps}><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 4v2"/></svg>,
+  },
 ];
 
 function activeNavKey(view: AppView): ShellNavItem["key"] {
+  if (view.kind === "team") return "team";
   if (view.kind === "retrieval") return "retrieval";
   if (view.kind === "knowledge") return "knowledge";
   if (view.kind === "settings") return "settings";

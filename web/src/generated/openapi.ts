@@ -511,7 +511,7 @@ export interface paths {
          *         完整 Dashboard JSON；暂时读取失败时发送稳定的 ``unavailable`` 事件。
          *
          *     注意：
-         *         长连接每 30 秒重新查询一次服务端会话状态，并单独检查绝对到期时间；
+         *         长连接每两秒重新查询一次服务端会话状态，并单独检查绝对到期时间；
          *         会话过期或被注销后发送 ``auth-expired`` 事件并结束连接。
          */
         get: operations["stream_reviews_api_v1_reviews_stream_get"];
@@ -854,6 +854,92 @@ export interface paths {
         /** List Configuration Audits */
         get: operations["list_configuration_audits_api_v1_settings_audits_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/team/audits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Audits */
+        get: operations["list_audits_api_v1_team_audits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/team/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Members */
+        get: operations["list_members_api_v1_team_members_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/team/members/{username}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Member */
+        put: operations["save_member_api_v1_team_members__username__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/team/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Repositories */
+        get: operations["list_repositories_api_v1_team_repositories_get"];
+        put?: never;
+        /** Create Repository */
+        post: operations["create_repository_api_v1_team_repositories_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/team/repositories/{repository_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Repository */
+        put: operations["save_repository_api_v1_team_repositories__repository_id__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1313,6 +1399,13 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** CursorPage[RepositoryView] */
+        CursorPage_RepositoryView_: {
+            /** Items */
+            items: components["schemas"]["RepositoryView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** CursorPage[RetrievalEvaluationReport] */
         CursorPage_RetrievalEvaluationReport_: {
             /** Items */
@@ -1331,6 +1424,13 @@ export interface components {
         CursorPage_ReviewFindingResponse_: {
             /** Items */
             items: components["schemas"]["ReviewFindingResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[TeamAuditView] */
+        CursorPage_TeamAuditView_: {
+            /** Items */
+            items: components["schemas"]["TeamAuditView"][];
             /** Next Cursor */
             next_cursor?: string | null;
         };
@@ -1637,6 +1737,75 @@ export interface components {
             /** Username */
             username: string;
         };
+        /** MemberPage */
+        MemberPage: {
+            /** Configured Administrator */
+            configured_administrator: string;
+            /** Items */
+            items: components["schemas"]["MemberView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** MemberScope */
+        MemberScope: {
+            /**
+             * Installation Ids
+             * @default []
+             */
+            installation_ids: number[];
+            /**
+             * Organizations
+             * @default []
+             */
+            organizations: string[];
+            /**
+             * Repositories
+             * @default []
+             */
+            repositories: string[];
+            /**
+             * Unrestricted
+             * @default false
+             */
+            unrestricted: boolean;
+        };
+        /** MemberView */
+        MemberView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Revision */
+            revision: number;
+            role: components["schemas"]["AccessRole"];
+            scope: components["schemas"]["MemberScope"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Updated By */
+            updated_by: string;
+            /** Username */
+            username: string;
+        };
+        /** MemberWrite */
+        MemberWrite: {
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Password */
+            password?: string | null;
+            role: components["schemas"]["AccessRole"];
+            scope?: components["schemas"]["MemberScope"];
+        };
         /**
          * ModelApiProtocol
          * @description 供应商调用使用的稳定 HTTP API 协议。
@@ -1660,6 +1829,78 @@ export interface components {
          * @enum {string}
          */
         Permission: "reviews:view" | "findings:adjudicate" | "reviews:approve" | "reviews:publish" | "reviews:manage" | "settings:manage" | "knowledge:manage";
+        /** RepositoryPolicy */
+        RepositoryPolicy: {
+            /** Approver */
+            approver?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Knowledge Sources */
+            knowledge_sources?: string[] | null;
+            /** Max Model Requests */
+            max_model_requests?: number | null;
+            /**
+             * Target Branches
+             * @default []
+             */
+            target_branches: string[];
+        };
+        /** RepositoryPolicySnapshot */
+        RepositoryPolicySnapshot: {
+            /** Approver */
+            approver?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Knowledge Sources */
+            knowledge_sources?: string[] | null;
+            /** Max Model Requests */
+            max_model_requests?: number | null;
+            /** Repository */
+            repository: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Target Branches
+             * @default []
+             */
+            target_branches: string[];
+        };
+        /** RepositoryView */
+        RepositoryView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Id */
+            id: string;
+            policy: components["schemas"]["RepositoryPolicy"];
+            /** Repository */
+            repository: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Updated By */
+            updated_by: string;
+        };
+        /** RepositoryWrite */
+        RepositoryWrite: {
+            /** Expected Revision */
+            expected_revision: number;
+            policy?: components["schemas"]["RepositoryPolicy"];
+            /** Repository */
+            repository: string;
+        };
         /** RetrievalEvaluationReport */
         RetrievalEvaluationReport: {
             /**
@@ -2134,6 +2375,8 @@ export interface components {
             model_provider: string | null;
             /** Model Reasoning Tokens */
             model_reasoning_tokens: number | null;
+            /** Model Request Count */
+            model_request_count?: number | null;
             /** Model Response Status */
             model_response_status: number | null;
             /** Model Review Completed At */
@@ -2187,6 +2430,7 @@ export interface components {
             repository: string;
             /** Repository Id */
             repository_id: number;
+            repository_policy?: components["schemas"]["RepositoryPolicySnapshot"] | null;
             /** Review Conclusion */
             review_conclusion: string | null;
             /** Review Plan Id */
@@ -2521,6 +2765,22 @@ export interface components {
              * @enum {string}
              */
             strategy: "bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked";
+        };
+        /** TeamAuditView */
+        TeamAuditView: {
+            /** Event Type */
+            event_type: string;
+            /** Id */
+            id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
         };
         /** ValidationError */
         ValidationError: {
@@ -4047,6 +4307,205 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConfigurationAuditListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_audits_api_v1_team_audits_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_TeamAuditView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_members_api_v1_team_members_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_member_api_v1_team_members__username__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_repositories_api_v1_team_repositories_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_RepositoryView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_repository_api_v1_team_repositories_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RepositoryWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_repository_api_v1_team_repositories__repository_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RepositoryWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryView"];
                 };
             };
             /** @description Validation Error */

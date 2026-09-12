@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from domain.enums import ExecutionStatus, PullRequestAction
 from domain.models import PullRequestWebhook
+from domain.repository_policy import RepositoryPolicyDeniedError
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.github_access import GitHubAccessPolicy
 
@@ -239,7 +240,12 @@ class GitHubWebhookService:
         except ValidationError as exc:
             raise self._invalid_payload("GitHub PR 事件缺少必需字段") from exc
 
-        result = self._repository.create_or_get(event, sha256(body).hexdigest())
+        try:
+            result = self._repository.create_or_get(event, sha256(body).hexdigest())
+        except RepositoryPolicyDeniedError:
+            return WebhookReceipt(
+                accepted=False, delivery_id=delivery_id, reason="repository_paused",
+            )
         return WebhookReceipt(
             accepted=True,
             delivery_id=delivery_id,

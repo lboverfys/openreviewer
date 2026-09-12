@@ -10,6 +10,8 @@ Worker 的领取、租约、恢复和 PR/CI 状态边界见 [review-worker.md](r
 
 管理员登录、Dashboard 和实时事件接口见 [management-api.md](management-api.md)。
 
+团队成员、仓库权限、版本化策略与请求上限见 [team-management.md](team-management.md)。
+
 GitHub Webhook 的验签、过滤、去重和原子入库见 [github-webhook.md](github-webhook.md)。
 
 GitHub App 短期身份、PR/diff/CI 读取和版本保护见 [github-context.md](github-context.md)。

@@ -28,6 +28,7 @@ from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_budget import (
     ModelBudgetRequest,
     ModelBudgetReservation,
+    check_model_request_limit,
     current_model_budget_accountant,
 )
 from services.model_review import (
@@ -891,6 +892,8 @@ class _StructuredModelReviewer(ModelReviewer):
         request_headers = dict(headers)
         if body.get("stream") is True:
             request_headers.setdefault("Accept", "text/event-stream")
+        # 在每次真实 HTTP 请求前执行，包括格式修复和协议参数重试。
+        check_model_request_limit()
         try:
             with self._client.stream(
                 "POST",

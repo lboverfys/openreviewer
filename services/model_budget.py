@@ -1,6 +1,6 @@
 """模型 HTTP 调用资源统计的进程内作用域与持久化接口。"""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -51,6 +51,25 @@ _CURRENT_ACCOUNTANT: ContextVar[ModelBudgetAccountant | None] = ContextVar(
     "openreviewer_model_budget_accountant",
     default=None,
 )
+
+_REQUEST_GUARD: ContextVar[Callable[[], None] | None] = ContextVar(
+    "openreviewer_repository_request_guard", default=None,
+)
+
+
+def check_model_request_limit() -> None:
+    guard = _REQUEST_GUARD.get()
+    if guard is not None:
+        guard()
+
+
+@contextmanager
+def model_request_scope(guard: Callable[[], None] | None) -> Iterator[None]:
+    token = _REQUEST_GUARD.set(guard)
+    try:
+        yield
+    finally:
+        _REQUEST_GUARD.reset(token)
 
 
 def current_model_budget_accountant() -> ModelBudgetAccountant | None:

@@ -41,6 +41,7 @@ from domain.model_review import (
     materialize_findings,
 )
 from domain.models import PullRequestWebhook, ReviewRequest
+from domain.repository_policy import RepositoryRequestLimitError
 from domain.review_planning import RepositoryRule, RepositoryRulesSnapshot
 from persistence.database import Database
 from persistence.models import (
@@ -63,6 +64,7 @@ from services.model_budget import ModelBudgetRequest
 from services.review_management import ReviewAction
 from services.review_planning import DeterministicReviewPlanner, ReviewPlanningSettings
 from services.reviews import ReviewService
+from services.task_queue import TaskLeaseLostError
 
 
 @pytest.fixture(scope="module")
@@ -93,6 +95,43 @@ def postgres_database():
         with database.engine.begin() as connection:
             connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         database.dispose()
+
+
+def test_repository_request_cap_is_atomic_across_agents(postgres_database: Database) -> None:
+    submission = ReviewService(SqlAlchemyReviewRepository(postgres_database.sessions)).submit(
+        ReviewRequest(
+            installation_id=10, repository_id=97, repository="example/budget-contract",
+            pull_request_number=7, head_sha="9" * 40,
+        ),
+        "repository-budget-concurrency",
+    )
+    with postgres_database.sessions() as session:
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        task.priority = 1000
+        session.commit()
+    queue = SqlAlchemyReviewTaskQueue(postgres_database.sessions)
+    lease = queue.claim_next("repository-budget-worker", timedelta(minutes=2))
+    assert lease is not None and lease.review_run_id == submission.review_run_id
+    barrier = Barrier(8)
+    def reserve(_):
+        barrier.wait(timeout=10)
+        try:
+            queue.reserve_repository_request(lease, 3)
+            return True
+        except RepositoryRequestLimitError:
+            return False
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        outcomes = list(executor.map(reserve, range(8)))
+    assert sum(outcomes) == 3
+    with postgres_database.sessions() as session:
+        assert session.scalar(select(ReviewRunRecord.model_request_count).where(
+            ReviewRunRecord.id == submission.review_run_id,
+        )) == 3
+        task = session.get(ReviewTaskRecord, submission.review_task_id)
+        task.lease_owner = "replacement-worker"
+        session.commit()
+    with pytest.raises(TaskLeaseLostError):
+        queue.reserve_repository_request(lease, 10)
 
 
 def test_postgres_migrations_and_skip_locked_claim(postgres_database: Database) -> None:

@@ -18,6 +18,12 @@ describe("Nginx API allowlist", () => {
 
   it.each([
     "/api/v1/auth/sessions/revoke-all",
+    "/api/v1/team/members",
+    "/api/v1/team/members/reviewer",
+    "/api/v1/team/members/reviewer@example.com",
+    "/api/v1/team/repositories",
+    "/api/v1/team/repositories/repo-1",
+    "/api/v1/team/audits",
     "/api/v1/settings/ai",
     "/api/v1/settings/ai/providers/openai",
     "/api/v1/settings/ai/providers/openai/test",

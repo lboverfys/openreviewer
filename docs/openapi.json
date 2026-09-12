@@ -1302,6 +1302,33 @@
         "title": "CursorPage[IndexView]",
         "type": "object"
       },
+      "CursorPage_RepositoryView_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RepositoryView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[RepositoryView]",
+        "type": "object"
+      },
       "CursorPage_RetrievalEvaluationReport_": {
         "properties": {
           "items": {
@@ -1381,6 +1408,33 @@
           "items"
         ],
         "title": "CursorPage[ReviewFindingResponse]",
+        "type": "object"
+      },
+      "CursorPage_TeamAuditView_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TeamAuditView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[TeamAuditView]",
         "type": "object"
       },
       "DashboardResponse": {
@@ -2124,6 +2178,165 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "MemberPage": {
+        "properties": {
+          "configured_administrator": {
+            "title": "Configured Administrator",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MemberView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "configured_administrator"
+        ],
+        "title": "MemberPage",
+        "type": "object"
+      },
+      "MemberScope": {
+        "additionalProperties": false,
+        "properties": {
+          "installation_ids": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 1000,
+            "title": "Installation Ids",
+            "type": "array"
+          },
+          "organizations": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Organizations",
+            "type": "array"
+          },
+          "repositories": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Repositories",
+            "type": "array"
+          },
+          "unrestricted": {
+            "default": false,
+            "title": "Unrestricted",
+            "type": "boolean"
+          }
+        },
+        "title": "MemberScope",
+        "type": "object"
+      },
+      "MemberView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AccessRole"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemberScope"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "role",
+          "enabled",
+          "scope",
+          "revision",
+          "created_at",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "MemberView",
+        "type": "object"
+      },
+      "MemberWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "format": "password",
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "role": {
+            "$ref": "#/components/schemas/AccessRole"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemberScope"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "role"
+        ],
+        "title": "MemberWrite",
+        "type": "object"
+      },
       "ModelApiProtocol": {
         "description": "\u4f9b\u5e94\u5546\u8c03\u7528\u4f7f\u7528\u7684\u7a33\u5b9a HTTP API \u534f\u8bae\u3002",
         "enum": [
@@ -2167,6 +2380,213 @@
         ],
         "title": "Permission",
         "type": "string"
+      },
+      "RepositoryPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "approver": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "knowledge_sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledge Sources"
+          },
+          "max_model_requests": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Model Requests"
+          },
+          "target_branches": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Target Branches",
+            "type": "array"
+          }
+        },
+        "title": "RepositoryPolicy",
+        "type": "object"
+      },
+      "RepositoryPolicySnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "approver": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "knowledge_sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledge Sources"
+          },
+          "max_model_requests": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Model Requests"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "target_branches": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Target Branches",
+            "type": "array"
+          }
+        },
+        "required": [
+          "repository",
+          "revision"
+        ],
+        "title": "RepositoryPolicySnapshot",
+        "type": "object"
+      },
+      "RepositoryView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/RepositoryPolicy"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "repository",
+          "policy",
+          "revision",
+          "created_at",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "RepositoryView",
+        "type": "object"
+      },
+      "RepositoryWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/RepositoryPolicy"
+          },
+          "repository": {
+            "maxLength": 255,
+            "minLength": 3,
+            "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+            "title": "Repository",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "repository"
+        ],
+        "title": "RepositoryWrite",
+        "type": "object"
       },
       "RetrievalEvaluationReport": {
         "additionalProperties": false,
@@ -3403,6 +3823,17 @@
             ],
             "title": "Model Reasoning Tokens"
           },
+          "model_request_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Request Count"
+          },
           "model_response_status": {
             "anyOf": [
               {
@@ -3602,6 +4033,16 @@
           "repository_id": {
             "title": "Repository Id",
             "type": "integer"
+          },
+          "repository_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepositoryPolicySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "review_conclusion": {
             "anyOf": [
@@ -4696,6 +5137,36 @@
           "cases"
         ],
         "title": "StrategyEvaluation",
+        "type": "object"
+      },
+      "TeamAuditView": {
+        "properties": {
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "event_type",
+          "payload",
+          "occurred_at"
+        ],
+        "title": "TeamAuditView",
         "type": "object"
       },
       "ValidationError": {
@@ -6130,7 +6601,7 @@
     },
     "/api/v1/reviews/stream": {
       "get": {
-        "description": "\u5efa\u7acb\u8ba4\u8bc1\u540e\u7684 Server-Sent Events \u5b9e\u65f6 Dashboard \u6d41\u3002\n\n\u540c\u4e00 API \u8fdb\u7a0b\u5185\u7684\u8fde\u63a5\u5171\u4eab\u4e24\u79d2\u8f6e\u8be2\u548c\u5feb\u7167\u7f13\u5b58\uff1b\u53ea\u6709\u4efb\u52a1\u6216 Worker \u53ef\u89c1\u72b6\u6001\n\u53d8\u5316\u65f6\u624d\u91cd\u65b0\u52a0\u8f7d\u5b8c\u6574\u5feb\u7167\u3002\u8bfb\u53d6\u6682\u65f6\u5931\u8d25\u53ea\u53d1\u9001 ``unavailable`` \u4e8b\u4ef6\uff0c\u4e0d\u628a\n\u9519\u8bef\u6570\u636e\u4f2a\u88c5\u6210\u6b63\u5e38\u5feb\u7167\uff1b\u54cd\u5e94\u5934\u5173\u95ed Nginx \u7f13\u51b2\u3002\n\n\u53c2\u6570\uff1a\n    request: \u7528\u4e8e\u68c0\u6d4b\u6d4f\u89c8\u5668\u662f\u5426\u5df2\u65ad\u5f00\u8fde\u63a5\u3002\n    principal: \u5efa\u7acb\u6d41\u4e4b\u524d\u9a8c\u8bc1\u5f97\u5230\u7684\u7ba1\u7406\u5458\u4f1a\u8bdd\u4e3b\u4f53\u3002\n\n\u8fd4\u56de\uff1a\n    ``text/event-stream`` \u54cd\u5e94\u3002\u6bcf\u6761\u6b63\u5e38\u4e8b\u4ef6\u5305\u542b\u54c8\u5e0c\u4e8b\u4ef6 ID\u3001\u4e8b\u4ef6\u540d\u548c\n    \u5b8c\u6574 Dashboard JSON\uff1b\u6682\u65f6\u8bfb\u53d6\u5931\u8d25\u65f6\u53d1\u9001\u7a33\u5b9a\u7684 ``unavailable`` \u4e8b\u4ef6\u3002\n\n\u6ce8\u610f\uff1a\n    \u957f\u8fde\u63a5\u6bcf 30 \u79d2\u91cd\u65b0\u67e5\u8be2\u4e00\u6b21\u670d\u52a1\u7aef\u4f1a\u8bdd\u72b6\u6001\uff0c\u5e76\u5355\u72ec\u68c0\u67e5\u7edd\u5bf9\u5230\u671f\u65f6\u95f4\uff1b\n    \u4f1a\u8bdd\u8fc7\u671f\u6216\u88ab\u6ce8\u9500\u540e\u53d1\u9001 ``auth-expired`` \u4e8b\u4ef6\u5e76\u7ed3\u675f\u8fde\u63a5\u3002",
+        "description": "\u5efa\u7acb\u8ba4\u8bc1\u540e\u7684 Server-Sent Events \u5b9e\u65f6 Dashboard \u6d41\u3002\n\n\u540c\u4e00 API \u8fdb\u7a0b\u5185\u7684\u8fde\u63a5\u5171\u4eab\u4e24\u79d2\u8f6e\u8be2\u548c\u5feb\u7167\u7f13\u5b58\uff1b\u53ea\u6709\u4efb\u52a1\u6216 Worker \u53ef\u89c1\u72b6\u6001\n\u53d8\u5316\u65f6\u624d\u91cd\u65b0\u52a0\u8f7d\u5b8c\u6574\u5feb\u7167\u3002\u8bfb\u53d6\u6682\u65f6\u5931\u8d25\u53ea\u53d1\u9001 ``unavailable`` \u4e8b\u4ef6\uff0c\u4e0d\u628a\n\u9519\u8bef\u6570\u636e\u4f2a\u88c5\u6210\u6b63\u5e38\u5feb\u7167\uff1b\u54cd\u5e94\u5934\u5173\u95ed Nginx \u7f13\u51b2\u3002\n\n\u53c2\u6570\uff1a\n    request: \u7528\u4e8e\u68c0\u6d4b\u6d4f\u89c8\u5668\u662f\u5426\u5df2\u65ad\u5f00\u8fde\u63a5\u3002\n    principal: \u5efa\u7acb\u6d41\u4e4b\u524d\u9a8c\u8bc1\u5f97\u5230\u7684\u7ba1\u7406\u5458\u4f1a\u8bdd\u4e3b\u4f53\u3002\n\n\u8fd4\u56de\uff1a\n    ``text/event-stream`` \u54cd\u5e94\u3002\u6bcf\u6761\u6b63\u5e38\u4e8b\u4ef6\u5305\u542b\u54c8\u5e0c\u4e8b\u4ef6 ID\u3001\u4e8b\u4ef6\u540d\u548c\n    \u5b8c\u6574 Dashboard JSON\uff1b\u6682\u65f6\u8bfb\u53d6\u5931\u8d25\u65f6\u53d1\u9001\u7a33\u5b9a\u7684 ``unavailable`` \u4e8b\u4ef6\u3002\n\n\u6ce8\u610f\uff1a\n    \u957f\u8fde\u63a5\u6bcf\u4e24\u79d2\u91cd\u65b0\u67e5\u8be2\u4e00\u6b21\u670d\u52a1\u7aef\u4f1a\u8bdd\u72b6\u6001\uff0c\u5e76\u5355\u72ec\u68c0\u67e5\u7edd\u5bf9\u5230\u671f\u65f6\u95f4\uff1b\n    \u4f1a\u8bdd\u8fc7\u671f\u6216\u88ab\u6ce8\u9500\u540e\u53d1\u9001 ``auth-expired`` \u4e8b\u4ef6\u5e76\u7ed3\u675f\u8fde\u63a5\u3002",
         "operationId": "stream_reviews_api_v1_reviews_stream_get",
         "responses": {
           "200": {
@@ -7187,6 +7658,317 @@
           }
         },
         "summary": "List Configuration Audits"
+      }
+    },
+    "/api/v1/team/audits": {
+      "get": {
+        "operationId": "list_audits_api_v1_team_audits_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_TeamAuditView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Audits"
+      }
+    },
+    "/api/v1/team/members": {
+      "get": {
+        "operationId": "list_members_api_v1_team_members_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Members"
+      }
+    },
+    "/api/v1/team/members/{username}": {
+      "put": {
+        "operationId": "save_member_api_v1_team_members__username__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Member"
+      }
+    },
+    "/api/v1/team/repositories": {
+      "get": {
+        "operationId": "list_repositories_api_v1_team_repositories_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_RepositoryView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Repositories"
+      },
+      "post": {
+        "operationId": "create_repository_api_v1_team_repositories_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositoryWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositoryView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Repository"
+      }
+    },
+    "/api/v1/team/repositories/{repository_id}": {
+      "put": {
+        "operationId": "save_repository_api_v1_team_repositories__repository_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "repository_id",
+            "required": true,
+            "schema": {
+              "title": "Repository Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositoryWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositoryView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Repository"
       }
     },
     "/webhooks/github": {

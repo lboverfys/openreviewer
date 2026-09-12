@@ -7,6 +7,13 @@ export type WorkerStatus = Schemas["WorkerStatus"];
 export type AccessRole = Schemas["AccessRole"];
 export type Permission = Schemas["Permission"];
 export type AuthUser = Schemas["AuthResponse"];
+export type TeamMember = Schemas["MemberView"];
+export type TeamMemberWrite = Schemas["MemberWrite"];
+export type TeamMemberPage = Schemas["MemberPage"];
+export type RepositoryPolicy = Schemas["RepositoryPolicy"];
+export type TeamRepository = Schemas["RepositoryView"];
+export type TeamRepositoryWrite = Schemas["RepositoryWrite"];
+export type TeamAudit = Schemas["TeamAuditView"];
 
 export type ReviewItem = Schemas["ReviewItemResponse"];
 export type ReviewAction = Schemas["ReviewAction"];

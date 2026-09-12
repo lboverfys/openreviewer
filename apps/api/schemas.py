@@ -17,6 +17,7 @@ from domain.enums import (
     VerificationStatus,
     WorkerStatus,
 )
+from domain.repository_policy import RepositoryPolicySnapshot
 from domain.review_progress import BatchProgress
 from services.agent_settings import AgentConfigDraft, AgentSettingsView
 from services.ai_settings import (
@@ -266,6 +267,8 @@ class ReviewStageResponse(BaseModel):
 class ReviewDetailsResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    repository_policy: RepositoryPolicySnapshot | None = None
+    model_request_count: int | None = None
     review_run_id: str
     review_task_id: str
     change_token: str

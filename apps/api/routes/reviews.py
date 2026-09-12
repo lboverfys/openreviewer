@@ -17,6 +17,7 @@ from apps.api.schemas import (
 )
 from domain.models import ReviewRequest
 from domain.pagination import CursorPage
+from domain.repository_policy import RepositoryPolicyDeniedError
 from domain.review_progress import BatchSnapshot
 from services.auth import SessionPrincipal
 from services.github_access import GitHubAccessPolicy
@@ -295,7 +296,7 @@ def register_review_routes(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="review task not found",
             ) from exc
-        except ReviewActionConflictError as exc:
+        except (ReviewActionConflictError, RepositoryPolicyDeniedError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(exc),
@@ -430,6 +431,8 @@ def register_review_routes(
                 normalized_key,
                 actor=principal.username,
             )
+        except RepositoryPolicyDeniedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except IdempotencyConflictError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

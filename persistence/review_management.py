@@ -26,6 +26,7 @@ from domain.evaluation import (
 from domain.github import PullRequestSnapshot
 from domain.identifiers import build_review_version_key, normalize_sha
 from domain.pagination import CursorPage, decode_cursor, encode_cursor
+from domain.repository_policy import RepositoryPolicySnapshot
 from domain.review_progress import BatchSnapshot
 from domain.security import redact_sensitive
 from domain.workflow import (
@@ -51,6 +52,7 @@ from persistence.models import (
     ReviewTaskRecord,
     ReviewUnitRecord,
 )
+from persistence.repository_policy import repository_policy_snapshot
 from persistence.resource_scope import resource_predicate
 from persistence.review_progress import load_batch_progress, load_progress_events
 from services.rbac import ResourceScope
@@ -442,6 +444,8 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     select(
                         ReviewRunRecord.id.label("review_run_id"),
                         ReviewTaskRecord.id.label("review_task_id"),
+                        ReviewRunRecord.repository_policy,
+                        ReviewRunRecord.model_request_count,
                         ReviewRunRecord.review_version_key,
                         ReviewRunRecord.installation_id,
                         ReviewRunRecord.repository_id,
@@ -600,6 +604,16 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                     model_completed=row["model_review_completed_at"] is not None,
                 )
                 return StoredReviewDetails(
+                    repository_policy=(
+                        RepositoryPolicySnapshot.model_validate(row["repository_policy"])
+                        if row["repository_policy"] is not None else None
+                    ),
+                    model_request_count=(
+                        row["model_request_count"]
+                        if row["repository_policy"] is not None
+                        and row["repository_policy"].get("max_model_requests") is not None
+                        else None
+                    ),
                     review_run_id=row["review_run_id"],
                     review_task_id=row["review_task_id"],
                     change_token=_review_change_token(
@@ -1434,7 +1448,6 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 )
                 if idempotent_result is not None:
                     return idempotent_result
-
                 # PostgreSQL 不允许 FOR UPDATE 锁定外连接的可空一侧。
                 # 运行记录和任务记录是必需的，先用内连接一起锁定；计划记录
                 # 是可选的，单独查询并锁定，既保留并发保护也兼容没有计划的早期阶段。
@@ -1458,6 +1471,13 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                 if row is None:
                     raise ReviewNotFoundError("审查任务不存在")
                 run, task = row
+                if (
+                    action in {ReviewAction.APPROVE, ReviewAction.REJECT}
+                    and run.repository_policy is not None
+                ):
+                    policy = RepositoryPolicySnapshot.model_validate(run.repository_policy)
+                    if policy.approver and actor != policy.approver and scope is not None:
+                        raise ReviewActionConflictError("请由仓库指定的审批负责人处理")
                 # 第一次事件查询和业务行加锁之间可能有并发请求已经提交；
                 # 锁定后必须再次检查，避免重复插入唯一 event_key 并误报 503。
                 idempotent_result = self._existing_action_result(
@@ -1806,6 +1826,9 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
                                 installation_id=run.installation_id,
                                 repository_id=run.repository_id,
                                 repository=run.repository,
+                                repository_policy=repository_policy_snapshot(
+                                    session, run.repository,
+                                ),
                                 pull_request_number=run.pull_request_number,
                                 head_sha=normalized_head_sha,
                                 execution_status=ExecutionStatus.QUEUED.value,

@@ -132,7 +132,7 @@ def register_dashboard_routes(
             完整 Dashboard JSON；暂时读取失败时发送稳定的 ``unavailable`` 事件。
 
         注意：
-            长连接每 30 秒重新查询一次服务端会话状态，并单独检查绝对到期时间；
+            长连接每两秒重新查询一次服务端会话状态，并单独检查绝对到期时间；
             会话过期或被注销后发送 ``auth-expired`` 事件并结束连接。
         """
         service = get_auth_service()
@@ -160,7 +160,7 @@ def register_dashboard_routes(
                     except (InvalidSessionError, AuthPersistenceError):
                         yield 'event: auth-expired\ndata: {"detail":"authentication required"}\n\n'
                         break
-                    next_auth_check = time.monotonic() + 30
+                    next_auth_check = time.monotonic() + 2
                 try:
                     update = await run_in_threadpool(stream_for(principal).poll)
                     if update.change_token != last_change_token:

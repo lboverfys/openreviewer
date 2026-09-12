@@ -30,6 +30,7 @@ from domain.model_review import (
     ModelTokenUsage,
     materialize_findings,
 )
+from domain.repository_policy import RepositoryRequestLimitError
 from domain.review_planning import ReviewUnit
 from domain.security import (
     ErrorCode,
@@ -66,6 +67,7 @@ from services.github_auth import (
 from services.github_code_sources import GitHubCodeSourceLoader
 from services.github_context import GitHubReviewContextLoader, ReviewContextLoader
 from services.github_rules import GitHubRepositoryRuleLoader, RepositoryRuleLoader
+from services.model_budget import model_request_scope
 from services.model_review import (
     ModelReviewer,
     ModelServiceSettings,
@@ -460,6 +462,7 @@ class _PersistentBatchedReviewer:
         reviewer: ModelReviewer,
         settings: ModelServiceSettings,
         lease_duration: timedelta,
+        request_guard: Callable[[], None] | None = None,
     ) -> None:
         self._queue = queue
         self._lease_cursor = lease_cursor
@@ -467,6 +470,7 @@ class _PersistentBatchedReviewer:
         self._reviewer = reviewer
         self._settings = settings
         self._lease_duration = lease_duration
+        self._request_guard = request_guard
 
     def _raise_partial_batch_error(
         self,
@@ -497,6 +501,10 @@ class _PersistentBatchedReviewer:
         ) from error
 
     def review(self, review_input: ModelReviewInput) -> ModelReviewResult:
+        with model_request_scope(self._request_guard):
+            return self._review_batches(review_input)
+
+    def _review_batches(self, review_input: ModelReviewInput) -> ModelReviewResult:
         _raise_if_lease_lost(self._lease_cursor)
         # 正式批次的截断恢复由 Worker 缩小输入；供应商适配器不得把同一
         # 大请求改成 8K 后再次发送。旧的直接适配器调用仍保留兼容行为。
@@ -2064,7 +2072,9 @@ class WorkerRuntime:
                             _raise_if_lease_lost(cursor)
                             _raise_if_lease_lost(cursor)
                             batch_result = remap_model_review_result(
-                                model_reviewer.review(batch.review_input),
+                                self._review_with_repository_limit(
+                                    cursor, model_reviewer, batch.review_input,
+                                ),
                                 batch,
                             )
                             _raise_if_lease_lost(cursor)
@@ -2272,7 +2282,9 @@ class WorkerRuntime:
                 else:
                     _raise_if_lease_lost(cursor)
                     _raise_if_lease_lost(cursor)
-                    model_result = model_reviewer.review(model_input)
+                    model_result = self._review_with_repository_limit(
+                        cursor, model_reviewer, model_input,
+                    )
                 _raise_if_lease_lost(cursor)
                 findings = materialize_findings(model_input, model_result.output)
                 findings = self._verify_findings(cursor, model_input, findings)
@@ -2317,6 +2329,30 @@ class WorkerRuntime:
             ci_wait_timeout=self._settings.ci_wait_timeout,
         )
 
+    def _repository_request_guard(
+        self, cursor: _LeaseCursor, model_input: ModelReviewInput,
+        exhausted: Event | None = None,
+    ) -> Callable[[], None] | None:
+        policy = model_input.repository_policy
+        if policy is None or policy.max_model_requests is None:
+            return None
+        limit = policy.max_model_requests
+
+        def reserve() -> None:
+            try:
+                self._queue.reserve_repository_request(cursor.lease, limit)
+            except RepositoryRequestLimitError:
+                if exhausted is not None:
+                    exhausted.set()
+                raise
+        return reserve
+
+    def _review_with_repository_limit(
+        self, cursor: _LeaseCursor, reviewer: ModelReviewer, model_input: ModelReviewInput,
+    ) -> ModelReviewResult:
+        with model_request_scope(self._repository_request_guard(cursor, model_input)):
+            return reviewer.review(model_input)
+
     def _run_fixed_agent_workflow(
         self,
         cursor: _LeaseCursor,
@@ -2328,6 +2364,8 @@ class WorkerRuntime:
         # 普通领取租约升级为模型阶段租约，避免忙碌心跳在这段窗口内续成短租约。
         cursor.renew(self._settings.model_review_lease_duration)
         model_input = self._queue.load_model_review_input(cursor.lease)
+        budget_exhausted = Event()
+        request_guard = self._repository_request_guard(cursor, model_input, budget_exhausted)
         if self._retrieval_service is not None:
             self._queue.record_model_progress(cursor.lease, "retrieval_started", {"agent": "workflow"}, agent="workflow")
             model_input = self._retrieval_service.review_context(model_input, lambda: cursor.renew(self._settings.model_review_lease_duration))
@@ -2356,6 +2394,7 @@ class WorkerRuntime:
                 reviewer,
                 settings_by_agent[agent],
                 self._settings.model_review_lease_duration,
+                request_guard=request_guard,
             )
             for agent, reviewer in reviewers.items()
             if agent in {ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC}
@@ -2372,6 +2411,7 @@ class WorkerRuntime:
                 summary_reviewer,
                 summary_settings,
                 self._settings.model_review_lease_duration,
+                request_guard=request_guard,
             )
         else:
             wrapped_summary = None
@@ -2388,6 +2428,12 @@ class WorkerRuntime:
         if self._knowledge_base is not None:
             # 首次调用在循环外完成有界文件读取并缓存；下面四次检索只做内存匹配。
             knowledge_chunks = self._knowledge_base.chunks()
+            policy = model_input.repository_policy
+            if policy is not None and policy.knowledge_sources is not None:
+                allowed_sources = frozenset(policy.knowledge_sources)
+                knowledge_chunks = tuple(
+                    chunk for chunk in knowledge_chunks if chunk.source in allowed_sources
+                )
             common_query = " ".join(
                 (
                     model_input.repository,
@@ -2431,6 +2477,9 @@ class WorkerRuntime:
             local_aggregation=True,
             force_summary=getattr(cursor.lease, "force_summary", False),
         )
+        if budget_exhausted.is_set():
+            # 已完成批次保留；额度耗尽不能以部分结果进入批准或发布。
+            raise RepositoryRequestLimitError()
         # 心跳线程可能在最后一个模型请求期间发现租约已被接管；即使编排器
         # 返回了完整结果，也不能让旧 Worker 覆盖新 Worker 的持久化结果。
         _raise_if_lease_lost(cursor)

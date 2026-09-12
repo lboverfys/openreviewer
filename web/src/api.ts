@@ -538,6 +538,19 @@ async function request<T>(
 }
 
 export const api = {
+  teamMembers: (cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("team-members:" + (cursor ?? "first"), (cacheSignal) =>
+      request<import("./types").TeamMemberPage>("/api/v1/team/members?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  saveTeamMember: (username: string, body: import("./types").TeamMemberWrite) =>
+    mutation(() => request<import("./types").TeamMember>("/api/v1/team/members/" + encodeURIComponent(username), {method: "PUT", body: JSON.stringify(body)})),
+  teamRepositories: (cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("team-repositories:" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").TeamRepository>>("/api/v1/team/repositories?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  saveTeamRepository: (body: import("./types").TeamRepositoryWrite, id?: string) =>
+    mutation(() => request<import("./types").TeamRepository>("/api/v1/team/repositories" + (id ? "/" + encodeURIComponent(id) : ""), {method: id ? "PUT" : "POST", body: JSON.stringify(body)})),
+  teamAudits: (cursor?: string, signal?: AbortSignal, force = false) =>
+    cachedGet("team-audits:" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").TeamAudit>>("/api/v1/team/audits?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
   retrievalTargets: (signal?: AbortSignal, cursor?: string, force = false) =>
     cachedGet(`retrieval-targets:${cursor ?? "first"}`, (cacheSignal) => request<CursorPage<import("./types").IndexTarget>>(`/api/v1/retrieval/targets?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})})}`, {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
   retrievalOperations: (signal?: AbortSignal, force = false) =>

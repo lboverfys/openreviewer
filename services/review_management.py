@@ -12,6 +12,7 @@ from typing import Protocol
 from domain.enums import ExecutionStatus, VerificationStatus
 from domain.github import PullRequestSnapshot
 from domain.pagination import CursorPage
+from domain.repository_policy import RepositoryPolicySnapshot
 from domain.review_progress import BatchProgress, BatchSnapshot
 from services.rbac import ResourceScope
 from services.task_queue import ReviewTarget
@@ -322,6 +323,8 @@ class StoredReviewDetails:
     failed_agents: tuple[str, ...] = ()
     failed_batches: tuple[Mapping[str, object], ...] = ()
     batch_progress: Mapping[str, BatchProgress] = field(default_factory=dict)
+    repository_policy: RepositoryPolicySnapshot | None = None
+    model_request_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

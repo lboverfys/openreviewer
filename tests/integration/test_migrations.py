@@ -85,6 +85,8 @@ def test_initial_migration_creates_durable_review_task_schema(
             "review_units",
             "worker_heartbeats",
             "review_quota_buckets",
+            "team_members",
+            "repository_policies",
         }
         assert {
             constraint["name"]

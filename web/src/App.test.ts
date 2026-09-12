@@ -4,6 +4,7 @@ import { readAppView } from "./App";
 
 describe("应用 Hash 路由", () => {
   it("解析固定管理页面", () => {
+    expect(readAppView("#team")).toEqual({ kind: "team" });
     expect(readAppView("#settings")).toEqual({ kind: "settings" });
     expect(readAppView("#knowledge")).toEqual({ kind: "knowledge" });
   });

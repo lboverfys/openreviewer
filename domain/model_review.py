@@ -23,6 +23,7 @@ from domain.enums import (
 from domain.identifiers import build_review_version_key, normalize_sha
 from domain.models import FindingLocation, ReviewFinding
 from domain.paths import normalize_repository_path
+from domain.repository_policy import RepositoryPolicySnapshot
 from domain.retrieval import ContextEvidence
 from domain.review_planning import RepositoryRule, ReviewUnit
 
@@ -182,6 +183,7 @@ class ModelReviewInput(ModelContract):
     """一次数据库批量读取生成的、绑定精确计划的模型输入。"""
 
     context_evidence: tuple[ContextEvidence, ...] = Field(default=(), max_length=60, exclude=True)
+    repository_policy: RepositoryPolicySnapshot | None = Field(default=None, exclude=True)
     review_plan_id: str = Field(min_length=1, max_length=36)
     review_run_id: str = Field(min_length=1, max_length=36)
     plan_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")

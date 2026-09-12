@@ -165,6 +165,10 @@ class ReviewRunRecord(Base):
     repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     repository: Mapped[str] = mapped_column(String(255), nullable=False)
     repository_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    repository_policy: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    model_request_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     pull_request_number: Mapped[int] = mapped_column(Integer, nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -398,6 +402,7 @@ class OutboxEventRecord(Base):
             "occurred_at",
         ),
         Index("ix_outbox_events_occurred_id", "occurred_at", "id"),
+        Index("ix_outbox_events_type_occurred", "aggregate_type", "occurred_at", "id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -450,6 +455,7 @@ class AdminSessionRecord(Base):
     __table_args__ = (
         Index("ix_admin_sessions_expires_at", "expires_at"),
         Index("ix_admin_sessions_active", "revoked_at", "expires_at"),
+        Index("ix_admin_sessions_username", "username"),
     )
 
     session_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -460,6 +466,57 @@ class AdminSessionRecord(Base):
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TeamMemberRecord(Base):
+    """复用现有角色和资源范围；账号修改以 revision 撤销旧会话。"""
+
+    __tablename__ = "team_members"
+    __table_args__ = (
+        CheckConstraint("revision >= 0", name="revision_nonnegative"),
+        CheckConstraint(
+            "role IN ('viewer', 'adjudicator', 'publisher', 'administrator')",
+            name="role_value",
+        ),
+        Index("ix_team_members_created", "created_at", "username"),
+    )
+
+    username: Mapped[str] = mapped_column(String(100), primary_key=True)
+    username_key: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    resource_scope: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+
+
+class RepositoryPolicyRecord(Base):
+    __tablename__ = "repository_policies"
+    __table_args__ = (
+        CheckConstraint("revision > 0", name="revision_positive"),
+        UniqueConstraint("repository_key"),
+        Index("ix_repository_policies_created", "created_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    repository: Mapped[str] = mapped_column(String(255), nullable=False)
+    repository_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    policy: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
 
 
 class LoginRateLimitRecord(Base):
