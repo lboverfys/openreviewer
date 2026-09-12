@@ -170,6 +170,7 @@ class SqlAlchemyUsageLedger:
                         target.repository,
                         "worker",
                         now,
+                        event_key=f"platform:budget:{month_id}:{budget}:{policy.budget_warning_percent}",
                         details={
                             "installation_id": target.installation_id,
                             "budget_microusd": budget,

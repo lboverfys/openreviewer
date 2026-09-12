@@ -27,23 +27,30 @@ def platform_audit(
     *,
     revision: int | None = None,
     details: dict[str, object] | None = None,
+    event_key: str | None = None,
 ) -> None:
     identifier = str(uuid4())
-    session.add(
-        OutboxEventRecord(
-            id=identifier,
-            event_key=f"platform:{identifier}",
-            aggregate_type="platform",
-            aggregate_id=object_id,
-            event_type=event_type,
-            occurred_at=now,
-            publish_attempts=0,
-            payload={
-                "actor": actor,
-                "repository": repository,
-                "repository_key": repository.casefold(),
-                "revision": revision,
-                **(details or {}),
-            },
-        )
+    values = dict(
+        id=identifier,
+        event_key=event_key or f"platform:{identifier}",
+        aggregate_type="platform",
+        aggregate_id=object_id,
+        event_type=event_type,
+        occurred_at=now,
+        publish_attempts=0,
+        payload={
+            "actor": actor,
+            "repository": repository,
+            "repository_key": repository.casefold(),
+            "revision": revision,
+            **(details or {}),
+        },
     )
+    if event_key is None:
+        session.add(OutboxEventRecord(**values))
+    else:
+        session.execute(
+            dialect_insert(session, OutboxEventRecord)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["event_key"])
+        )

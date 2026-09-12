@@ -1,5 +1,6 @@
 """审查配置冻结、版本恢复与人工经验的仓库隔离。"""
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +21,7 @@ from persistence.review_profiles import ReviewProfileRepository
 from persistence.work_items import WorkItemRepository
 from services.ai_secret_rotation import AiSecretRotationService
 from services.ai_settings import AiSecretCipher
-from services.model_review import ModelServiceSettings
+from services.model_review import ModelPricing, ModelServiceSettings
 from services.rag import ManagedMarkdownKnowledgeBase
 from services.rbac import ResourceScope
 from services.review_learning import ReviewLearningService
@@ -47,7 +48,14 @@ def profile_services(database, tmp_path):
     knowledge.list_documents()
     models = {
         agent: ModelServiceSettings(
-            ModelProvider.OPENAI, "fixture-original", "fixture-private-key"
+            ModelProvider.OPENAI,
+            "fixture-original",
+            "fixture-private-key",
+            pricing=ModelPricing(
+                Decimal("1.2"),
+                Decimal("3.4"),
+                cache_read_usd_per_million=Decimal("0.1"),
+            ),
         )
         for agent in ReviewAgent
     }
@@ -111,6 +119,9 @@ def test_profile_freezes_configuration_and_restores_without_changing_old_runs(
     )
     runtime = ReviewProfileRuntimeLoader(repository, service.cipher)(first.id)
     assert runtime.profile_id == first.id
+    price = runtime.agent_workflow.agent_settings[ReviewAgent.LOGIC].pricing
+    assert price is not None and price.input_usd_per_million == Decimal("1.2")
+    assert price.cache_read_usd_per_million == Decimal("0.1")
     assert (
         runtime.agent_workflow.agent_settings[ReviewAgent.LOGIC].model
         == "fixture-original"

@@ -23,8 +23,10 @@ from domain.security import SafeError
 from persistence.models import (
     FindingWorkItemRecord,
     ModelUsageRequestRecord,
+    OutboxEventRecord,
     RepositoryUsageMonthRecord,
     ReviewFindingRecord,
+    ReviewRunRecord,
     ReviewTaskRecord,
 )
 from persistence.platform_queries import PlatformQueries
@@ -139,6 +141,21 @@ def test_unknown_price_and_expired_lease_never_send_or_reserve(database):
     clock[0] += timedelta(days=1)
     with pytest.raises(TaskLeaseLostError):
         ledger.reserve(lease, "security", request())
+
+
+def test_budget_warning_is_deduplicated_after_repeated_reservations(database):
+    _, lease, _, ledger = setup_ledger(database, budget=100)
+    settle(ledger, ledger.reserve(lease, "logic", request(90)), cost=0)
+    settle(ledger, ledger.reserve(lease, "logic", request(90)), cost=0)
+    with database.sessions() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(OutboxEventRecord)
+                .where(OutboxEventRecord.event_type == "platform.budget.warning")
+            )
+            == 1
+        )
 
 
 def test_late_settlement_stays_in_original_month_and_lists_are_scoped(database):
@@ -284,6 +301,23 @@ def test_usage_pages_and_work_pages_do_not_grow_queries_with_rows(database):
         event.remove(database.engine, "before_cursor_execute", capture)
     assert len(first.items) == 10 and len(second.items) == 5
     assert len(statements) == 2
+
+
+def test_old_approval_owner_is_respected_without_inventing_deadline(database):
+    run_id = _seed_review(database, finding_count=0)
+    with database.sessions() as session:
+        run = session.get(ReviewRunRecord, run_id)
+        run.repository_policy = {
+            "repository": run.repository,
+            "revision": 1,
+            "approver": "AnotherReviewer",
+        }
+        session.commit()
+    store = WorkItemRepository(database.sessions, TEST_USERNAME)
+    assert not store.approvals(ALL, TEST_USERNAME).items
+    assigned = store.approvals(ALL, "anotherreviewer").items
+    assert len(assigned) == 1 and assigned[0].assignee == "anotherreviewer"
+    assert assigned[0].due_at is None
 
 
 def test_platform_api_auth_scope_and_origin(database):

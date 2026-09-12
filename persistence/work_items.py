@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.enums import ExecutionStatus
@@ -273,11 +273,12 @@ class WorkItemRepository:
         cursor: str | None = None,
     ) -> CursorPage[ApprovalTodo]:
         run = ReviewRunRecord
+        legacy_assignee = func.lower(run.repository_policy["approver"].as_string())
         statement = select(
             run.id,
             run.repository,
             run.pull_request_number,
-            run.approval_assignee.label("assignee"),
+            func.coalesce(run.approval_assignee, legacy_assignee).label("assignee"),
             run.approval_requested_at.label("requested_at"),
             run.approval_due_at.label("due_at"),
             run.created_at,
@@ -289,7 +290,13 @@ class WorkItemRepository:
             statement = statement.where(
                 or_(
                     run.approval_assignee == actor.casefold(),
-                    run.approval_assignee.is_(None),
+                    and_(
+                        run.approval_assignee.is_(None),
+                        or_(
+                            legacy_assignee == actor.casefold(),
+                            legacy_assignee.is_(None),
+                        ),
+                    ),
                 )
             )
         if overdue:

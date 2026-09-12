@@ -45,7 +45,7 @@ export default function WorkItemsPanel({ user, findingId, onError }: PlatformPan
         <div className="team-table-wrap"><table><thead><tr><th>问题</th><th>负责人</th><th>截止时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{page.data?.items.map(item => <tr key={item.id}><td>{item.title}<small>{item.repository} · PR #{item.pull_request_number}</small></td><td>{item.assignee ?? "未分配"}</td><td>{item.due_at ? formatDate(item.due_at) : "未设置"}</td><td>{statuses[item.status]}</td><td><a href={`#review/${encodeURIComponent(item.source_run_id)}`}>来源</a>{editable && <button disabled={busy} onClick={() => setEditing(item)}>处理</button>}</td></tr>)}</tbody></table></div>
         {!page.loading && !page.data?.items.length && <p className="platform-empty">当前筛选下没有工作项。可从审查问题卡片加入待办。</p>}
         <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next} />
-        {editable && <form className="platform-inline-form" onSubmit={event => void create(event)}><label>审查问题 ID<input required value={source} maxLength={36} placeholder="也可以从审查详情点击加入待办" onChange={event => setSource(event.target.value)} /></label><button disabled={busy} type="submit">加入我的待办</button></form>}
+        {editable && source && <form className="platform-inline-form" onSubmit={event => void create(event)}><p>将刚选择的审查问题加入我的待办，再安排负责人和截止时间。</p><button disabled={busy} type="submit">加入我的待办</button></form>}
       </>}
       {mode === "approvals" && <>
         <p className="team-hint">未指定负责人的审查由有权限的成员处理；旧任务缺少截止时间时不推算超期。</p>
