@@ -42,6 +42,7 @@ describe("Nginx API allowlist", () => {
     "/api/v1/knowledge/documents/789cd0af-e771-4fbe-a544-c36ce9592e64",
     "/api/v1/knowledge/documents/789cd0af-e771-4fbe-a544-c36ce9592e64/archive",
     "/api/v1/knowledge/documents/789cd0af-e771-4fbe-a544-c36ce9592e64/restore",
+    "/api/v1/knowledge/documents/789cd0af-e771-4fbe-a544-c36ce9592e64/versions",
     "/api/v1/knowledge/documents/789cd0af-e771-4fbe-a544-c36ce9592e64/versions/2/restore",
   ])("proxies the supported knowledge route %s", (path) => {
     expect(isProxied(path)).toBe(true);
@@ -53,6 +54,9 @@ describe("Nginx API allowlist", () => {
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/change-token",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/identity/sync",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings/finding-1",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/events",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/batches",
   ])("proxies the supported review detail route %s", (path) => {
     expect(isProxied(path)).toBe(true);
   });
@@ -87,6 +91,8 @@ describe("Nginx API allowlist", () => {
     "/api/v1/knowledge/documents/all/delete",
     "/api/v1/knowledge/documents/document-1/versions/0/restore",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/unknown",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/batches/delete",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/events/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/identity/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings",
   ])("does not proxy the unsupported settings route %s", (path) => {
