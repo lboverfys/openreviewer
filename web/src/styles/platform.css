@@ -1,0 +1,28 @@
+@import "./team.css";
+
+.platform-page { width: min(1440px, 100%); margin: 0 auto; padding: 28px clamp(16px, 3vw, 42px); }
+.platform-page > header { margin-bottom: 24px; }
+.platform-page h1 { font-size: 28px; }
+.platform-page header p { color: var(--text-muted, #657287); }
+.platform-page .team-card { margin-top: 18px; }
+.platform-page table small { display: block; color: #64748b; margin-top: 5px; }
+.platform-page table td { overflow-wrap: anywhere; }
+.platform-page table td button { margin-left: 10px; }
+.platform-page a { color: #2563eb; text-decoration: underline; text-underline-offset: 3px; }
+.platform-empty { padding: 24px 8px; color: #64748b; text-align: center; }
+.platform-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
+.platform-metrics > div { display: flex; flex-direction: column; gap: 6px; padding: 15px; border: 1px solid #e2e8f0; border-radius: 10px; overflow-wrap: anywhere; }
+.platform-inline-form { display: flex; align-items: end; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+.platform-inline-form label { flex: 1; min-width: 210px; }
+.platform-profile { display: flex; gap: 18px; justify-content: space-between; align-items: start; padding: 20px 0; border-top: 1px solid #e2e8f0; }
+.platform-profile > div { min-width: 0; overflow-wrap: anywhere; }
+.platform-profile > button { flex-shrink: 0; }
+.platform-profile p { color: #64748b; font-size: 13px; }
+.platform-page fieldset { border: 0; padding: 0; margin: 16px 0; }
+.platform-page label { display: flex; flex-direction: column; gap: 6px; }
+.platform-page .team-toolbar label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
+.platform-page input:not([type="checkbox"]), .platform-page select, .platform-page textarea { box-sizing: border-box; max-width: 100%; padding: 9px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #1e293b; }
+.platform-page textarea { width: 100%; }
+.platform-page button { cursor: pointer; }
+.platform-page button:disabled { cursor: default; }
+@media (max-width: 640px) { .platform-profile { flex-direction: column; } .platform-page .team-tabs { overflow-x: auto; } .platform-page .team-toolbar { align-items: stretch; } }

@@ -207,6 +207,8 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
           <div className="retrieval-form-grid">
             <label>向量模型<input value={draft.embedding_model ?? ""} onChange={event => setDraft({...draft, embedding_model: event.target.value})} /></label>
             <label>重排模型<input value={draft.rerank_model ?? ""} onChange={event => setDraft({...draft, rerank_model: event.target.value})} /></label>
+            <label>向量价格（美元 / 百万 Token）<input type="number" min={0} max={1000000} step="any" value={draft.embedding_usd_per_million ?? ""} onChange={event => setDraft({...draft, embedding_usd_per_million: event.target.value || null})} /></label>
+            <label>精排价格（美元 / 百万 Token）<input type="number" min={0} max={1000000} step="any" value={draft.rerank_usd_per_million ?? ""} onChange={event => setDraft({...draft, rerank_usd_per_million: event.target.value || null})} /></label>
             <label>单个索引最多新增向量数<input type="number" min={0} max={20000} value={draft.max_new_vectors_per_index ?? 100} onChange={event => setDraft({...draft, max_new_vectors_per_index: Number(event.target.value)})} /></label>
             <label>每次操作最多模型请求数<input type="number" min={0} max={300} value={draft.max_requests_per_operation ?? 12} onChange={event => setDraft({...draft, max_requests_per_operation: Number(event.target.value)})} /></label>
             <label>每路候选上限<input type="number" min={1} max={50} value={draft.candidate_k ?? 20} onChange={event => setDraft({...draft, candidate_k: Number(event.target.value)})} /></label>

@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { platformApi } from "./platform-api";
 
 export const pageLoaders = {
   dashboard: () => import("./DashboardPage"),
@@ -8,6 +9,7 @@ export const pageLoaders = {
   retrieval: () => import("./RetrievalPage"),
   team: () => import("./TeamPage"),
   evaluations: () => import("./EvaluationPage"),
+  platform: () => import("./PlatformPage"),
 };
 
 export function preloadPage(page: keyof typeof pageLoaders) {
@@ -21,6 +23,7 @@ export function preloadPage(page: keyof typeof pageLoaders) {
     retrieval: () => api.retrievalIndexes(),
     team: () => api.teamRepositories(),
     evaluations: () => api.evaluationDatasets(),
+    platform: () => platformApi.workItems(true, "", false),
   };
   if (page !== "review") void reads[page]().catch(() => undefined);
 }

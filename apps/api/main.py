@@ -20,9 +20,11 @@ from fastapi import (
 from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
+from apps.api.platform_services import PlatformServices
 from apps.api.routes.dashboard import register_dashboard_routes
 from apps.api.routes.evaluations import register_evaluation_routes
 from apps.api.routes.knowledge import register_knowledge_routes
+from apps.api.routes.platform import register_platform_routes
 from apps.api.routes.retrieval import register_retrieval_routes
 from apps.api.routes.reviews import register_review_routes
 from apps.api.routes.settings import register_settings_routes
@@ -48,11 +50,15 @@ from persistence.dashboard import SqlAlchemyDashboardRepository
 from persistence.database import Database, DatabaseConfigurationError
 from persistence.external_actions import SqlAlchemyExternalActionStore
 from persistence.operations import SqlAlchemyOperationsRepository
+from persistence.platform_queries import PlatformQueries
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.retrieval import RetrievalRepository
 from persistence.review_management import SqlAlchemyReviewManagementRepository
+from persistence.review_profiles import ReviewProfileRepository
 from persistence.team import SqlAlchemyMemberStore
+from persistence.usage_queries import UsageQueries
 from persistence.webhooks import SqlAlchemyGitHubWebhookRepository
+from persistence.work_items import WorkItemRepository
 from services.agent_settings import AgentSettingsService
 from services.ai_settings import (
     AiProviderNotReadyError,
@@ -112,10 +118,12 @@ from services.rag import (
 )
 from services.rbac import Permission, ResourceScope, has_permission, permissions_for
 from services.retrieval import HybridRetrievalService, RetrievalSettingsService
+from services.review_learning import ReviewLearningService
 from services.review_management import (
     PullRequestIdentityLoader,
     ReviewManagementService,
 )
+from services.review_profiles import ReviewProfileService
 from services.reviews import (
     ReviewService,
 )
@@ -203,6 +211,9 @@ def create_app(
     retrieval_service: HybridRetrievalService | None = None,
     team_service: TeamService | None = None,
     evaluation_service: EvaluationWorkbench | None = None,
+    platform_services: PlatformServices | None = None,
+    profile_creator: ReviewProfileService | None = None,
+    learning_service: ReviewLearningService | None = None,
 ) -> FastAPI:
     """创建带依赖注入边界的 FastAPI 应用实例。
 
@@ -437,6 +448,22 @@ def create_app(
 
     def get_evaluation_service() -> EvaluationWorkbench:
         return evaluation_service or EvaluationWorkbench(get_database().sessions)
+
+    def get_platform_services() -> PlatformServices:
+        if platform_services is not None:
+            return platform_services
+        sessions = get_database().sessions
+        return PlatformServices(UsageQueries(sessions),
+            WorkItemRepository(sessions, get_auth_service().settings.username),
+            PlatformQueries(sessions), ReviewProfileRepository(sessions))
+
+    def get_profile_creator() -> ReviewProfileService:
+        return profile_creator or ReviewProfileService(get_platform_services().profiles,
+            AiSecretCipher.from_environment(), get_ai_settings_service(), get_agent_settings_service(),
+            get_managed_knowledge_base(), get_retrieval_service().settings)
+
+    def get_learning_service() -> ReviewLearningService:
+        return learning_service or ReviewLearningService(get_platform_services().work_items, get_managed_knowledge_base())
 
     def get_login_limiter() -> LoginLimiter:
         """返回注入的限流器，或懒加载数据库共享实现。"""
@@ -1378,6 +1405,12 @@ def create_app(
         require_manager=require_settings_manager,
         require_same_origin=require_same_origin,
     )
+
+    register_platform_routes(application, get_service=get_platform_services,
+        get_profile_creator=get_profile_creator, require_viewer=require_review_viewer,
+        require_editor=require_adjudicator, require_manager=require_settings_manager,
+        get_learning=get_learning_service, require_knowledge_manager=require_knowledge_manager,
+        require_same_origin=require_same_origin)
 
     register_evaluation_routes(
         application, get_service=get_evaluation_service,

@@ -92,6 +92,7 @@ export default function FindingCard({
         </div>
       </div>
       <h3>{finding.title}</h3>
+      {editable && <a href={`#platform?finding=${encodeURIComponent(finding.id)}`}>加入团队待办</a>}
       <div className="finding-location">
         <code>{finding.location_file ?? "未定位到具体文件"}</code>
         {finding.location_start_line && (

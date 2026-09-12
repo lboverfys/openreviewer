@@ -72,6 +72,8 @@ jobs:
 
       - name: Verify management queries at 10k and 100k rows
         run: python -m pytest tests/performance/management_scale.py -q -s -W error
+      - name: Verify request ledger at 100k rows
+        run: python -m pytest tests/performance/platform_scale.py -q -s -W error
 
   web-test:
     name: Test React on Node 22.19

@@ -18,6 +18,17 @@ describe("Nginx API allowlist", () => {
 
   it.each([
     "/api/v1/auth/sessions/revoke-all",
+    "/api/v1/platform/usage",
+    "/api/v1/platform/usage/month-1/requests",
+    "/api/v1/platform/usage/month-1/breakdown",
+    "/api/v1/platform/work-items",
+    "/api/v1/platform/work-items/work-1",
+    "/api/v1/platform/work-items/work-1/knowledge",
+    "/api/v1/platform/approvals",
+    "/api/v1/platform/profiles",
+    "/api/v1/platform/profiles/profile-1/activate",
+    "/api/v1/platform/diagnostics",
+    "/api/v1/platform/audits",
     "/api/v1/evaluations/sources",
     "/api/v1/evaluations/datasets",
     "/api/v1/evaluations/datasets/dataset-1",
@@ -102,6 +113,9 @@ describe("Nginx API allowlist", () => {
 
   it.each([
     "/api/v1/retrieval",
+    "/api/v1/platform/internal",
+    "/api/v1/platform/profiles/profile-1/delete",
+    "/api/v1/platform/usage/month-1/raw-secret",
     "/api/v1/retrieval/settings/delete",
     "/api/v1/retrieval/indexes/index-1/delete",
     "/api/v1/settings",

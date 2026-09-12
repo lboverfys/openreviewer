@@ -16,6 +16,7 @@ const SettingsPage = lazy(pageLoaders.settings);
 const RetrievalPage = lazy(pageLoaders.retrieval);
 const TeamPage = lazy(pageLoaders.team);
 const EvaluationPage = lazy(pageLoaders.evaluations);
+const PlatformPage = lazy(pageLoaders.platform);
 
 type SessionState =
   | { phase: "checking" }
@@ -26,12 +27,19 @@ export type AppView =
   | { kind: "dashboard" }
   | { kind: "settings" }
   | { kind: "team" }
+  | { kind: "platform"; findingId?: string; tab?: import("./PlatformPage").PlatformTab }
   | { kind: "evaluations"; datasetId?: string; caseId?: string; reviewRunId?: string }
   | { kind: "knowledge" }
   | { kind: "retrieval"; reviewRunId?: string }
   | { kind: "review"; reviewRunId: string };
 
 export function readAppView(hash = window.location.hash): AppView {
+  if (hash === "#platform" || hash.startsWith("#platform?")) {
+    const params = new URLSearchParams(hash.split("?", 2)[1]);
+    const tab = params.get("tab");
+    return { kind: "platform", findingId: params.get("finding") || undefined,
+      tab: tab === "usage" || tab === "profiles" || tab === "diagnostics" ? tab : "work" };
+  }
   if (hash === "#evaluations" || hash.startsWith("#evaluations/") || hash.startsWith("#evaluations?")) {
     try {
       const [path, query] = hash.split("?", 2);
@@ -133,7 +141,9 @@ function AppContent() {
   }
 
   let page: ReactNode;
-  if (view.kind === "evaluations") {
+  if (view.kind === "platform") {
+    page = <PlatformPage key={`${view.tab}:${view.findingId}`} user={session.user} findingId={view.findingId} initialTab={view.tab} onSignedOut={onSignedOut} />;
+  } else if (view.kind === "evaluations") {
     page = <EvaluationPage user={session.user} datasetId={view.datasetId} caseId={view.caseId} reviewRunId={view.reviewRunId} onSignedOut={onSignedOut} />;
   } else if (view.kind === "team" && hasPermission(session.user, "settings:manage")) {
     page = <TeamPage onSignedOut={onSignedOut} />;

@@ -285,6 +285,7 @@ class ModelServiceSettings:
     max_request_bytes: int = 4 * 1024 * 1024
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
     api_base_url: str | None = None
+    prompt_snapshot: dict[str, object] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         try:
@@ -551,6 +552,17 @@ class StructuredReviewPromptBuilder:
         ),
     }
 
+    def __init__(self, snapshot: dict[str, object] | None = None) -> None:
+        self.version = PROMPT_VERSION
+        if snapshot is not None:
+            system, roles, version = snapshot.get("system"), snapshot.get("roles"), snapshot.get("version")
+            if not isinstance(system, str) or not isinstance(roles, dict) or version != PROMPT_VERSION:
+                raise ValueError("审查方案 Prompt 快照无效或协议不兼容")
+            self.SYSTEM_PROMPT = system
+            self.ROLE_INSTRUCTIONS = {agent: str(roles[agent.value]) for agent in ReviewAgent}
+            digest = sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+            self.version = f"{version}.{digest}"
+
     def build(
         self,
         review_input: ModelReviewInput,
@@ -626,7 +638,7 @@ class StructuredReviewPromptBuilder:
                 "provider": provider.value,
                 "api_protocol": api_protocol.value if api_protocol is not None else None,
                 "model": model,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": self.version,
                 "system": self.SYSTEM_PROMPT,
                 "user": user,
             },
@@ -638,7 +650,7 @@ class StructuredReviewPromptBuilder:
         return ReviewPrompt(
             system=self.SYSTEM_PROMPT,
             user=user,
-            version=PROMPT_VERSION,
+            version=self.version,
             request_fingerprint=sha256(identity).hexdigest(),
         )
 
@@ -743,7 +755,7 @@ def plan_model_review_batches(
 
     if not review_input.units:
         return ()
-    builder = prompt_builder or StructuredReviewPromptBuilder()
+    builder = prompt_builder or StructuredReviewPromptBuilder(settings.prompt_snapshot)
     empty_input = _copy_model_input(review_input, (), ())
     empty_prompt = builder.build(
         empty_input,

@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from urllib.parse import urlsplit
 
 import httpx
@@ -160,7 +161,7 @@ class _StructuredModelReviewer(ModelReviewer):
             transport=PublicDnsPinnedHTTPTransport(),
         )
         self._monotonic = monotonic or time.monotonic
-        self._prompt_builder = prompt_builder or StructuredReviewPromptBuilder()
+        self._prompt_builder = prompt_builder or StructuredReviewPromptBuilder(settings.prompt_snapshot)
         self._telemetry = telemetry or GLOBAL_TELEMETRY
 
     def close(self) -> None:
@@ -1391,6 +1392,9 @@ class _StructuredModelReviewer(ModelReviewer):
                 input_token_upper_bound=input_limit,
                 output_token_upper_bound=output_limit,
                 cost_upper_bound_microusd=cost_limit,
+                connection_key=sha256((self._settings.resolved_api_base_url + "\0" + self._settings.api_key).encode()).hexdigest(),
+                timeout_seconds=int(self._settings.connect_timeout_seconds + self._settings.read_timeout_seconds
+                    + self._settings.write_timeout_seconds + self._settings.pool_timeout_seconds + 60),
             )
         )
 

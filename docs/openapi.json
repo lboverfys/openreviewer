@@ -839,6 +839,74 @@
         "title": "AiSettingsResponse",
         "type": "object"
       },
+      "ApprovalTodo": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "pull_request_number": {
+            "title": "Pull Request Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested At"
+          }
+        },
+        "required": [
+          "id",
+          "repository",
+          "pull_request_number",
+          "assignee",
+          "requested_at",
+          "due_at",
+          "created_at"
+        ],
+        "title": "ApprovalTodo",
+        "type": "object"
+      },
       "AuthResponse": {
         "properties": {
           "authenticated": {
@@ -1259,6 +1327,33 @@
         "title": "ContextEvidence",
         "type": "object"
       },
+      "CursorPage_ApprovalTodo_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalTodo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[ApprovalTodo]",
+        "type": "object"
+      },
       "CursorPage_BatchSnapshot_": {
         "properties": {
           "items": {
@@ -1502,6 +1597,60 @@
         "title": "CursorPage[IndexView]",
         "type": "object"
       },
+      "CursorPage_PlatformAudit_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformAudit"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[PlatformAudit]",
+        "type": "object"
+      },
+      "CursorPage_ProfileView_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[ProfileView]",
+        "type": "object"
+      },
       "CursorPage_RepositoryView_": {
         "properties": {
           "items": {
@@ -1637,6 +1786,87 @@
         "title": "CursorPage[TeamAuditView]",
         "type": "object"
       },
+      "CursorPage_UsageMonth_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UsageMonth"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[UsageMonth]",
+        "type": "object"
+      },
+      "CursorPage_UsageRequest_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UsageRequest"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[UsageRequest]",
+        "type": "object"
+      },
+      "CursorPage_WorkItemView_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkItemView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[WorkItemView]",
+        "type": "object"
+      },
       "DashboardResponse": {
         "properties": {
           "generated_at": {
@@ -1697,6 +1927,56 @@
           "next_cursor"
         ],
         "title": "DashboardResponse",
+        "type": "object"
+      },
+      "DiagnosticReport": {
+        "additionalProperties": false,
+        "properties": {
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/FailureDiagnostic"
+            },
+            "title": "Failures",
+            "type": "array"
+          },
+          "provider_channels": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProviderChannelView"
+            },
+            "title": "Provider Channels",
+            "type": "array"
+          },
+          "repositories": {
+            "items": {
+              "$ref": "#/components/schemas/RepositoryDiagnostic"
+            },
+            "title": "Repositories",
+            "type": "array"
+          },
+          "since": {
+            "format": "date-time",
+            "title": "Since",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "until": {
+            "format": "date-time",
+            "title": "Until",
+            "type": "string"
+          }
+        },
+        "required": [
+          "since",
+          "until",
+          "repositories",
+          "failures"
+        ],
+        "title": "DiagnosticReport",
         "type": "object"
       },
       "EvaluationArchive": {
@@ -2971,6 +3251,25 @@
         "title": "ExecutionStatus",
         "type": "string"
       },
+      "FailureDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "count"
+        ],
+        "title": "FailureDiagnostic",
+        "type": "object"
+      },
       "FindingCategory": {
         "enum": [
           "architecture",
@@ -3611,6 +3910,58 @@
         "title": "KnowledgeMutationResponse",
         "type": "object"
       },
+      "KnowledgeProposalView": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "title": "Document Id",
+            "type": "string"
+          },
+          "library_revision": {
+            "title": "Library Revision",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "source",
+          "library_revision"
+        ],
+        "title": "KnowledgeProposalView",
+        "type": "object"
+      },
+      "KnowledgeProposalWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_library_revision": {
+            "minimum": 0.0,
+            "title": "Expected Library Revision",
+            "type": "integer"
+          },
+          "expected_work_revision": {
+            "minimum": 1.0,
+            "title": "Expected Work Revision",
+            "type": "integer"
+          },
+          "lesson": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Lesson",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_work_revision",
+          "expected_library_revision",
+          "lesson"
+        ],
+        "title": "KnowledgeProposalWrite",
+        "type": "object"
+      },
       "KnowledgeSearchResponse": {
         "properties": {
           "items": {
@@ -4129,6 +4480,227 @@
         "title": "Permission",
         "type": "string"
       },
+      "PlatformAudit": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "id",
+          "event_type",
+          "actor",
+          "repository",
+          "object_id",
+          "revision",
+          "created_at"
+        ],
+        "title": "PlatformAudit",
+        "type": "object"
+      },
+      "ProfileActivate": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_repository_revision": {
+            "minimum": 1.0,
+            "title": "Expected Repository Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_repository_revision"
+        ],
+        "title": "ProfileActivate",
+        "type": "object"
+      },
+      "ProfileCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_ai_revision": {
+            "minimum": 0.0,
+            "title": "Expected Ai Revision",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          },
+          "repository": {
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Repository",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "repository",
+          "expected_ai_revision"
+        ],
+        "title": "ProfileCreate",
+        "type": "object"
+      },
+      "ProfileView": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_revision": {
+            "title": "Ai Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "knowledge_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Knowledge Versions",
+            "type": "object"
+          },
+          "models": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "retrieval_settings": {
+            "additionalProperties": true,
+            "title": "Retrieval Settings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repository",
+          "note",
+          "fingerprint",
+          "ai_revision",
+          "prompt_version",
+          "models",
+          "knowledge_versions",
+          "retrieval_settings",
+          "created_by",
+          "created_at"
+        ],
+        "title": "ProfileView",
+        "type": "object"
+      },
+      "ProviderChannelView": {
+        "additionalProperties": false,
+        "properties": {
+          "failure_count": {
+            "title": "Failure Count",
+            "type": "integer"
+          },
+          "in_flight": {
+            "title": "In Flight",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "open_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Until"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "provider",
+          "in_flight",
+          "failure_count",
+          "open_until"
+        ],
+        "title": "ProviderChannelView",
+        "type": "object"
+      },
       "ReferenceDefect": {
         "additionalProperties": false,
         "properties": {
@@ -4289,9 +4861,116 @@
         "title": "ReferenceUpdate",
         "type": "object"
       },
+      "RepositoryDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "max_concurrent_reviews": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Reviews"
+          },
+          "mean_model_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Model Ms"
+          },
+          "mean_queue_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Queue Ms"
+          },
+          "oldest_queued_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Queued At"
+          },
+          "p95_queue_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Queue Ms"
+          },
+          "paused": {
+            "title": "Paused",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "running": {
+            "title": "Running",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repository",
+          "queued",
+          "running",
+          "paused",
+          "failed",
+          "completed",
+          "oldest_queued_at",
+          "mean_queue_ms",
+          "p95_queue_ms",
+          "mean_model_ms",
+          "max_concurrent_reviews"
+        ],
+        "title": "RepositoryDiagnostic",
+        "type": "object"
+      },
       "RepositoryPolicy": {
         "additionalProperties": false,
         "properties": {
+          "approval_timeout_hours": {
+            "default": 24,
+            "maximum": 720.0,
+            "minimum": 1.0,
+            "title": "Approval Timeout Hours",
+            "type": "integer"
+          },
           "approver": {
             "anyOf": [
               {
@@ -4304,6 +4983,13 @@
               }
             ],
             "title": "Approver"
+          },
+          "budget_warning_percent": {
+            "default": 80,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Budget Warning Percent",
+            "type": "integer"
           },
           "enabled": {
             "default": true,
@@ -4325,6 +5011,19 @@
             ],
             "title": "Knowledge Sources"
           },
+          "max_concurrent_reviews": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Reviews"
+          },
           "max_model_requests": {
             "anyOf": [
               {
@@ -4337,6 +5036,32 @@
               }
             ],
             "title": "Max Model Requests"
+          },
+          "monthly_budget_microusd": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Budget Microusd"
+          },
+          "review_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Profile Id"
           },
           "target_branches": {
             "default": [],
@@ -4354,6 +5079,13 @@
       "RepositoryPolicySnapshot": {
         "additionalProperties": false,
         "properties": {
+          "approval_timeout_hours": {
+            "default": 24,
+            "maximum": 720.0,
+            "minimum": 1.0,
+            "title": "Approval Timeout Hours",
+            "type": "integer"
+          },
           "approver": {
             "anyOf": [
               {
@@ -4366,6 +5098,13 @@
               }
             ],
             "title": "Approver"
+          },
+          "budget_warning_percent": {
+            "default": 80,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Budget Warning Percent",
+            "type": "integer"
           },
           "enabled": {
             "default": true,
@@ -4387,6 +5126,19 @@
             ],
             "title": "Knowledge Sources"
           },
+          "max_concurrent_reviews": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Reviews"
+          },
           "max_model_requests": {
             "anyOf": [
               {
@@ -4400,9 +5152,35 @@
             ],
             "title": "Max Model Requests"
           },
+          "monthly_budget_microusd": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Budget Microusd"
+          },
           "repository": {
             "title": "Repository",
             "type": "string"
+          },
+          "review_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Profile Id"
           },
           "revision": {
             "minimum": 1.0,
@@ -4616,7 +5394,7 @@
         "title": "RetrievalOperations",
         "type": "object"
       },
-      "RetrievalSettings": {
+      "RetrievalSettings-Input": {
         "additionalProperties": false,
         "properties": {
           "api_host": {
@@ -4651,6 +5429,23 @@
             "title": "Embedding Model",
             "type": "string"
           },
+          "embedding_usd_per_million": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Usd Per Million"
+          },
           "enabled": {
             "default": false,
             "title": "Enabled",
@@ -4676,6 +5471,131 @@
             "minLength": 1,
             "title": "Rerank Model",
             "type": "string"
+          },
+          "rerank_usd_per_million": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Usd Per Million"
+          },
+          "strategy": {
+            "default": "reranked",
+            "enum": [
+              "bm25",
+              "lexical_relations",
+              "hybrid",
+              "hybrid_relations",
+              "reranked"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 60,
+            "maximum": 180.0,
+            "minimum": 5.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "RetrievalSettings",
+        "type": "object"
+      },
+      "RetrievalSettings-Output": {
+        "additionalProperties": false,
+        "properties": {
+          "api_host": {
+            "default": "",
+            "title": "Api Host",
+            "type": "string"
+          },
+          "candidate_k": {
+            "default": 20,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Candidate K",
+            "type": "integer"
+          },
+          "context_k": {
+            "default": 8,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Context K",
+            "type": "integer"
+          },
+          "dimensions": {
+            "const": 1024,
+            "default": 1024,
+            "title": "Dimensions",
+            "type": "integer"
+          },
+          "embedding_model": {
+            "default": "qwen3.7-text-embedding",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "embedding_usd_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Usd Per Million"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_new_vectors_per_index": {
+            "default": 100,
+            "maximum": 20000.0,
+            "minimum": 0.0,
+            "title": "Max New Vectors Per Index",
+            "type": "integer"
+          },
+          "max_requests_per_operation": {
+            "default": 12,
+            "maximum": 300.0,
+            "minimum": 0.0,
+            "title": "Max Requests Per Operation",
+            "type": "integer"
+          },
+          "rerank_model": {
+            "default": "qwen3.7-text-rerank",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Rerank Model",
+            "type": "string"
+          },
+          "rerank_usd_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Usd Per Million"
           },
           "strategy": {
             "default": "reranked",
@@ -4721,7 +5641,7 @@
             "type": "integer"
           },
           "settings": {
-            "$ref": "#/components/schemas/RetrievalSettings"
+            "$ref": "#/components/schemas/RetrievalSettings-Input"
           }
         },
         "required": [
@@ -4748,7 +5668,7 @@
             "type": "integer"
           },
           "settings": {
-            "$ref": "#/components/schemas/RetrievalSettings"
+            "$ref": "#/components/schemas/RetrievalSettings-Output"
           },
           "tested": {
             "default": false,
@@ -7134,6 +8054,247 @@
         "title": "TeamAuditView",
         "type": "object"
       },
+      "UsageBreakdown": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_cost_microusd": {
+            "title": "Estimated Cost Microusd",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "request_count": {
+            "title": "Request Count",
+            "type": "integer"
+          },
+          "unknown_count": {
+            "title": "Unknown Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "purpose",
+          "request_count",
+          "estimated_cost_microusd",
+          "unknown_count"
+        ],
+        "title": "UsageBreakdown",
+        "type": "object"
+      },
+      "UsageMonth": {
+        "additionalProperties": false,
+        "properties": {
+          "budget_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Microusd"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "estimated_cost_microusd": {
+            "title": "Estimated Cost Microusd",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "installation_id": {
+            "title": "Installation Id",
+            "type": "integer"
+          },
+          "month": {
+            "title": "Month",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "request_count": {
+            "title": "Request Count",
+            "type": "integer"
+          },
+          "reserved_cost_microusd": {
+            "title": "Reserved Cost Microusd",
+            "type": "integer"
+          },
+          "uncertain_count": {
+            "title": "Uncertain Count",
+            "type": "integer"
+          },
+          "unknown_count": {
+            "title": "Unknown Count",
+            "type": "integer"
+          },
+          "warning": {
+            "title": "Warning",
+            "type": "boolean"
+          },
+          "warning_percent": {
+            "title": "Warning Percent",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "installation_id",
+          "repository",
+          "month",
+          "request_count",
+          "input_tokens",
+          "output_tokens",
+          "estimated_cost_microusd",
+          "reserved_cost_microusd",
+          "unknown_count",
+          "uncertain_count",
+          "budget_microusd",
+          "warning_percent",
+          "warning",
+          "created_at"
+        ],
+        "title": "UsageMonth",
+        "type": "object"
+      },
+      "UsageRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "estimated_cost_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Microusd"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "reserved_cost_microusd": {
+            "title": "Reserved Cost Microusd",
+            "type": "integer"
+          },
+          "response_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Status"
+          },
+          "review_run_id": {
+            "title": "Review Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "review_run_id",
+          "repository",
+          "agent",
+          "purpose",
+          "model",
+          "status",
+          "estimated_cost_microusd",
+          "reserved_cost_microusd",
+          "input_tokens",
+          "output_tokens",
+          "duration_ms",
+          "response_status",
+          "created_at"
+        ],
+        "title": "UsageRequest",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -7272,6 +8433,231 @@
           "created"
         ],
         "title": "WebhookReceiptResponse",
+        "type": "object"
+      },
+      "WorkItemCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "finding_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Finding Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id"
+        ],
+        "title": "WorkItemCreate",
+        "type": "object"
+      },
+      "WorkItemUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "fix_pull_request_number": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fix Pull Request Number"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Note",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "in_progress",
+              "resolved",
+              "wont_fix"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "status"
+        ],
+        "title": "WorkItemUpdate",
+        "type": "object"
+      },
+      "WorkItemView": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "fix_pull_request_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fix Pull Request Number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "pull_request_number": {
+            "title": "Pull Request Number",
+            "type": "integer"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "source_finding_id": {
+            "title": "Source Finding Id",
+            "type": "string"
+          },
+          "source_run_id": {
+            "title": "Source Run Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "in_progress",
+              "resolved",
+              "wont_fix"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_run_id",
+          "source_finding_id",
+          "repository",
+          "pull_request_number",
+          "title",
+          "severity",
+          "status",
+          "assignee",
+          "due_at",
+          "note",
+          "fix_pull_request_number",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WorkItemView",
         "type": "object"
       },
       "WorkerResponse": {
@@ -9049,6 +10435,790 @@
           }
         },
         "summary": "Search Knowledge"
+      }
+    },
+    "/api/v1/platform/approvals": {
+      "get": {
+        "operationId": "approvals_api_v1_platform_approvals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mine",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Mine",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overdue",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Overdue",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_ApprovalTodo_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approvals"
+      }
+    },
+    "/api/v1/platform/audits": {
+      "get": {
+        "operationId": "audits_api_v1_platform_audits_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "object_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Object Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_PlatformAudit_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Audits"
+      }
+    },
+    "/api/v1/platform/diagnostics": {
+      "get": {
+        "operationId": "diagnostics_api_v1_platform_diagnostics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "maximum": 30,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Diagnostics"
+      }
+    },
+    "/api/v1/platform/profiles": {
+      "get": {
+        "operationId": "profiles_api_v1_platform_profiles_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "repository",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repository"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_ProfileView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Profiles"
+      },
+      "post": {
+        "operationId": "create_profile_api_v1_platform_profiles_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Profile"
+      }
+    },
+    "/api/v1/platform/profiles/{identifier}/activate": {
+      "post": {
+        "operationId": "activate_profile_api_v1_platform_profiles__identifier__activate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileActivate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Activate Profile Api V1 Platform Profiles  Identifier  Activate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Profile"
+      }
+    },
+    "/api/v1/platform/usage": {
+      "get": {
+        "operationId": "usage_api_v1_platform_usage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "month",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^\\d{4}-\\d{2}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Month"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_UsageMonth_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage"
+      }
+    },
+    "/api/v1/platform/usage/{month_id}/breakdown": {
+      "get": {
+        "operationId": "breakdown_api_v1_platform_usage__month_id__breakdown_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "month_id",
+            "required": true,
+            "schema": {
+              "title": "Month Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UsageBreakdown"
+                  },
+                  "title": "Response Breakdown Api V1 Platform Usage  Month Id  Breakdown Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Breakdown"
+      }
+    },
+    "/api/v1/platform/usage/{month_id}/requests": {
+      "get": {
+        "operationId": "requests_api_v1_platform_usage__month_id__requests_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "month_id",
+            "required": true,
+            "schema": {
+              "title": "Month Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_UsageRequest_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Requests"
+      }
+    },
+    "/api/v1/platform/work-items": {
+      "get": {
+        "operationId": "work_items_api_v1_platform_work_items_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mine",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Mine",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "open",
+                    "in_progress",
+                    "resolved",
+                    "wont_fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overdue",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Overdue",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_WorkItemView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Work Items"
+      },
+      "post": {
+        "operationId": "create_work_api_v1_platform_work_items_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkItemCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Work"
+      }
+    },
+    "/api/v1/platform/work-items/{identifier}": {
+      "put": {
+        "operationId": "update_work_api_v1_platform_work_items__identifier__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkItemUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Work"
+      }
+    },
+    "/api/v1/platform/work-items/{identifier}/knowledge": {
+      "post": {
+        "operationId": "propose_knowledge_api_v1_platform_work_items__identifier__knowledge_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeProposalWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeProposalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Propose Knowledge"
       }
     },
     "/api/v1/retrieval/evaluations": {

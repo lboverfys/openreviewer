@@ -170,6 +170,11 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
   const [branches, setBranches] = useState(current?.policy.target_branches?.join("\n") ?? "");
   const [approver, setApprover] = useState(current?.policy.approver ?? "");
   const [limit, setLimit] = useState(current?.policy.max_model_requests?.toString() ?? "");
+  const [monthlyBudget, setMonthlyBudget] = useState(current?.policy.monthly_budget_microusd == null ? "" : String(current.policy.monthly_budget_microusd / 1_000_000));
+  const [warningPercent, setWarningPercent] = useState(String(current?.policy.budget_warning_percent ?? 80));
+  const [concurrency, setConcurrency] = useState(current?.policy.max_concurrent_reviews?.toString() ?? "");
+  const [approvalHours, setApprovalHours] = useState(String(current?.policy.approval_timeout_hours ?? 24));
+  const [useProfile, setUseProfile] = useState(Boolean(current?.policy.review_profile_id));
   const initialSources = current?.policy.knowledge_sources;
   const [knowledgeMode, setKnowledgeMode] = useState(initialSources == null ? "inherit" : initialSources.length ? "selected" : "none");
   const [sources, setSources] = useState(initialSources?.join("\n") ?? "");
@@ -180,6 +185,9 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
       policy: {
         enabled, target_branches: lines(branches), approver: approver.trim() || null,
         max_model_requests: limit ? Number(limit) : null,
+        monthly_budget_microusd: monthlyBudget ? Math.round(Number(monthlyBudget) * 1_000_000) : null,
+        budget_warning_percent: Number(warningPercent), max_concurrent_reviews: concurrency ? Number(concurrency) : null,
+        approval_timeout_hours: Number(approvalHours), review_profile_id: useProfile ? current?.policy.review_profile_id ?? null : null,
         knowledge_sources: knowledgeMode === "inherit" ? null : knowledgeMode === "none" ? [] : lines(sources),
       },
     }, current?.id);
@@ -193,11 +201,16 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
           <label className="team-check"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />接收新审查任务</label>
           <label>审批负责人（用户名，可留空）<input value={approver} maxLength={100} onChange={(event) => setApprover(event.target.value)} /><small>留空时按角色审批；管理员可以代为处理。</small></label>
           <label>单次审查最多模型请求数<input type="number" min={1} max={10000} step={1} value={limit} placeholder="不限制" onChange={(event) => setLimit(event.target.value)} /><small>含各 Agent 和重试；不包含向量、精排请求。</small></label>
+          <label>月度预算（美元，可留空）<input type="number" min={0.000001} max={1000000} step={0.000001} value={monthlyBudget} onChange={event => setMonthlyBudget(event.target.value)} /><small>按 UTC 自然月和配置价格估算。预算不足时暂停新模型请求；启用前需配置模型价格。</small></label>
+          <label>预算提醒比例（%）<input required type="number" min={1} max={100} value={warningPercent} onChange={event => setWarningPercent(event.target.value)} /></label>
+          <label>仓库同时执行的任务上限<input type="number" min={1} max={100} value={concurrency} placeholder="不限制" onChange={event => setConcurrency(event.target.value)} /></label>
+          <label>审批时限（小时）<input required type="number" min={1} max={720} value={approvalHours} onChange={event => setApprovalHours(event.target.value)} /></label>
+          {current?.policy.review_profile_id && <label className="team-check"><input type="checkbox" checked={useProfile} onChange={event => setUseProfile(event.target.checked)} />继续固定已启用的审查方案</label>}
         </div>
         <label>目标分支（每行一个，留空审查全部分支）<textarea value={branches} rows={3} placeholder={"main\nrelease/*"} onChange={(event) => setBranches(event.target.value)} /></label>
         <label>知识规则<select value={knowledgeMode} onChange={(event) => setKnowledgeMode(event.target.value)}><option value="inherit">继承已启用知识库</option><option value="selected">仅使用指定文档</option><option value="none">不使用知识库</option></select></label>
         {knowledgeMode === "selected" && <label>知识文档来源（从知识库复制，每行一个）<textarea value={sources} rows={3} required placeholder="security.md" onChange={(event) => setSources(event.target.value)} /></label>}
-        <p className="team-hint">仓库内的 AGENTS.md 始终生效。保存后，新任务使用新策略；已有任务继续使用创建时的版本。</p>
+        <p className="team-hint">仓库内的 AGENTS.md 始终生效。审查范围和方案用于新任务；预算与仓库并发限制在后续请求、任务领取时生效。<a href="#platform?tab=profiles">管理审查方案</a></p>
         <div className="team-form-actions"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存仓库策略"}</button><button type="button" onClick={onCancel}>取消编辑</button></div>
       </fieldset>
     </form>

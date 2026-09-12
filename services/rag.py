@@ -34,6 +34,7 @@ class KnowledgeChunk:
     content: str
     content_sha256: str
     version: str
+    repository_scope: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,6 +403,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                     rows = session.execute(
                         select(
                             KnowledgeDocumentRecord.source,
+                            KnowledgeDocumentRecord.repository_scope,
                             KnowledgeDocumentVersionRecord.content,
                             KnowledgeDocumentVersionRecord.content_sha256,
                         )
@@ -429,7 +431,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
             chunks: list[KnowledgeChunk] = []
             for row in rows:
                 chunks.extend(
-                    _split_markdown(
+                    replace(chunk, repository_scope=row.repository_scope) for chunk in _split_markdown(
                         row.source,
                         row.content,
                         row.content_sha256[:16],
@@ -547,6 +549,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         enabled: bool,
         expected_revision: int,
         actor: str,
+        repository_scope: str | None = None,
     ) -> KnowledgeMutationView:
         normalized_source = _validate_source(source)
         normalized_content, content_hash, byte_size = _validate_content(
@@ -576,6 +579,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                 document = KnowledgeDocumentRecord(
                     id=document_id,
                     source=normalized_source,
+                    repository_scope=repository_scope.casefold() if repository_scope else None,
                     enabled=enabled,
                     current_version=1,
                     created_by=actor,

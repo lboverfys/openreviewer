@@ -55,8 +55,10 @@ from services.review_planning import (
 )
 
 if TYPE_CHECKING:
+    from domain.retrieval import RetrievalSettingsView
     from services.agent_settings import AgentSettingsService, AgentSettingsView
     from services.agent_workflow import FixedAgentWorkflow
+    from services.rag import KnowledgeChunk
 
 
 AI_SETTINGS_ID = 1
@@ -419,6 +421,9 @@ class ActiveAiRuntime:
     planner: DeterministicReviewPlanner
     model_settings: ModelServiceSettings | None = None
     agent_workflow: FixedAgentWorkflow | None = None
+    profile_id: str | None = None
+    knowledge_chunks: tuple[KnowledgeChunk, ...] | None = None
+    retrieval_settings: tuple[RetrievalSettingsView, str | None] | None = field(default=None, repr=False)
 
 
 class AiRuntimeProvider(Protocol):

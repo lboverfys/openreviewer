@@ -309,8 +309,9 @@ class HybridRetrievalService:
         )
 
 
-    def review_context(self, model_input, on_progress: Callable[[], None]):
-        view = self.settings.get()
+    def review_context(self, model_input, on_progress: Callable[[], None], *,
+                       frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None):
+        view = frozen_runtime[0] if frozen_runtime is not None else self.settings.get()
         if not model_input.units:
             return model_input
         target = self.repository.target_for_review(model_input.review_run_id, None)
@@ -328,7 +329,7 @@ class HybridRetrievalService:
             if cached:
                 raise RetrievalError("已有部分检索上下文，请恢复检索配置后重试")
             return model_input
-        index_id = self.enqueue(target)
+        index_id = self.repository.enqueue({**target, "include_vectors": False}, view.settings)
         index = self.repository.get(index_id)
         if index.status == "failed" and not index.lexical_ready:
             raise RetrievalError("代码索引构建失败，请先重试索引")
@@ -344,7 +345,7 @@ class HybridRetrievalService:
         governance = RetrievalRuntimeRepository(self.repository.sessions)
         budget_key = stable_key(model_input.review_run_id, model_input.plan_fingerprint)
         budget = RequestBudget(view.settings.max_requests_per_operation, charge=lambda: governance.charge_request(budget_key, view.settings.max_requests_per_operation))
-        runtime, key = self.settings.runtime()
+        runtime, key = frozen_runtime if frozen_runtime is not None else self.settings.runtime()
         client = self._client(runtime, key, budget) if key and not runtime.external_calls_paused else None
         units_by_agent = {agent: tuple(unit for unit in model_input.units if agent in unit.review_domains)
                           for agent in purposes}

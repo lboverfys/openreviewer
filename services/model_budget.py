@@ -18,6 +18,9 @@ class ModelBudgetRequest:
     # 没有完整价格表时无法给出可信的最坏费用；硬限制模式会拒绝这种请求，
     # 观测模式仍会记录请求并把费用标记为未知。
     cost_upper_bound_microusd: int | None
+    purpose: str = "review"
+    connection_key: str | None = None
+    timeout_seconds: int = 300
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +80,7 @@ def current_model_budget_accountant() -> ModelBudgetAccountant | None:
 
 
 @contextmanager
-def model_budget_scope(accountant: ModelBudgetAccountant) -> Iterator[None]:
+def model_budget_scope(accountant: ModelBudgetAccountant | None) -> Iterator[None]:
     token: Token[ModelBudgetAccountant | None] = _CURRENT_ACCOUNTANT.set(accountant)
     try:
         yield

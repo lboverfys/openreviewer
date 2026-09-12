@@ -1,6 +1,19 @@
 import type { components } from "./generated/openapi";
 
 type Schemas = components["schemas"];
+export type UsageMonth = Schemas["UsageMonth"];
+export type UsageRequest = Schemas["UsageRequest"];
+export type UsageBreakdown = Schemas["UsageBreakdown"];
+export type WorkItem = Schemas["WorkItemView"];
+export type WorkItemCreate = Schemas["WorkItemCreate"];
+export type WorkItemUpdate = Schemas["WorkItemUpdate"];
+export type ApprovalTodo = Schemas["ApprovalTodo"];
+export type ReviewProfile = Schemas["ProfileView"];
+export type ProfileCreate = Schemas["ProfileCreate"];
+export type DiagnosticReport = Schemas["DiagnosticReport"];
+export type PlatformAudit = Schemas["PlatformAudit"];
+export type KnowledgeProposalWrite = Schemas["KnowledgeProposalWrite"];
+export type KnowledgeProposalView = Schemas["KnowledgeProposalView"];
 
 export type ExecutionStatus = Schemas["ExecutionStatus"];
 export type WorkerStatus = Schemas["WorkerStatus"];
@@ -79,7 +92,7 @@ export type CodeIndexView = Schemas["IndexView"];
 export type IndexTarget = Schemas["IndexTarget"];
 export type RetrievalOperations = Schemas["RetrievalOperations"];
 export type RetrievalSettingsView = Schemas["RetrievalSettingsView"];
-export type RetrievalSettings = Schemas["RetrievalSettings"];
+export type RetrievalSettings = RetrievalSettingsView["settings"];
 export type RetrievalTrace = Schemas["RetrievalTrace"];
 export type ContextEvidence = Schemas["ContextEvidence"];
 export type RetrievalEvaluationReport = Schemas["RetrievalEvaluationReport"];

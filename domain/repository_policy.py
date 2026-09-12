@@ -17,6 +17,11 @@ class RepositoryPolicy(BaseModel):
     knowledge_sources: tuple[str, ...] | None = Field(default=None, max_length=100)
     max_model_requests: int | None = Field(default=None, ge=1, le=10_000)
     approver: str | None = Field(default=None, min_length=1, max_length=100)
+    monthly_budget_microusd: int | None = Field(default=None, ge=1, le=1_000_000_000_000)
+    budget_warning_percent: int = Field(default=80, ge=1, le=100)
+    max_concurrent_reviews: int | None = Field(default=None, ge=1, le=100)
+    approval_timeout_hours: int = Field(default=24, ge=1, le=720)
+    review_profile_id: str | None = Field(default=None, min_length=1, max_length=36)
 
     @field_validator("target_branches")
     @classmethod

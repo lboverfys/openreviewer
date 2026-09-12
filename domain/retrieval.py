@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from hashlib import sha256
 from typing import Literal
 
@@ -91,6 +92,8 @@ class RetrievalSettings(RetrievalContract):
     timeout_seconds: int = Field(default=60, ge=5, le=180)
     max_new_vectors_per_index: int = Field(default=100, ge=0, le=20_000)
     max_requests_per_operation: int = Field(default=12, ge=0, le=300)
+    embedding_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
+    rerank_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
 
     @property
     def embedding_fingerprint(self) -> str:

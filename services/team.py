@@ -5,7 +5,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from argon2 import PasswordHasher
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -16,6 +16,7 @@ from persistence.models import (
     KnowledgeDocumentRecord,
     OutboxEventRecord,
     RepositoryPolicyRecord,
+    ReviewProfileRecord,
     TeamMemberRecord,
 )
 from persistence.pagination import apply_cursor as _page_after
@@ -265,10 +266,18 @@ class TeamService:
             return view
 
     def _validate_policy(self, session: Session, draft: RepositoryWrite) -> None:
+        if draft.policy.review_profile_id:
+            if session.scalar(select(ReviewProfileRecord.id).where(
+                ReviewProfileRecord.id == draft.policy.review_profile_id,
+                ReviewProfileRecord.repository_key == draft.repository.casefold(),
+            )) is None:
+                raise ValueError("审查方案不存在或属于其他仓库")
         sources = draft.policy.knowledge_sources
         if sources:
             existing = set(session.scalars(select(KnowledgeDocumentRecord.source).where(
                 KnowledgeDocumentRecord.source.in_(sources),
+                or_(KnowledgeDocumentRecord.repository_scope.is_(None),
+                    KnowledgeDocumentRecord.repository_scope == draft.repository.casefold()),
                 KnowledgeDocumentRecord.enabled.is_(True),
                 KnowledgeDocumentRecord.archived_at.is_(None),
             ).limit(100)).all())

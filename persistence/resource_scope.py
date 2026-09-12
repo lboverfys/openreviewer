@@ -30,7 +30,7 @@ def resource_predicate(
     if scope.installation_ids:
         conditions.append(installation_column.in_(scope.installation_ids))
 
-    repository_match_column = repository_key_column or repository_column
+    repository_match_column = repository_key_column if repository_key_column is not None else repository_column
     repository_conditions: list[Any] = []
     if scope.repositories:
         # scope 和 repository_key 都已在写入/构造边界 casefold；比较不对索引列

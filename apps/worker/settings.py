@@ -50,7 +50,9 @@ class WorkerSettings:
         if self.poll_interval.total_seconds() <= 0:
             raise ValueError("worker poll interval must be positive")
         if self.lease_duration <= self.poll_interval * 2:
-            raise ValueError("worker lease duration must exceed twice the poll interval")
+            raise ValueError(
+                "worker lease duration must exceed twice the poll interval"
+            )
         if self.ci_poll_interval.total_seconds() <= 0:
             raise ValueError("CI poll interval must be positive")
         if self.ci_wait_timeout <= self.ci_poll_interval:
@@ -64,7 +66,9 @@ class WorkerSettings:
             or len(self.telemetry_host) > 255
             or any(character.isspace() for character in self.telemetry_host)
         ):
-            raise ValueError("telemetry host must contain 1 to 255 non-space characters")
+            raise ValueError(
+                "telemetry host must contain 1 to 255 non-space characters"
+            )
         if not 1 <= self.telemetry_port <= 65535:
             raise ValueError("telemetry port must be between 1 and 65535")
 
@@ -87,7 +91,9 @@ class WorkerSettings:
             "OPENREVIEWER_WORKER_LEASE_SECONDS",
         )
         if lease_seconds <= poll_seconds * 2:
-            raise ValueError("worker lease duration must exceed twice the poll interval")
+            raise ValueError(
+                "worker lease duration must exceed twice the poll interval"
+            )
         ci_poll_seconds = _positive_float(
             os.environ.get("OPENREVIEWER_CI_POLL_SECONDS", "30"),
             "OPENREVIEWER_CI_POLL_SECONDS",

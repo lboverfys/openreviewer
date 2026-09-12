@@ -9,6 +9,8 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import ROUND_CEILING, Decimal
+from hashlib import sha256
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -16,6 +18,7 @@ import httpx
 
 from domain.retrieval import VECTOR_DIMENSIONS, RetrievalSettings
 from domain.security import ErrorCode, SafeApplicationError, SafeError
+from services.model_budget import ModelBudgetRequest, current_model_budget_accountant
 from services.model_review import normalize_api_base_url
 from services.pinned_http import PublicDnsPinnedHTTPTransport
 from services.telemetry import GLOBAL_TELEMETRY
@@ -107,19 +110,39 @@ class AliyunRetrievalClient:
         if self._owns_client and external_retrieval_paused():
             raise RetrievalError("检索模型外部调用已暂停，需管理员明确开启")
         started = time.monotonic()
+        accountant = current_model_budget_accountant()
+        request_bytes = len(json.dumps(payload, ensure_ascii=False).encode())
+        purpose = "embedding" if "embeddings" in path else "rerank"
+        price = self.settings.embedding_usd_per_million if purpose == "embedding" else self.settings.rerank_usd_per_million
         for attempt in range(3):
             if self.budget is not None:
                 self.budget.consume()
             request_started = time.monotonic()
             outcome = "success"
+            reservation = accountant.reserve(ModelBudgetRequest(
+                provider="aliyun", api_protocol=purpose, model=str(payload.get("model", "unknown")),
+                request_bytes=request_bytes, input_token_upper_bound=request_bytes,
+                output_token_upper_bound=0, purpose=purpose,
+                connection_key=sha256((self.settings.api_host + "\0" + self.api_key).encode()).hexdigest(),
+                timeout_seconds=self.settings.timeout_seconds + 60,
+                cost_upper_bound_microusd=int((price * request_bytes).to_integral_value(rounding=ROUND_CEILING)) if price is not None else None,
+            )) if accountant is not None else None
+            response_body = None
             try:
-                return self._post_once(path, payload)
+                response_body = self._post_once(path, payload)
+                return response_body
             except RetrievalError as exc:
                 outcome = "client_error"
                 if not exc.retryable or attempt == 2 or time.monotonic() - started > 200 - self.settings.timeout_seconds:
                     raise
                 time.sleep(max(exc.retry_after, 2 ** attempt))
             finally:
+                if accountant is not None and reservation is not None:
+                    tokens = self._tokens(response_body) if response_body is not None else None
+                    accountant.settle(reservation, input_tokens=tokens, output_tokens=0 if tokens is not None else None,
+                        estimated_cost_microusd=int((price * Decimal(tokens)).to_integral_value(rounding=ROUND_CEILING)) if price is not None and tokens is not None else None,
+                        response_status=200 if response_body is not None else None,
+                        duration_ms=round((time.monotonic() - request_started) * 1000), uncertain=response_body is None)
                 GLOBAL_TELEMETRY.observe_external(
                     "retrieval_embedding" if "embeddings" in path else "retrieval_rerank",
                     time.monotonic() - request_started, outcome=outcome,
