@@ -657,6 +657,10 @@ class AiAgentResponse(BaseModel):
     test_status: Literal["untested", "succeeded", "failed"]
     tested_at: datetime | None
     updated_at: datetime | None
+    input_usd_per_million: Decimal | None = None
+    output_usd_per_million: Decimal | None = None
+    cache_read_usd_per_million: Decimal | None = None
+    cache_write_usd_per_million: Decimal | None = None
 
 
 class AiAgentSettingsResponse(BaseModel):
@@ -702,6 +706,10 @@ class AiAgentUpdateRequest(BaseModel):
     write_timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
     pool_timeout_seconds: float = Field(default=5.0, gt=0, le=3600)
     max_retries: int = Field(default=2, ge=0, le=10)
+    input_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
+    output_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
+    cache_read_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
+    cache_write_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
 
     def to_draft(self) -> AgentConfigDraft:
         return AgentConfigDraft(

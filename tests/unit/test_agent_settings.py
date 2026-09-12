@@ -1,3 +1,5 @@
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -290,6 +292,8 @@ def test_shared_connection_uses_active_provider_without_duplicate_agent_secret(
         ModelProvider.OPENAI,
         AiProviderDraft(
             model="shared-default-model",
+            input_usd_per_million=Decimal("1"),
+            output_usd_per_million=Decimal("2"),
             api_protocol=ModelApiProtocol.CHAT_COMPLETIONS,
             api_base_url="https://shared.example.test/v1",
         ),
@@ -345,12 +349,98 @@ def test_shared_connection_uses_active_provider_without_duplicate_agent_secret(
         expected_revision=tested_view.revision,
         actor="administrator",
     )
-    assert next(item for item in enabled.agents if item.agent is ReviewAgent.LOGIC).enabled
+    assert next(
+        item for item in enabled.agents if item.agent is ReviewAgent.LOGIC
+    ).enabled
     runtime_settings = agent_service.model_settings()
     assert runtime_settings[ReviewAgent.LOGIC].model == "logic-special-model"
     assert runtime_settings[ReviewAgent.LOGIC].api_key == "shared-secret-1234"
+    assert runtime_settings[ReviewAgent.LOGIC].pricing is None
+    priced = agent_service.update(
+        ReviewAgent.LOGIC,
+        AgentConfigDraft(
+            provider=ModelProvider.OPENAI,
+            model="legacy-placeholder",
+            use_shared_connection=True,
+            model_override="logic-special-model",
+            input_usd_per_million=Decimal("3"),
+            output_usd_per_million=Decimal("4"),
+        ),
+        expected_revision=enabled.revision,
+        actor="administrator",
+    )
+    assert next(
+        item for item in priced.agents if item.agent is ReviewAgent.LOGIC
+    ).enabled
+    assert agent_service.model_settings()[
+        ReviewAgent.LOGIC
+    ].pricing.input_usd_per_million == Decimal("3")
+    assert len(tested) == 2
     with database.sessions() as session:
         assert session.get(AiAgentSecretRecord, ReviewAgent.LOGIC.value) is None
+
+
+def test_agent_prices_keep_connection_validation_but_model_changes_invalidate_it(
+    database,
+):
+    tested = []
+    service = AgentSettingsService(
+        database.sessions, AiSecretCipher(b"p" * 32), connection_tester=tested.append
+    )
+    draft = AgentConfigDraft(provider=ModelProvider.OPENAI, model="pricing-model")
+    view = service.update(
+        ReviewAgent.SECURITY,
+        draft,
+        expected_revision=0,
+        actor="administrator",
+        api_key="fixture-price-key",
+    )
+    view = service.test(
+        ReviewAgent.SECURITY, expected_revision=view.revision, actor="administrator"
+    )
+    view = service.set_enabled(
+        ReviewAgent.SECURITY,
+        True,
+        expected_revision=view.revision,
+        actor="administrator",
+    )
+    priced = replace(
+        draft,
+        input_usd_per_million=Decimal("1.25"),
+        output_usd_per_million=Decimal("2.50"),
+    )
+    view = service.update(
+        ReviewAgent.SECURITY,
+        priced,
+        expected_revision=view.revision,
+        actor="administrator",
+    )
+    assert view.agents[0].enabled and view.agents[0].test_status == "succeeded"
+    assert view.agents[0].input_usd_per_million == Decimal("1.25") and len(tested) == 1
+    view = service.update(
+        ReviewAgent.SECURITY,
+        priced,
+        expected_revision=view.revision,
+        actor="administrator",
+    )
+    assert view.agents[0].enabled and len(tested) == 1
+    assert service.model_settings()[
+        ReviewAgent.SECURITY
+    ].pricing.output_usd_per_million == Decimal("2.50")
+    with pytest.raises(AiSettingsValidationError):
+        service.update(
+            ReviewAgent.SECURITY,
+            replace(priced, output_usd_per_million=None),
+            expected_revision=view.revision,
+            actor="administrator",
+        )
+    view = service.update(
+        ReviewAgent.SECURITY,
+        replace(priced, model="changed-model"),
+        expected_revision=view.revision,
+        actor="administrator",
+    )
+    assert not view.agents[0].enabled and view.agents[0].test_status == "untested"
 
 
 def test_shared_agent_cannot_be_enabled_after_provider_test_fails(

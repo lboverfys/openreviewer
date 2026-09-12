@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from hashlib import sha256
 from typing import Literal
 
@@ -81,6 +82,10 @@ class AgentConfigDraft:
     # 放在原有字段之后，保持旧版位置参数调用的兼容性。
     use_shared_connection: bool = False
     model_override: str | None = None
+    input_usd_per_million: Decimal | None = None
+    output_usd_per_million: Decimal | None = None
+    cache_read_usd_per_million: Decimal | None = None
+    cache_write_usd_per_million: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +115,31 @@ class AgentConfigView:
     model_override: str | None = None
     shared_connection_configured: bool = False
     shared_connection_ready: bool = False
+    input_usd_per_million: Decimal | None = None
+    output_usd_per_million: Decimal | None = None
+    cache_read_usd_per_million: Decimal | None = None
+    cache_write_usd_per_million: Decimal | None = None
+
+
+_PRICE_FIELDS = (
+    "input_usd_per_million",
+    "output_usd_per_million",
+    "cache_read_usd_per_million",
+    "cache_write_usd_per_million",
+)
+
+
+def _agent_pricing(draft: AgentConfigDraft) -> ModelPricing | None:
+    if draft.input_usd_per_million is None or draft.output_usd_per_million is None:
+        if any(getattr(draft, name) is not None for name in _PRICE_FIELDS):
+            raise ValueError("请同时填写节点的输入和输出 Token 单价")
+        return None
+    return ModelPricing(
+        draft.input_usd_per_million,
+        draft.output_usd_per_million,
+        draft.cache_read_usd_per_million,
+        draft.cache_write_usd_per_million,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,25 +286,50 @@ class AgentSettingsService:
                         secret.updated_at = now
                 elif clear_api_key and secret is not None:
                     session.delete(secret)
-                row.test_status = None
-                row.tested_configuration_fingerprint = None
-                row.tested_at = None
-                # 参数变化后旧连接测试不再可信，必须由管理员重新测试并启用。
-                row.enabled = False
-                self._commit_revision(session, settings, actor, now, f"agent.{agent.value}.updated")
+                retain_validation = False
+                if (
+                    row.tested_configuration_fingerprint
+                    and api_key is None
+                    and not clear_api_key
+                ):
+                    shared = (
+                        self._load_shared_connection(session, settings)
+                        if row.use_shared_connection
+                        else None
+                    )
+                    try:
+                        effective = self._effective_model_settings(row, secret, shared)
+                        retain_validation = (
+                            self._fingerprint(effective)
+                            == row.tested_configuration_fingerprint
+                        )
+                    except AiSettingsValidationError:
+                        retain_validation = False
+                if not retain_validation:
+                    row.test_status = None
+                    row.tested_configuration_fingerprint = None
+                    row.tested_at = None
+                    row.enabled = False
+                self._commit_revision(
+                    session, settings, actor, now, f"agent.{agent.value}.updated"
+                )
                 session.commit()
             except (AiSettingsConflictError, AiSettingsValidationError):
                 session.rollback()
                 raise
             except IntegrityError as exc:
                 session.rollback()
-                raise AiSettingsConflictError("配置已被其他管理员更新，请刷新后重试") from exc
+                raise AiSettingsConflictError(
+                    "配置已被其他管理员更新，请刷新后重试"
+                ) from exc
             except SQLAlchemyError as exc:
                 session.rollback()
                 raise AiSettingsPersistenceError("Agent 配置暂时无法保存") from exc
         return self.get()
 
-    def test(self, agent: ReviewAgent, *, expected_revision: int, actor: str) -> AgentSettingsView:
+    def test(
+        self, agent: ReviewAgent, *, expected_revision: int, actor: str
+    ) -> AgentSettingsView:
         with self._sessions() as session:
             settings = self._lock_settings(session, expected_revision, self._clock())
             row = session.get(AiAgentConfigRecord, agent.value)
@@ -326,11 +381,15 @@ class AgentSettingsService:
                     effective = self._effective_model_settings(row, secret, shared)
                     fingerprint = self._fingerprint(effective)
                     if row.tested_configuration_fingerprint != fingerprint:
-                        raise AiSettingsValidationError("Agent 配置已变化，请重新测试连接")
+                        raise AiSettingsValidationError(
+                            "Agent 配置已变化，请重新测试连接"
+                        )
                 row.enabled = enabled
                 row.updated_by = actor
                 row.updated_at = now
-                self._commit_revision(session, settings, actor, now, f"agent.{agent.value}.enabled")
+                self._commit_revision(
+                    session, settings, actor, now, f"agent.{agent.value}.enabled"
+                )
                 session.commit()
             except (AiSettingsConflictError, AiSettingsValidationError):
                 session.rollback()
@@ -412,9 +471,13 @@ class AgentSettingsService:
                 if self._fingerprint(current) != fingerprint:
                     raise AiSettingsConflictError("测试期间配置已发生变化")
                 row.test_status = "succeeded" if succeeded else "failed"
-                row.tested_configuration_fingerprint = fingerprint if succeeded else None
+                row.tested_configuration_fingerprint = (
+                    fingerprint if succeeded else None
+                )
                 row.tested_at = now
-                self._commit_revision(session, settings, actor, now, f"agent.{agent.value}.test")
+                self._commit_revision(
+                    session, settings, actor, now, f"agent.{agent.value}.test"
+                )
                 session.commit()
             except (
                 AiSettingsConfigurationError,
@@ -425,11 +488,11 @@ class AgentSettingsService:
                 raise
             except SQLAlchemyError as exc:
                 session.rollback()
-                raise AiSettingsPersistenceError(
-                    "连接测试结果暂时无法保存"
-                ) from exc
+                raise AiSettingsPersistenceError("连接测试结果暂时无法保存") from exc
 
-    def _lock_settings(self, session: Session, expected_revision: int, now: datetime) -> AiSettingsRecord:
+    def _lock_settings(
+        self, session: Session, expected_revision: int, now: datetime
+    ) -> AiSettingsRecord:
         row = session.scalar(
             select(AiSettingsRecord)
             .where(AiSettingsRecord.id == AI_SETTINGS_ID)
@@ -454,7 +517,9 @@ class AgentSettingsService:
         return row
 
     @staticmethod
-    def _commit_revision(session: Session, row: AiSettingsRecord, actor: str, now: datetime, action: str) -> None:
+    def _commit_revision(
+        session: Session, row: AiSettingsRecord, actor: str, now: datetime, action: str
+    ) -> None:
         # Agent 配置复用现有全局 revision；审计字段只记录动作，不保存参数值。
         from persistence.models import ConfigurationAuditRecord
 
@@ -473,7 +538,9 @@ class AgentSettingsService:
         )
 
     @staticmethod
-    def _apply(row: AiAgentConfigRecord, draft: AgentConfigDraft, actor: str, now: datetime) -> None:
+    def _apply(
+        row: AiAgentConfigRecord, draft: AgentConfigDraft, actor: str, now: datetime
+    ) -> None:
         row.use_shared_connection = draft.use_shared_connection
         row.model_override = (
             draft.model_override.strip() or None
@@ -493,6 +560,10 @@ class AgentSettingsService:
         row.write_timeout_seconds = draft.write_timeout_seconds
         row.pool_timeout_seconds = draft.pool_timeout_seconds
         row.max_retries = draft.max_retries
+        row.input_usd_per_million = draft.input_usd_per_million
+        row.output_usd_per_million = draft.output_usd_per_million
+        row.cache_read_usd_per_million = draft.cache_read_usd_per_million
+        row.cache_write_usd_per_million = draft.cache_write_usd_per_million
         row.updated_by = actor
         row.updated_at = now
 
@@ -514,14 +585,21 @@ class AgentSettingsService:
             write_timeout_seconds=row.write_timeout_seconds,
             pool_timeout_seconds=row.pool_timeout_seconds,
             max_retries=row.max_retries,
+            input_usd_per_million=row.input_usd_per_million,
+            output_usd_per_million=row.output_usd_per_million,
+            cache_read_usd_per_million=row.cache_read_usd_per_million,
+            cache_write_usd_per_million=row.cache_write_usd_per_million,
         )
 
     @staticmethod
-    def _to_model_settings(provider: ModelProvider, draft: AgentConfigDraft, key: str) -> ModelServiceSettings:
+    def _to_model_settings(
+        provider: ModelProvider, draft: AgentConfigDraft, key: str
+    ) -> ModelServiceSettings:
         try:
             return ModelServiceSettings(
                 provider=provider,
                 model=draft.model,
+                pricing=_agent_pricing(draft),
                 api_key=key,
                 api_protocol=draft.api_protocol,
                 api_base_url=draft.api_base_url,
@@ -645,12 +723,15 @@ class AgentSettingsService:
             if shared.config.test_status != "succeeded":
                 raise AiSettingsValidationError("公共连接必须先通过连接测试")
             model = row.model_override or shared.config.model
-            return self._shared_model_settings(
+            effective = self._shared_model_settings(
                 shared.provider,
                 shared.config,
                 shared.api_key,
                 model=model,
                 max_retries=row.max_retries,
+            )
+            return replace(
+                effective, pricing=_agent_pricing(self._draft(row)) or effective.pricing
             )
         if secret is None:
             raise AiSettingsValidationError("请先保存 Agent 参数和 API Key")
@@ -690,7 +771,9 @@ class AgentSettingsService:
                     cache_read_usd_per_million=prices[2],
                     cache_write_usd_per_million=prices[3],
                 )
-                if prices[0] is not None and prices[1] is not None
+                if prices[0] is not None
+                and prices[1] is not None
+                and model == config.model
                 else None
             )
             return ModelServiceSettings(
@@ -729,7 +812,8 @@ class AgentSettingsService:
                 enabled=False,
                 use_shared_connection=False,
                 model_override=None,
-                shared_connection_configured=shared is not None and shared.secret is not None,
+                shared_connection_configured=shared is not None
+                and shared.secret is not None,
                 shared_connection_ready=False,
                 provider=ModelProvider.OPENAI,
                 model="",
@@ -794,7 +878,8 @@ class AgentSettingsService:
                     shared_configured
                     and shared.config.test_status == "succeeded"
                     and row.test_status == "succeeded"
-                    and row.tested_configuration_fingerprint == self._fingerprint(effective)
+                    and row.tested_configuration_fingerprint
+                    == self._fingerprint(effective)
                 )
             except AiSettingsValidationError:
                 shared_ready = False
@@ -822,7 +907,9 @@ class AgentSettingsService:
             api_protocol=api_protocol,
             api_base_url=api_base_url,
             reasoning_effort=reasoning_effort,
-            api_key_configured=shared_configured if source_shared else secret is not None,
+            api_key_configured=shared_configured
+            if source_shared
+            else secret is not None,
             api_key_mask=f"****{key[-4:]}" if key else None,
             context_window_tokens=context_window_tokens,
             max_output_tokens=max_output_tokens,
@@ -835,6 +922,10 @@ class AgentSettingsService:
             test_status=test_status,
             tested_at=row.tested_at,
             updated_at=row.updated_at,
+            input_usd_per_million=row.input_usd_per_million,
+            output_usd_per_million=row.output_usd_per_million,
+            cache_read_usd_per_million=row.cache_read_usd_per_million,
+            cache_write_usd_per_million=row.cache_write_usd_per_million,
         )
 
     @staticmethod
@@ -857,7 +948,9 @@ class AgentSettingsService:
             ],
             "api_key_sha256": sha256(settings.api_key.encode("utf-8")).hexdigest(),
         }
-        return sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
 
 def _test_connection(settings: ModelServiceSettings) -> None:

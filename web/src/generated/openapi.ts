@@ -1475,6 +1475,10 @@ export interface components {
             /** Api Key Mask */
             api_key_mask: string | null;
             api_protocol: components["schemas"]["ModelApiProtocol"];
+            /** Cache Read Usd Per Million */
+            cache_read_usd_per_million?: string | null;
+            /** Cache Write Usd Per Million */
+            cache_write_usd_per_million?: string | null;
             /** Configured */
             configured: boolean;
             /** Connect Timeout Seconds */
@@ -1483,6 +1487,8 @@ export interface components {
             context_window_tokens: number;
             /** Enabled */
             enabled: boolean;
+            /** Input Usd Per Million */
+            input_usd_per_million?: string | null;
             /** Max Batch Input Tokens */
             max_batch_input_tokens: number;
             /** Max Output Tokens */
@@ -1493,6 +1499,8 @@ export interface components {
             model: string;
             /** Model Override */
             model_override: string | null;
+            /** Output Usd Per Million */
+            output_usd_per_million?: string | null;
             /** Pool Timeout Seconds */
             pool_timeout_seconds: number;
             provider: components["schemas"]["ModelProvider"];
@@ -1532,6 +1540,10 @@ export interface components {
             api_key?: string | null;
             /** @default chat_completions */
             api_protocol: components["schemas"]["ModelApiProtocol"];
+            /** Cache Read Usd Per Million */
+            cache_read_usd_per_million?: number | string | null;
+            /** Cache Write Usd Per Million */
+            cache_write_usd_per_million?: number | string | null;
             /**
              * Clear Api Key
              * @default false
@@ -1549,6 +1561,8 @@ export interface components {
             context_window_tokens: number;
             /** Expected Revision */
             expected_revision: number;
+            /** Input Usd Per Million */
+            input_usd_per_million?: number | string | null;
             /**
              * Max Batch Input Tokens
              * @default 64000
@@ -1568,6 +1582,8 @@ export interface components {
             model: string;
             /** Model Override */
             model_override?: string | null;
+            /** Output Usd Per Million */
+            output_usd_per_million?: number | string | null;
             /**
              * Pool Timeout Seconds
              * @default 5

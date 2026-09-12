@@ -6,7 +6,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, clearSettingsCache } from "./api";
 import AgentSettingsPanel from "./AgentSettingsPanel";
 import type { AiAgentSettingsResponse, ReviewAgent } from "./types";
 
@@ -62,6 +62,29 @@ function settings(revision: number): AiAgentSettingsResponse {
     ],
   };
 }
+
+it("单独填写节点价格时保存报价，不自动调用模型测试", async () => {
+  clearSettingsCache();
+  vi.mocked(api.agentSettings).mockResolvedValue(settings(2));
+  const updated = settings(3);
+  updated.agents[0] = { ...updated.agents[0], input_usd_per_million: "1.2", output_usd_per_million: "3.4" };
+  const save = vi.spyOn(api, "updateAgent").mockResolvedValue(updated);
+  const test = vi.spyOn(api, "testAgent").mockResolvedValue(updated);
+  try {
+    const user = userEvent.setup();
+    render(<AgentSettingsPanel refreshRequest={0} parentRevision={2} onRevisionChange={vi.fn()} onSignedOut={vi.fn()} />);
+    await screen.findByText("安全审查");
+    await user.click(screen.getAllByText("费用估算价格")[0]);
+    await user.type(screen.getByLabelText("安全审查输入单价"), "1.2");
+    await user.type(screen.getByLabelText("安全审查输出单价"), "3.4");
+    await user.click(screen.getAllByRole("button", { name: "保存配置" })[0]);
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save).toHaveBeenCalledWith("security", expect.objectContaining({
+      expected_revision: 2, input_usd_per_million: "1.2", output_usd_per_million: "3.4",
+    }));
+    expect(test).not.toHaveBeenCalled();
+  } finally { save.mockRestore(); test.mockRestore(); clearSettingsCache(); }
+});
 
 afterEach(() => {
   vi.mocked(api.agentSettings).mockReset();

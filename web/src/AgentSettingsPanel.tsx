@@ -33,6 +33,10 @@ interface AgentDraft {
   writeTimeoutSeconds: string;
   poolTimeoutSeconds: string;
   maxRetries: string;
+  inputPrice: string;
+  outputPrice: string;
+  cacheReadPrice: string;
+  cacheWritePrice: string;
 }
 const agentLabels: Record<ReviewAgent, { title: string; description: string }> = {
   security: { title: "安全审查", description: "关注权限、注入、敏感数据和可靠性风险。" },
@@ -69,6 +73,10 @@ function agentDraft(settings: AiAgentSettings): AgentDraft {
     writeTimeoutSeconds: String(settings.write_timeout_seconds),
     poolTimeoutSeconds: String(settings.pool_timeout_seconds),
     maxRetries: String(settings.max_retries),
+    inputPrice: settings.input_usd_per_million ?? "",
+    outputPrice: settings.output_usd_per_million ?? "",
+    cacheReadPrice: settings.cache_read_usd_per_million ?? "",
+    cacheWritePrice: settings.cache_write_usd_per_million ?? "",
   };
 }
 
@@ -92,6 +100,10 @@ function agentDraftDirty(settings: AiAgentSettings, draft: AgentDraft): boolean 
     || draft.writeTimeoutSeconds !== saved.writeTimeoutSeconds
     || draft.poolTimeoutSeconds !== saved.poolTimeoutSeconds
     || draft.maxRetries !== saved.maxRetries
+    || draft.inputPrice !== saved.inputPrice
+    || draft.outputPrice !== saved.outputPrice
+    || draft.cacheReadPrice !== saved.cacheReadPrice
+    || draft.cacheWritePrice !== saved.cacheWritePrice
   );
 }
 
@@ -384,6 +396,10 @@ export default function AgentSettingsPanel({
         write_timeout_seconds: agentNumber(draft.writeTimeoutSeconds, "发送超时"),
         pool_timeout_seconds: agentNumber(draft.poolTimeoutSeconds, "连接排队超时"),
         max_retries: agentNumber(draft.maxRetries, "重试次数", true),
+        input_usd_per_million: draft.inputPrice.trim() || null,
+        output_usd_per_million: draft.outputPrice.trim() || null,
+        cache_read_usd_per_million: draft.cacheReadPrice.trim() || null,
+        cache_write_usd_per_million: draft.cacheWritePrice.trim() || null,
       });
       if (sequence !== refreshSequence.current) return;
       const applied = apply(response, agent);
@@ -569,6 +585,16 @@ export default function AgentSettingsPanel({
                   </div>
                 </details>
               </div>
+              <details className="agent-price-settings">
+                  <summary>费用估算价格</summary>
+                  <p className="settings-field-note">单独覆盖时同时填写输入和输出价格。留空仅在模型名称一致时继承公共价格；仅改价格保留原连接验证。</p>
+                  <div className="agent-settings-fields">
+                    <label><span>输入（美元 / 百万 Token）</span><input aria-label={`${agentLabels[agent].title}输入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.inputPrice} onChange={event => updateDraft(agent, "inputPrice", event.target.value)} /></label>
+                    <label><span>输出（美元 / 百万 Token）</span><input aria-label={`${agentLabels[agent].title}输出单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.outputPrice} onChange={event => updateDraft(agent, "outputPrice", event.target.value)} /></label>
+                    <label><span>缓存读取（可选）</span><input aria-label={`${agentLabels[agent].title}缓存读取单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheReadPrice} onChange={event => updateDraft(agent, "cacheReadPrice", event.target.value)} /></label>
+                    <label><span>缓存写入（可选）</span><input aria-label={`${agentLabels[agent].title}缓存写入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheWritePrice} onChange={event => updateDraft(agent, "cacheWritePrice", event.target.value)} /></label>
+                  </div>
+              </details>
               <div className="agent-settings-actions">
                 <button className="settings-primary-btn" type="button" onClick={() => void save(agent)} disabled={Boolean(busy) || !dirty}>{busy === "save-" + agent ? "保存中..." : "保存配置"}</button>
                 <button className="settings-secondary-btn" type="button" onClick={() => void test(agent)} disabled={Boolean(busy) || dirty || !item.configured || !item.api_key_configured} title={dirty ? "请先保存当前修改" : "测试已保存配置"}>{busy === "test-" + agent ? "测试中..." : "测试连接"}</button>

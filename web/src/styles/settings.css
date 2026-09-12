@@ -1404,3 +1404,12 @@
     display: none;
   }
 }
+
+/* 节点费用编辑与连接操作分开排版。 */
+.agent-price-settings { margin: 14px 0; padding: 12px 0; border-top: 1px solid #e2e8f0; min-width: 0; }
+.agent-price-settings summary { cursor: pointer; font-weight: 600; }
+.agent-price-settings .agent-settings-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.agent-price-settings label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.agent-price-settings input { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; }
+.agent-price-settings .settings-field-note { font-size: 12px; color: #64748b; line-height: 1.7; }
+@media (max-width: 560px) { .agent-price-settings .agent-settings-fields { grid-template-columns: minmax(0, 1fr); } }
