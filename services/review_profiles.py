@@ -194,6 +194,22 @@ class ReviewProfileRuntimeLoader:
         for agent, values in snapshot["agents"].items():
             values = dict(values)
             prices = values.pop("pricing", None)
+            pricing: ModelPricing | None = None
+            if prices:
+                pricing = ModelPricing(
+                    input_usd_per_million=Decimal(prices["input_usd_per_million"]),
+                    output_usd_per_million=Decimal(prices["output_usd_per_million"]),
+                    cache_read_usd_per_million=Decimal(
+                        prices["cache_read_usd_per_million"]
+                    )
+                    if prices.get("cache_read_usd_per_million") is not None
+                    else None,
+                    cache_write_usd_per_million=Decimal(
+                        prices["cache_write_usd_per_million"]
+                    )
+                    if prices.get("cache_write_usd_per_million") is not None
+                    else None,
+                )
             models[ReviewAgent(agent)] = ModelServiceSettings(
                 **{
                     **values,
@@ -205,14 +221,7 @@ class ReviewProfileRuntimeLoader:
                         values["reasoning_effort"]
                     ),
                     "api_key": credentials[agent],
-                    "pricing": ModelPricing(
-                        **{
-                            key: Decimal(value) if value is not None else None
-                            for key, value in prices.items()
-                        }
-                    )
-                    if prices
-                    else None,
+                    "pricing": pricing,
                     "prompt_snapshot": snapshot["prompt"],
                 }
             )

@@ -19,6 +19,7 @@ from persistence.models import (
     OutboxEventRecord,
     ProviderCircuitRecord,
     RepositoryPolicyRecord,
+    ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
 )
@@ -71,13 +72,16 @@ class PlatformQueries:
         )
         calls = (
             select(
-                ModelCallRecord.review_run_id.label("run_id"),
+                ReviewPlanRecord.review_run_id.label("run_id"),
                 func.sum(ModelCallRecord.duration_ms).label("duration_ms"),
+            )
+            .join(
+                ReviewPlanRecord, ReviewPlanRecord.id == ModelCallRecord.review_plan_id
             )
             .where(
                 ModelCallRecord.created_at >= since,
             )
-            .group_by(ModelCallRecord.review_run_id)
+            .group_by(ReviewPlanRecord.review_run_id)
             .subquery()
         )
         with self.sessions() as session:
