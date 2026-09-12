@@ -47,7 +47,9 @@ def acquire_channel(
             failure_count=0,
             updated_at=now,
         )
-        .on_conflict_do_nothing(index_elements=["connection_key"])
+        .on_conflict_do_update(
+            index_elements=["connection_key"], set_={"updated_at": now}
+        )
     )
     circuit = lock_channel(session, key)
     if circuit is None:

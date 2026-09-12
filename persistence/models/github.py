@@ -33,6 +33,48 @@ class PullRequestVersionRecord(Base):
 
     __tablename__ = "pull_request_versions"
     __table_args__ = (
+        Index(
+            "ix_pull_request_versions_title_trgm",
+            "title",
+            postgresql_using="gin",
+            postgresql_ops={"title": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_pull_request_versions_author_login_trgm",
+            "author_login",
+            postgresql_using="gin",
+            postgresql_ops={"author_login": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_pull_request_versions_head_ref_trgm",
+            "head_ref",
+            postgresql_using="gin",
+            postgresql_ops={"head_ref": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_pull_request_versions_base_ref_trgm",
+            "base_ref",
+            postgresql_using="gin",
+            postgresql_ops={"base_ref": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_pull_request_versions_head_repository_trgm",
+            "head_repository",
+            postgresql_using="gin",
+            postgresql_ops={"head_repository": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_pull_request_versions_base_repository_trgm",
+            "base_repository",
+            postgresql_using="gin",
+            postgresql_ops={"base_repository": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
         CheckConstraint("installation_id > 0", name="installation_id_positive"),
         CheckConstraint("repository_id > 0", name="repository_id_positive"),
         CheckConstraint("pull_request_number > 0", name="pull_request_number_positive"),

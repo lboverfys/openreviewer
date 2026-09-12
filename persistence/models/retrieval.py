@@ -51,6 +51,7 @@ class CodeIndexRecord(Base):
         Index("ix_code_indexes_repository_created", "repository_id", "created_at"),
         Index("ix_code_indexes_status_lease", "status", "lease_until"),
         Index("ix_code_indexes_created_at", "created_at"),
+        Index("ix_code_indexes_created_id", "created_at", "id"),
     )
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -243,6 +244,7 @@ class RetrievalEvaluationRecord(Base):
     __tablename__ = "retrieval_evaluations"
     __table_args__ = (
         Index("ix_retrieval_evaluations_index_created", "index_id", "created_at"),
+        Index("ix_retrieval_evaluations_created_id", "created_at", "id"),
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     index_id: Mapped[str] = mapped_column(

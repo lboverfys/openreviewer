@@ -1921,7 +1921,7 @@ def test_persistent_reviewer_exposes_prior_batch_after_later_failure(monkeypatch
         for number in (1, 2)
     )
 
-    import apps.worker.main as worker_main
+    import apps.worker.batches as worker_main
 
     monkeypatch.setattr(worker_main, "plan_model_review_batches", lambda *_args, **_kwargs: batches)
 
@@ -2032,7 +2032,7 @@ def test_checkpoint_size_limit_does_not_fail_successful_model_batch(monkeypatch)
         estimated_input_tokens=10,
     )
 
-    import apps.worker.main as worker_main
+    import apps.worker.batches as worker_main
 
     monkeypatch.setattr(worker_main, "plan_model_review_batches", lambda *_args, **_kwargs: (batch,))
 

@@ -63,6 +63,24 @@ class ReviewRunRecord(Base):
         ),
         Index("ix_review_runs_created_at", "created_at"),
         Index(
+            "ix_review_runs_status_created_id", "execution_status", "created_at", "id"
+        ),
+        Index("ix_review_runs_pr_number", "pull_request_number"),
+        Index(
+            "ix_review_runs_repository_trgm",
+            "repository",
+            postgresql_using="gin",
+            postgresql_ops={"repository": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_review_runs_head_sha_trgm",
+            "head_sha",
+            postgresql_using="gin",
+            postgresql_ops={"head_sha": "gin_trgm_ops"},
+            info={"postgresql_only": True},
+        ).ddl_if(dialect="postgresql"),
+        Index(
             "ix_review_runs_approval_todo",
             "workflow_status",
             "approval_assignee",
@@ -316,6 +334,13 @@ class WorkerHeartbeatRecord(Base):
 class OutboxEventRecord(Base):
     __tablename__ = "outbox_events"
     __table_args__ = (
+        Index(
+            "ix_outbox_events_aggregate_occurred_id",
+            "aggregate_type",
+            "aggregate_id",
+            "occurred_at",
+            "id",
+        ),
         CheckConstraint(
             "publish_attempts >= 0",
             name="publish_attempts_nonnegative",

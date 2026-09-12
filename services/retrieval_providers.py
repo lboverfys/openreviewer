@@ -25,14 +25,32 @@ from services.telemetry import GLOBAL_TELEMETRY
 
 
 def external_retrieval_paused() -> bool:
-    return os.environ.get("OPENREVIEWER_RETRIEVAL_API_DISABLED", "").lower() in {"1", "true", "yes"}
+    return os.environ.get("OPENREVIEWER_RETRIEVAL_API_DISABLED", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 class RetrievalError(SafeApplicationError):
-    def __init__(self, message: str, *, retryable: bool = False, retry_after: float = 0) -> None:
-        super().__init__(SafeError(code=ErrorCode.RETRIEVAL_UNAVAILABLE, safe_message=message, retryable=retryable))
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        retry_after: float = 0,
+        response_status: int | None = None,
+    ) -> None:
+        super().__init__(
+            SafeError(
+                code=ErrorCode.RETRIEVAL_UNAVAILABLE,
+                safe_message=message,
+                retryable=retryable,
+            )
+        )
         self.retryable = retryable
         self.retry_after = min(30.0, max(0.0, retry_after))
+        self.response_status = response_status
 
 
 def normalize_aliyun_host(value: str) -> str:
@@ -42,11 +60,18 @@ def normalize_aliyun_host(value: str) -> str:
     parsed = urlsplit(normalized)
     host = parsed.hostname or ""
     allowed = host.endswith(".maas.aliyuncs.com") or host in {
-        "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com", "dashscope-us.aliyuncs.com",
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
     }
     if not allowed or parsed.port not in {None, 443}:
         raise ValueError("检索模型地址必须是阿里云百炼 HTTPS 接入域名")
-    if parsed.path.rstrip("/") not in {"", "/api/v1", "/compatible-mode/v1", "/compatible-api/v1"}:
+    if parsed.path.rstrip("/") not in {
+        "",
+        "/api/v1",
+        "/compatible-mode/v1",
+        "/compatible-api/v1",
+    }:
         raise ValueError("请填写百炼 API Host 或其标准接入地址")
     return f"https://{host}"
 
@@ -98,7 +123,8 @@ class AliyunRetrievalClient:
             self.client = httpx.Client(
                 transport=PublicDnsPinnedHTTPTransport(),
                 timeout=httpx.Timeout(self.settings.timeout_seconds, connect=10),
-                follow_redirects=False, trust_env=False,
+                follow_redirects=False,
+                trust_env=False,
             )
             self._owns_client = True
 
@@ -113,53 +139,109 @@ class AliyunRetrievalClient:
         accountant = current_model_budget_accountant()
         request_bytes = len(json.dumps(payload, ensure_ascii=False).encode())
         purpose = "embedding" if "embeddings" in path else "rerank"
-        price = self.settings.embedding_usd_per_million if purpose == "embedding" else self.settings.rerank_usd_per_million
+        price = (
+            self.settings.embedding_usd_per_million
+            if purpose == "embedding"
+            else self.settings.rerank_usd_per_million
+        )
         for attempt in range(3):
             if self.budget is not None:
                 self.budget.consume()
             request_started = time.monotonic()
             outcome = "success"
-            reservation = accountant.reserve(ModelBudgetRequest(
-                provider="aliyun", api_protocol=purpose, model=str(payload.get("model", "unknown")),
-                request_bytes=request_bytes, input_token_upper_bound=request_bytes,
-                output_token_upper_bound=0, purpose=purpose,
-                connection_key=sha256((self.settings.api_host + "\0" + self.api_key).encode()).hexdigest(),
-                timeout_seconds=self.settings.timeout_seconds + 60,
-                cost_upper_bound_microusd=int((price * request_bytes).to_integral_value(rounding=ROUND_CEILING)) if price is not None else None,
-            )) if accountant is not None else None
+            reservation = (
+                accountant.reserve(
+                    ModelBudgetRequest(
+                        provider="aliyun",
+                        api_protocol=purpose,
+                        model=str(payload.get("model", "unknown")),
+                        request_bytes=request_bytes,
+                        input_token_upper_bound=request_bytes,
+                        output_token_upper_bound=0,
+                        purpose=purpose,
+                        connection_key=sha256(
+                            (self.settings.api_host + "\0" + self.api_key).encode()
+                        ).hexdigest(),
+                        timeout_seconds=self.settings.timeout_seconds + 60,
+                        cost_upper_bound_microusd=int(
+                            (price * request_bytes).to_integral_value(
+                                rounding=ROUND_CEILING
+                            )
+                        )
+                        if price is not None
+                        else None,
+                    )
+                )
+                if accountant is not None
+                else None
+            )
             response_body = None
+            response_status: int | None = None
+            retry_delay = 0.0
             try:
                 response_body = self._post_once(path, payload)
+                response_status = 200
                 return response_body
             except RetrievalError as exc:
                 outcome = "client_error"
-                if not exc.retryable or attempt == 2 or time.monotonic() - started > 200 - self.settings.timeout_seconds:
+                response_status = exc.response_status
+                if (
+                    not exc.retryable
+                    or attempt == 2
+                    or time.monotonic() - started > 200 - self.settings.timeout_seconds
+                ):
                     raise
-                time.sleep(max(exc.retry_after, 2 ** attempt))
+                retry_delay = max(exc.retry_after, 2**attempt)
             finally:
                 if accountant is not None and reservation is not None:
-                    tokens = self._tokens(response_body) if response_body is not None else None
-                    accountant.settle(reservation, input_tokens=tokens, output_tokens=0 if tokens is not None else None,
-                        estimated_cost_microusd=int((price * Decimal(tokens)).to_integral_value(rounding=ROUND_CEILING)) if price is not None and tokens is not None else None,
-                        response_status=200 if response_body is not None else None,
-                        duration_ms=round((time.monotonic() - request_started) * 1000), uncertain=response_body is None)
+                    tokens = (
+                        self._tokens(response_body)
+                        if response_body is not None
+                        else None
+                    )
+                    accountant.settle(
+                        reservation,
+                        input_tokens=tokens,
+                        output_tokens=0 if tokens is not None else None,
+                        estimated_cost_microusd=int(
+                            (price * Decimal(tokens)).to_integral_value(
+                                rounding=ROUND_CEILING
+                            )
+                        )
+                        if price is not None and tokens is not None
+                        else None,
+                        response_status=response_status,
+                        duration_ms=round((time.monotonic() - request_started) * 1000),
+                        uncertain=response_body is None,
+                    )
                 GLOBAL_TELEMETRY.observe_external(
-                    "retrieval_embedding" if "embeddings" in path else "retrieval_rerank",
-                    time.monotonic() - request_started, outcome=outcome,
+                    "retrieval_embedding"
+                    if "embeddings" in path
+                    else "retrieval_rerank",
+                    time.monotonic() - request_started,
+                    outcome=outcome,
                 )
+            # 当前请求先结算并释放通道，再等待下一次尝试；退避不占用并发名额。
+            if retry_delay:
+                time.sleep(retry_delay)
         raise AssertionError("unreachable retry state")
 
     def _post_once(self, path: str, payload: dict[str, object]) -> dict[str, Any]:
         assert self.client is not None
         try:
             with self.client.stream(
-                "POST", normalize_aliyun_host(self.settings.api_host) + path,
+                "POST",
+                normalize_aliyun_host(self.settings.api_host) + path,
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=payload,
             ) as response:
                 if response.status_code != 200:
                     retry_header = response.headers.get("retry-after", "")
-                    retry_after = float(retry_header) if retry_header.isascii() and retry_header.isdigit() else 0
+                    retry_after = (
+                        float(retry_header)
+                        if retry_header.isascii() and retry_header.isdigit()
+                        else 0
+                    )
                     error_bytes = bytearray()
                     for part in response.iter_bytes():
                         error_bytes.extend(part)
@@ -169,14 +251,28 @@ class AliyunRetrievalClient:
                         error_body = json.loads(error_bytes)
                     except ValueError:
                         error_body = {}
-                    error = error_body.get("error", error_body) if isinstance(error_body, dict) else {}
+                    error = (
+                        error_body.get("error", error_body)
+                        if isinstance(error_body, dict)
+                        else {}
+                    )
                     code = str(error.get("code", "")) if isinstance(error, dict) else ""
-                    code = code if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", code) and not code.startswith("sk-") else ""
-                    description = f"百炼检索接口返回 HTTP {response.status_code}" + (f"（{code}）" if code else "")
+                    code = (
+                        code
+                        if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", code)
+                        and not code.startswith("sk-")
+                        else ""
+                    )
+                    description = f"百炼检索接口返回 HTTP {response.status_code}" + (
+                        f"（{code}）" if code else ""
+                    )
                     raise RetrievalError(
                         description,
-                        retryable=response.status_code == 429 or response.status_code >= 500 or code.startswith("Throttling"),
+                        retryable=response.status_code == 429
+                        or response.status_code >= 500
+                        or code.startswith("Throttling"),
                         retry_after=retry_after,
+                        response_status=response.status_code,
                     )
                 data = bytearray()
                 for part in response.iter_bytes():
@@ -197,8 +293,14 @@ class AliyunRetrievalClient:
         usage = body.get("usage")
         if not isinstance(usage, dict):
             return None
-        value = usage.get("input_tokens", usage.get("prompt_tokens", usage.get("total_tokens")))
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+        value = usage.get(
+            "input_tokens", usage.get("prompt_tokens", usage.get("total_tokens"))
+        )
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else None
+        )
 
     def embed(self, texts: tuple[str, ...]) -> EmbeddingResult:
         # The indexer packs bounded batches before calling this method.
@@ -207,10 +309,14 @@ class AliyunRetrievalClient:
         if sum(len(value.encode()) for value in texts) > 64_000:
             raise ValueError("单批向量输入超过 64 KB")
         started = time.monotonic()
-        body = self._post("/compatible-mode/v1/embeddings", {
-            "model": self.settings.embedding_model,
-            "input": list(texts), "dimensions": VECTOR_DIMENSIONS,
-        })
+        body = self._post(
+            "/compatible-mode/v1/embeddings",
+            {
+                "model": self.settings.embedding_model,
+                "input": list(texts),
+                "dimensions": VECTOR_DIMENSIONS,
+            },
+        )
         rows = body.get("data")
         if not isinstance(rows, list) or len(rows) != len(texts):
             raise RetrievalError("向量响应条数与请求不一致")
@@ -219,16 +325,30 @@ class AliyunRetrievalClient:
             if not isinstance(row, dict):
                 raise RetrievalError("向量响应条目无效")
             index, vector = row.get("index"), row.get("embedding")
-            if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(texts) or index in vectors:
+            if (
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < len(texts)
+                or index in vectors
+            ):
                 raise RetrievalError("向量响应索引无效或重复")
             if not isinstance(vector, list) or len(vector) != VECTOR_DIMENSIONS:
                 raise RetrievalError("向量维度与索引配置不一致")
-            if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in vector):
+            if not all(
+                isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and math.isfinite(v)
+                for v in vector
+            ):
                 raise RetrievalError("向量响应包含无效数值")
             if not any(vector):
                 raise RetrievalError("向量响应为零向量")
             vectors[index] = tuple(float(v) for v in vector)
-        return EmbeddingResult(tuple(vectors[i] for i in range(len(texts))), round((time.monotonic() - started) * 1000), self._tokens(body))
+        return EmbeddingResult(
+            tuple(vectors[i] for i in range(len(texts))),
+            round((time.monotonic() - started) * 1000),
+            self._tokens(body),
+        )
 
     def rerank(self, query: str, documents: tuple[str, ...]) -> RerankResult:
         if not query.strip() or not 1 <= len(documents) <= 30:
@@ -239,15 +359,20 @@ class AliyunRetrievalClient:
         if self.settings.rerank_model == "qwen3-rerank":
             path = "/compatible-api/v1/reranks"
             payload: dict[str, object] = {
-                "model": self.settings.rerank_model, "query": query,
-                "documents": list(documents), "top_n": len(documents),
+                "model": self.settings.rerank_model,
+                "query": query,
+                "documents": list(documents),
+                "top_n": len(documents),
             }
         else:
             path = "/api/v1/services/rerank/text-rerank/text-rerank"
             payload = {
                 "model": self.settings.rerank_model,
                 "input": {"query": query, "documents": list(documents)},
-                "parameters": {"top_n": len(documents), "instruct": "Retrieve code and rules that are relevant evidence for reviewing the described code change."},
+                "parameters": {
+                    "top_n": len(documents),
+                    "instruct": "Retrieve code and rules that are relevant evidence for reviewing the described code change.",
+                },
             }
         body = self._post(path, payload)
         output = body.get("output", body)
@@ -260,11 +385,24 @@ class AliyunRetrievalClient:
             if not isinstance(row, dict):
                 raise RetrievalError("精排响应条目无效")
             index, score = row.get("index"), row.get("relevance_score")
-            if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(documents) or index in seen:
+            if (
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < len(documents)
+                or index in seen
+            ):
                 raise RetrievalError("精排响应索引无效或重复")
-            if not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score):
+            if (
+                not isinstance(score, (int, float))
+                or isinstance(score, bool)
+                or not math.isfinite(score)
+            ):
                 raise RetrievalError("精排响应分数无效")
             seen.add(index)
             ranking.append((index, float(score)))
         ranking.sort(key=lambda item: (-item[1], item[0]))
-        return RerankResult(tuple(ranking), round((time.monotonic() - started) * 1000), self._tokens(body))
+        return RerankResult(
+            tuple(ranking),
+            round((time.monotonic() - started) * 1000),
+            self._tokens(body),
+        )
