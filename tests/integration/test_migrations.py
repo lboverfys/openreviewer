@@ -397,6 +397,7 @@ def test_initial_migration_creates_durable_review_task_schema(
         assert {
             "ix_admin_sessions_active",
             "ix_admin_sessions_expires_at",
+            "ix_admin_sessions_username",
         } == {
             index["name"] for index in inspector.get_indexes("admin_sessions")
         }

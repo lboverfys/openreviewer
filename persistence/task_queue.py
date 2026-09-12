@@ -165,7 +165,9 @@ def _latest_summary_failed(session: Session, review_run_id: str) -> bool:
     )
 
 
-def _task_run_mutation_load_options() -> tuple[Load, Load]:
+def _task_run_mutation_load_options(
+    *, include_repository_policy: bool = False,
+) -> tuple[Load, Load]:
     """只加载任务和运行状态转换代码实际读取的列。"""
 
     return (
@@ -197,6 +199,7 @@ def _task_run_mutation_load_options() -> tuple[Load, Load]:
             ReviewRunRecord.workflow_paused_from,
             ReviewRunRecord.coverage_status,
             ReviewRunRecord.created_at,
+            *((ReviewRunRecord.repository_policy,) if include_repository_policy else ()),
             raiseload=True,
         ),
     )
@@ -791,7 +794,9 @@ class SqlAlchemyReviewTaskQueue:
         now = self._clock()
         with self._sessions() as session:
             try:
-                task, run = self._locked_owned_task_with_run(session, lease, now)
+                task, run = self._locked_owned_task_with_run(
+                    session, lease, now, include_repository_policy=True,
+                )
                 pull_request = context.pull_request
                 if (
                     pull_request.repository_id != run.repository_id
@@ -3034,20 +3039,31 @@ class SqlAlchemyReviewTaskQueue:
             ReviewTaskRecord.attempt_count == lease.attempt_count,
             ReviewTaskRecord.model_attempt_count == lease.model_attempt_count,
             ReviewTaskRecord.ci_poll_count == lease.ci_poll_count,
+            ReviewTaskRecord.claimed_from_status == lease.claimed_from_status.value,
+            or_(ReviewTaskRecord.workflow_status.is_(None),
+                ReviewTaskRecord.workflow_status != ExecutionStatus.PAUSED.value),
             ReviewTaskRecord.lease_expires_at > now,
         ).exists()
+        run_is_owned = (
+            ReviewRunRecord.id == lease.review_run_id,
+            ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
+            or_(ReviewRunRecord.workflow_status.is_(None),
+                ReviewRunRecord.workflow_status != ExecutionStatus.PAUSED.value),
+            owned_task,
+        )
         with self._sessions() as session:
             try:
                 used = session.scalar(update(ReviewRunRecord).where(
-                    ReviewRunRecord.id == lease.review_run_id,
-                    ReviewRunRecord.execution_status == ExecutionStatus.RUNNING.value,
+                    *run_is_owned,
                     ReviewRunRecord.model_request_count < limit,
-                    owned_task,
                 ).values(
                     model_request_count=ReviewRunRecord.model_request_count + 1,
                 ).returning(ReviewRunRecord.model_request_count))
                 if used is None:
-                    self._locked_owned_task_with_run(session, lease, now)
+                    # UPDATE 已接触运行行，错误路径不能再倒序锁任务行；
+                    # 只读确认租约即可区分额度耗尽和所有权丢失。
+                    if session.scalar(select(ReviewRunRecord.id).where(*run_is_owned)) is None:
+                        raise TaskLeaseLostError()
                     raise RepositoryRequestLimitError()
                 session.commit()
             except SQLAlchemyError as exc:
@@ -3317,6 +3333,8 @@ class SqlAlchemyReviewTaskQueue:
         session: Session,
         lease: ReviewTaskLease,
         now: datetime,
+        *,
+        include_repository_policy: bool = False,
     ) -> tuple[ReviewTaskRecord, ReviewRunRecord]:
         """通过一次命中索引的 JOIN 查询锁定所属任务及其运行记录。"""
 
@@ -3353,7 +3371,9 @@ class SqlAlchemyReviewTaskQueue:
                 ReviewTaskRecord.lease_expires_at.is_not(None),
                 ReviewTaskRecord.lease_expires_at > now,
             )
-            .options(*_task_run_mutation_load_options())
+            .options(*_task_run_mutation_load_options(
+                include_repository_policy=include_repository_policy,
+            ))
             .with_for_update()
         )
         row = session.execute(statement).one_or_none()
