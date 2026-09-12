@@ -94,7 +94,7 @@ describe("Nginx API allowlist", () => {
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/batches/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/events/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/identity/delete",
-    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings/finding-1/delete",
   ])("does not proxy the unsupported settings route %s", (path) => {
     expect(isProxied(path)).toBe(false);
   });
