@@ -21,7 +21,6 @@ from domain.evaluation_workbench import (
     EvaluationConflictError,
     EvaluationDatasetCreate,
     EvaluationDatasetView,
-    EvaluationFinding,
     EvaluationFindingView,
     EvaluationImportResult,
     EvaluationNotFoundError,

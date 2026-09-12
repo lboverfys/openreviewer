@@ -254,7 +254,8 @@ def test_case_and_finding_pagination_and_single_query_report(database):
         service.report(dataset.id,ALL,"tuning")
         assert len(statements)==1
         assert "source_snapshot" not in statements[0] and "ballots" not in statements[0]
-    finally: event.remove(database.engine,"before_cursor_execute",capture)
+    finally:
+        event.remove(database.engine,"before_cursor_execute",capture)
 
 
 def test_postgres_snapshot_survives_source_cleanup_and_reviews_use_cas(postgres_database):
