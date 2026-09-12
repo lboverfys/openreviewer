@@ -111,9 +111,9 @@ def capture_review_sources(
       .order_by(ReviewFindingRecord.review_run_id, ReviewFindingRecord.created_at, ReviewFindingRecord.id)
       .limit(len(run_ids) * (MAX_EVALUATION_FINDINGS + 1))
       .execution_options(yield_per=100)).mappings()
-    for row in finding_rows:
-        run_id = row["review_run_id"]
-        payload = {key: value for key, value in row.items() if key != "review_run_id"}
+    for finding_row in finding_rows:
+        run_id = finding_row["review_run_id"]
+        payload = {key: value for key, value in finding_row.items() if key != "review_run_id"}
         finding = EvaluationFinding.model_validate(redact_sensitive(payload))
         size += len(finding.model_dump_json().encode())
         if size > MAX_CAPTURE_BYTES or len(findings[run_id]) >= MAX_EVALUATION_FINDINGS:

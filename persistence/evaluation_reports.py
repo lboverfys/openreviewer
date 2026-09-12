@@ -139,6 +139,7 @@ def comparison_report(
         left, right = getattr(scores["baseline"], key), getattr(scores["candidate"], key)
         deltas[key] = round(right - left, 8) if left is not None and right is not None else None
     return EvaluationComparisonReport(
+        metric_scope="paired_review_workflow",
         dataset_id=identifier, dataset_name=row["name"], repository=row["repository"],
         split=split, generated_at=datetime.now(UTC),
         data_version=sha256(f"{identifier}:{split}:{row['revision']}:{row['case_revisions']}".encode()).hexdigest()[:20],
