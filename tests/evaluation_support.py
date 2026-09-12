@@ -8,6 +8,7 @@ from sqlalchemy import insert
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from domain.enums import LocationSide
 from persistence.models import (
     GitHubInstallationRecord,
     ModelCallRecord,
@@ -104,7 +105,7 @@ def seed_evaluation_runs(database, specs):
                 "head_sha": head, "severity": "high", "category": "authorization",
                 "location_file": "src/service.py", "location_blob_sha": "f" * 40,
                 "location_start_line": index + 1, "location_end_line": index + 1,
-                "location_side": "RIGHT", "location_in_diff": True,
+                "location_side": LocationSide.RIGHT.value, "location_in_diff": True,
                 "title": title, "evidence": spec.get("evidence", "接口没有校验资源归属"),
                 "impact": "可能读取其他用户的数据", "suggestion": "增加资源归属校验",
                 "confidence": 0.9, "verification_status": "verified",
