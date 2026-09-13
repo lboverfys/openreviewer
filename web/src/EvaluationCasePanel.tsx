@@ -6,6 +6,7 @@ import Pagination from "./Pagination";
 import type { AuthUser, EvaluationCaseDetail, EvaluationDataset, EvaluationDecision, EvaluationFinding, EvaluationObservationDetail, EvaluationReference, EvaluationVariant } from "./types";
 import { useCursorPage } from "./useCursorPage";
 import { shortSha } from "./utils";
+import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty } from "./Workspace";
 
 export const assessmentLabels: Record<string, string> = {pending:"待复核", partial:"复核中", disputed:"存在分歧", complete:"双人复核完成"};
 const categories: Record<EvaluationReference["category"], string> = {authorization:"权限", security:"安全", database:"数据库", business_contract:"业务契约", architecture:"架构", test_gap:"测试缺口", reliability:"可靠性"};
@@ -37,17 +38,19 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
     try {setSample(await api.reviewEvaluationReference(caseId, sample.revision, agrees, note)); setNote(""); onChanged();}
     catch (error) {onError(error);} finally {setBusy(false);}
   }
-  if (!sample) return <section className="evaluation-card" role="status">正在加载样本…</section>;
+  if (!sample) return <section className="evaluation-card"><WorkspaceEmpty loading title="正在加载样本…" /></section>;
   const editable = canEdit && !dataset.archived_at;
+  if (editingReference && editable) return <><WorkspaceBack onClick={() => setEditingReference(false)}>返回样本复核</WorkspaceBack><section className="evaluation-card ws-editor"><div className="ws-editor-heading"><div><h2>编辑参考标签</h2><p>PR #{sample.pull_request_number} · {sample.title}</p></div><WorkspaceBadge>版本 {sample.revision}</WorkspaceBadge></div><ReferenceEditor key={caseId} sample={sample} onSaved={data => {setSample(data); setEditingReference(false); onChanged();}} onError={onError} /></section></>;
+  if (importing && editable) return <EvaluationImportPanel key={variant} dataset={dataset} sample={sample} onSaved={() => {setImporting(false); updated();}} onCancel={() => setImporting(false)} onError={onError} />;
   return <section className="evaluation-case">
     <div className="evaluation-card">
       <div className="evaluation-toolbar"><div><h2>PR #{sample.pull_request_number} · {sample.title}</h2><p className="evaluation-hint">{sample.repository} · <code>{shortSha(sample.head_sha)}</code> · {sample.split === "validation" ? "验收集" : "调参集"}</p></div>
         <button type="button" disabled={busy} onClick={() => void load()}>刷新样本</button></div>
       <a href={"https://github.com/" + sample.repository + "/pull/" + sample.pull_request_number + "/files/" + sample.head_sha} target="_blank" rel="noreferrer">在 GitHub 核对该提交</a>
       <div className="evaluation-reference">
-        <div className="evaluation-toolbar"><h3>参考缺陷</h3><span>{sample.reference_status === "confirmed" ? "两位成员已确认" : sample.reference_status === "disputed" ? "参考标签存在分歧" : "待双人确认"}</span>
+        <div className="evaluation-toolbar"><h3>参考缺陷</h3><WorkspaceBadge tone={sample.reference_status === "confirmed" ? "success" : sample.reference_status === "disputed" ? "danger" : "warning"}>{sample.reference_status === "confirmed" ? "两位成员已确认" : sample.reference_status === "disputed" ? "参考标签存在分歧" : "待双人确认"}</WorkspaceBadge>
           {editable && <button type="button" onClick={() => setEditingReference(value => !value)}>{editingReference ? "关闭参考编辑" : "编辑参考标签"}</button>}</div>
-        {sample.reference_defects == null ? <p className="evaluation-empty">尚未标注参考缺陷，已知缺陷找回率暂不计算。</p>
+        {sample.reference_defects == null ? <WorkspaceEmpty title="尚未标注参考缺陷" description="补充人工参考标签后，才能计算已知缺陷找回率。" />
           : sample.reference_defects.length === 0 ? <p>当前标签为“没有已知缺陷”，仍需双人确认。</p>
           : <ul>{sample.reference_defects.map(item => <li key={item.key}><strong>{item.title}</strong> · {categories[item.category]} {item.file && <code>{item.file}{item.start_line ? ":" + item.start_line : ""}</code>}</li>)}</ul>}
         <div className="evaluation-reviewers">{sample.reference_reviews.map(item => <p key={item.reviewer}>{item.reviewer}：{item.agrees ? "认可参考标签" : "不认可参考标签"}{item.note ? " · " + item.note : ""}</p>)}</div>
@@ -57,7 +60,6 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
           <button type="button" disabled={busy} onClick={() => void reviewReference(false)}>参考标签有问题</button>
         </div>}
       </div>
-      {editingReference && editable && <ReferenceEditor key={caseId} sample={sample} onSaved={data => {setSample(data); setEditingReference(false); onChanged();}} onError={onError} />}
     </div>
     <nav className="evaluation-tabs" aria-label="观察分组">
       {(["baseline","candidate"] as const).map(group => <button type="button" key={group} aria-pressed={variant === group} onClick={() => {setVariant(group); setImporting(false);}}>
@@ -66,8 +68,6 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
     </nav>
     {sample[variant] ? <ObservationPanel key={caseId + ":" + variant} sample={sample} variant={variant} user={user} editable={editable} onError={onError} onChanged={updated} />
       : <section className="evaluation-card"><p>该组尚未收录。请选择同一 PR、同一提交的另一条已完成运行。</p>{editable && <button type="button" onClick={() => setImporting(true)}>收录该组运行</button>}</section>}
-    {importing && editable && <EvaluationImportPanel key={variant} dataset={dataset} sample={sample}
-      onSaved={() => {setImporting(false); updated();}} onCancel={() => setImporting(false)} onError={onError} />}
   </section>;
 }
 
@@ -96,7 +96,7 @@ function ReferenceEditor({ sample, onSaved, onError }: {
       reference_defects:mode === "unknown" ? null : mode === "clean" ? [] : references}));}
     catch (error) {onError(error);} finally {setBusy(false);}
   }
-  return <form className="evaluation-editor" onSubmit={save} aria-label="参考标签编辑">
+  return <form className="evaluation-reference-editor" onSubmit={save} aria-label="参考标签编辑">
     <fieldset disabled={busy}>
       <div className="evaluation-form-grid"><label>参考标签类型<select value={mode} onChange={event => setMode(event.target.value)}>
         <option value="unknown">尚未标注</option><option value="clean">没有已知缺陷</option><option value="defects">列出已知缺陷</option></select></label>
@@ -169,23 +169,23 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged 
   }
   const page = tab === "changes" ? changes : findings;
   return <section className="evaluation-card" aria-label="观察结果复核">
-    <div className="evaluation-toolbar"><div><h3>{variant === "baseline" ? "基线" : "候选"}观察</h3><p>{assessmentLabels[detail?.observation.assessment_status ?? slot.assessment_status]}</p></div>
+    <div className="evaluation-toolbar"><div><h3>{variant === "baseline" ? "基线" : "候选"}观察</h3><p>{assessmentLabels[detail?.observation.assessment_status ?? slot.assessment_status]}</p></div><div className="ws-actions">
       <button type="button" disabled={busy} onClick={() => {void load(); void page.refresh();}}>刷新观察</button>
       {editable && <button type="button" disabled={busy} onClick={() => setReplacing(value => !value)}>更换来源运行</button>}
-    </div>
+    </div></div>
     {detail && <>
-      <p className="evaluation-hint">来源 <a href={"#review/" + detail.observation.source_run_id}>{detail.observation.source_run_id.slice(0,8)}</a> · {detail.observation.model_label} · {detail.observation.finding_count} 条问题</p>
+      <div className="evaluation-observation-meta"><a href={"#review/" + detail.observation.source_run_id}>查看来源审查 →</a><span>{detail.observation.model_label}</span><WorkspaceBadge>{detail.observation.finding_count} 条问题</WorkspaceBadge></div>
       <div className="evaluation-reviewers">{detail.ballots.length ? detail.ballots.map(item => <span key={item.reviewer}>{item.reviewer}：{item.decision_count}/{detail.observation.finding_count} 条 · {item.submitted_at ? "已提交" : "草稿"}</span>) : <span>尚无复核。需要两位不同成员分别提交。</span>}</div>
       <nav className="evaluation-tabs" aria-label="复核内容">{([["findings","问题复核"],["changes","变更代码"],["versions","模型与版本"]] as const).map(([key,label]) => <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</nav>
       {tab === "findings" && <>
         {findings.data?.items.map(item => <FindingEditor key={item.finding.id} item={item} user={user} references={sample.reference_defects ?? []} disabled={busy || !editable}
           onSave={decision => void action(() => api.saveEvaluationFindingReview(sample.id,variant,item.finding.id,detail.observation.revision,decision))} />)}
-        {findings.data?.items.length === 0 && !findings.loading && <p className="evaluation-empty">本次审查没有输出问题。请核对参考缺陷与变更代码后提交复核，遗漏问题会体现在已知缺陷找回率中。</p>}
+        {findings.data?.items.length === 0 && !findings.loading && <WorkspaceEmpty title="本次审查没有输出问题" description="核对参考缺陷与变更代码后提交复核，遗漏问题仍会计入找回率。" />}
       </>}
       {tab === "changes" && <>
         <p className="evaluation-hint">这里保存收录时的 PR 审查变更。未改动的关联文件可到 GitHub 的同一提交核对。</p>
         {changes.data?.items.map(item => <article className="evaluation-code" key={item.file}><h4>{item.file}</h4><pre>{item.patch}</pre></article>)}
-        {changes.data?.items.length === 0 && !changes.loading && <p className="evaluation-empty">该快照没有可展示的审查变更。</p>}
+        {changes.data?.items.length === 0 && !changes.loading && <WorkspaceEmpty title="该快照没有可展示的审查变更" />}
       </>}
       {tab !== "versions" && <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={busy || page.loading} onPrevious={page.previous} onNext={page.next} label={tab === "changes" ? "变更代码分页" : "评测问题分页"} />}
       {tab === "versions" && <div className="evaluation-provenance">
@@ -226,7 +226,7 @@ function FindingEditor({ item, user, references, disabled, onSave }: {
   const submit=(event: FormEvent) => {event.preventDefault(); if (!verdict) return; onSave({verdict,
     location_correct:location === "" ? null : location === "true", reference_key:verdict === "valid" && reference ? reference : null, note});};
   return <article className="evaluation-finding">
-    <div className="evaluation-toolbar"><h4>{item.finding.title}</h4><span>{item.finding.severity} · {categories[item.finding.category]}</span></div>
+    <div className="evaluation-toolbar"><h4>{item.finding.title}</h4><WorkspaceBadge tone={item.finding.severity === "critical" || item.finding.severity === "high" ? "danger" : "warning"}>{({ critical: "严重", high: "高风险", medium: "中风险", low: "低风险" } as Record<string,string>)[item.finding.severity] ?? item.finding.severity} · {categories[item.finding.category]}</WorkspaceBadge></div>
     <p><code>{item.finding.file ?? "未定位"}{item.finding.start_line ? ":" + item.finding.start_line : ""}</code></p>
     <details open><summary>证据与影响</summary><pre>{item.finding.evidence}</pre><p>{item.finding.impact}</p><p>{item.finding.suggestion}</p></details>
     <div className="evaluation-reviewers">{item.reviews.map(review => <span key={review.reviewer}>{review.reviewer}：{verdicts[review.decision.verdict]}{review.submitted_at ? "（已提交）" : "（草稿）"}{review.decision.note ? " · " + review.decision.note : ""}</span>)}</div>

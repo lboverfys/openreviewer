@@ -751,8 +751,8 @@ function ReviewDetailPage({
                 {hasPermission(user, "knowledge:manage") && <button type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</button>}
               </div>
               {retrievalLoadError ? <p className="retrieval-warning">{retrievalLoadError}</p> : <RetrievalTracePanel traces={retrievalTraces} compact />}
-              <StaticAnalysisPanel key={reviewRunId} runId={reviewRunId} headSha={details.head_sha} editable={hasPermission(user, "findings:adjudicate")} onError={handlePageError} />
             </section>
+            <StaticAnalysisPanel key={reviewRunId} runId={reviewRunId} headSha={details.head_sha} editable={hasPermission(user, "findings:adjudicate")} onError={handlePageError} />
             </>}
             {activeTab === "agents" && <>
             <ModelBatchPanel

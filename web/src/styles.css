@@ -4,4 +4,6 @@
 @import "./styles/settings.css";
 @import "./styles/review.css";
 @import "./styles/knowledge.css";
+@import "./styles/workspace.css";
+@import "./styles/platform.css";
 @import "./styles/retrieval.css";

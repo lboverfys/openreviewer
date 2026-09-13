@@ -1,28 +1,48 @@
-@import "./team.css";
-
-.platform-page { width: min(1440px, 100%); margin: 0 auto; padding: 28px clamp(16px, 3vw, 42px); }
-.platform-page > header { margin-bottom: 24px; }
-.platform-page h1 { font-size: 28px; }
-.platform-page header p { color: var(--text-muted, #657287); }
-.platform-page .team-card { margin-top: 18px; }
-.platform-page table small { display: block; color: #64748b; margin-top: 5px; }
-.platform-page table td { overflow-wrap: anywhere; }
-.platform-page table td button { margin-left: 10px; }
-.platform-page a { color: #2563eb; text-decoration: underline; text-underline-offset: 3px; }
-.platform-empty { padding: 24px 8px; color: #64748b; text-align: center; }
-.platform-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }
-.platform-metrics > div { display: flex; flex-direction: column; gap: 6px; padding: 15px; border: 1px solid #e2e8f0; border-radius: 10px; overflow-wrap: anywhere; }
-.platform-inline-form { display: flex; align-items: end; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
-.platform-inline-form label { flex: 1; min-width: 210px; }
-.platform-profile { display: flex; gap: 18px; justify-content: space-between; align-items: start; padding: 20px 0; border-top: 1px solid #e2e8f0; }
+/* 运营工作区沿用共享视觉层，仅在此维护业务布局。 */
+.platform-inline-form { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 12px 14px; background: var(--accent-softer); border: 1px solid var(--border-glow); border-radius: var(--radius-md); }
+.platform-inline-form p { color: var(--text-secondary); font-size: 12px; }
+.platform-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 14px; }
+.platform-metrics > div { display: flex; flex-direction: column; gap: 5px; padding: 13px; border: 1px solid var(--border-soft); background: var(--bg-card-soft); border-radius: var(--radius-md); min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.platform-metrics > div > span { color: var(--text-muted); font-size: 11px; }
+.platform-profile { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 0; border-top: 1px solid var(--border-soft); }
 .platform-profile > div { min-width: 0; overflow-wrap: anywhere; }
-.platform-profile > button { flex-shrink: 0; }
-.platform-profile p { color: #64748b; font-size: 13px; }
-.platform-page fieldset { border: 0; padding: 0; margin: 16px 0; }
-.platform-page label { display: flex; flex-direction: column; gap: 6px; }
-.platform-page .team-toolbar label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
-.platform-page input:not([type="checkbox"]), .platform-page select, .platform-page textarea { box-sizing: border-box; max-width: 100%; padding: 9px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #1e293b; }
-.platform-page textarea { width: 100%; }
-.platform-page button { cursor: pointer; }
-.platform-page button:disabled { cursor: default; }
-@media (max-width: 640px) { .platform-profile { flex-direction: column; } .platform-page .team-tabs { overflow-x: auto; } .platform-page .team-toolbar { align-items: stretch; } }
+.platform-profile p { color: var(--text-muted); font-size: 12px; }
+.profile-heading { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.profile-models { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.profile-models > span { color: var(--text-secondary); background: var(--bg-card-soft); border: 1px solid var(--border-soft); padding: 4px 8px; border-radius: 7px; font-size: 10.5px; }
+.profile-models b { color: var(--text-muted); font-weight: 500; margin-right: 6px; }
+.profile-metadata { display: flex; flex-wrap: wrap; gap: 12px; color: var(--text-muted); font-size: 11px; margin-top: 8px; }
+.profile-repository-picker { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+.profile-repository-picker > label { width: min(420px,100%); }
+.profile-repository-picker .list-pagination { margin-left: auto; padding: 0; gap: 12px; }
+.profile-history { margin-top: 8px; }
+.profile-history .platform-profile:first-child { border-top: 0; }
+.profile-quality { display: flex; align-items: flex-start; gap: 12px; padding: 14px; margin: 16px 0; background: var(--bg-card-soft); border: 1px solid var(--border-soft); border-radius: var(--radius-md); }
+.profile-quality > div { min-width: 0; }
+.profile-quality p { color: var(--text-muted); font-size: 12px; margin-top: 5px; }
+.usage-scope { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.usage-groups { margin-top: 16px; }
+.usage-groups > summary { padding: 10px 0; }
+.diagnostic-secondary { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); gap: 14px; }
+.diagnostic-failure-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.diagnostic-failure-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border: 1px solid var(--border-soft); background: var(--bg-card-soft); border-radius: 8px; font-size: 11.5px; }
+.diagnostic-failure-list code { overflow-wrap: anywhere; min-width: 0; }
+.work-source { margin-bottom: 16px; }
+.static-analysis { margin-top: 0; border-radius: var(--radius-lg); background: var(--bg-card); }
+.static-analysis > summary { padding: 2px 0; }
+.static-analysis > summary > span { margin-left: auto; }
+.static-analysis-content { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; }
+.static-upload-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.static-file-field { border: 1px dashed var(--border-strong); padding: 14px; border-radius: var(--radius-md); background: var(--bg-card); }
+.static-file-field small { margin-bottom: 4px; }
+.workspace-surface input[type="file"] { font-size: 11px; padding: 0; border: 0; background: transparent; }
+.workspace-surface input[type="file"]::file-selector-button { padding: 7px 10px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--bg-inset); color: var(--text-secondary); font: inherit; margin-right: 8px; cursor: pointer; }
+.static-finding { padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-card); }
+.static-finding p { font-size: 12px; line-height: 1.7; margin-top: 8px; color: var(--text-secondary); }
+@media (max-width: 900px) { .diagnostic-secondary { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 640px) { .platform-profile { align-items: flex-start; flex-direction: column; gap: 12px; } .static-upload-grid { grid-template-columns: minmax(0,1fr); } .profile-repository-picker .list-pagination { margin-left: 0; width: 100%; } }
+.profile-version { margin-top: 10px; }
+.profile-version > summary { font-size: 11px; color: var(--text-muted); }
+.profile-version > p { padding: 8px 0 0; font-size: 11px; }
+.diagnostic-table { max-height: 460px; }
+.diagnostic-table th { position: sticky; top: 0; z-index: 1; }

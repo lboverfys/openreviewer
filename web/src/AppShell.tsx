@@ -25,7 +25,6 @@ const iconProps = {
 } as const;
 
 const NAV_ITEMS: ReadonlyArray<ShellNavItem> = [
-  { key: "platform", label: "协作与运营", hash: "platform", icon: <svg {...iconProps}><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/></svg> },
   {
     key: "dashboard",
     label: "审查控制台",
@@ -34,6 +33,7 @@ const NAV_ITEMS: ReadonlyArray<ShellNavItem> = [
       <svg {...iconProps}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
     ),
   },
+  { key: "platform", label: "协作与运营", hash: "platform", icon: <svg {...iconProps}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg> },
   {
     key: "retrieval",
     label: "代码检索",

@@ -7,6 +7,7 @@ import UsagePanel from "./UsagePanel";
 import WorkItemsPanel from "./WorkItemsPanel";
 import ReviewProfilesPanel from "./ReviewProfilesPanel";
 import DiagnosticsPanel from "./DiagnosticsPanel";
+import { WorkspaceHeader } from "./Workspace";
 import "./styles/platform.css";
 
 export type PlatformTab = "work" | "usage" | "profiles" | "diagnostics";
@@ -22,8 +23,8 @@ export default function PlatformPage({ user, findingId, initialTab, onSignedOut 
     if (failure instanceof ApiError && failure.status === 401) { onSignedOut("登录已失效，请重新登录"); return; }
     setError(failure instanceof Error ? failure.message : "操作暂时无法完成");
   }, [onSignedOut]);
-  return <main className="platform-page">
-    <header><p className="team-eyebrow">TEAM OPERATIONS</p><h1>协作与运营</h1><p>处理审查待办，管理仓库用量、审查方案和运行情况。</p></header>
+  return <main className="workspace-page platform-page">
+    <WorkspaceHeader title="协作与运营" icon="review" description="处理待办、查看用量，管理审查方案与运行情况。" />
     <nav className="team-tabs" aria-label="协作与运营分类">
       {([["work", "审查待办"], ["usage", "用量与预算"], ["profiles", "审查方案"], ["diagnostics", "运行诊断"]] as const).filter(([key]) => manager || key === "work").map(([key, label]) =>
         <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(""); }}>{label}</button>)}

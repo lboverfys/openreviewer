@@ -355,7 +355,7 @@ code, pre {
   align-items: center;
   gap: 11px;
 }
-@media (max-width: 900px) {
+@media (max-width: 1180px) {
   .app-shell-topbar {
     flex-wrap: wrap;
     gap: 8px 12px;

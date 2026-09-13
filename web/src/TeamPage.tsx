@@ -6,6 +6,7 @@ import { roleLabels } from "./rbac";
 import type { AccessRole, TeamMember, TeamMemberWrite, TeamRepository, TeamRepositoryWrite } from "./types";
 import { useCursorPage } from "./useCursorPage";
 import { formatDate } from "./utils";
+import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty, WorkspaceHeader, WorkspaceSection } from "./Workspace";
 import "./styles/team.css";
 
 type Tab = "repositories" | "members" | "audits";
@@ -53,19 +54,18 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
     }
   };
 
-  return <main className="team-page">
-    <header className="team-heading">
-      <div><p className="team-eyebrow">TEAM WORKSPACE</p><h1>团队管理</h1><p>分配成员权限，为每个仓库选择审查范围和审批负责人。</p></div>
-      <button type="button" disabled={busy || page.loading} onClick={() => {setError(""); void page.refresh();}}>刷新列表</button>
-    </header>
-    <nav className="team-tabs" aria-label="团队管理分类">
+  return <main className="workspace-page team-page">
+    <WorkspaceHeader title="团队管理" icon="team" description="管理成员权限、仓库范围与审查策略。" actions={member || repository
+      ? <WorkspaceBack onClick={() => { if (!busy) { setMember(null); setRepository(null); setError(""); } }} />
+      : <button type="button" disabled={busy || page.loading} onClick={() => {setError(""); void page.refresh();}}>刷新列表</button>} />
+    {!member && !repository && <nav className="team-tabs" aria-label="团队管理分类">
       {([["repositories", "仓库策略"], ["members", "团队成员"], ["audits", "变更记录"]] as const).map(([key, label]) =>
         <button key={key} type="button" aria-pressed={tab === key} disabled={busy} onClick={() => changeTab(key)}>{label}</button>,
       )}
-    </nav>
+    </nav>}
     {error && <p className="team-error" role="alert">{error}</p>}
     {message && <p className="team-success" role="status">{message}</p>}
-    <section className="team-card">
+    {!member && !repository && <section className="team-card">
       <div className="team-toolbar">
         <h2>{tab === "repositories" ? "已配置仓库" : tab === "members" ? "成员权限" : "最近变更"}</h2>
         {tab !== "audits" && <button type="button" className="team-primary" disabled={busy} onClick={() => {
@@ -79,7 +79,7 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
         {tab === "repositories" && <table>
           <thead><tr><th>仓库</th><th>新任务</th><th>目标分支</th><th>审批负责人</th><th>请求上限</th><th>版本</th><th>操作</th></tr></thead>
           <tbody>{repositories.data?.items.map((item) => <tr key={item.id}>
-            <td>{item.repository}</td><td>{item.policy.enabled ? "接收" : "暂停"}</td>
+            <td><strong>{item.repository}</strong></td><td><WorkspaceBadge tone={item.policy.enabled ? "success" : "neutral"}>{item.policy.enabled ? "接收" : "暂停"}</WorkspaceBadge></td>
             <td>{item.policy.target_branches?.join("、") || "全部"}</td><td>{item.policy.approver || "按角色审批"}</td>
             <td>{item.policy.max_model_requests == null ? "不限制" : item.policy.max_model_requests + " 次"}</td><td>v{item.revision}</td>
             <td><button type="button" aria-label={"编辑仓库 " + item.repository} disabled={busy} onClick={() => {setRepository(item); setMessage("");}}>编辑</button></td>
@@ -88,9 +88,9 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
         {tab === "members" && <table>
           <thead><tr><th>用户名</th><th>角色</th><th>可见资源</th><th>状态</th><th>版本</th><th>操作</th></tr></thead>
           <tbody>{members.data?.items.map((item) => <tr key={item.username}>
-            <td>{item.username}</td><td>{roleLabels[item.role]}</td>
+            <td><div className="team-member-identity"><span className="team-member-avatar">{item.username.slice(0, 1).toUpperCase()}</span><strong>{item.username}</strong></div></td><td>{roleLabels[item.role]}</td>
             <td>{item.scope.unrestricted ? "全部仓库" : [...(item.scope.repositories ?? []), ...(item.scope.organizations ?? []).map((name) => name + "/*")].join("、") || (item.scope.installation_ids?.length ? "指定 App 安装范围" : "未分配")}</td>
-            <td>{item.enabled ? "启用" : "停用"}</td><td>v{item.revision}</td>
+            <td><WorkspaceBadge tone={item.enabled ? "success" : "neutral"}>{item.enabled ? "启用" : "停用"}</WorkspaceBadge></td><td><span className="ws-chip">v{item.revision}</span></td>
             <td><button type="button" aria-label={"编辑成员 " + item.username} disabled={busy} onClick={() => {setMember(item); setMessage("");}}>编辑</button></td>
           </tr>)}</tbody>
         </table>}
@@ -104,9 +104,9 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
           </tr>)}</tbody>
         </table>}
       </div>
-      {!page.loading && page.data?.items.length === 0 && <p className="team-empty">{tab === "repositories" ? "还没有仓库策略，可先为正在使用的仓库添加一份。" : tab === "members" ? "还没有普通成员，可新增成员并分配仓库权限。" : "还没有团队变更记录。"}</p>}
+      {!page.loading && page.data?.items.length === 0 && <WorkspaceEmpty title={tab === "repositories" ? "尚未配置仓库" : tab === "members" ? "尚未添加成员" : "暂无变更记录"} description={tab === "repositories" ? "为已授权的仓库添加策略，统一管理审查范围与审批。" : tab === "members" ? "新增成员后，为其分配角色与可见仓库。" : "成员与仓库策略的变更会显示在这里。"} />}
       <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={busy || page.loading} onPrevious={page.previous} onNext={page.next} />
-    </section>
+    </section>}
     {member && <MemberEditor key={member === "new" ? "new-member" : member.username + ":" + member.revision} member={member} busy={busy} onCancel={() => setMember(null)} onSave={(username, body) => void save(() => api.saveTeamMember(username, body))} />}
     {repository && <RepositoryEditor key={repository === "new" ? "new-repository" : repository.id + ":" + repository.revision} repository={repository} busy={busy} onCancel={() => setRepository(null)} onSave={(body, id) => void save(() => api.saveTeamRepository(body, id))} />}
   </main>;
@@ -135,16 +135,17 @@ function MemberEditor({ member, busy, onCancel, onSave }: {
       ...(password ? {password} : {}),
     });
   };
-  return <section className="team-card team-editor" aria-label="成员编辑">
-    <h2>{current ? "编辑成员 · " + current.username : "新增成员"}</h2>
+  return <section className="team-card team-editor ws-editor" aria-label="成员编辑">
+    <div className="ws-editor-heading"><div><h2>{current ? "编辑成员 · " + current.username : "新增成员"}</h2><p>设置账号身份与可见资源，修改后成员需要重新登录。</p></div>{current && <WorkspaceBadge>版本 {current.revision}</WorkspaceBadge>}</div>
     <form onSubmit={submit}>
       <fieldset disabled={busy}>
-        <div className="team-form-grid">
+        <WorkspaceSection title="账号信息" description="分配角色，维护账号状态与登录密码。"><div className="team-form-grid">
           <label>用户名<input value={username} disabled={Boolean(current)} required maxLength={100} pattern={"[A-Za-z0-9_.@\\-]+"} autoComplete="off" onChange={(event) => setUsername(event.target.value)} /></label>
           <label>角色<select value={role} onChange={(event) => {setRole(event.target.value as AccessRole); setUnrestricted(event.target.value === "administrator");}}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>{current ? "新密码（留空保留）" : "初始密码"}<input type="password" value={password} required={!current} minLength={12} maxLength={128} autoComplete="new-password" onChange={(event) => setPassword(event.target.value)} /></label>
           <label className="team-check"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />启用账号</label>
-        </div>
+        </div></WorkspaceSection>
+        <WorkspaceSection title="资源范围" description="成员只能查看已分配范围内的仓库与任务。">
         {role === "administrator" && <label className="team-check"><input type="checkbox" checked={unrestricted} onChange={(event) => setUnrestricted(event.target.checked)} />可查看全部仓库（管理员具有成员和配置管理权限）</label>}
         {!unrestricted && <>
           <label>可见仓库（每行一个）<textarea value={repositories} rows={3} placeholder="owner/repository" onChange={(event) => setRepositories(event.target.value)} /></label>
@@ -154,7 +155,8 @@ function MemberEditor({ member, busy, onCancel, onSave }: {
             <p className="team-hint">安装范围与仓库范围同时生效；全部留空时无法查看任何任务。</p>
           </details>
         </>}
-        <div className="team-form-actions"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存成员"}</button><button type="button" onClick={onCancel}>取消编辑</button></div>
+        </WorkspaceSection>
+        <div className="ws-form-actions is-sticky"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存成员"}</button><button type="button" onClick={onCancel}>取消编辑</button></div>
       </fieldset>
     </form>
   </section>;
@@ -198,32 +200,40 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
       },
     }, current?.id);
   };
-  return <section className="team-card team-editor" aria-label="仓库策略编辑">
-    <h2>{current ? "编辑策略 · " + current.repository : "添加仓库策略"}</h2>
-    <form onSubmit={submit}>
-      <fieldset disabled={busy}>
+  return <section className="team-card team-editor ws-editor" aria-label="仓库策略编辑">
+    <div className="ws-editor-heading"><div><h2>{current ? "编辑策略 · " + current.repository : "添加仓库策略"}</h2><p>按范围、协作与费用组织配置，高级选项可按需展开。</p></div>{current && <WorkspaceBadge>策略 v{current.revision}</WorkspaceBadge>}</div>
+    <form onSubmit={submit}><fieldset disabled={busy}>
+      <WorkspaceSection title="审查范围" description="选择接入仓库、目标分支和团队知识。">
+        <div className="team-form-grid"><label>仓库名称<input value={name} required disabled={Boolean(current)} maxLength={255} pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} placeholder="owner/repository" onChange={event => setName(event.target.value)} /></label>
+          <label className="team-check"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />接收新审查任务</label></div>
+        <label>目标分支（每行一个，留空审查全部分支）<textarea value={branches} rows={2} placeholder={"main\nrelease/*"} onChange={event => setBranches(event.target.value)} /></label>
+        <label>知识规则<select value={knowledgeMode} onChange={event => setKnowledgeMode(event.target.value)}><option value="inherit">继承已启用知识库</option><option value="selected">仅使用指定文档</option><option value="none">不使用知识库</option></select></label>
+        {knowledgeMode === "selected" && <label>知识文档来源（从知识库复制，每行一个）<textarea value={sources} rows={3} required placeholder="security.md" onChange={event => setSources(event.target.value)} /></label>}
+        <p className="team-hint">仓库内的 AGENTS.md 始终生效。<a href="#knowledge">管理知识库</a></p>
+      </WorkspaceSection>
+      <WorkspaceSection title="审批与方案" description="明确审批负责人，控制结果发布前的人工确认。">
+        <div className="team-form-grid"><label>审批负责人（用户名，可留空）<input value={approver} maxLength={100} onChange={event => setApprover(event.target.value)} /><small>留空时按角色审批。</small></label>
+          <label>审批时限（小时）<input required type="number" min={1} max={720} value={approvalHours} onChange={event => setApprovalHours(event.target.value)} /></label></div>
+        {current?.policy.review_profile_id && <label className="team-check"><input type="checkbox" checked={useProfile} onChange={event => setUseProfile(event.target.checked)} />继续固定已启用的审查方案</label>}
+        <p className="team-hint">审查范围和方案应用于新任务。<a href="#platform?tab=profiles">管理审查方案 →</a></p>
+      </WorkspaceSection>
+      <WorkspaceSection title="费用与执行" description="设置月度预算与执行上限，让审查用量可控。">
         <div className="team-form-grid">
-          <label>仓库名称<input value={name} required disabled={Boolean(current)} maxLength={255} pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} placeholder="owner/repository" onChange={(event) => setName(event.target.value)} /></label>
-          <label className="team-check"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />接收新审查任务</label>
-          <label>审批负责人（用户名，可留空）<input value={approver} maxLength={100} onChange={(event) => setApprover(event.target.value)} /><small>留空时按角色审批；管理员可以代为处理。</small></label>
-          <label>单次审查最多模型请求数<input type="number" min={1} max={10000} step={1} value={limit} placeholder="不限制" onChange={(event) => setLimit(event.target.value)} /><small>含各 Agent 和重试；不包含向量、精排请求。</small></label>
-          <label>月度预算（美元，可留空）<input type="number" min={0.000001} max={1000000} step={0.000001} value={monthlyBudget} onChange={event => setMonthlyBudget(event.target.value)} /><small>按 UTC 自然月和配置价格估算。预算不足时暂停新模型请求；启用前需配置模型价格。</small></label>
+          <label>月度预算（美元，可留空）<input type="number" min={0.000001} max={1000000} step={0.000001} value={monthlyBudget} placeholder="不限制" onChange={event => setMonthlyBudget(event.target.value)} /><small>按 UTC 月份估算，启用前需配置模型价格。</small></label>
           <label>预算提醒比例（%）<input required type="number" min={1} max={100} value={warningPercent} onChange={event => setWarningPercent(event.target.value)} /></label>
+          <label>单次审查最多模型请求数<input type="number" min={1} max={10000} step={1} value={limit} placeholder="不限制" onChange={event => setLimit(event.target.value)} /><small>包含各 Agent 与重试，不含向量、精排。</small></label>
           <label>仓库同时执行的任务上限<input type="number" min={1} max={100} value={concurrency} placeholder="不限制" onChange={event => setConcurrency(event.target.value)} /></label>
-          <label>审批时限（小时）<input required type="number" min={1} max={720} value={approvalHours} onChange={event => setApprovalHours(event.target.value)} /></label>
-          {current?.policy.review_profile_id && <label className="team-check"><input type="checkbox" checked={useProfile} onChange={event => setUseProfile(event.target.checked)} />继续固定已启用的审查方案</label>}
         </div>
-        <label>目标分支（每行一个，留空审查全部分支）<textarea value={branches} rows={3} placeholder={"main\nrelease/*"} onChange={(event) => setBranches(event.target.value)} /></label>
-        <label>禁止外发的文件（每行一项，支持 * 通配符）<textarea rows={4} value={blockedPaths} onChange={event => setBlockedPaths(event.target.value)} /></label>
-        <label>允许的模型供应商域名（每行一个，留空使用已配置连接）<textarea rows={2} value={allowedHosts} onChange={event => setAllowedHosts(event.target.value)} placeholder="api.openai.com" /></label>
+      </WorkspaceSection>
+      <details className="ws-disclosure"><summary>数据外发与增量复用<small>高级设置</small></summary><div className="ws-disclosure-body">
+        <p className="team-hint">外发限制覆盖审查、向量与精排；命中限制时拒绝请求并保留原代码。</p>
+        <div className="team-form-grid"><label>禁止外发的文件（每行一项，支持 * 通配符）<textarea rows={5} value={blockedPaths} onChange={event => setBlockedPaths(event.target.value)} /></label>
+          <label>允许的模型供应商域名（每行一个，留空使用已配置连接）<textarea rows={5} value={allowedHosts} onChange={event => setAllowedHosts(event.target.value)} placeholder="api.openai.com" /></label></div>
         <label className="team-check"><input type="checkbox" checked={blockSecrets} onChange={event => setBlockSecrets(event.target.checked)} />检测到凭据形状时阻止整次外发</label>
         <label className="team-check"><input type="checkbox" checked={incremental} onChange={event => setIncremental(event.target.checked)} />启用跨提交的精确输入复用（需绑定审查方案）</label>
-        <p className="team-hint">外发限制覆盖审查、向量和精排；命中限制时保留原代码并拒绝请求。增量复用只适用于相同方案和输入，关联代码变化会失效，汇总仍重新执行。</p>
-        <label>知识规则<select value={knowledgeMode} onChange={(event) => setKnowledgeMode(event.target.value)}><option value="inherit">继承已启用知识库</option><option value="selected">仅使用指定文档</option><option value="none">不使用知识库</option></select></label>
-        {knowledgeMode === "selected" && <label>知识文档来源（从知识库复制，每行一个）<textarea value={sources} rows={3} required placeholder="security.md" onChange={(event) => setSources(event.target.value)} /></label>}
-        <p className="team-hint">仓库内的 AGENTS.md 始终生效。审查范围和方案用于新任务；预算与仓库并发限制在后续请求、任务领取时生效。<a href="#platform?tab=profiles">管理审查方案</a></p>
-        <div className="team-form-actions"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存仓库策略"}</button><button type="button" onClick={onCancel}>取消编辑</button></div>
-      </fieldset>
-    </form>
+        <p className="team-hint">仅复用相同方案和输入，关联代码变化后重新审查。</p>
+      </div></details>
+      <div className="ws-form-actions is-sticky"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存仓库策略"}</button><button type="button" onClick={onCancel}>取消编辑</button><span className="ws-hint">保存时会核对当前策略版本</span></div>
+    </fieldset></form>
   </section>;
 }

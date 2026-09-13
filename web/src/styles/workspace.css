@@ -1,0 +1,114 @@
+/* 新增业务界面复用晨曦白瓷主题；独立面板不依赖页面访问顺序。 */
+.workspace-page { width: 100%; max-width: 1460px; margin: 0 auto; padding: 14px 28px 34px; display: flex; flex-direction: column; gap: 14px; color: var(--text-main); }
+.ws-page-header, .ws-page-heading, .ws-actions, .ws-toolbar, .team-toolbar, .evaluation-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ws-page-header { justify-content: space-between; min-height: 48px; }
+.ws-page-heading { flex-wrap: nowrap; min-width: 0; gap: 11px; }
+.ws-page-heading h1 { font-size: 17px; font-weight: 830; letter-spacing: -.02em; }
+.ws-page-heading p { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.ws-page-icon { display: grid; place-items: center; flex: 0 0 36px; height: 36px; border-radius: 11px; color: var(--accent); background: var(--gradient-aurora-soft); }
+.ws-actions { margin-left: auto; }
+.ws-toolbar, .team-toolbar, .evaluation-toolbar { justify-content: space-between; min-width: 0; }
+.ws-toolbar > div, .team-toolbar > div, .evaluation-toolbar > div { min-width: 0; }
+.ws-toolbar p, .team-toolbar p, .evaluation-toolbar p { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+.workspace-surface, .team-card, .evaluation-card { min-width: 0; padding: 18px; background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
+.workspace-surface h2, .team-card h2, .evaluation-card h2 { font-size: 14px; font-weight: 780; }
+.workspace-surface h3, .team-card h3, .evaluation-card h3 { font-size: 13px; font-weight: 750; }
+.workspace-surface h4, .team-card h4, .evaluation-card h4 { font-size: 12.5px; font-weight: 730; }
+:where(.workspace-page, .workspace-surface) :where(button:not(.switch-item)), :where(.workspace-page, .workspace-surface) .ws-button-link { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 6px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-secondary); font-size: 12px; font-weight: 650; line-height: 1.45; text-decoration: none; white-space: nowrap; transition: background .18s, color .18s, border-color .18s, box-shadow .18s; }
+:where(.workspace-page, .workspace-surface) button:hover:not(:disabled), :where(.workspace-page, .workspace-surface) .ws-button-link:hover { color: var(--accent); background: var(--accent-softer); border-color: var(--border-glow); }
+:where(.workspace-page, .workspace-surface) button:disabled { opacity: .45; cursor: not-allowed; }
+:where(.workspace-page, .workspace-surface) :is(.ws-primary, .team-primary, .evaluation-primary) { color: #fff; background: var(--gradient-aurora); border-color: transparent; box-shadow: 0 4px 12px -5px rgba(79,70,229,.45); }
+:where(.workspace-page, .workspace-surface) :is(.ws-primary, .team-primary, .evaluation-primary):hover:not(:disabled) { color: #fff; background: var(--gradient-aurora); border-color: transparent; box-shadow: 0 5px 16px -5px rgba(79,70,229,.55); }
+:where(.workspace-page, .workspace-surface) .ws-back { align-self: flex-start; color: var(--text-muted); background: transparent; border-color: transparent; padding-left: 0; }
+:where(.workspace-page, .workspace-surface) .ws-link-button { color: var(--accent); border-color: transparent; background: var(--accent-softer); }
+:where(.workspace-page, .workspace-surface) fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+:where(.workspace-page, .workspace-surface) label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-secondary); font-weight: 600; }
+:where(.workspace-page, .workspace-surface) :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) { width: 100%; min-width: 0; min-height: 35px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-main); font: inherit; font-size: 12px; transition: border-color .18s, box-shadow .18s; }
+:where(.workspace-page, .workspace-surface) :is(input, select, textarea):focus { outline: none; border-color: var(--accent); box-shadow: var(--shadow-glow); }
+:where(.workspace-page, .workspace-surface) :is(input, select, textarea):disabled { background: var(--bg-card-soft); color: var(--text-muted); }
+:where(.workspace-page, .workspace-surface) textarea { resize: vertical; line-height: 1.65; }
+:where(.workspace-page, .workspace-surface) :is(input[type="checkbox"], input[type="radio"]) { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; flex: 0 0 auto; }
+:where(.workspace-page, .workspace-surface) :is(.team-check, .evaluation-check, .ws-check) { flex-direction: row; align-items: center; gap: 8px; min-height: 32px; font-weight: 550; }
+:where(.workspace-page, .workspace-surface) small { display: block; color: var(--text-muted); font-size: 11px; line-height: 1.6; font-weight: 400; overflow-wrap: anywhere; }
+.ws-filterbar { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; padding: 14px 0; margin-top: 4px; }
+.ws-filterbar > label:not(.ws-check) { min-width: 142px; }
+.ws-filterbar .ws-actions { align-self: center; }
+.ws-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; line-height: 1.6; white-space: nowrap; color: var(--text-muted); background: var(--bg-inset); border: 1px solid var(--border-soft); }
+.ws-badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: 0 0 5px; }
+.ws-badge.is-accent { color: var(--accent); background: var(--accent-soft); border-color: var(--border-glow); }
+.ws-badge.is-success { color: var(--color-completed); background: var(--color-completed-bg); border-color: var(--color-completed-border); }
+.ws-badge.is-warning { color: var(--color-queued); background: var(--color-queued-bg); border-color: var(--color-queued-border); }
+.ws-badge.is-danger { color: var(--color-failed); background: var(--color-failed-bg); border-color: var(--color-failed-border); }
+.ws-tabs, .team-tabs, .evaluation-tabs { display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: var(--radius-md); border: 1px solid var(--border-soft); background: var(--bg-inset); width: fit-content; max-width: 100%; overflow-x: auto; flex-shrink: 0; }
+:where(.workspace-page, .workspace-surface) :is(.ws-tabs, .team-tabs, .evaluation-tabs) button { border-color: transparent; background: transparent; color: var(--text-muted); padding: 7px 15px; min-height: 32px; }
+:where(.workspace-page, .workspace-surface) :is(.ws-tabs, .team-tabs, .evaluation-tabs) button[aria-pressed="true"] { background: var(--bg-card); color: var(--accent); box-shadow: 0 2px 7px -3px rgba(16,31,56,.2); }
+.ws-table-wrap, .team-table-wrap, .evaluation-table-wrap { overflow-x: auto; margin-top: 14px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); }
+:where(.workspace-page, .workspace-surface) table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; line-height: 1.55; }
+:where(.workspace-page, .workspace-surface) th { background: var(--bg-card-soft); color: var(--text-muted); font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+:where(.workspace-page, .workspace-surface) :is(th, td) { padding: 11px 13px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+:where(.workspace-page, .workspace-surface) tr:last-child td { border-bottom: 0; }
+:where(.workspace-page, .workspace-surface) tbody tr:hover { background: var(--accent-softer); }
+:where(.workspace-page, .workspace-surface) td { max-width: 360px; overflow-wrap: anywhere; }
+:where(.workspace-page, .workspace-surface) td strong { display: block; color: var(--text-main); font-size: 12px; font-weight: 700; }
+:where(.workspace-page, .workspace-surface) td small { margin-top: 3px; }
+.ws-cell-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; white-space: nowrap; }
+.ws-cell-actions a { font-size: 12px; font-weight: 650; }
+.ws-numeric { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ws-chip { display: inline-block; padding: 2px 6px; border-radius: 5px; background: var(--bg-inset); color: var(--text-secondary); font-size: 10.5px; }
+.ws-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 38px 16px; color: var(--text-secondary); text-align: center; }
+.ws-empty strong { font-size: 13px; }
+.ws-empty p { max-width: 440px; color: var(--text-muted); font-size: 12px; }
+.ws-empty-icon { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 3px; border: 1px solid var(--border-soft); border-radius: 13px; background: var(--bg-card-soft); color: var(--text-muted); }
+.ws-empty.is-loading .ws-empty-icon { color: var(--accent); }
+.ws-hint, .team-hint, .evaluation-hint { color: var(--text-muted); font-size: 12px; line-height: 1.7; font-weight: 400; }
+.ws-note { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-card-soft); border: 1px solid var(--border-soft); font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+.team-error, .evaluation-error, .team-success, .evaluation-notice { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 13px; border-radius: var(--radius-sm); font-size: 12px; line-height: 1.7; }
+.team-error, .evaluation-error { color: var(--color-failed); background: var(--color-failed-bg); border: 1px solid var(--color-failed-border); }
+.team-success { color: var(--color-completed); background: var(--color-completed-bg); border: 1px solid var(--color-completed-border); }
+.evaluation-notice { color: var(--color-queued); background: var(--color-queued-bg); border: 1px solid var(--color-queued-border); }
+.ws-editor { max-width: 1100px; width: 100%; align-self: center; }
+.ws-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid var(--border-soft); }
+.ws-editor-heading p { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+.ws-form-section { display: grid; grid-template-columns: 185px minmax(0, 1fr); gap: 26px; padding: 22px 0; border-bottom: 1px solid var(--border-soft); }
+.ws-section-copy h3 { font-size: 12.5px; margin-bottom: 5px; }
+.ws-section-copy p { color: var(--text-muted); font-size: 11.5px; line-height: 1.8; }
+.ws-section-fields { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.team-form-grid, .evaluation-form-grid, .ws-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+.ws-form-grid > .is-wide { grid-column: 1 / -1; }
+.team-form-actions, .evaluation-actions, .ws-form-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 16px; }
+.ws-form-actions.is-sticky { position: sticky; bottom: 0; margin-top: 12px; padding: 12px 0 0; background: var(--bg-card); border-top: 1px solid var(--border-soft); z-index: 1; }
+.ws-form-actions .ws-hint { margin-left: auto; }
+.ws-disclosure, .team-scope-options { border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--bg-card-soft); }
+:where(.workspace-page, .workspace-surface) summary { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 650; list-style: none; }
+:where(.workspace-page, .workspace-surface) summary::-webkit-details-marker { display: none; }
+:where(.workspace-page, .workspace-surface) summary::before { content: "›"; font-size: 17px; line-height: 1; transition: transform .18s; color: var(--text-muted); }
+:where(.workspace-page, .workspace-surface) details[open] > summary::before { transform: rotate(90deg); }
+.ws-disclosure > summary, .team-scope-options > summary { padding: 12px 14px; }
+.ws-disclosure-body { display: flex; flex-direction: column; gap: 14px; padding: 0 14px 14px; }
+.ws-disclosure > summary small { margin-left: auto; }
+:where(.workspace-page, .workspace-surface) pre { overflow: auto; max-height: 320px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: var(--radius-sm); color: var(--text-secondary); background: var(--bg-card-soft); font-size: 11px; }
+.ws-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ws-metric { padding: 14px 16px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--bg-card); box-shadow: var(--shadow-card); min-width: 0; }
+.ws-metric > span { display: block; color: var(--text-muted); font-size: 11px; }
+.ws-metric > strong { display: block; margin-top: 4px; color: var(--text-main); font-size: 21px; font-weight: 800; line-height: 1.3; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ws-metric > small { margin-top: 4px; }
+.ws-metric.is-accent { background: var(--gradient-aurora-soft); border-color: var(--border-glow); }
+.ws-metric.is-accent > strong { color: var(--accent); }
+.workspace-page .list-pagination, .workspace-surface .list-pagination { padding: 12px 0 0; font-size: 11px; }
+@media (max-width: 1050px) { .workspace-page { padding: 14px 18px 28px; } .ws-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width: 720px) {
+  .workspace-page { padding: 12px 14px 24px; gap: 12px; }
+  .workspace-surface, .team-card, .evaluation-card { padding: 14px; }
+  .ws-form-section { grid-template-columns: minmax(0,1fr); gap: 12px; padding: 18px 0; }
+  .ws-page-header > .ws-actions { margin-left: 47px; }
+  .ws-filterbar { gap: 10px; }
+  .ws-filterbar > label:not(.ws-check) { flex: 1 1 140px; }
+  .team-form-grid, .evaluation-form-grid, .ws-form-grid { grid-template-columns: minmax(0,1fr); }
+  .ws-form-actions .ws-hint { margin-left: 0; flex-basis: 100%; }
+}
+
+.ws-filterbar .ws-check { padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg-card-soft); }
+.ws-filterbar .ws-check:has(input:checked) { background: var(--accent-softer); border-color: var(--border-glow); color: var(--accent); }
+.workspace-page .team-card > .ws-hint { margin-top: 12px; }
+.evaluation-reference-editor { padding-top: 18px; }
+@media (max-width: 640px) { .ws-metric > strong { font-size: 15px; } }

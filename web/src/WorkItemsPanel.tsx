@@ -7,6 +7,7 @@ import { hasPermission } from "./rbac";
 import type { AuthUser, WorkItem, WorkItemUpdate } from "./types";
 import { useCursorPage } from "./useCursorPage";
 import { formatDate } from "./utils";
+import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty, WorkspaceSection } from "./Workspace";
 
 const statuses: Record<WorkItem["status"], string> = { open: "待处理", in_progress: "处理中", resolved: "人工确认修复", wont_fix: "暂不修复" };
 const toInputDate = (value: string | null | undefined) => value ? new Date(new Date(value).getTime() - new Date(value).getTimezoneOffset() * 60_000).toISOString().slice(0, 16) : "";
@@ -36,27 +37,36 @@ export default function WorkItemsPanel({ user, findingId, onError }: PlatformPan
     try { await platformApi.updateWork(item.id, body); setEditing(null); setMessage("处理结果已保存并记录操作人。"); await page.refresh(); }
     catch (error) { onError(error); } finally { setBusy(false); }
   };
+  if (learning) return <LearningEditor key={`${learning.id}:${learning.revision}`} item={learning} onError={onError} onClose={() => setLearning(null)} />;
+  if (editing) return <>
+    <WorkspaceBack onClick={() => { if (!busy) setEditing(null); }}>返回待办列表</WorkspaceBack>
+    {message && <p className="team-success" role="status">{message}</p>}
+    <WorkEditor key={`${editing.id}:${editing.revision}`} item={editing} busy={busy} onCancel={() => setEditing(null)} onSave={body => void save(editing, body)}
+      onLearn={hasPermission(user, "knowledge:manage") && (editing.status === "resolved" || editing.status === "wont_fix") ? () => { setLearning(editing); setEditing(null); } : undefined} />
+  </>;
+  const active = mode === "issues" ? page : approvals;
   return <>
-    <section className="team-card"><div className="team-toolbar"><h2>团队待办</h2><label>类型<select value={mode} onChange={event => { setMode(event.target.value as typeof mode); setEditing(null); }}><option value="issues">问题处理</option>{hasPermission(user, "reviews:approve") && <option value="approvals">等待审批</option>}</select></label><label><input type="checkbox" checked={mine} onChange={event => setMine(event.target.checked)} />只看我的待办</label><label><input type="checkbox" checked={overdue} onChange={event => setOverdue(event.target.checked)} />已超期</label><button disabled={busy} onClick={() => void (mode === "issues" ? page : approvals).refresh()}>刷新</button></div>
-      {message && <p className="team-success" role="status">{message}</p>}
-      {mode === "issues" && <>
-        <p className="team-hint">处理状态由成员明确确认。审查报告中的问题是否有效，以及问题是否完成修复，分别记录。</p>
-        <label>处理状态<select value={status} onChange={event => setStatus(event.target.value)}><option value="">全部状态</option>{Object.entries(statuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-        <div className="team-table-wrap"><table><thead><tr><th>问题</th><th>负责人</th><th>截止时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{page.data?.items.map(item => <tr key={item.id}><td>{item.title}<small>{item.repository} · PR #{item.pull_request_number}</small></td><td>{item.assignee ?? "未分配"}</td><td>{item.due_at ? formatDate(item.due_at) : "未设置"}</td><td>{statuses[item.status]}</td><td><a href={`#review/${encodeURIComponent(item.source_run_id)}`}>来源</a>{editable && <button disabled={busy} onClick={() => setEditing(item)}>处理</button>}</td></tr>)}</tbody></table></div>
-        {!page.loading && !page.data?.items.length && <p className="platform-empty">当前筛选下没有工作项。可从审查问题卡片加入待办。</p>}
-        <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next} />
-        {editable && source && <form className="platform-inline-form" onSubmit={event => void create(event)}><p>将刚选择的审查问题加入我的待办，再安排负责人和截止时间。</p><button disabled={busy} type="submit">加入我的待办</button></form>}
-      </>}
-      {mode === "approvals" && <>
-        <p className="team-hint">未指定负责人的审查由有权限的成员处理；旧任务缺少截止时间时不推算超期。</p>
-        <div className="team-table-wrap"><table><thead><tr><th>审查任务</th><th>负责人</th><th>进入审批</th><th>截止时间</th><th>操作</th></tr></thead><tbody>{approvals.data?.items.map(item => <tr key={item.id}><td>{item.repository} · PR #{item.pull_request_number}</td><td>{item.assignee ?? "按角色处理"}</td><td>{item.requested_at ? formatDate(item.requested_at) : "历史未记录"}</td><td>{item.due_at ? formatDate(item.due_at) : "未设置"}</td><td><a href={`#review/${encodeURIComponent(item.id)}`}>查看并审批</a></td></tr>)}</tbody></table></div>
-        {!approvals.loading && !approvals.data?.items.length && <p className="platform-empty">当前没有待审批任务。</p>}
-        <Pagination page={approvals.page} count={approvals.data?.items.length ?? 0} hasNext={Boolean(approvals.data?.next_cursor)} busy={approvals.loading} onPrevious={approvals.previous} onNext={approvals.next} />
-      </>}
+    {message && <p className="team-success" role="status">{message}</p>}
+    {editable && source && mode === "issues" && <form className="platform-inline-form" onSubmit={event => void create(event)}><div><strong>来自审查结果的问题</strong><p>加入待办后，可安排负责人和截止时间。</p></div><button className="ws-primary" disabled={busy} type="submit">加入我的待办</button></form>}
+    <section className="team-card">
+      <div className="team-toolbar"><div><h2>团队待办</h2><p>跟进问题处理与待审批审查。</p></div><button disabled={busy || active.loading} onClick={() => void active.refresh()}>刷新</button></div>
+      <div className="ws-filterbar">
+        <label>类型<select value={mode} onChange={event => setMode(event.target.value as typeof mode)}><option value="issues">问题处理</option>{hasPermission(user, "reviews:approve") && <option value="approvals">等待审批</option>}</select></label>
+        {mode === "issues" && <label>处理状态<select value={status} onChange={event => setStatus(event.target.value)}><option value="">全部状态</option>{Object.entries(statuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>}
+        <label className="ws-check"><input type="checkbox" checked={mine} onChange={event => setMine(event.target.checked)} />只看我的待办</label>
+        <label className="ws-check"><input type="checkbox" checked={overdue} onChange={event => setOverdue(event.target.checked)} />已超期</label>
+      </div>
+      {mode === "issues" ? <div className="team-table-wrap"><table><thead><tr><th>问题 / 来源</th><th>负责人</th><th>截止时间</th><th>处理状态</th><th>操作</th></tr></thead><tbody>{page.data?.items.map(item => <tr key={item.id}>
+        <td><strong>{item.title}</strong><small>{item.repository} · PR #{item.pull_request_number}</small></td><td>{item.assignee ?? "未分配"}</td><td>{item.due_at ? formatDate(item.due_at) : "未设置"}</td>
+        <td><WorkspaceBadge tone={item.status === "resolved" ? "success" : item.status === "in_progress" ? "accent" : "neutral"}>{statuses[item.status]}</WorkspaceBadge></td>
+        <td><div className="ws-cell-actions"><a href={`#review/${encodeURIComponent(item.source_run_id)}`}>来源</a>{editable && <button className="ws-link-button" disabled={busy} onClick={() => setEditing(item)}>处理</button>}</div></td>
+      </tr>)}</tbody></table></div> : <div className="team-table-wrap"><table><thead><tr><th>审查任务</th><th>负责人</th><th>进入审批</th><th>截止时间</th><th>操作</th></tr></thead><tbody>{approvals.data?.items.map(item => <tr key={item.id}>
+        <td><strong>{item.repository}</strong><small>PR #{item.pull_request_number}</small></td><td>{item.assignee ?? "按角色处理"}</td><td>{item.requested_at ? formatDate(item.requested_at) : "历史未记录"}</td><td>{item.due_at ? formatDate(item.due_at) : "未设置"}</td><td><a className="ws-button-link" href={`#review/${encodeURIComponent(item.id)}`}>查看并审批 →</a></td>
+      </tr>)}</tbody></table></div>}
+      {!active.loading && !active.data?.items.length && <WorkspaceEmpty title={mode === "issues" ? "当前没有待处理问题" : "当前没有待审批任务"} description={mode === "issues" ? "可调整筛选条件，或从审查问题卡片加入待办。" : "需要人工批准的审查会集中显示在这里。"} />}
+      <Pagination page={active.page} count={active.data?.items.length ?? 0} hasNext={Boolean(active.data?.next_cursor)} busy={active.loading} onPrevious={active.previous} onNext={active.next} />
     </section>
-    {editing && <WorkEditor key={`${editing.id}:${editing.revision}`} item={editing} busy={busy} onCancel={() => setEditing(null)} onSave={body => void save(editing, body)} />}
-    {editing && hasPermission(user, "knowledge:manage") && (editing.status === "resolved" || editing.status === "wont_fix") && <button onClick={() => setLearning(editing)}>将处理结论整理为知识草稿</button>}
-    {learning && <LearningEditor key={`${learning.id}:${learning.revision}`} item={learning} onError={onError} onClose={() => setLearning(null)} />}
+    <p className="ws-hint">问题是否有效与是否完成修复分别记录；处理状态由成员确认。</p>
   </>;
 }
 
@@ -66,17 +76,31 @@ function LearningEditor({ item, onError, onClose }: PlatformPanelProps & { item:
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   useEffect(() => { const controller = new AbortController(); void api.knowledgeDocuments(false, controller.signal).then(value => setRevision(value.revision)).catch(error => { if (!controller.signal.aborted) onError(error); }); return () => controller.abort(); }, [onError]);
-  return <section className="team-card"><h2>整理仓库经验</h2><p className="team-hint">来源为当前工作项的人工处理结论。保存后处于未启用状态，仅适用于 {item.repository}；审核启用后，固定审查方案的仓库还需保存新方案。</p>
-    {saved ? <p role="status">知识草稿已保存。<a href="#knowledge">前往知识库审核</a></p> : <form onSubmit={async event => { event.preventDefault(); if (revision == null) return; setBusy(true); try { await platformApi.proposeKnowledge(item.id, { expected_work_revision: item.revision, expected_library_revision: revision, lesson }); setSaved(true); } catch (error) { onError(error); } finally { setBusy(false); } }}><label>经验与适用条件<textarea required rows={5} maxLength={4000} value={lesson} onChange={event => setLesson(event.target.value)} /></label><button disabled={busy || revision == null} type="submit">保存为未启用知识草稿</button></form>}
-    <button onClick={onClose}>关闭草稿编辑</button>
-  </section>;
+  return <><WorkspaceBack onClick={() => { if (!busy) onClose(); }}>返回待办列表</WorkspaceBack><section className="team-card ws-editor">
+    <div className="ws-editor-heading"><div><h2>整理仓库经验</h2><p>{item.repository} · {item.title}</p></div><WorkspaceBadge tone={saved ? "success" : "neutral"}>{saved ? "草稿已保存" : "待审核草稿"}</WorkspaceBadge></div>
+    {saved ? <div className="ws-empty" role="status"><strong>知识草稿已保存。</strong><p>审核启用后生效。</p><a className="ws-button-link" href="#knowledge">前往知识库审核 →</a></div> : <form onSubmit={async event => { event.preventDefault(); if (revision == null) return; setBusy(true); try { await platformApi.proposeKnowledge(item.id, { expected_work_revision: item.revision, expected_library_revision: revision, lesson }); setSaved(true); } catch (error) { onError(error); } finally { setBusy(false); } }}><fieldset disabled={busy}>
+      <WorkspaceSection title="经验内容" description="从人工处理结论中提取可复用规则，说明适用范围。"><label>经验与适用条件<textarea required rows={7} maxLength={4000} value={lesson} onChange={event => setLesson(event.target.value)} /></label><p className="ws-hint">仅适用于当前仓库。使用固定方案时，审核后还需保存新方案。</p></WorkspaceSection>
+      <div className="ws-form-actions"><button className="ws-primary" disabled={revision == null} type="submit">保存为未启用知识草稿</button><button type="button" onClick={onClose}>关闭草稿编辑</button></div>
+    </fieldset></form>}
+  </section></>;
 }
 
-function WorkEditor({ item, busy, onSave, onCancel }: { item: WorkItem; busy: boolean; onSave: (body: WorkItemUpdate) => void; onCancel: () => void }) {
+function WorkEditor({ item, busy, onSave, onCancel, onLearn }: { item: WorkItem; busy: boolean; onSave: (body: WorkItemUpdate) => void; onCancel: () => void; onLearn?: () => void }) {
   const [status, setStatus] = useState(item.status);
   const [assignee, setAssignee] = useState(item.assignee ?? "");
   const [due, setDue] = useState(toInputDate(item.due_at));
   const [note, setNote] = useState(item.note);
   const [fixPr, setFixPr] = useState(item.fix_pull_request_number?.toString() ?? "");
-  return <section className="team-card"><h2>处理 · {item.title}</h2><form onSubmit={event => { event.preventDefault(); onSave({ expected_revision: item.revision, status, assignee: assignee.trim() || null, due_at: due ? new Date(due).toISOString() : null, note, fix_pull_request_number: fixPr ? Number(fixPr) : null }); }}><fieldset disabled={busy}><div className="team-form-grid"><label>处理状态<select aria-label="修改处理状态" value={status} onChange={event => setStatus(event.target.value as typeof status)}>{Object.entries(statuses).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>负责人用户名<input value={assignee} maxLength={100} onChange={event => setAssignee(event.target.value)} /></label><label>截止时间<input type="datetime-local" value={due} onChange={event => setDue(event.target.value)} /></label><label>关联修复 PR 编号<input type="number" min={1} value={fixPr} onChange={event => setFixPr(event.target.value)} /><small>属于同一仓库，由人工核对修复内容。</small></label></div><label>处理说明<textarea value={note} required={status === "resolved" || status === "wont_fix"} maxLength={2000} rows={4} onChange={event => setNote(event.target.value)} /></label><div className="team-form-actions"><button type="submit">保存处理结果</button><button type="button" onClick={onCancel}>取消</button></div></fieldset></form></section>;
+  return <section className="team-card ws-editor"><div className="ws-editor-heading"><div><h2>处理 · {item.title}</h2><p>{item.repository} · PR #{item.pull_request_number}</p></div><WorkspaceBadge>版本 {item.revision}</WorkspaceBadge></div>
+    <form onSubmit={event => { event.preventDefault(); onSave({ expected_revision: item.revision, status, assignee: assignee.trim() || null, due_at: due ? new Date(due).toISOString() : null, note, fix_pull_request_number: fixPr ? Number(fixPr) : null }); }}><fieldset disabled={busy}>
+      <WorkspaceSection title="处理安排" description="确认状态、负责人和计划完成时间。"><div className="team-form-grid">
+        <label>处理状态<select aria-label="修改处理状态" value={status} onChange={event => setStatus(event.target.value as typeof status)}>{Object.entries(statuses).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label>
+        <label>负责人用户名<input value={assignee} maxLength={100} onChange={event => setAssignee(event.target.value)} /></label>
+        <label>截止时间<input type="datetime-local" value={due} onChange={event => setDue(event.target.value)} /></label>
+        <label>关联修复 PR 编号<input type="number" min={1} value={fixPr} onChange={event => setFixPr(event.target.value)} /><small>同一仓库的修复 PR，由人工核对。</small></label>
+      </div></WorkspaceSection>
+      <WorkspaceSection title="处理结论" description="确认修复或暂不修复时，需要说明依据。"><label>处理说明<textarea value={note} required={status === "resolved" || status === "wont_fix"} maxLength={2000} rows={5} onChange={event => setNote(event.target.value)} /></label></WorkspaceSection>
+      <div className="ws-form-actions is-sticky"><button className="ws-primary" type="submit">保存处理结果</button><button type="button" onClick={onCancel}>取消</button>{onLearn && <button type="button" onClick={onLearn}>将处理结论整理为知识草稿</button>}</div>
+    </fieldset></form>
+  </section>;
 }

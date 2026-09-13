@@ -70,3 +70,16 @@ it("审批筛选只发出对应待办请求", async () => {
   fireEvent.click(screen.getByLabelText("已超期"));
   await waitFor(() => expect(calls.some(call => call.path.includes("/approvals?") && call.path.includes("overdue=true"))).toBe(true));
 });
+
+it("退出独立处理视图后保留待办筛选", async () => {
+  render(<PlatformPage user={admin} onSignedOut={vi.fn()} />);
+  await screen.findByText("资源归属校验缺失");
+  fireEvent.click(screen.getByLabelText("只看我的待办"));
+  fireEvent.change(screen.getByLabelText("处理状态"), { target: { value: "in_progress" } });
+  fireEvent.click(await screen.findByRole("button", { name: "处理" }));
+  expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(screen.getByLabelText("处理状态")).toHaveValue("in_progress");
+  expect(screen.getByLabelText("只看我的待办")).not.toBeChecked();
+  expect(calls.some(call => call.method === "PUT")).toBe(false);
+});

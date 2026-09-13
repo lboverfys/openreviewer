@@ -3,6 +3,7 @@ import { api } from "./api";
 import { platformApi } from "./platform-api";
 import { formatDuration } from "./review-details";
 import type { EvaluationReport, EvaluationSplit } from "./types";
+import { WorkspaceBadge } from "./Workspace";
 
 export function evaluationPercent(value: number | null | undefined) {
   return value == null ? "—" : (value * 100).toFixed(1) + "%";
@@ -38,14 +39,14 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
       link.download = `openreviewer-evidence-${datasetId}.json`; link.click(); URL.revokeObjectURL(url);
     } catch (error) { onError(error); }
   }
-  return <section className="evaluation-card" aria-label="配对对比报告">
-    <div className="evaluation-toolbar"><h2>配对对比报告</h2>
+  return <section className="workspace-surface evaluation-card evaluation-report-card" aria-label="配对对比报告">
+    <div className="evaluation-toolbar"><div><h2>配对对比报告</h2><p>比较同一提交的质量、耗时与估算成本。</p></div><div className="ws-actions">
       <label>报告样本集<select value={split} onChange={event => setSplit(event.target.value as EvaluationSplit)}>
         <option value="validation">验收集</option><option value="tuning">调参集</option></select></label>
       <button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)}>重新计算</button>
       <button type="button" disabled={!report} onClick={exportReport}>导出报告 JSON</button>
-      <button type="button" disabled={!report || split !== "validation"} onClick={() => void exportEvidence()}>导出面试证据</button>
-    </div>
+      <button className="ws-primary" type="button" disabled={!report || split !== "validation"} onClick={() => void exportEvidence()}>导出面试证据</button>
+    </div></div>
     {loading && <p role="status">正在聚合评测结果…</p>}
     {report && <>
       <div className="evaluation-stats">
@@ -54,8 +55,8 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
         <div><strong>{report.quality_pairs}</strong><span>双方复核完成</span></div>
         <div><strong>{report.reference_pairs}</strong><span>参考标签已确认</span></div>
       </div>
-      {report.notices.map(notice => <p key={notice} className="evaluation-notice">{notice}</p>)}
-      <p className="evaluation-hint">缺基线 {report.missing_baseline} · 缺候选 {report.missing_candidate} · 待完成复核 {report.pending_pairs} 对 · 有分歧 {report.disputed_pairs} 对</p>
+      <div className="ws-toolbar"><WorkspaceBadge tone={report.quality_pairs ? "accent" : "warning"}>{report.quality_pairs ? "已有复核样本" : "待人工复核"}</WorkspaceBadge><span className="evaluation-hint">待复核 {report.pending_pairs} 对 · 分歧 {report.disputed_pairs} 对</span></div>
+      <details className="ws-disclosure evaluation-report-notes" open={!report.quality_pairs}><summary>数据完整性与统计口径</summary><div className="ws-disclosure-body">{report.notices.map(notice => <p key={notice} className="evaluation-notice">{notice}</p>)}<p className="evaluation-hint">缺基线 {report.missing_baseline} · 缺候选 {report.missing_candidate} · 待完成复核 {report.pending_pairs} 对 · 有分歧 {report.disputed_pairs} 对</p></div></details>
       <div className="evaluation-table-wrap"><table>
         <thead><tr><th>指标</th><th>基线</th><th>候选</th><th>统计范围</th></tr></thead>
         <tbody>

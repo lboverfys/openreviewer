@@ -75,3 +75,14 @@ it("普通成员登录过期时交还登录入口", async () => {
   render(<TeamPage onSignedOut={signedOut} />);
   await waitFor(() => expect(signedOut).toHaveBeenCalledWith("登录已失效，请重新登录"));
 });
+
+it("仓库编辑独立展示，取消后返回原列表且不保存草稿", async () => {
+  render(<TeamPage onSignedOut={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", {name: "编辑仓库 example/project"}));
+  expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText(/目标分支（/), {target: {value: "unsaved/*"}});
+  fireEvent.click(screen.getByRole("button", {name: "取消编辑"}));
+  fireEvent.click(await screen.findByRole("button", {name: "编辑仓库 example/project"}));
+  expect(screen.getByLabelText(/目标分支（/)).toHaveValue("main");
+  expect(saved).toHaveLength(0);
+});
