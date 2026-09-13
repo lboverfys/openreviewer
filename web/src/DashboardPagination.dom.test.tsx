@@ -42,6 +42,21 @@ beforeEach(() => {
 });
 afterEach(() => {cleanup(); clearSettingsCache(); vi.unstubAllGlobals();});
 
+it("模型阶段失败显示模型尝试次数，准备阶段继续显示准备次数", async () => {
+  const modelFailure = {...review(92), execution_status: "failed", workflow_status: "failed",
+    attempt_count: 0, model_attempt_count: 3};
+  const preparation = {...review(91), attempt_count: 2, model_attempt_count: 0};
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    ...snapshot, recent_reviews: [modelFailure, preparation], next_cursor: null,
+  }))));
+  render(<DashboardPage user={user} onSignedOut={vi.fn()} onOpenReview={vi.fn()} />);
+  const failedRow = (await screen.findByText("PR #92")).closest("tr")!;
+  const preparingRow = screen.getByText("PR #91").closest("tr")!;
+  expect(failedRow.querySelector(".attempts-num")).toHaveTextContent("3/3");
+  expect(failedRow.querySelector(".dash-progress-bar-fill")).toHaveStyle({width: "100%"});
+  expect(preparingRow.querySelector(".attempts-num")).toHaveTextContent("2/3");
+});
+
 it("不等实时连接便读取10条，翻页替换内容，实时消息不把第二页挤回首页", async () => {
   render(<DashboardPage user={user} onSignedOut={vi.fn()} onOpenReview={vi.fn()} />);
   await screen.findByText("PR #1");

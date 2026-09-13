@@ -59,6 +59,8 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
   const hasBranchRoute = Boolean(review.head_ref || review.base_ref);
   const headRepository = review.head_repository ?? review.repository;
   const baseRepository = review.base_repository ?? review.repository;
+  const modelAttempted = review.model_attempt_count > 0;
+  const attempts = modelAttempted ? review.model_attempt_count : review.attempt_count;
 
   return (
     <tr className="dash-table-row">
@@ -135,15 +137,15 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
         )}
       </td>
       <td>
-        <div className="dash-attempts-track-block">
+        <div className="dash-attempts-track-block" title={modelAttempted ? "模型阶段尝试次数" : "准备阶段尝试次数"}>
           <div className="attempts-num">
-            <span>{review.attempt_count}</span>/{review.max_attempts}
+            <span>{attempts}</span>/{review.max_attempts}
           </div>
           <div className="dash-progress-bar-bg">
             <div
               className="dash-progress-bar-fill"
               style={{
-                width: `${Math.min(100, (review.attempt_count / Math.max(1, review.max_attempts)) * 100)}%`,
+                width: `${Math.min(100, (attempts / Math.max(1, review.max_attempts)) * 100)}%`,
               }}
             />
           </div>

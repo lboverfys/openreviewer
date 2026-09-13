@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import event, func, select
@@ -62,9 +63,11 @@ from persistence.models import (
 from persistence.repositories import SqlAlchemyReviewRepository
 from persistence.review_management import SqlAlchemyReviewManagementRepository
 from persistence.task_queue import SqlAlchemyReviewTaskQueue
+from services.agent_workflow import FixedAgentWorkflow
 from services.ai_settings import ActiveAiRuntime
 from services.model_budget import ModelBudgetRequest
 from services.model_review import ModelServiceSettings, plan_model_review_batches
+from services.retrieval import HybridRetrievalService
 from services.review_management import ReviewAction
 from services.review_planning import DeterministicReviewPlanner, ReviewPlanningSettings
 from services.reviews import ReviewService
@@ -1630,23 +1633,38 @@ def test_plan_retry_and_expired_lease_return_to_ready_stage(
         assert task.claimed_from_status is None
 
 
-def test_worker_prepares_plan_runs_model_batches_and_completes(database: Database) -> None:
+@pytest.mark.parametrize("with_retrieval", [False, True])
+def test_worker_prepares_plan_runs_model_batches_and_completes(
+    database: Database, with_retrieval: bool,
+) -> None:
     clock = MutableClock(datetime(2026, 8, 25, 13, 0, tzinfo=UTC))
     task_id, run_id = _submit(database, clock, "worker-plan", "a" * 40)
     rule_loader = StaticRuleLoader()
     model_reviewer = StaticModelReviewer()
+    model_settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI,
+        model="test-model",
+        api_key="test-key",
+        api_protocol=ModelApiProtocol.RESPONSES,
+        context_window_tokens=1_000_000,
+    )
+    agents = (ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC)
+    workflow = FixedAgentWorkflow(
+        {agent: model_reviewer for agent in agents},
+        agent_settings={agent: model_settings for agent in agents},
+        max_concurrency=1,
+    ) if with_retrieval else None
+    retrieval = Mock(spec=HybridRetrievalService) if with_retrieval else None
+    if retrieval is not None:
+        retrieval.review_context.side_effect = lambda model_input, _renew: model_input
+        retrieval.process_next.return_value = False
     runtime_provider = StaticAiRuntimeProvider(
         ActiveAiRuntime(
             revision=17,
             reviewer=model_reviewer,
             planner=DeterministicReviewPlanner(),
-            model_settings=ModelServiceSettings(
-                provider=ModelProvider.OPENAI,
-                model="test-model",
-                api_key="test-key",
-                api_protocol=ModelApiProtocol.RESPONSES,
-                context_window_tokens=1_000_000,
-            ),
+            model_settings=model_settings,
+            agent_workflow=workflow,
         )
     )
     runtime = WorkerRuntime(
@@ -1659,6 +1677,7 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(database: Databas
         context_loader=StaticContextLoader(_context("a" * 40, clock.value)),
         rule_loader=rule_loader,
         ai_runtime_provider=runtime_provider,
+        retrieval_service=retrieval,
     )
 
     assert runtime.run_once() is True
@@ -1666,7 +1685,12 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(database: Databas
     assert runtime.run_once() is True
     assert runtime.run_once() is False
     assert len(rule_loader.calls) == 1
-    assert len(model_reviewer.calls) == 1
+    assert len(model_reviewer.calls) == (2 if with_retrieval else 1)
+    if retrieval is not None:
+        retrieval.review_context.assert_called_once()
+        assert {call.review_agent for call in model_reviewer.calls} == {
+            ReviewAgent.CONVENTION, ReviewAgent.LOGIC,
+        }
     with database.sessions() as session:
         task = session.get(ReviewTaskRecord, task_id)
         run = session.get(ReviewRunRecord, run_id)
@@ -1702,6 +1726,11 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(database: Databas
             "review.model.batch_completed",
             "review.model.completed",
         } <= progress_types
+        if with_retrieval:
+            assert {
+                "review.model.retrieval_started",
+                "review.model.retrieval_completed",
+            } <= progress_types
         completed_event = session.scalar(
             select(OutboxEventRecord).where(
                 OutboxEventRecord.event_type == "review.model.batch_completed"
@@ -1709,6 +1738,29 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(database: Databas
         )
         assert completed_event is not None
         assert completed_event.payload["reasoning_tokens"] == 5
+
+
+def test_incremental_reuse_progress_is_persisted_without_a_model_request(
+    database: Database,
+) -> None:
+    clock = MutableClock(datetime(2026, 9, 13, 10, tzinfo=UTC))
+    queue, lease, _task_id, run_id, _plan_id = _prepare_budget_lease(
+        database, clock, key="reuse-progress", policy=ModelBudgetPolicy(),
+    )
+    queue.record_model_progress(
+        lease, "incremental_reused",
+        {"source_run_id": "previous-run", "model_requests": 0}, agent="logic",
+    )
+    with database.sessions() as session:
+        progress = session.execute(select(
+            OutboxEventRecord.event_type, OutboxEventRecord.payload,
+        ).where(
+            OutboxEventRecord.aggregate_id == run_id,
+            OutboxEventRecord.event_type == "review.model.incremental_reused",
+        ).limit(1)).one()
+        assert progress.payload["source_run_id"] == "previous-run"
+        assert progress.payload["agent"] == "logic"
+        assert progress.payload["model_requests"] == 0
 
 
 def test_worker_records_failed_batch_http_details_and_retry_time(
