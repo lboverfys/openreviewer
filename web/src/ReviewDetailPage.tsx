@@ -13,7 +13,7 @@ import {
   ModelBatchPanel,
   StageTimeline,
 } from "./ReviewProgressPanels";
-import { ciStateLabels, ReviewSidebar } from "./ReviewSidebarPanels";
+import { ciDisplayStatus, ReviewSidebar } from "./ReviewSidebarPanels";
 import {
   actionKey,
   agentDefinitions,
@@ -516,10 +516,13 @@ function ReviewDetailPage({
       "review.model.batch_failed",
     ].includes(event.event_type)
   ));
+  const stopped = ["paused", "cancelled", "superseded", "rejected"].includes(details.phase);
   const retryPending = Boolean(
     currentRetryEvent
-    && details.execution_status === "ready_for_review",
+    && details.execution_status === "ready_for_review" && !stopped,
   );
+  const waitingForIndex = retryPending && payloadString(currentRetryEvent, "error_code") === "retrieval_index_pending";
+  const taskStateLabel = waitingForIndex ? "准备代码索引" : workflowReadout(details, retryPending);
   const retryStatus = retryDetail(currentRetryEvent);
   const requestInFlight = latestRequestLifecycleEvent?.event_type
     === "review.model.request_started";
@@ -528,6 +531,8 @@ function ReviewDetailPage({
   );
   const modelDisplayState = details.model_status === "succeeded"
     ? "成功"
+    : stopped ? details.phase === "paused" ? "已暂停" : "已停止"
+    : waitingForIndex ? "等待代码索引"
     : retryPending
       ? "等待重试"
       : currentModelFailure
@@ -541,6 +546,7 @@ function ReviewDetailPage({
             : details.model_status ?? "未调用";
   const modelStateClass = details.model_status === "succeeded"
     ? "is-good"
+    : stopped ? ""
     : retryPending
         ? "is-warning"
         : currentModelFailure
@@ -552,7 +558,7 @@ function ReviewDetailPage({
               : "";
   const modelDisplayName = details.model_name ?? payloadString(latestBatchPlan, "model");
   const displayMessage = retryPending
-    ? `上一轮 AI 请求失败，${retryStatus ?? "系统已安排自动重试"}`
+    ? waitingForIndex ? "正在准备关联代码索引，完成后自动继续 AI 检查" : `上一轮处理未完成，${retryStatus ?? "系统已安排自动重试"}`
     : currentMessage;
   const failureStatus = payloadNumber(currentModelFailure, "status_code");
   const failureDuration = payloadNumber(currentModelFailure, "duration_ms");
@@ -685,7 +691,7 @@ function ReviewDetailPage({
           </div>
           <div className="review-hero-status">
             <span className="review-current-stage-label">任务状态</span>
-            <strong>{workflowReadout(details, retryPending)}</strong>
+            <strong>{taskStateLabel}</strong>
             <span className="review-current-phase">{stageLabels[details.current_stage] ?? details.current_stage}</span>
             <div className="review-hero-stage-progress" aria-hidden="true">
               <span style={{ width: `${applicableStageCount > 0 ? (completedStageCount / applicableStageCount) * 100 : 0}%` }} />
@@ -738,8 +744,8 @@ function ReviewDetailPage({
         )}
 
         <section className="review-summary-strip" aria-label="任务关键指标">
-          <div><span className="review-metric-icon is-state" aria-hidden="true">◈</span><div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div></div>
-          <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{details.snapshot_review ? "本次未重跑" : ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.snapshot_review ? "采用保存的代码快照" : `${details.ci_checks.length} 项检查`}</small></div></div>
+          <div><span className="review-metric-icon is-state" aria-hidden="true">◈</span><div><span>当前状态</span><strong>{taskStateLabel}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div></div>
+          <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{ciDisplayStatus(details)}</strong><small>{details.snapshot_review ? "采用保存的代码快照" : `${details.ci_checks.length} 项已保存检查`}</small></div></div>
           <div><span className="review-metric-icon is-cover" aria-hidden="true">▦</span><div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div></div>
           <div><span className="review-metric-icon is-agent" aria-hidden="true">🤖</span><div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/{requiredAgentCount}</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div></div>
           <div><span className="review-metric-icon is-finding" aria-hidden="true">⚑</span><div><span>候选问题</span><strong>{details.finding_total_count}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div></div>
@@ -857,11 +863,12 @@ function ReviewDetailPage({
                   <strong>{filteredFindings.length}/{details.finding_total_count} 条结果</strong>
                 </div>
               )}
-              {!details.model_review_completed_at && (currentModelFailure || retryPending) && (
+              {waitingForIndex && <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>正在准备关联代码</strong><p>索引完成后自动继续，本次尚未获得 AI 结果。</p></div></div>}
+              {!details.model_review_completed_at && !waitingForIndex && !stopped && (currentModelFailure || retryPending) && (
                 <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small>{(availableActions.includes("retry_failed_node") || (availableActions.includes("retry") && details.coverage_status === "partial")) && <button type="button" className="review-inline-retry-btn" disabled={actionBusy !== null} onClick={() => void runAction(availableActions.includes("retry_failed_node") ? "retry_failed_node" : "retry")}>立即重试当前失败节点</button>}</div></div>
               )}
-              {!details.model_review_completed_at && !currentModelFailure && !retryPending && (
-                <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>AI 结果尚未生成</strong><p>模型完成后，候选问题会显示在这里。</p></div></div>
+              {!details.model_review_completed_at && ((!currentModelFailure && !retryPending) || stopped) && (
+                <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>{stopped ? details.phase === "paused" ? "任务已暂停" : "任务已停止" : "AI 结果尚未生成"}</strong><p>{stopped ? "本次尚无最终结论。需要继续检查时，请使用任务控制中的可用操作。" : "模型完成后，候选问题会显示在这里。"}</p></div></div>
               )}
               {details.model_review_completed_at && details.finding_total_count === 0 && (
                 <div className={`review-result-empty ${finalAgentProgress.verdict === "no_actionable_issue" ? "result-empty-positive" : finalAgentProgress.verdict === "insufficient_context" ? "result-empty-limited" : ""}`}><DetailIcon>{finalAgentProgress.verdict === "insufficient_context" ? "!" : "✓"}</DetailIcon><div><strong>本次没有候选问题</strong><p>{finalAgentProgress.hasStructuredConclusion ? "具体判断、依据范围和限制见上方汇总 Agent 结论。" : "这条历史记录没有保存结论摘要，不能仅凭候选问题数量推断分析结果。"}</p></div></div>

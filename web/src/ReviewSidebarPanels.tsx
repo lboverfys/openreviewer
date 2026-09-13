@@ -17,6 +17,15 @@ export const ciStateLabels: Record<string, string> = {
   failure: "失败",
 };
 
+export function ciDisplayStatus(details: Pick<ReviewDetails, "snapshot_review" | "phase" | "ci_state">): string {
+  if (details.snapshot_review) return "本次未重跑";
+  if (details.ci_state === "pending") {
+    if (details.phase === "paused") return "已暂停跟进";
+    if (["cancelled", "superseded", "rejected"].includes(details.phase)) return "已停止跟进";
+  }
+  return ciStateLabels[details.ci_state ?? ""] ?? "等待";
+}
+
 export const fileDecisionLabels: Record<string, string> = {
   planned: "已送 AI",
   binary: "二进制",
@@ -101,7 +110,7 @@ export function ReviewSidebar({
       </section>
 
       <section className="review-panel review-context-panel">
-        <div className="review-panel-heading"><div><span className="review-eyebrow">GITHUB CONTEXT</span><h2>代码与 CI</h2></div><span className={`review-ci-state ci-${details.ci_state ?? "unknown"}`}>{ciStateLabels[details.ci_state ?? ""] ?? "未知"}</span></div>
+        <div className="review-panel-heading"><div><span className="review-eyebrow">GITHUB CONTEXT</span><h2>代码与 CI</h2></div><span className={`review-ci-state ci-${details.ci_state ?? "unknown"}`}>{ciDisplayStatus(details)}</span></div>
         <dl className="review-context-list">
           <div><dt>PR 状态</dt><dd>{details.pr_state ?? "—"}{details.pr_is_draft ? " · Draft" : ""}</dd></div>
           <div><dt>提起人</dt><dd>{details.pr_author_login ? `@${details.pr_author_login}` : "历史任务未记录"}</dd></div>
@@ -110,7 +119,7 @@ export function ReviewSidebar({
           <div><dt>变更文件</dt><dd>{details.changed_files_count ?? "—"} 个</dd></div>
           <div><dt>文件快照</dt><dd>{details.files_complete === null ? "—" : details.files_complete ? "完整" : "部分"}</dd></div>
           <div><dt>Diff 快照</dt><dd>{details.diff_complete === null ? "—" : details.diff_complete ? "完整" : "部分"}</dd></div>
-          <div><dt>CI 检查</dt><dd>{details.ci_checks.length} 项 · {details.ci_checks_complete ? "完整" : "持续刷新"}</dd></div>
+          <div><dt>已保存的 CI 记录</dt><dd>{details.ci_checks.length} 项 · {ciStateLabels[details.ci_state ?? ""] ?? "未知"}（最后读取时）</dd></div>
           {details.pr_html_url && <div><dt>Pull Request</dt><dd><a href={details.pr_html_url} target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></dd></div>}
         </dl>
         {details.ci_checks.length > 0 && <div className="review-ci-check-list">{details.ci_checks.slice((ciPage - 1) * PAGE_SIZE, ciPage * PAGE_SIZE).map((check) => <div key={`${check.kind}:${check.name}`}><span className={`ci-check-dot ci-check-${check.conclusion ?? check.status}`} /><span>{check.name}</span><small>{check.conclusion ?? check.status}</small></div>)}</div>}

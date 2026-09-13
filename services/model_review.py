@@ -757,6 +757,9 @@ def plan_model_review_batches(
         return ()
     builder = prompt_builder or StructuredReviewPromptBuilder(settings.prompt_snapshot)
     empty_input = _copy_model_input(review_input, (), ())
+    # 空批次会过滤带 unit_keys 的证据，但真实批次仍会带回它们。
+    # 先为当前 Agent 的有界证据预留空间，分批时继续只发送对应单元的证据。
+    empty_input = empty_input.model_copy(update={"context_evidence": review_input.context_evidence})
     empty_prompt = builder.build(
         empty_input,
         settings.provider,

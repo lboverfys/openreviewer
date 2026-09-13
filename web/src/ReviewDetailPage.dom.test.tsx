@@ -55,3 +55,32 @@ it("刷新详情后重新读取当前日志页，保持第二页位置", async (
   expect(vi.mocked(api.eventPage).mock.calls.at(-1)?.[1]).toBe("second-page");
   expect(screen.getByText(/第 2 页/)).toBeInTheDocument();
 });
+
+it.each(["paused", "cancelled"])("%s 状态不会沿用自动重试或实时 CI 提示", async phase => {
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details, phase,
+    workflow_status: phase as ReviewDetails["workflow_status"], execution_status: "ready_for_review",
+    model_attempt_count: 0, model_review_completed_at: null, ci_state: "pending", snapshot_review: false,
+    events: [{id:"retry",event_type:"review.task.retry_scheduled",occurred_at:"2026-09-14T00:00:00Z",
+      payload:{model_attempt_count:0,error_code:"retrieval_index_pending",retry_at:"2099-01-01T00:00:00Z"}}],
+  });
+  render(<ReviewDetailPage user={user} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  const metrics = within(await screen.findByRole("region", {name: "任务关键指标"}));
+  expect(metrics.getByText(phase === "paused" ? "已暂停" : "已取消")).toBeInTheDocument();
+  expect(metrics.getByText(phase === "paused" ? "已暂停跟进" : "已停止跟进")).toBeInTheDocument();
+  expect(screen.queryByText(/等待自动重试/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/上一轮.*失败/)).not.toBeInTheDocument();
+});
+
+it("等待索引不会宣称模型调用失败", async () => {
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details, phase:"model_queued",
+    workflow_status:"agent_batches", execution_status:"ready_for_review", model_attempt_count:0,
+    model_review_completed_at:null,
+    events:[{id:"retry",event_type:"review.task.retry_scheduled",occurred_at:"2026-09-14T00:00:00Z",
+      payload:{model_attempt_count:0,error_code:"retrieval_index_pending",retry_at:"2099-01-01T00:00:00Z"}}],
+  });
+  render(<ReviewDetailPage user={user} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  await screen.findByText("正在准备关联代码索引，完成后自动继续 AI 检查");
+  fireEvent.click(screen.getByRole("button", {name:/问题与结论/}));
+  expect(await screen.findByText("正在准备关联代码")).toBeInTheDocument();
+  expect(screen.queryByText(/AI 请求失败/)).not.toBeInTheDocument();
+});

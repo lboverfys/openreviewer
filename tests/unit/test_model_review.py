@@ -28,6 +28,7 @@ from domain.model_review import (
     materialize_findings,
     model_review_output_schema,
 )
+from domain.retrieval import ContextEvidence, stable_key
 from domain.review_planning import RepositoryRule, ReviewUnit
 from services.model_review import (
     FragmentLineMap,
@@ -486,6 +487,36 @@ def test_model_batches_use_context_window_without_omitting_files() -> None:
         batch.estimated_input_tokens <= small_context.batch_input_budget_tokens
         for batch in small_batches
     )
+
+
+def test_model_batches_reserve_associated_context_without_losing_code() -> None:
+    source = make_large_v2_input()
+    content = "关联代码\n" * 1000
+    evidence = ContextEvidence(
+        reference_id=stable_key("index", "chunk"), chunk_id="chunk", index_id="index",
+        head_sha=HEAD_SHA, file="src/context.py", blob_sha=BLOB_SHA,
+        symbol="authorize", start_line=1, end_line=1000, content=content,
+        content_hash=sha256(content.encode()).hexdigest(), routes=("bm25",),
+        rank=1, fused_rank=1, fusion_score=1, selected=True,
+        unit_keys=(source.units[0].unit_key,),
+    )
+    review_input = source.model_copy(update={"context_evidence": (evidence,)})
+    settings = ModelServiceSettings(
+        provider=ModelProvider.OPENAI, model="context-model", api_key="test-key",
+        api_protocol=ModelApiProtocol.RESPONSES, context_window_tokens=128000,
+        max_output_tokens=4096, max_batch_input_tokens=64000,
+    )
+    batches = plan_model_review_batches(review_input, settings)
+    patches: dict[str, list[str]] = {}
+    for batch in batches:
+        assert batch.estimated_input_tokens <= settings.batch_input_budget_tokens
+        expected = any(unit.unit_key in evidence.unit_keys for unit in batch.review_input.units)
+        assert bool(batch.review_input.context_evidence) is expected
+        for unit in batch.review_input.units:
+            patches.setdefault(unit.unit_key, []).append(unit.patch)
+    assert {key: "".join(parts) for key, parts in patches.items()} == {
+        unit.unit_key: unit.patch for unit in source.units
+    }
 
 
 def test_model_batch_planning_caches_rule_and_piece_sizes(

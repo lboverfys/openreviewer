@@ -32,6 +32,7 @@ from services.model_review import (
 from services.task_queue import (
     ModelBatchBusyError,
     ModelReviewCheckpointTooLargeError,
+    ModelReviewInputError,
     ReviewTaskQueue,
 )
 
@@ -145,7 +146,12 @@ class _PersistentBatchedReviewer:
         # 正式批次的截断恢复由 Worker 缩小输入；供应商适配器不得把同一
         # 大请求改成 8K 后再次发送。旧的直接适配器调用仍保留兼容行为。
         review_input = review_input.model_copy(update={"allow_truncation_retry": False})
-        batches = plan_model_review_batches(review_input, self._settings)
+        try:
+            batches = plan_model_review_batches(review_input, self._settings)
+        except ValueError as exc:
+            raise ModelReviewInputError(
+                "审查输入无法按当前容量分批，请检查模型的上下文和单批输入上限"
+            ) from exc
         if not batches:
             _raise_if_lease_lost(self._lease_cursor)
             # 在最后一刻再检查一次，避免租约已丢失后调用模型。
