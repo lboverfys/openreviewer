@@ -400,7 +400,13 @@ class _StructuredModelReviewer(ModelReviewer):
                 raise self._error(
                     ErrorCode.MODEL_INVALID_RESPONSE,
                     "模型引用了本批次未提供的代码或规则，请重试该批次",
-                    retryable=True, details={**self._audit_details(audit), "invalid_references": True},
+                    retryable=True, details={**self._audit_details(audit), "invalid_references": True,
+                        "invalid_reference_kind": {
+                            "model finding references unknown retrieval evidence": "context_references",
+                            "model finding references an unknown repository rule": "rule_reference",
+                            "model finding references an unknown review unit": "unit_key",
+                            "model finding location does not match its review unit": "location_file",
+                        }.get(str(exc), "reference")},
                 ) from exc
         estimated_cost = (
             self._settings.pricing.estimate_microusd(usage)

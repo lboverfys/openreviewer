@@ -383,7 +383,7 @@ def test_prompt_is_one_bounded_plan_payload_and_marks_repository_text_untrusted(
 
     payload = json.loads(prompt.user)
     assert len(payload["review_units"]) == 1
-    assert payload["review_units"][0]["unit_key"] == "d" * 64
+    assert payload["review_units"][0]["unit_key"] == "u_1"
     assert len(payload["repository_rules"]) == 1
     assert set(payload["output_contract"]["required"]) == {
         "verdict",

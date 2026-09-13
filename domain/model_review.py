@@ -67,7 +67,7 @@ class ModelFindingCandidate(ModelContract):
     """模型可生成的 Finding 候选，不含平台拥有的身份和复核字段。"""
 
     context_references: tuple[str, ...] = Field(default=(), max_length=8)
-    unit_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    unit_key: str = Field(pattern=r"^(?:[0-9a-f]{64}|u_[1-9][0-9]{0,3})$")
     severity: Severity
     category: FindingCategory
     location: ModelFindingLocation | None
@@ -443,19 +443,25 @@ def normalize_model_references(review_input: ModelReviewInput, output: ModelRevi
     known_context = set(aliases.values())
     known_rules = {rule.path for rule in review_input.rules} | set(review_input.knowledge_versions)
     units = {unit.unit_key: unit for unit in review_input.units}
+    unit_aliases = {f"u_{number}": unit.unit_key for number, unit in enumerate(review_input.units, 1)}
     findings = []
     for candidate in output.findings:
         references = tuple(dict.fromkeys(aliases.get(key, key) for key in candidate.context_references))
         if not set(references) <= known_context:
             raise ValueError("model finding references unknown retrieval evidence")
-        if candidate.rule_reference not in known_rules | {None}:
+        rule = candidate.rule_reference
+        if rule is not None and rule not in known_rules:
+            # 规则字段保存文件路径；仅移除已提供文档的章节/版本后缀，不接受新来源。
+            rule = rule.split("#", 1)[0].split("@", 1)[0]
+        if rule not in known_rules | {None}:
             raise ValueError("model finding references an unknown repository rule")
-        unit = units.get(candidate.unit_key)
+        unit_key = unit_aliases.get(candidate.unit_key, candidate.unit_key)
+        unit = units.get(unit_key)
         if unit is None:
             raise ValueError("model finding references an unknown review unit")
         if candidate.location is not None and candidate.location.file != unit.file:
             raise ValueError("model finding location does not match its review unit")
-        findings.append(candidate.model_copy(update={"context_references": references}))
+        findings.append(candidate.model_copy(update={"unit_key": unit_key, "rule_reference": rule, "context_references": references}))
     return output.model_copy(update={"findings": tuple(findings)})
 
 
