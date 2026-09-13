@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -18,6 +19,7 @@ from services.review_management import (
     ReviewAction,
     ReviewActionConflictError,
     ReviewManagementService,
+    StoredReviewEvent,
 )
 from services.review_planning import DeterministicReviewPlanner
 from services.task_queue import TaskLeaseLostError
@@ -44,6 +46,20 @@ def test_cancel_running_task_stops_lease_and_all_timeline_nodes(database):
     assert detail.phase == "cancelled" and detail.current_stage == "result"
     assert all(stage.status not in {"current", "pending"} for stage in detail.stages)
     assert ReviewAction.REVIEW_SNAPSHOT in detail.available_actions
+
+
+def test_retrieving_context_does_not_claim_that_model_agents_have_started(database):
+    clock = MutableClock(datetime(2026, 9, 14, tzinfo=UTC))
+    _, _, _, run_id = _prepare_planning_lease(database, clock, complete_context=True)
+    service = ReviewManagementService(SqlAlchemyReviewManagementRepository(database.sessions, clock=clock))
+    started = StoredReviewEvent("retrieval-start", "review.model.retrieval_started", {}, clock())
+    stored = replace(service.details(run_id).stored, workflow_status=ExecutionStatus.AGENT_BATCHES,
+                     execution_status=ExecutionStatus.RUNNING, events=(started,))
+    assert service._current_stage(stored, 0) == ("agent_batches", "retrieval_started")
+    completed = StoredReviewEvent("retrieval-end", "review.model.retrieval_completed", {}, clock())
+    assert service._current_stage(replace(stored, events=(started, completed)), 0) == (
+        "agent_batches", "agent_batches_running"
+    )
 
 
 @pytest.mark.parametrize("action", [ReviewAction.PAUSE, ReviewAction.CANCEL])

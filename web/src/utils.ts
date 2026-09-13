@@ -59,7 +59,7 @@ export const phaseLabels: Record<string, string> = {
   ci_checking: "Worker 正在刷新 GitHub CI 状态",
   ci_running: "正在检查 GitHub CI 结果",
   ci_failed: "CI 检查失败，请查看错误后重试",
-  planning_queued: "CI 已结束，等待生成审查计划",
+  planning_queued: "等待生成审查计划",
   planning_running: "正在整理规则、文件和审查范围",
   model_queued: "审查计划已准备，等待 AI 分析",
   model_retry_waiting: "上一轮 AI 请求失败，系统会按计划自动重试",

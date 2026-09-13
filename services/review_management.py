@@ -784,6 +784,11 @@ class ReviewManagementService:
                     "planning_queued" if status is ExecutionStatus.PLANNING else "model_queued"
                 )
                 return direct_stage[0], queued_phase
+            if status is ExecutionStatus.AGENT_BATCHES:
+                retrieval = next((event for event in reversed(item.events)
+                                  if event.event_type in {"review.model.retrieval_started", "review.model.retrieval_completed"}), None)
+                if retrieval is not None and retrieval.event_type == "review.model.retrieval_started":
+                    return "agent_batches", "retrieval_started"
             return direct_stage
         if item.review_plan_id is not None:
             return (
