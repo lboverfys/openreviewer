@@ -8,12 +8,13 @@ from sqlalchemy import delete, select, update
 from persistence.models import ReviewReuseRecord, ReviewRunRecord, ReviewTaskRecord
 from services.task_queue import TaskLeaseLostError
 from tests.integration.test_github_context_persistence import _submit
-from tests.integration.test_management_api import database as database
+from tests.integration.test_postgres_contract import postgres_database as postgres_database
 from tests.integration.test_team_platform import setup_ledger
 from tests.unit.test_model_review import make_output, make_result
 
 
-def test_reuse_obeys_ttl_source_cleanup_and_old_worker_fencing(database):
+def test_reuse_obeys_ttl_source_cleanup_and_old_worker_fencing(postgres_database):
+    database = postgres_database
     queue, lease, clock, _ = setup_ledger(database)
     key = "c" * 64
     payload = make_result(make_output(), "b" * 64).model_dump(mode="json")
