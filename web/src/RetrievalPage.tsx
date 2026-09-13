@@ -5,10 +5,10 @@ import CodeIndexPanel from "./CodeIndexPanel";
 import Pagination from "./Pagination";
 import { useCursorPage } from "./useCursorPage";
 import { formatDuration } from "./review-details";
-import type { CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettings, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
+import type { CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
 import { errorMessage, formatDate } from "./utils";
 
-type Tab = "search" | "evaluations" | "settings";
+type Tab = "search" | "evaluations";
 const annotationLabels: Record<string, string> = { synthetic_contract: "合成契约样本", agent_annotated: "代理标注 · 非独立人工金标", independent_human: "独立人工标注" };
 
 export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
@@ -18,14 +18,12 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
   const [operations, setOperations] = useState<RetrievalOperations | null>(() => peekReadCache<RetrievalOperations>("retrieval-operations") ?? null);
   const cachedSettings = peekReadCache<RetrievalSettingsView>("retrieval-settings");
   const [view, setView] = useState<RetrievalSettingsView | null>(cachedSettings ?? null);
-  const [draft, setDraft] = useState<RetrievalSettings | null>(cachedSettings?.settings ?? null);
   const [selectedId, setSelectedId] = useState("");
   const [reviewRunId, setReviewRunId] = useState(initialReviewRunId ?? "");
   const [query, setQuery] = useState("");
   const [seedFiles, setSeedFiles] = useState("");
   const [strategy, setStrategy] = useState<RetrievalStrategy>("lexical_relations");
   const [trace, setTrace] = useState<RetrievalTrace | null>(null);
-  const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -47,15 +45,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
   const reports = (reportPage.data?.items ?? []).map(report => report.strategies.some(item => item.strategy !== "bm25" && item.strategy !== "lexical_relations") ? report : {...report, query_cache_mode: "not_used", vector_search_mode: "not_used"});
   const selected = indexes.find(item => item.id === selectedId);
 
-  const settingsRef = useRef(view);
-  const draftRef = useRef(draft);
-  settingsRef.current = view;
-  draftRef.current = draft;
-  const applySettings = useCallback((next: RetrievalSettingsView) => {
-    // 后台校验更新版本，但保留用户尚未保存的配置草稿。
-    if (!draftRef.current || JSON.stringify(draftRef.current) === JSON.stringify(settingsRef.current?.settings)) setDraft(next.settings);
-    setView(next);
-  }, []);
+  const applySettings = useCallback((next: RetrievalSettingsView) => setView(next), []);
   const loadOverview = useCallback(async (signal?: AbortSignal, force = false) => {
     // 每块数据独立显示，慢请求或失败不会阻塞索引列表。
     await Promise.allSettled([
@@ -116,8 +106,8 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
     <div className="retrieval-main">
     <section className="retrieval-hero">
       <div className="retrieval-hero-copy">
-        <h1>让每一次判断，都有代码依据</h1>
-        <p>版本化索引、跨文件检索与效果对比，汇集到一个工作区。</p>
+        <h1>代码检索</h1>
+        <p>审查会自动从这里取关联代码；你也可以手动搜索，核对 AI 使用的依据。这里不直接生成代码审查结论。</p><nav className="workspace-links"><a href="#knowledge">← 知识文档</a><a href="#settings?section=retrieval">检索模型与开关 →</a></nav>
       </div>
       <button type="button" className="btn-ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -135,18 +125,18 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
       </div>
       <div className="retrieval-overview-card">
         <span className="retrieval-overview-icon is-model" aria-hidden="true">⚡</span>
-        <div><span>模型调用状态</span><strong className="retrieval-overview-status">{view?.external_calls_paused ? "已暂停" : operations?.circuit_open ? "短暂熔断" : operations?.provider_busy ? "处理中" : view ? "按需调用" : "—"}</strong><small>基础检索始终独立运行</small></div>
+        <div><span>向量与精排</span><strong className="retrieval-overview-status">{view?.external_calls_paused ? "已暂停" : operations?.circuit_open ? "短暂熔断" : operations?.provider_busy ? "处理中" : view ? "按需调用" : "—"}</strong><small>基础检索始终独立运行</small></div>
       </div>
       <div className="retrieval-overview-card">
         <span className="retrieval-overview-icon is-limit" aria-hidden="true">▦</span>
-        <div><span>每次操作请求上限</span><strong>{draft?.max_requests_per_operation ?? "—"}</strong><small>包含失败后的重试</small></div>
+        <div><span>每次操作请求上限</span><strong>{view?.settings.max_requests_per_operation ?? "—"}</strong><small>包含失败后的重试</small></div>
       </div>
     </div>
     <nav className="seg-tabs retrieval-tabs" aria-label="代码检索页面">
-      {([["search", "索引与检索"], ["evaluations", "评测对比"], ["settings", "模型配置"]] as const).map(([key, label]) => <button key={key} className={tab === key ? "is-active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
+      {([["search", "索引与检索"], ["evaluations", "检索效果（高级）"]] as const).map(([key, label]) => <button key={key} className={tab === key ? "is-active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
     </nav>
     {error && <div role="alert" className="toast-banner is-error">{error}</div>}
-    {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>真实模型调用已暂停</strong><p>可以建立基础索引，使用关键词和代码关系检索。已有向量会保留。</p></div></div>}
+    {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>向量与精排调用已关闭</strong><p>关键词和代码关系检索仍可用于审查，GPT 审查不受影响。<a href="#settings?section=retrieval">到模型配置开启 →</a></p></div></div>}
     {message && <div role="status" className="toast-banner is-success">{message}</div>}
     {<>
       {tab === "search" && <div className="retrieval-workspace">
@@ -167,7 +157,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
             void action("search", async () => {
               searchController.current?.abort();
               const controller = new AbortController(); searchController.current = controller;
-              const next = await api.searchCodeIndex(selectedId, {query, strategy, symbols: [], seed_files: seedFiles.split(/\r?\n/).map(value => value.trim()).filter(Boolean), limit: draft?.context_k ?? 8}, controller.signal);
+              const next = await api.searchCodeIndex(selectedId, {query, strategy, symbols: [], seed_files: seedFiles.split(/\r?\n/).map(value => value.trim()).filter(Boolean), limit: view?.settings.context_k ?? 8}, controller.signal);
               if (!controller.signal.aborted) setTrace(next);
             });
           }}>
@@ -198,27 +188,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
           </article>;
         })}
       <Pagination page={reportPage.page} count={reports.length} hasNext={Boolean(reportPage.data?.next_cursor)} busy={reportPage.loading} onPrevious={reportPage.previous} onNext={reportPage.next} label="评测报告分页" /></section>}
-      {tab === "settings" && view && draft && <section className="retrieval-card">
-        <h2>检索模型配置</h2><p className="retrieval-muted">向量与精排使用百炼接口。更换向量模型或接入域名后，需要建立对应的新索引。索引在请求前检查新增向量数量，超过上限会停止，已有缓存不计入新增数量。</p>
-        <form onSubmit={event => { event.preventDefault(); void action("save", async () => { const next = await api.updateRetrievalSettings(draft, view.revision, apiKey.trim() || undefined); setView(next); setDraft(next.settings); setApiKey(""); setMessage("检索配置已保存"); }); }}>
-          <label className="retrieval-checkbox"><input type="checkbox" checked={Boolean(draft.enabled)} onChange={event => setDraft({...draft, enabled: event.target.checked})} />在审查中使用代码上下文</label>
-          <label>百炼 API Host<input value={draft.api_host ?? ""} onChange={event => setDraft({...draft, api_host: event.target.value})} placeholder="https://业务空间.cn-beijing.maas.aliyuncs.com" /></label>
-          <label>API Key<input type="password" autoComplete="new-password" value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder={view.key_configured ? "已保存；留空保留当前密钥" : "填写百炼 API Key"} /></label>
-          <div className="retrieval-form-grid">
-            <label>向量模型<input value={draft.embedding_model ?? ""} onChange={event => setDraft({...draft, embedding_model: event.target.value})} /></label>
-            <label>重排模型<input value={draft.rerank_model ?? ""} onChange={event => setDraft({...draft, rerank_model: event.target.value})} /></label>
-            <label>向量价格（美元 / 百万 Token）<input type="number" min={0} max={1000000} step="any" value={draft.embedding_usd_per_million ?? ""} onChange={event => setDraft({...draft, embedding_usd_per_million: event.target.value || null})} /></label>
-            <label>精排价格（美元 / 百万 Token）<input type="number" min={0} max={1000000} step="any" value={draft.rerank_usd_per_million ?? ""} onChange={event => setDraft({...draft, rerank_usd_per_million: event.target.value || null})} /></label>
-            <label>单个索引最多新增向量数<input type="number" min={0} max={20000} value={draft.max_new_vectors_per_index ?? 100} onChange={event => setDraft({...draft, max_new_vectors_per_index: Number(event.target.value)})} /></label>
-            <label>每次操作最多模型请求数<input type="number" min={0} max={300} value={draft.max_requests_per_operation ?? 12} onChange={event => setDraft({...draft, max_requests_per_operation: Number(event.target.value)})} /></label>
-            <label>每路候选上限<input type="number" min={1} max={50} value={draft.candidate_k ?? 20} onChange={event => setDraft({...draft, candidate_k: Number(event.target.value)})} /></label>
-            <label>上下文数量上限<input type="number" min={1} max={20} value={draft.context_k ?? 8} onChange={event => setDraft({...draft, context_k: Number(event.target.value)})} /></label>
-            <label>默认策略<select value={draft.strategy ?? "reranked"} onChange={event => setDraft({...draft, strategy: event.target.value as RetrievalStrategy})}>{Object.entries(retrievalStrategyLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-            <label>接口超时（秒）<input type="number" min={5} max={180} value={draft.timeout_seconds ?? 60} onChange={event => setDraft({...draft, timeout_seconds: Number(event.target.value)})} /></label>
-          </div>
-          <div className="retrieval-actions"><button className="primary" disabled={Boolean(busy)}>{busy === "save" ? "保存中…" : "保存配置"}</button><button type="button" disabled={Boolean(busy) || !view.key_configured || view.external_calls_paused} onClick={() => void action("test", async () => { const next = await api.testRetrievalSettings(); setView(next); setMessage("向量与精排接口测试通过"); })}>{busy === "test" ? "测试中…" : "测试已保存的连接"}</button><span>{view.tested ? "当前配置已通过连接测试" : "当前配置尚未验证"} · 1024 维</span></div>
-        </form>
-      </section>}
+
     </>}
     </div>
   </main>;

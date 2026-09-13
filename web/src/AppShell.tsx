@@ -33,19 +33,10 @@ const NAV_ITEMS: ReadonlyArray<ShellNavItem> = [
       <svg {...iconProps}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
     ),
   },
-  { key: "platform", label: "协作与运营", hash: "platform", icon: <svg {...iconProps}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg> },
-  {
-    key: "retrieval",
-    label: "代码检索",
-    hash: "retrieval",
-    permission: "knowledge:manage",
-    icon: (
-      <svg {...iconProps}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    ),
-  },
+  { key: "platform", label: "待办与用量", hash: "platform", icon: <svg {...iconProps}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg> },
   {
     key: "knowledge",
-    label: "知识库",
+    label: "审查依据",
     hash: "knowledge",
     permission: "knowledge:manage",
     icon: (
@@ -54,7 +45,7 @@ const NAV_ITEMS: ReadonlyArray<ShellNavItem> = [
   },
   {
     key: "settings",
-    label: "AI 设置",
+    label: "模型配置",
     hash: "settings",
     permission: "settings:manage",
     icon: (
@@ -69,7 +60,7 @@ const NAV_ITEMS: ReadonlyArray<ShellNavItem> = [
     icon: <svg {...iconProps}><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 4v2"/></svg>,
   },
   {
-    key: "evaluations", label: "评测工作台", hash: "evaluations",
+    key: "evaluations", label: "效果评测", hash: "evaluations",
     icon: <svg {...iconProps}><path d="M4 19h16M7 15V9m5 6V5m5 10v-4"/></svg>,
   },
 ];
@@ -78,7 +69,7 @@ function activeNavKey(view: AppView): ShellNavItem["key"] {
   if (view.kind === "platform") return "platform";
   if (view.kind === "evaluations") return "evaluations";
   if (view.kind === "team") return "team";
-  if (view.kind === "retrieval") return "retrieval";
+  if (view.kind === "retrieval") return "knowledge";
   if (view.kind === "knowledge") return "knowledge";
   if (view.kind === "settings") return "settings";
   return "dashboard";

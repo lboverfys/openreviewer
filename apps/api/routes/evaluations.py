@@ -19,6 +19,7 @@ from domain.evaluation_workbench import (
     EvaluationFindingView,
     EvaluationImportResult,
     EvaluationNotFoundError,
+    EvaluationOverview,
     EvaluationRevision,
     EvaluationRunOption,
     EvaluationSplit,
@@ -91,6 +92,10 @@ def register_evaluation_routes(
     @application.get("/api/v1/evaluations/datasets/{dataset_id}", response_model=EvaluationDatasetView)
     def dataset(dataset_id: str, principal: Annotated[SessionPrincipal, Depends(require_viewer)]):
         return _guard(lambda: get_service().dataset(dataset_id, principal.resource_scope))
+
+    @application.get("/api/v1/evaluations/datasets/{dataset_id}/overview", response_model=EvaluationOverview)
+    def overview(dataset_id: str, principal: Annotated[SessionPrincipal, Depends(require_viewer)]):
+        return _guard(lambda: get_service().overview(dataset_id, principal.resource_scope))
 
     @application.post("/api/v1/evaluations/datasets/{dataset_id}/archive", response_model=EvaluationDatasetView)
     def archive(

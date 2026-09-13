@@ -25,7 +25,7 @@ type SessionState =
 
 export type AppView =
   | { kind: "dashboard" }
-  | { kind: "settings" }
+  | { kind: "settings"; section?: "provider" | "agents" | "policy" | "retrieval" }
   | { kind: "team" }
   | { kind: "platform"; findingId?: string; tab?: import("./PlatformPage").PlatformTab }
   | { kind: "evaluations"; datasetId?: string; caseId?: string; reviewRunId?: string }
@@ -49,7 +49,10 @@ export function readAppView(hash = window.location.hash): AppView {
     } catch { return {kind:"dashboard"}; }
   }
   if (hash === "#team") return { kind: "team" };
-  if (hash === "#settings") return { kind: "settings" };
+  if (hash === "#settings" || hash.startsWith("#settings?")) {
+    const section = new URLSearchParams(hash.split("?", 2)[1]).get("section");
+    return {kind: "settings", ...(section === "agents" || section === "policy" || section === "retrieval" ? {section} : {})};
+  }
   if (hash === "#knowledge") return { kind: "knowledge" };
   if (hash === "#retrieval") return {kind: "retrieval"};
   if (hash.startsWith("#retrieval/")) {
@@ -148,7 +151,7 @@ function AppContent() {
   } else if (view.kind === "team" && hasPermission(session.user, "settings:manage")) {
     page = <TeamPage onSignedOut={onSignedOut} />;
   } else if (view.kind === "settings" && hasPermission(session.user, "settings:manage")) {
-    page = <SettingsPage onSignedOut={onSignedOut} />;
+    page = <SettingsPage onSignedOut={onSignedOut} initialSection={view.section} />;
   } else if (view.kind === "knowledge" && hasPermission(session.user, "knowledge:manage")) {
     page = <KnowledgePage onSignedOut={onSignedOut} />;
   } else if (view.kind === "retrieval" && hasPermission(session.user, "knowledge:manage")) {

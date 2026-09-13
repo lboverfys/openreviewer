@@ -412,6 +412,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/evaluations/datasets/{dataset_id}/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Overview */
+        get: operations["overview_api_v1_evaluations_datasets__dataset_id__overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/evaluations/datasets/{dataset_id}/report": {
         parameters: {
             query?: never;
@@ -527,6 +544,23 @@ export interface paths {
         put?: never;
         /** Restore Knowledge Document Version */
         post: operations["restore_knowledge_document_version_api_v1_knowledge_documents__document_id__versions__version__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/knowledge/project-pack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Install Project Pack */
+        post: operations["install_project_pack_api_v1_knowledge_project_pack_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2518,6 +2552,25 @@ export interface components {
             /** Imported */
             imported: number;
         };
+        /** EvaluationOverview */
+        EvaluationOverview: {
+            /** Case Count */
+            case_count: number;
+            /** False Positive Findings */
+            false_positive_findings: number;
+            /** Missing Reference Cases */
+            missing_reference_cases: number;
+            /** Observation Count */
+            observation_count: number;
+            /** Reviewed Findings */
+            reviewed_findings: number;
+            /** Reviewed Observations */
+            reviewed_observations: number;
+            /** Unreviewed Findings */
+            unreviewed_findings: number;
+            /** Valid Findings */
+            valid_findings: number;
+        };
         /** EvaluationRevision */
         EvaluationRevision: {
             /** Expected Revision */
@@ -2842,6 +2895,8 @@ export interface components {
             enabled: boolean;
             /** Expected Revision */
             expected_revision: number;
+            /** Repository Scope */
+            repository_scope?: string | null;
             /** Source */
             source: string;
         };
@@ -2891,6 +2946,8 @@ export interface components {
             enabled: boolean;
             /** Id */
             id: string;
+            /** Repository Scope */
+            repository_scope?: string | null;
             /** Source */
             source: string;
             /** Title */
@@ -2935,6 +2992,8 @@ export interface components {
             enabled: boolean;
             /** Id */
             id: string;
+            /** Repository Scope */
+            repository_scope?: string | null;
             /** Source */
             source: string;
             /** Title */
@@ -2960,6 +3019,8 @@ export interface components {
             expected_document_version: number;
             /** Expected Revision */
             expected_revision: number;
+            /** Repository Scope */
+            repository_scope?: string | null;
             /** Source */
             source: string;
         };
@@ -3656,6 +3717,8 @@ export interface components {
              * @default false
              */
             enabled: boolean;
+            /** External Calls Enabled */
+            external_calls_enabled?: boolean | null;
             /**
              * Max New Vectors Per Index
              * @default 100
@@ -3720,6 +3783,8 @@ export interface components {
              * @default false
              */
             enabled: boolean;
+            /** External Calls Enabled */
+            external_calls_enabled?: boolean | null;
             /**
              * Max New Vectors Per Index
              * @default 100
@@ -5531,6 +5596,37 @@ export interface operations {
             };
         };
     };
+    overview_api_v1_evaluations_datasets__dataset_id__overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     report_api_v1_evaluations_datasets__dataset_id__report_get: {
         parameters: {
             query?: {
@@ -5840,11 +5936,45 @@ export interface operations {
             };
         };
     };
+    install_project_pack_api_v1_knowledge_project_pack_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AiRevisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeDocumentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     search_knowledge_api_v1_knowledge_search_get: {
         parameters: {
             query: {
                 q: string;
                 limit?: number;
+                repository?: string | null;
             };
             header?: never;
             path?: never;

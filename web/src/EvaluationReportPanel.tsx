@@ -55,7 +55,8 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
         <div><strong>{report.quality_pairs}</strong><span>双方复核完成</span></div>
         <div><strong>{report.reference_pairs}</strong><span>参考标签已确认</span></div>
       </div>
-      <div className="ws-toolbar"><WorkspaceBadge tone={report.quality_pairs ? "accent" : "warning"}>{report.quality_pairs ? "已有复核样本" : "待人工复核"}</WorkspaceBadge><span className="evaluation-hint">待复核 {report.pending_pairs} 对 · 分歧 {report.disputed_pairs} 对</span></div>
+      <div className="ws-toolbar"><WorkspaceBadge tone={report.quality_pairs ? "accent" : "warning"}>{report.quality_pairs ? "可以比较方案" : report.missing_candidate > 0 && !report.performance_pairs ? "等待候选运行配对" : "等待配对样本完成复核"}</WorkspaceBadge><span className="evaluation-hint">待复核 {report.pending_pairs} 对 · 分歧 {report.disputed_pairs} 对</span></div>
+      {!report.performance_pairs && <p className="ws-note">当前已有的单组复核不会丢失，请在“样本管理”查看。这里仅比较同一提交的两条独立运行，没有候选运行时不计算对比指标。</p>}
       <details className="ws-disclosure evaluation-report-notes" open={!report.quality_pairs}><summary>数据完整性与统计口径</summary><div className="ws-disclosure-body">{report.notices.map(notice => <p key={notice} className="evaluation-notice">{notice}</p>)}<p className="evaluation-hint">缺基线 {report.missing_baseline} · 缺候选 {report.missing_candidate} · 待完成复核 {report.pending_pairs} 对 · 有分歧 {report.disputed_pairs} 对</p></div></details>
       <div className="evaluation-table-wrap"><table>
         <thead><tr><th>指标</th><th>基线</th><th>候选</th><th>统计范围</th></tr></thead>

@@ -266,6 +266,17 @@ class EvaluationDatasetCreate(ObservationImport):
     name: str = Field(min_length=1, max_length=120)
 
 
+class EvaluationOverview(EvaluationContract):
+    case_count: int
+    observation_count: int
+    reviewed_observations: int
+    reviewed_findings: int
+    valid_findings: int
+    false_positive_findings: int
+    unreviewed_findings: int
+    missing_reference_cases: int
+
+
 class EvaluationRevision(EvaluationContract):
     expected_revision: int = Field(ge=1)
 

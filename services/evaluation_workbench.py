@@ -24,6 +24,7 @@ from domain.evaluation_workbench import (
     EvaluationFindingView,
     EvaluationImportResult,
     EvaluationNotFoundError,
+    EvaluationOverview,
     EvaluationRunOption,
     EvaluationSource,
     EvaluationSourceMetadata,
@@ -188,6 +189,25 @@ class EvaluationWorkbench:
             encode_cursor(items[-1].created_at, items[-1].review_run_id)
             if len(rows) > limit else None
         ))
+
+    def overview(self, identifier: str, scope: ResourceScope) -> EvaluationOverview:
+        """单评测集最多 200 PR；一条聚合读取复核进度，不拉取快照正文。"""
+        from sqlalchemy import case, func
+        c, o = EvaluationCaseRecord, EvaluationObservationRecord
+        with self.sessions() as session:
+            dataset = self._dataset(session, identifier, scope)
+            complete = o.assessment_status == "complete"
+            fields = {"reviewed_findings": "adjudicated_count", "valid_findings": "valid_count",
+                      "false_positive_findings": "false_positive_count"}
+            row = session.execute(select(
+                func.count(o.id).label("observation_count"),
+                func.count(o.id).filter(complete).label("reviewed_observations"),
+                *(func.coalesce(func.sum(case((complete, o.metrics[key].as_integer()), else_=0)), 0).label(name)
+                  for name, key in fields.items()),
+                func.coalesce(func.sum(case((~complete, o.finding_count), else_=0)), 0).label("unreviewed_findings"),
+                func.count(func.distinct(c.id)).filter(c.reference_count.is_(None)).label("missing_reference_cases"),
+            ).select_from(c).outerjoin(o, o.case_id == c.id).where(c.dataset_id == identifier).limit(1)).mappings().one()
+            return EvaluationOverview(case_count=dataset.case_count, **row)
 
     def report(self, identifier: str, scope: ResourceScope, split: EvaluationSplit = "validation"):
         with self.sessions() as session:

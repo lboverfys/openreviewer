@@ -83,12 +83,14 @@ export function ModelBatchPanel({
       </div>
       <div className="review-agent-grid">
         {activeAgents.map(({ key, label, description, progress }) => {
+          const programSummary = key === "summary" && details.aggregation_status === "local"
+            && details.summary_status === "skipped" && details.coverage_status === "complete";
           const completeCount = progress.completedCount;
           const failedCount = progress.failedCount;
           const progressPercent = progress.batchCount > 0
             ? Math.min(100, (completeCount / progress.batchCount) * 100)
             : progress.status === "completed" ? 100 : 0;
-          const statusLabel = progress.status === "completed"
+          const statusLabel = programSummary ? "已完成程序汇总" : progress.status === "completed"
             ? "已完成"
             : progress.status === "disabled"
               ? "未启用"
@@ -113,18 +115,18 @@ export function ModelBatchPanel({
                 <div><strong>{label}</strong><span>{description}</span></div>
                 <b>{displayStatusLabel}</b>
               </header>
-              <div className="review-agent-progress-meta">
+              {!programSummary && <div className="review-agent-progress-meta">
                 <span>{completeCount}/{progress.batchCount || "—"} 批</span>
                 {failedCount > 0 && <span className="is-error">{failedCount} 批失败</span>}
                 <span>{progress.findingCount} 条 Finding</span>
-              </div>
-              <div className="review-batch-progress" aria-hidden="true"><span style={{ width: `${progressPercent}%` }} /></div>
-              <dl className="review-agent-metrics">
+              </div>}
+              <div className="review-batch-progress" aria-hidden="true"><span style={{ width: `${programSummary ? 100 : progressPercent}%` }} /></div>
+              {!programSummary && <dl className="review-agent-metrics">
                 <div><dt>耗时</dt><dd>{formatDuration(progress.duration)}</dd></div>
                 <div><dt>输入 Token</dt><dd>{progress.inputTokens?.toLocaleString() ?? "—"}</dd></div>
                 <div><dt>输出 Token</dt><dd>{progress.outputTokens?.toLocaleString() ?? "—"}</dd></div>
                 <div><dt>推理 Token</dt><dd>{progress.reasoningTokens?.toLocaleString() ?? "—"}</dd></div>
-              </dl>
+              </dl>}
               {progress.requestIds.length > 0 && (
                 <div className="review-agent-detail"><span>请求 ID</span><code>{progress.requestIds.join(" · ")}</code></div>
               )}
@@ -159,12 +161,13 @@ export function ModelBatchPanel({
               )}
               {progress.status === "not_executed" && key === "summary" && (
                 <div className="review-agent-empty">
-                  <span>{details.coverage_status === "partial" ? "未执行" : "本地汇总"}</span>
+                  <span>{details.coverage_status === "partial" ? "等待上游" : "程序汇总"}</span>
                   {details.coverage_status === "partial"
                     ? "上游 Agent 未完成，汇总未执行"
-                    : "没有重复或冲突候选，已使用本地确定性汇总"}
+                    : `三路结果已合并，共 ${details.finding_total_count} 条候选问题。程序完成去重和排序，本轮无需额外调用汇总模型。`}
                 </div>
               )}
+              {programSummary && <div className="program-summary-notes"><h4>本轮检查结论</h4>{activeAgents.filter(item => item.key !== "summary" && item.progress.conclusionSummary).map(item => <p key={item.key}><strong>{item.label}：</strong>{item.progress.conclusionSummary}</p>)}<small>以上为各审查 Agent 的原始结论摘要；未报告问题不代表代码绝对没有缺陷。</small></div>}
               {progress.status === "not_applicable" && (
                 <div className="review-agent-empty">
                   <span>不适用</span>

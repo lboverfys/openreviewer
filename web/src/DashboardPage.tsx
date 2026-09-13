@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError, DASHBOARD_CACHE_TTL_MS, peekReadCache, primeReadCache, subscribeReadCache, reviewListKey } from "./api";
 import CreateReviewForm from "./CreateReviewForm";
+import WorkflowGuide from "./WorkflowGuide";
 import Pagination, { PAGE_SIZE } from "./Pagination";
 import { useCursorPage } from "./useCursorPage";
 import { preloadPage } from "./page-loaders";
@@ -452,6 +453,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
           </div>
         </section>
 
+        <WorkflowGuide user={user} />
         {/* 状态统计轨道：7 张卡，点击筛选表格 */}
         <section className="dash-stat-rail" aria-label="任务状态统计">
           <div
@@ -530,7 +532,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                     <th>Pull Request</th>
                     <th>合并方向</th>
                     <th>流转状态</th>
-                    <th>重试次数</th>
+                    <th>本阶段尝试</th>
                     <th>更新时间</th>
                     <th>操作</th>
                   </tr>

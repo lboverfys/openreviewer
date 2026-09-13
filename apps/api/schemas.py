@@ -767,6 +767,7 @@ class KnowledgeDocumentSummaryResponse(BaseModel):
 
     id: str
     source: str
+    repository_scope: str | None = None
     title: str
     enabled: bool
     archived: bool
@@ -857,6 +858,7 @@ class KnowledgeMutationResponse(BaseModel):
 
 class KnowledgeDocumentCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    repository_scope: str | None = Field(default=None, max_length=255)
 
     expected_revision: int = Field(ge=0)
     source: str = Field(min_length=1, max_length=200)

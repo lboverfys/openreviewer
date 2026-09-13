@@ -4,11 +4,11 @@ import type { ContextEvidence, RetrievalTrace } from "./types";
 import { formatDuration } from "./review-details";
 
 export const retrievalStrategyLabels = {
-  bm25: "BM25 基线",
+  bm25: "关键词搜索",
   lexical_relations: "关键词 + 代码关系",
-  hybrid: "关键词 + 向量",
-  hybrid_relations: "三路召回 + RRF",
-  reranked: "三路召回 + 精排",
+  hybrid: "关键词 + 语义搜索",
+  hybrid_relations: "关键词 + 语义 + 代码关系",
+  reranked: "完整检索（含相关性排序）",
 } as const;
 
 const routeLabels: Record<string, string> = { bm25: "BM25", vector: "向量", relation: "代码关系" };
@@ -63,7 +63,7 @@ export default function RetrievalTracePanel({ traces, compact = false }: { trace
         <div><span>最终上下文</span><strong>{trace.candidates.filter(item => item.selected).length} 条</strong><small>{trace.candidates.length} 条融合候选</small></div>
       </div>
       <div className="retrieval-measurements">
-        <span>本次模型请求：{trace.model_requests ?? 0}</span>
+        <span>本次检索模型请求：{trace.model_requests ?? 0}</span>
         <span>向量搜索：{vectorSearchLabel(trace.vector_search_mode)}</span>
         {trace.rerank_cache_hit && <span>精排缓存命中</span>}
         <span>查询向量：{!trace.routes.some(item => item.route === "vector") ? "未使用" : trace.query_cache_hit ? "缓存命中" : "本次生成"}</span>

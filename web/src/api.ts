@@ -28,6 +28,7 @@ import { cachedGet, request, mutation, SETTINGS_CACHE_TTL_MS, DASHBOARD_CACHE_TT
 export { ApiError, ApiTimeoutError, DASHBOARD_CACHE_TTL_MS, reviewListKey, peekReadCache, subscribeReadCache, primeReadCache, clearReadCache, clearSettingsCache } from "./http";
 
 export const api = {
+  evaluationOverview: (id: string, signal?: AbortSignal) => request<import("./types").EvaluationOverview>(`/api/v1/evaluations/datasets/${encodeURIComponent(id)}/overview`, {signal}),
   evaluationDatasets: (includeArchived = false, cursor?: string, signal?: AbortSignal, force = false) =>
     cachedGet("evaluation-datasets:" + includeArchived + ":" + (cursor ?? "first"), (cacheSignal) =>
       request<CursorPage<import("./types").EvaluationDataset>>("/api/v1/evaluations/datasets?" + new URLSearchParams({limit: "10", include_archived: String(includeArchived), ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
@@ -388,9 +389,9 @@ export const api = {
         body: JSON.stringify({ enabled, expected_revision: expectedRevision }),
       },
     )),
-  searchKnowledge: (query: string, limit = 5) =>
+  searchKnowledge: (query: string, limit = 5, repository?: string) =>
     request<KnowledgeSearchResult>(
-      `/api/v1/knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+      `/api/v1/knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}${repository ? `&repository=${encodeURIComponent(repository)}` : ""}`,
     ),
   knowledgeDocuments: (
     includeArchived = false,
@@ -425,7 +426,11 @@ export const api = {
       SETTINGS_CACHE_TTL_MS,
       force,
     ),
+  installKnowledgeProjectPack: (expectedRevision: number) => mutation(() => request<KnowledgeLibrary>("/api/v1/knowledge/project-pack", {
+    method: "POST", body: JSON.stringify({expected_revision: expectedRevision}),
+  })),
   createKnowledgeDocument: (payload: {
+    repository_scope?: string | null;
     expected_revision: number;
     source: string;
     content: string;
@@ -435,6 +440,7 @@ export const api = {
     body: JSON.stringify(payload),
   })),
   updateKnowledgeDocument: (documentId: string, payload: {
+    repository_scope?: string | null;
     expected_revision: number;
     expected_document_version: number;
     source: string;

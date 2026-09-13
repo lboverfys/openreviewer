@@ -1,0 +1,40 @@
+.workflow-guide { margin: 18px 0; padding: 15px 18px; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--bg-card); }
+.workflow-guide > summary { cursor: pointer; color: var(--text-main); font-size: 13px; font-weight: 750; }
+.workflow-guide-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 16px; }
+.workflow-guide-grid > * { display: grid; align-content: start; gap: 7px; padding: 14px; border-radius: 12px; background: var(--bg-page, #f6f8ff); color: var(--text-main); text-decoration: none; }
+.workflow-guide-grid b { color: var(--accent); font-size: 12px; }
+.workflow-guide-grid span { font-size: 12px; color: var(--text-muted); line-height: 1.8; }
+.workspace-links { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; margin-top: 12px; font-size: 13px; }
+.workspace-links [aria-current] { color: var(--text-main); font-weight: 750; }
+.knowledge-pack-note { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; justify-content: space-between; padding: 18px; margin: 16px 0; border: 1px solid var(--border-soft); border-radius: 15px; background: var(--bg-card); }
+.knowledge-pack-note p, .settings-retrieval p, .evaluation-intro p, .evaluation-progress-summary p { margin: 8px 0; color: var(--text-muted); font-size: 13px; line-height: 1.8; }
+.knowledge-scope { display: grid; gap: 7px; padding: 12px 18px; font-size: 12px; }
+.knowledge-scope input { padding: 9px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card); color: var(--text-main); }
+.knowledge-scope small, .program-summary-notes small { color: var(--text-muted); }
+.settings-price-section { margin: 20px 0; padding: 18px; border: 1px solid var(--border-soft); border-radius: 14px; }
+.settings-price-section > p { font-size: 12px; color: var(--text-muted); margin: 8px 0; }
+.price-reference { display: grid; gap: 8px; margin: 12px 0; padding: 14px; border-radius: 12px; background: var(--bg-page, #f6f8ff); font-size: 12px; line-height: 1.8; }
+.price-reference > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.price-reference button { justify-self: start; }
+.price-reference small { color: var(--text-muted); }
+.feature-switches { display: grid; gap: 14px; margin: 18px 0 24px; }
+.feature-switches label { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border: 1px solid var(--border-soft); border-radius: 13px; }
+.feature-switches input { width: 20px; height: 20px; flex: 0 0 20px; accent-color: var(--accent); margin-top: 2px; }
+.feature-switches label span { display: grid; gap: 7px; font-size: 13px; }
+.settings-retrieval .feature-switches label { flex-direction: row; align-items: center; }
+.settings-retrieval .feature-switches label > span { flex: 1; }
+.settings-retrieval .feature-switches input[role="switch"] { appearance: none; position: relative; width: 44px; height: 24px; flex: 0 0 44px; border: 0; border-radius: 99px; background: #bac6d9; cursor: pointer; }
+.settings-retrieval .feature-switches input[role="switch"]::before { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.settings-retrieval .feature-switches input[role="switch"]:checked { background: var(--accent); }
+.settings-retrieval .feature-switches input[role="switch"]:checked::before { transform: translateX(20px); }
+.settings-main .settings-hero-copy, .knowledge-main .knowledge-hero-copy { flex-wrap: wrap; }
+.settings-main .settings-hero-copy > p, .knowledge-main .knowledge-hero-copy > p { flex-basis: 100%; order: 3; max-width: 78ch; font-size: 12px; color: var(--text-muted); line-height: 1.8; }
+.knowledge-main .knowledge-hero-copy .workspace-links { order: 4; flex-basis: 100%; margin-top: 7px; }
+.knowledge-pack-note button { padding: 9px 14px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700; }
+.feature-switches small { font-weight: 400; line-height: 1.7; color: var(--text-muted); }
+.settings-retrieval .ws-form-grid { margin: 16px 0; }
+.evaluation-intro ol { padding-left: 22px; margin: 12px 0; line-height: 2; font-size: 13px; }
+.evaluation-progress-summary small { color: var(--text-muted); font-size: 12px; }
+.program-summary-notes { padding: 16px; margin-top: 15px; border-radius: 12px; border: 1px solid var(--border-soft); background: var(--bg-card); font-size: 12px; line-height: 1.8; }
+.program-summary-notes p { margin: 10px 0; color: var(--text-secondary); }
+@media (max-width: 700px) { .workflow-guide-grid { grid-template-columns: 1fr; } .settings-price-section { padding: 12px; } }

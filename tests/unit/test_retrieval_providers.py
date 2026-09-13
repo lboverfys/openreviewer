@@ -162,7 +162,7 @@ def test_server_pause_switch_blocks_real_requests_before_transport(monkeypatch):
     )
     client._owns_client = True
     try:
-        with pytest.raises(RetrievalError, match="外部调用已暂停"):
+        with pytest.raises(RetrievalError, match="向量与精排调用已关闭"):
             client.embed(("one",))
         assert calls == []
     finally:

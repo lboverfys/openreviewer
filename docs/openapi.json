@@ -2974,6 +2974,55 @@
         "title": "EvaluationImportResult",
         "type": "object"
       },
+      "EvaluationOverview": {
+        "additionalProperties": false,
+        "properties": {
+          "case_count": {
+            "title": "Case Count",
+            "type": "integer"
+          },
+          "false_positive_findings": {
+            "title": "False Positive Findings",
+            "type": "integer"
+          },
+          "missing_reference_cases": {
+            "title": "Missing Reference Cases",
+            "type": "integer"
+          },
+          "observation_count": {
+            "title": "Observation Count",
+            "type": "integer"
+          },
+          "reviewed_findings": {
+            "title": "Reviewed Findings",
+            "type": "integer"
+          },
+          "reviewed_observations": {
+            "title": "Reviewed Observations",
+            "type": "integer"
+          },
+          "unreviewed_findings": {
+            "title": "Unreviewed Findings",
+            "type": "integer"
+          },
+          "valid_findings": {
+            "title": "Valid Findings",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "case_count",
+          "observation_count",
+          "reviewed_observations",
+          "reviewed_findings",
+          "valid_findings",
+          "false_positive_findings",
+          "unreviewed_findings",
+          "missing_reference_cases"
+        ],
+        "title": "EvaluationOverview",
+        "type": "object"
+      },
       "EvaluationRevision": {
         "additionalProperties": false,
         "properties": {
@@ -3811,6 +3860,18 @@
             "title": "Expected Revision",
             "type": "integer"
           },
+          "repository_scope": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Scope"
+          },
           "source": {
             "maxLength": 200,
             "minLength": 1,
@@ -3910,6 +3971,17 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "repository_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Scope"
           },
           "source": {
             "title": "Source",
@@ -4022,6 +4094,17 @@
             "title": "Id",
             "type": "string"
           },
+          "repository_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Scope"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -4080,6 +4163,18 @@
             "minimum": 0.0,
             "title": "Expected Revision",
             "type": "integer"
+          },
+          "repository_scope": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Scope"
           },
           "source": {
             "maxLength": 200,
@@ -5829,6 +5924,17 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "external_calls_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Calls Enabled"
+          },
           "max_new_vectors_per_index": {
             "default": 100,
             "maximum": 20000.0,
@@ -5941,6 +6047,17 @@
             "default": false,
             "title": "Enabled",
             "type": "boolean"
+          },
+          "external_calls_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Calls Enabled"
           },
           "max_new_vectors_per_index": {
             "default": 100,
@@ -10532,6 +10649,45 @@
         "summary": "Import Observations"
       }
     },
+    "/api/v1/evaluations/datasets/{dataset_id}/overview": {
+      "get": {
+        "operationId": "overview_api_v1_evaluations_datasets__dataset_id__overview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Overview"
+      }
+    },
     "/api/v1/evaluations/datasets/{dataset_id}/report": {
       "get": {
         "operationId": "report_api_v1_evaluations_datasets__dataset_id__report_get",
@@ -11059,6 +11215,44 @@
         "summary": "Restore Knowledge Document Version"
       }
     },
+    "/api/v1/knowledge/project-pack": {
+      "post": {
+        "operationId": "install_project_pack_api_v1_knowledge_project_pack_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiRevisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeDocumentListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Install Project Pack"
+      }
+    },
     "/api/v1/knowledge/search": {
       "get": {
         "operationId": "search_knowledge_api_v1_knowledge_search_get",
@@ -11084,6 +11278,24 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "repository",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repository"
             }
           }
         ],

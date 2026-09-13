@@ -82,6 +82,8 @@ class ParsedSources(RetrievalContract):
 
 class RetrievalSettings(RetrievalContract):
     enabled: bool = False
+    # 未在页面保存过开关时兼容原部署值；保存后由管理员页面控制。
+    external_calls_enabled: bool | None = None
     api_host: str = ""
     embedding_model: str = Field(default="qwen3.7-text-embedding", min_length=1, max_length=200)
     rerank_model: str = Field(default="qwen3.7-text-rerank", min_length=1, max_length=200)

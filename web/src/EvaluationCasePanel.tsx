@@ -175,6 +175,7 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged 
     </div></div>
     {detail && !replacing && <>
       <div className="evaluation-observation-meta"><a href={"#review/" + detail.observation.source_run_id}>查看来源审查 →</a><span>{detail.observation.model_label}</span><WorkspaceBadge>{detail.observation.finding_count} 条问题</WorkspaceBadge></div>
+      <p className="evaluation-hint">这里展示来源运行当时的模型与结果，修改当前模型配置不会改写这份快照；复核也不会自动再发起模型调用。</p>
       <div className="evaluation-reviewers">{detail.ballots.length ? detail.ballots.map(item => <span key={item.reviewer}>{item.reviewer}：{item.decision_count}/{detail.observation.finding_count} 条 · {item.submitted_at ? "已提交" : "草稿"}</span>) : <span>尚无复核。需要两位不同成员分别提交。</span>}</div>
       <nav className="evaluation-tabs" aria-label="复核内容">{([["findings","问题复核"],["changes","变更代码"],["versions","模型与版本"]] as const).map(([key,label]) => <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</nav>
       {tab === "findings" && <>

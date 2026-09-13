@@ -5,6 +5,7 @@
 
 | 需要了解什么 | 文档 |
 | --- | --- |
+| 平台各入口负责什么，如何完成一次审查 | [使用流程](usage.md) |
 | 系统怎么分层、为什么这样设计 | [架构与取舍](architecture.md) |
 | GitHub 事件如何变成可审批、可发布的审查结果 | [审查流程](contracts/review-flow.md) |
 | 权限、预算、待办、方案、调度和故障隔离 | [团队运营](contracts/platform.md) |

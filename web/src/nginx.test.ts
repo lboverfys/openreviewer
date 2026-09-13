@@ -34,6 +34,7 @@ describe("Nginx API allowlist", () => {
     "/api/v1/evaluations/datasets/dataset-1",
     "/api/v1/evaluations/datasets/dataset-1/observations",
     "/api/v1/evaluations/datasets/dataset-1/report",
+    "/api/v1/evaluations/datasets/dataset-1/overview",
     "/api/v1/evaluations/datasets/dataset-1/cases",
     "/api/v1/evaluations/datasets/dataset-1/audits",
     "/api/v1/evaluations/datasets/dataset-1/archive",
@@ -72,6 +73,7 @@ describe("Nginx API allowlist", () => {
 
   it.each([
     "/api/v1/knowledge/search",
+    "/api/v1/knowledge/project-pack",
     "/api/v1/knowledge/documents",
     "/api/v1/knowledge/documents/789cd0af-e771-4fbe-a544-c36ce9592e64",
     "/api/v1/knowledge/documents/789cd0af-e771-4fbe-a544-c36ce9592e64/archive",

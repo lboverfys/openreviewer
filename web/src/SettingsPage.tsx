@@ -17,6 +17,8 @@ import {
 } from "./api";
 import AgentSettingsPanel from "./AgentSettingsPanel";
 import { NumberField } from "./SettingsFields";
+import RetrievalSettingsPanel from "./RetrievalSettingsPanel";
+import ModelPriceReference from "./ModelPriceReference";
 import {
   bytesToInput,
   inputToBytes,
@@ -49,6 +51,7 @@ import { errorMessage, formatDate } from "./utils";
 
 interface SettingsPageProps {
   onSignedOut: (message?: string) => void;
+  initialSection?: "provider" | "agents" | "policy" | "retrieval";
 }
 
 const providerLabels: Record<AiProvider, string> = {
@@ -141,12 +144,18 @@ function ProviderStatus({ settings }: { settings: AiProviderSettings }) {
 
 export default function SettingsPage({
   onSignedOut,
+  initialSection = "provider",
 }: SettingsPageProps) {
   // 复用未过期快照，后台 refresh 校验最新版本，避免路由切换时整页 loading。
   const cachedSettings = peekReadCache<AiSettings>("ai-settings");
   const initialSettings = cachedSettings ? normalizeAiSettings(cachedSettings) : null;
   const [settings, setSettings] = useState<AiSettings | null>(initialSettings);
-  const [activeTab, setActiveTab] = useState<"provider" | "agents" | "policy">("provider");
+  const [activeTab, setActiveTab] = useState<"provider" | "agents" | "policy" | "retrieval">(initialSection);
+  useEffect(() => setActiveTab(initialSection), [initialSection]);
+  const retrievalError = useCallback((error: unknown) => {
+    if (error instanceof ApiError && error.status === 401) onSignedOut("登录已失效");
+    else {setMessage(error instanceof Error ? error.message : "检索配置暂时不可用"); setMessageKind("error");}
+  }, [onSignedOut]);
   const [policyDraft, setPolicyDraft] = useState<ReviewPolicyDraft | null>(
     initialSettings ? reviewPolicyDraft(initialSettings) : null,
   );
@@ -655,7 +664,8 @@ export default function SettingsPage({
         {/* 页头：标题 + 版本信息 + 运行状态 + 刷新，单行紧凑 */}
         <section className="settings-hero">
           <div className="settings-hero-copy">
-            <h1>AI 设置</h1>
+            <h1>模型配置</h1>
+            <p>先设置审查模型和费用，再选择是否使用关联代码与检索模型。已保存的历史结果保留当时版本。</p>
             <div className="settings-meta-line">
               <span>配置版本 {settings?.revision ?? "--"}</span>
               <span>更新于 {formatDate(settings?.updated_at ?? null)}</span>
@@ -666,8 +676,8 @@ export default function SettingsPage({
             <div className={`settings-runtime-card ${settings?.active_provider ? "is-active" : "is-idle"}`}>
               <span className="settings-status-dot" />
               <div>
-                <small>当前运行服务</small>
-                <strong>{settings?.active_provider ? `${providerShortLabels[settings.active_provider]} 运行中` : "还未启用模型"}</strong>
+                <small>公共审查模型</small>
+                <strong>{settings?.active_provider ? settings.providers.find(provider => provider.provider === settings.active_provider)?.model ?? providerShortLabels[settings.active_provider] : "还未启用模型"}</strong>
               </div>
             </div>
             {refreshNotice && (
@@ -685,21 +695,23 @@ export default function SettingsPage({
 
         <div className="settings-layout">
           <nav className="settings-tab-nav" aria-label="设置分区">
-            <button type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => setActiveTab("provider")}>
+            <button type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => {setActiveTab("provider"); window.location.hash="settings";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
-              <span className="settings-tab-copy"><strong>模型服务</strong><small>连接、密钥与启用</small></span>
+              <span className="settings-tab-copy"><strong>审查模型</strong><small>连接、价格与启用</small></span>
             </button>
-            <button type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => setActiveTab("agents")}>
+            <button type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => {setActiveTab("agents"); window.location.hash="settings?section=agents";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-              <span className="settings-tab-copy"><strong>Agent 配置</strong><small>四路审查独立调整</small></span>
+              <span className="settings-tab-copy"><strong>审查分工</strong><small>三路检查与按需汇总</small></span>
             </button>
-            <button type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => setActiveTab("policy")}>
+            <button type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => {setActiveTab("policy"); window.location.hash="settings?section=policy";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               <span className="settings-tab-copy"><strong>审查范围</strong><small>输入规模与层级上限</small></span>
             </button>
+            <button type="button" className={activeTab === "retrieval" ? "is-active" : ""} aria-pressed={activeTab === "retrieval"} onClick={() => {setActiveTab("retrieval"); window.location.hash="settings?section=retrieval";}}><span className="settings-tab-copy"><strong>代码上下文</strong><small>检索开关、向量与精排</small></span></button>
           </nav>
 
           <div className="settings-tab-content">
+            {activeTab === "retrieval" && <RetrievalSettingsPanel onError={retrievalError} />}
             {!loading && settings && selectedSettings && draft ? (
               <>
               <div className="settings-tab-panel" hidden={activeTab !== "provider"}>
@@ -843,6 +855,19 @@ export default function SettingsPage({
                     </fieldset>
                   </details>
 
+                  <section className="settings-price-section" aria-label="审查模型费用">
+                    <h3>费用估算</h3><p>只修改价格不会停用模型。留空表示未知费用，填写 0 表示免费。</p>
+                    <ModelPriceReference model={draft.model} disabled={Boolean(busyAction)} onApply={prices => {
+                      updateDraft("inputPrice", prices.inputPrice); updateDraft("outputPrice", prices.outputPrice);
+                      updateDraft("cacheReadPrice", prices.cacheReadPrice); updateDraft("cacheWritePrice", prices.cacheWritePrice);
+                    }} />
+                    <div className="settings-form-grid settings-form-grid-compact">
+                      <NumberField name="input-price" label="输入单价" value={draft.inputPrice} min="0" max="1000000" step="any" required={false} suffix="$/百万 Token" onChange={value => updateDraft("inputPrice", value)} />
+                      <NumberField name="output-price" label="输出单价" value={draft.outputPrice} min="0" max="1000000" step="any" required={false} suffix="$/百万 Token" onChange={value => updateDraft("outputPrice", value)} />
+                      <NumberField name="cache-read-price" label="缓存读取单价" value={draft.cacheReadPrice} min="0" max="1000000" step="any" required={false} suffix="$/百万 Token" onChange={value => updateDraft("cacheReadPrice", value)} />
+                      <NumberField name="cache-write-price" label="缓存写入单价" value={draft.cacheWritePrice} min="0" max="1000000" step="any" required={false} suffix="$/百万 Token" onChange={value => updateDraft("cacheWritePrice", value)} />
+                    </div>
+                  </section>
                   <div className="settings-activation-flow" aria-label="启用流程">
                     <div className={selectedSettings.configured && !providerDirty ? "is-done" : "is-current"}><span>1</span><strong>保存</strong><small>{providerDirty ? "等待保存" : selectedSettings.configured ? "已保存" : "填写配置"}</small></div>
                     <i />

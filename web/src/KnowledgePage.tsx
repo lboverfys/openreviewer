@@ -27,12 +27,14 @@ interface DocumentDraft {
   source: string;
   content: string;
   enabled: boolean;
+  repository_scope: string;
 }
 
 const EMPTY_DRAFT: DocumentDraft = {
   source: "new-rule.md",
   content: "# 新规则\n\n在这里填写审查规则。\n",
   enabled: false,
+  repository_scope: "lboverfys/NiuMa",
 };
 
 function formatSize(bytes: number): string {
@@ -45,6 +47,7 @@ function documentDraft(document: KnowledgeDocument): DocumentDraft {
     source: document.source,
     content: document.content,
     enabled: document.enabled,
+    repository_scope: document.repository_scope ?? "",
   };
 }
 
@@ -56,6 +59,7 @@ function documentDraftIsDirty(
     draft.source !== document.source
     || draft.content !== document.content
     || draft.enabled !== document.enabled
+    || draft.repository_scope !== (document.repository_scope ?? "")
   ));
 }
 
@@ -89,7 +93,7 @@ export default function KnowledgePage({
   documentRef.current = document;
   draftRef.current = draft;
   const [creating, setCreating] = useState(false);
-  const [editorMode, setEditorMode] = useState<"edit" | "preview">("edit");
+  const [editorMode, setEditorMode] = useState<"edit" | "preview">("preview");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
@@ -241,6 +245,7 @@ export default function KnowledgePage({
           source: draft.source,
           content: draft.content,
           enabled: draft.enabled,
+          repository_scope: draft.repository_scope.trim() || null,
         })
         : await api.updateKnowledgeDocument(document!.id, {
           expected_revision: library.revision,
@@ -248,6 +253,7 @@ export default function KnowledgePage({
           source: draft.source,
           content: draft.content,
           enabled: draft.enabled,
+          repository_scope: draft.repository_scope.trim() || null,
         });
       applyMutation(result, creating ? "知识文档已创建" : "知识文档已保存");
     } catch (reason) {
@@ -302,7 +308,7 @@ export default function KnowledgePage({
     if (!searchQuery.trim()) return;
     setBusy("search");
     try {
-      setCitations((await api.searchKnowledge(searchQuery.trim(), 8)).items);
+      setCitations((await api.searchKnowledge(searchQuery.trim(), 8, draft.repository_scope.trim() || undefined)).items);
     } catch (reason) {
       handleError(reason);
     } finally {
@@ -324,7 +330,7 @@ export default function KnowledgePage({
       const content = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
       setCreating(true);
       setDocument(null);
-      setDraft({ source: file.name, content, enabled: false });
+      setDraft({ source: file.name, content, enabled: false, repository_scope: "lboverfys/NiuMa" });
       setEditorMode("edit");
       setMessage("");
     } catch {
@@ -347,8 +353,9 @@ export default function KnowledgePage({
       <main className="knowledge-main">
         <section className="knowledge-hero">
           <div className="knowledge-hero-copy">
-            <h1>审查知识文档</h1>
-            <p>维护新的审查规则时会生成不可变版本，已开始的任务继续使用原知识快照。</p>
+            <h1>审查依据</h1>
+            <p>这里保存业务规则和团队约定。启用文档按仓库及相关性进入 AI 审查；任务详情的“知识引用”会显示实际使用的版本。</p>
+            <nav className="workspace-links" aria-label="审查依据分类"><span aria-current="page">知识文档</span><a href="#retrieval">代码检索 →</a><a href="#settings?section=retrieval">配置自动补充代码</a></nav>
           </div>
           <div className="knowledge-stats">
             <span className="knowledge-stat-chip is-enabled"><b>{library?.enabled_count ?? 0}</b>启用</span>
@@ -358,6 +365,11 @@ export default function KnowledgePage({
           </div>
         </section>
 
+        <section className="knowledge-pack-note"><div><strong>NiuMa 项目资料</strong><p>业务、鉴权、积分、游戏入驻和工程约定已整理为有来源的项目资料。只补充缺少的文档，已有编辑会保留。</p></div><button type="button" disabled={!library || Boolean(busy)} onClick={async () => {
+          if (!library) return; setBusy("pack");
+          try {const next = await api.installKnowledgeProjectPack(library.revision); setLibrary(next); setMessageKind("success"); setMessage("项目资料已补充，现有文档保持原样。");}
+          catch (error) {handleError(error);} finally {setBusy("");}
+        }}>补充项目资料</button></section>
         <div className="knowledge-workspace">
           <aside className="knowledge-document-pane">
             <div className="knowledge-pane-heading"><div><strong>文档</strong><small>{visibleItems.length} 条</small></div><button type="button" onClick={startNewDocument} title="新建 Markdown 文档">＋</button></div>
@@ -382,6 +394,7 @@ export default function KnowledgePage({
                 <label><span>文档路径</span><input id="knowledge-source" name="knowledge-source" value={draft.source} maxLength={200} disabled={Boolean(busy) || Boolean(document?.archived)} onChange={(event) => setDraft((current) => ({ ...current, source: event.target.value }))} /></label>
                 <div className="knowledge-editor-status"><label><input id="knowledge-enabled" name="knowledge-enabled" type="checkbox" checked={draft.enabled} disabled={Boolean(busy) || Boolean(document?.archived)} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} />参与审查</label><span>{creating ? "新文档" : `第 ${document?.current_version} 版`}</span></div>
               </div>
+              <label className="knowledge-scope">适用仓库<input value={draft.repository_scope} maxLength={255} placeholder="留空为所有仓库通用" disabled={Boolean(busy) || Boolean(document?.archived)} onChange={event => setDraft(current => ({...current, repository_scope: event.target.value}))} /><small>例如 lboverfys/NiuMa。保存后新审查按这个范围选择规则。</small></label>
               <div className="knowledge-editor-tabs"><button type="button" className={editorMode === "edit" ? "is-active" : ""} onClick={() => setEditorMode("edit")}>编辑</button><button type="button" className={editorMode === "preview" ? "is-active" : ""} onClick={() => setEditorMode("preview")}>预览</button><small>{formatSize(new TextEncoder().encode(draft.content).length)} / 512 KiB</small></div>
               {editorMode === "edit" ? <textarea id="knowledge-content" name="knowledge-content" className="knowledge-editor" value={draft.content} disabled={Boolean(busy) || Boolean(document?.archived)} spellCheck={false} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /> : <article className="knowledge-markdown-preview"><Suspense fallback={<p role="status">正在加载预览…</p>}><ReactMarkdown skipHtml>{draft.content}</ReactMarkdown></Suspense></article>}
               <div className="knowledge-editor-actions">

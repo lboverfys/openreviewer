@@ -1,5 +1,13 @@
 # 性能与证据
 
+## 流程整改的数据访问
+
+单组评测概况访问 `evaluation_datasets`、`evaluation_cases`、`evaluation_observations`：先按评测集主键及仓库范围授权，再用一条 JOIN 聚合状态和已有 metrics，合计两条查询。每集最多 200 PR、400 组观察；复用 dataset_id 索引及 (case_id, variant) 唯一索引，查询次数 O(1)，不读取快照正文。
+
+项目资料补充访问 `knowledge_library`、`knowledge_documents`、`knowledge_document_versions`：锁单行库版本，一次 IN 读取已有来源，两个批量 INSERT 写入缺失资料和版本。文档最多 128 份、启用正文最多 5 MiB；复用库主键、source 唯一键及文档/版本唯一键，查询次数 O(1)。本次补充 9 份、约 66 KiB，不覆盖已有编辑。知识列表在这一小规模集合内排序、分页，未增加无界查询或后台扫描任务。
+
+检索开关与价格仍使用 `retrieval_settings` 单行 JSON；GPT 报价通过 `ai_settings`、`ai_provider_configs` 及现有配置审计保存。本轮没有新表或迁移，也没有在数据访问循环内增加查询、HTTP 或 RPC。
+
 ## 本轮新增查询与故障证据
 
 新增访问 `static_analysis_reports`、`static_analysis_findings`、`review_reuse_entries`，并复用

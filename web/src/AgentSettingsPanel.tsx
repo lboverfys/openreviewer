@@ -1,3 +1,4 @@
+import ModelPriceReference from "./ModelPriceReference";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -586,7 +587,7 @@ export default function AgentSettingsPanel({
                 </details>
               </div>
               <details className="agent-price-settings">
-                  <summary>费用估算价格</summary>
+                  <summary>费用估算价格</summary><ModelPriceReference model={draft.modelOverride || draft.model} disabled={Boolean(busy)} onApply={prices => {updateDraft(agent, "inputPrice", prices.inputPrice); updateDraft(agent, "outputPrice", prices.outputPrice); updateDraft(agent, "cacheReadPrice", prices.cacheReadPrice); updateDraft(agent, "cacheWritePrice", prices.cacheWritePrice);}} />
                   <p className="settings-field-note">单独覆盖时同时填写输入和输出价格。留空仅在模型名称一致时继承公共价格；仅改价格保留原连接验证。</p>
                   <div className="agent-settings-fields">
                     <label><span>输入（美元 / 百万 Token）</span><input aria-label={`${agentLabels[agent].title}输入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.inputPrice} onChange={event => updateDraft(agent, "inputPrice", event.target.value)} /></label>

@@ -24,7 +24,7 @@ export default function PlatformPage({ user, findingId, initialTab, onSignedOut 
     setError(failure instanceof Error ? failure.message : "操作暂时无法完成");
   }, [onSignedOut]);
   return <main className="workspace-page platform-page">
-    <WorkspaceHeader title="协作与运营" icon="review" description="处理待办、查看用量，管理审查方案与运行情况。" />
+    <WorkspaceHeader title="待办与用量" icon="review" description="审查后的处理中心：跟进问题修复、审批待办和模型开销。方案版本与诊断供需要时使用。" />
     <nav className="team-tabs" aria-label="协作与运营分类">
       {([["work", "审查待办"], ["usage", "用量与预算"], ["profiles", "审查方案"], ["diagnostics", "运行诊断"]] as const).filter(([key]) => manager || key === "work").map(([key, label]) =>
         <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(""); }}>{label}</button>)}

@@ -561,6 +561,10 @@ function ReviewDetailPage({
   const failedAgentCount = agentSummaries.filter(
     (item) => item.progress.status === "failed",
   ).length;
+  const requiredAgentCount = agentSummaries.filter(item =>
+    item.progress.status !== "not_applicable" && !(item.key === "summary"
+      && details.aggregation_status === "local" && details.summary_status === "skipped")
+  ).length;
   const finalAgentProgress = agentSummaries.find(
     (item) => item.key === "summary",
   )!.progress;
@@ -586,7 +590,7 @@ function ReviewDetailPage({
   const filteredEvents = eventPage.data?.items ?? [];
   const tabs: ReadonlyArray<[ReviewDetailTab, string, string]> = [
     ["overview", "任务概览", details.current_stage],
-    ["agents", "Agent 进度", `${completedAgentCount}/4`],
+    ["agents", "Agent 进度", `${completedAgentCount}/${requiredAgentCount}`],
     ["findings", "审查问题", String(details.finding_total_count)],
     ["logs", "运行日志", "按页查看"],
   ];
@@ -731,7 +735,7 @@ function ReviewDetailPage({
           <div><span className="review-metric-icon is-state" aria-hidden="true">◈</span><div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div></div>
           <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div></div>
           <div><span className="review-metric-icon is-cover" aria-hidden="true">▦</span><div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div></div>
-          <div><span className="review-metric-icon is-agent" aria-hidden="true">🤖</span><div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/4</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div></div>
+          <div><span className="review-metric-icon is-agent" aria-hidden="true">🤖</span><div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/{requiredAgentCount}</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div></div>
           <div><span className="review-metric-icon is-finding" aria-hidden="true">⚑</span><div><span>候选问题</span><strong>{details.finding_total_count}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div></div>
         </section>
 

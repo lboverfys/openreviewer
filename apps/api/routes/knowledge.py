@@ -4,8 +4,10 @@ from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
+from sqlalchemy.exc import SQLAlchemyError
 
 from apps.api.schemas import (
+    AiRevisionRequest,
     KnowledgeCitationResponse,
     KnowledgeDocumentCreateRequest,
     KnowledgeDocumentListResponse,
@@ -37,6 +39,20 @@ def register_knowledge_routes(
 ) -> None:
     """注册知识检索和版本化文档管理端点。"""
 
+    @application.post("/api/v1/knowledge/project-pack", response_model=KnowledgeDocumentListResponse)
+    def install_project_pack(
+        body: AiRevisionRequest,
+        principal: Annotated[SessionPrincipal, Depends(require_knowledge_manager)],
+        _: Annotated[None, Depends(require_same_origin)],
+    ) -> KnowledgeDocumentListResponse:
+        try:
+            result = get_managed_knowledge_base().install_project_pack(body.expected_revision, principal.username)
+        except (KnowledgeConflictError, KnowledgePersistenceError, KnowledgeValidationError) as exc:
+            raise translate_knowledge_error(exc) from exc
+        except SQLAlchemyError as exc:
+            raise translate_knowledge_error(KnowledgePersistenceError("项目资料暂时无法写入")) from exc
+        return KnowledgeDocumentListResponse.from_view(result)
+
     @application.get(
         "/api/v1/knowledge/search",
         response_model=KnowledgeSearchResponse,
@@ -45,9 +61,13 @@ def register_knowledge_routes(
         q: Annotated[str, Query(min_length=1, max_length=500)],
         _: Annotated[SessionPrincipal, Depends(require_knowledge_manager)],
         limit: Annotated[int, Query(ge=1, le=20)] = 5,
+        repository: Annotated[str | None, Query(max_length=255, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")] = None,
     ) -> KnowledgeSearchResponse:
         try:
-            items = get_knowledge_base().search(q, limit=limit)
+            knowledge = get_knowledge_base()
+            chunks = tuple(chunk for chunk in knowledge.chunks() if chunk.repository_scope is None
+                           or chunk.repository_scope == repository.casefold()) if repository else None
+            items = knowledge.search(q, limit=limit, chunks=chunks)
         except (KnowledgePersistenceError, KnowledgeValidationError) as exc:
             raise translate_knowledge_error(exc) from exc
         return KnowledgeSearchResponse(
@@ -107,6 +127,7 @@ def register_knowledge_routes(
                 enabled=request_body.enabled,
                 expected_revision=request_body.expected_revision,
                 actor=principal.username,
+                repository_scope=request_body.repository_scope,
             )
         except (
             KnowledgeConflictError,
@@ -154,6 +175,8 @@ def register_knowledge_routes(
                 expected_revision=request_body.expected_revision,
                 expected_document_version=request_body.expected_document_version,
                 actor=principal.username,
+                repository_scope=request_body.repository_scope,
+                update_repository_scope="repository_scope" in request_body.model_fields_set,
             )
         except (
             KnowledgeConflictError,

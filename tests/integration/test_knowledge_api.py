@@ -50,6 +50,7 @@ def test_authenticated_knowledge_management_api(tmp_path: Path) -> None:
                 json={
                     "expected_revision": 1,
                     "source": "database.md",
+                    "repository_scope": "lboverfys/NiuMa",
                     "content": "# 数据库规则\n\n禁止 N+1 查询。",
                     "enabled": True,
                 },
@@ -59,6 +60,7 @@ def test_authenticated_knowledge_management_api(tmp_path: Path) -> None:
             document_id = body["document"]["id"]
             assert body["revision"] == 2
             assert body["document"]["current_version"] == 1
+            assert body["document"]["repository_scope"] == "lboverfys/niuma"
 
             stale = await client.put(
                 f"/api/v1/knowledge/documents/{document_id}",

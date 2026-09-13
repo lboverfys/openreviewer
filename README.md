@@ -38,6 +38,7 @@ migrations/           兼容的 Alembic 向前迁移
 
 ## 从这里开始
 
+- [使用流程](docs/usage.md)：模型配置、审查依据、任务处理和效果评测如何配合。
 - [文档导航](docs/README.md)：八份核心说明，按问题阅读。
 - [架构与取舍](docs/architecture.md)：模块边界、事务、恢复与一致性。
 - [项目陈述与面试准备](docs/interview.md)：简历草案、代码入口和可以展开的设计问题。

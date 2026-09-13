@@ -76,8 +76,8 @@ class RetrievalSettingsService:
                 key = self.cipher.decrypt(_CIPHER_SCOPE, row.ciphertext, row.nonce, row.key_version)
             return RetrievalSettingsView(
                 revision=row.revision, settings=settings, key_configured=key is not None,
-                external_calls_paused=external_retrieval_paused(),
-                tested=row.tested_fingerprint == stable_key(row.revision, settings.model_dump()),
+                external_calls_paused=external_retrieval_paused(settings),
+                tested=row.tested_fingerprint == stable_key(row.revision, settings.model_dump(mode="json")),
             ), key
 
     def get(self) -> RetrievalSettingsView:
@@ -112,7 +112,7 @@ class RetrievalSettingsService:
             row = session.scalar(select(RetrievalSettingsRecord).where(RetrievalSettingsRecord.id == 1).with_for_update())
             if row is None or row.revision != view.revision:
                 raise RetrievalError("连接测试期间配置已变化")
-            row.tested_fingerprint = stable_key(view.revision, view.settings.model_dump())
+            row.tested_fingerprint = stable_key(view.revision, view.settings.model_dump(mode="json"))
 
 
 def reciprocal_rank_fusion(routes: dict[str, list[tuple[str, float]]], limit: int = _FUSION_LIMIT) -> list[tuple[str, float, tuple[str, ...]]]:
@@ -147,6 +147,8 @@ class HybridRetrievalService:
 
     def test_connection(self) -> RetrievalSettingsView:
         view, key = self.settings.runtime()
+        if view.external_calls_paused:
+            raise RetrievalError("向量与精排调用已关闭，请在模型配置中开启后测试连接")
         client = self._client(view, key)
         try:
             client.embed(("database transaction", "format a date"))
@@ -316,6 +318,13 @@ class HybridRetrievalService:
 
     def review_context(self, model_input, on_progress: Callable[[], None], *,
                        frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None):
+        if frozen_runtime is not None:
+            # 开关属于当前运营控制，不冻结在历史审查方案里；模型及索引参数仍用方案快照。
+            current = self.settings.get()
+            frozen, key = frozen_runtime
+            settings = frozen.settings.model_copy(update={"external_calls_enabled": not current.external_calls_paused})
+            frozen_runtime = (frozen.model_copy(update={"settings": settings,
+                "external_calls_paused": current.external_calls_paused}), key)
         with repository_egress(self.repository.sessions, model_input.repository, model_input.review_run_id):
             check_paths(tuple(unit.file for unit in model_input.units))
             return self._review_context(model_input, on_progress, frozen_runtime=frozen_runtime)

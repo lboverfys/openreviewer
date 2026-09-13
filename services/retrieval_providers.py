@@ -24,7 +24,9 @@ from services.pinned_http import PublicDnsPinnedHTTPTransport
 from services.telemetry import GLOBAL_TELEMETRY
 
 
-def external_retrieval_paused() -> bool:
+def external_retrieval_paused(settings: RetrievalSettings | None = None) -> bool:
+    if settings is not None and settings.external_calls_enabled is not None:
+        return not settings.external_calls_enabled
     return os.environ.get("OPENREVIEWER_RETRIEVAL_API_DISABLED", "").lower() in {
         "1",
         "true",
@@ -136,8 +138,8 @@ class AliyunRetrievalClient:
         from services.egress import check_payload
 
         check_payload(self.settings.api_host, payload)
-        if self._owns_client and external_retrieval_paused():
-            raise RetrievalError("检索模型外部调用已暂停，需管理员明确开启")
+        if self._owns_client and external_retrieval_paused(self.settings):
+            raise RetrievalError("向量与精排调用已关闭，请在模型配置中开启")
         started = time.monotonic()
         accountant = current_model_budget_accountant()
         request_bytes = len(json.dumps(payload, ensure_ascii=False).encode())

@@ -5,14 +5,14 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from threading import RLock
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, defer, sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
@@ -91,6 +91,7 @@ class KnowledgeDocumentSummary:
     updated_by: str
     created_at: datetime
     updated_at: datetime
+    repository_scope: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +124,7 @@ class _SeedDocument:
     content: str
     content_sha256: str
     byte_size: int
+    repository_scope: str | None = None
 
 
 class KnowledgeError(RuntimeError):
@@ -195,7 +197,8 @@ class MarkdownKnowledgeBase:
             total += size
             relative = path.relative_to(self.root).as_posix()
             version = sha256(text.encode("utf-8")).hexdigest()[:16]
-            chunks.extend(_split_markdown(relative, text, version))
+            scope = _source_repository_scope(text)
+            chunks.extend(replace(chunk, repository_scope=scope) for chunk in _split_markdown(relative, text, version))
         loaded_chunks = tuple(chunks)
         self._replace_chunks_cache(loaded_chunks)
         return loaded_chunks
@@ -481,6 +484,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                     .where(*filters)
                     .order_by(
                         KnowledgeDocumentRecord.archived_at.asc(),
+                        KnowledgeDocumentRecord.repository_scope.asc().nullslast(),
                         KnowledgeDocumentRecord.source.asc(),
                         KnowledgeDocumentRecord.id.asc(),
                     )
@@ -552,6 +556,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         repository_scope: str | None = None,
     ) -> KnowledgeMutationView:
         normalized_source = _validate_source(source)
+        repository_scope = _validate_repository_scope(repository_scope)
         normalized_content, content_hash, byte_size = _validate_content(
             content,
             self.max_file_bytes,
@@ -624,8 +629,12 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         expected_revision: int,
         expected_document_version: int,
         actor: str,
+        repository_scope: str | None = None,
+        update_repository_scope: bool = False,
     ) -> KnowledgeMutationView:
         normalized_source = _validate_source(source)
+        if update_repository_scope:
+            repository_scope = _validate_repository_scope(repository_scope)
         normalized_content, content_hash, byte_size = _validate_content(
             content,
             self.max_file_bytes,
@@ -652,7 +661,9 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                 enabled_bytes = self._enabled_bytes_excluding(session, document_id)
                 if enabled and enabled_bytes + byte_size > self.max_total_bytes:
                     raise KnowledgeValidationError("启用文档总大小不能超过 5 MiB")
-                if current.content_sha256 != content_hash:
+                if current.content_sha256 != content_hash or (
+                    update_repository_scope and document.repository_scope != repository_scope
+                ):
                     document.current_version += 1
                     session.add(
                         KnowledgeDocumentVersionRecord(
@@ -668,6 +679,8 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                     )
                 document.source = normalized_source
                 document.enabled = enabled
+                if update_repository_scope:
+                    document.repository_scope = repository_scope
                 document.updated_by = actor
                 document.updated_at = now
                 self._advance_state(state, actor, now)
@@ -788,6 +801,35 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
             document=self.get_document(document_id),
         )
 
+    def install_project_pack(self, expected_revision: int, actor: str) -> KnowledgeLibraryView:
+        """批量补充内置项目资料，不覆盖已有文档或人工编辑。"""
+        self._ensure_seeded()
+        seeds = tuple(seed for seed in self._seed_documents if seed.repository_scope)
+        now = self._clock()
+        with self._sessions() as session, session.begin():
+            state = self._lock_state(session, expected_revision, actor, now)
+            existing = set(session.scalars(select(KnowledgeDocumentRecord.source).where(
+                KnowledgeDocumentRecord.source.in_([seed.source for seed in seeds]),
+            ).limit(self.max_files)))
+            missing = [seed for seed in seeds if seed.source not in existing]
+            count = session.scalar(select(func.count(KnowledgeDocumentRecord.id))) or 0
+            _, enabled_bytes = self._enabled_totals(session)
+            if count + len(missing) > self.max_files or enabled_bytes + sum(s.byte_size for s in missing) > self.max_total_bytes:
+                raise KnowledgeValidationError("项目资料超过知识库文档或容量上限")
+            documents, versions = [], []
+            for seed in missing:
+                identifier = str(uuid4())
+                documents.append(dict(id=identifier, source=seed.source, repository_scope=seed.repository_scope,
+                    enabled=True, current_version=1, created_by=actor, updated_by=actor, created_at=now, updated_at=now))
+                versions.append(dict(id=str(uuid4()), document_id=identifier, version=1,
+                    content=seed.content, content_sha256=seed.content_sha256, byte_size=seed.byte_size,
+                    created_by=actor, created_at=now))
+            if documents:
+                session.execute(insert(KnowledgeDocumentRecord), documents)
+                session.execute(insert(KnowledgeDocumentVersionRecord), versions)
+                self._advance_state(state, actor, now)
+        return self.list_documents()
+
     def _ensure_seeded(self) -> None:
         if self._seed_is_checked():
             return
@@ -808,6 +850,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                                 KnowledgeDocumentRecord(
                                     id=document_id,
                                     source=seed.source,
+                                    repository_scope=seed.repository_scope,
                                     enabled=True,
                                     current_version=1,
                                     created_by="system:seed",
@@ -981,6 +1024,7 @@ def _read_seed_documents(
                 content=content,
                 content_sha256=sha256(encoded).hexdigest(),
                 byte_size=len(encoded),
+                repository_scope=_source_repository_scope(content),
             )
         )
     return tuple(result)
@@ -1024,6 +1068,20 @@ def _document_title(source: str, content: str) -> str:
     return (heading or PurePosixPath(source).stem)[:200]
 
 
+def _source_repository_scope(content: str) -> str | None:
+    match = re.search(r"^适用仓库：[ \t]*([^\r\n]+)$", content, re.M)
+    return _validate_repository_scope(match.group(1) if match else None)
+
+
+def _validate_repository_scope(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().casefold()
+    if not re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", normalized) or len(normalized) > 255:
+        raise KnowledgeValidationError("适用仓库应填写 owner/repository，留空表示通用规则")
+    return normalized
+
+
 def _summary(
     document: KnowledgeDocumentRecord,
     version: KnowledgeDocumentVersionRecord,
@@ -1041,6 +1099,7 @@ def _summary(
         updated_by=document.updated_by,
         created_at=document.created_at,
         updated_at=document.updated_at,
+        repository_scope=document.repository_scope,
     )
 
 
@@ -1075,6 +1134,7 @@ def _document_view(
         updated_by=summary.updated_by,
         created_at=summary.created_at,
         updated_at=summary.updated_at,
+        repository_scope=summary.repository_scope,
         content=version.content,
         versions=versions,
     )

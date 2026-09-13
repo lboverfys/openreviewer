@@ -3,6 +3,7 @@ import { api, ApiError } from "./api";
 import EvaluationCasePanel, { assessmentLabels } from "./EvaluationCasePanel";
 import EvaluationImportPanel from "./EvaluationImportPanel";
 import EvaluationReportPanel from "./EvaluationReportPanel";
+import EvaluationOverviewPanel from "./EvaluationOverviewPanel";
 import Pagination from "./Pagination";
 import { hasPermission } from "./rbac";
 import type { AuthUser, EvaluationDataset, EvaluationSplit } from "./types";
@@ -23,7 +24,8 @@ export default function EvaluationPage({ user, datasetId, caseId, reviewRunId, o
   },[onSignedOut]);
   useEffect(() => setError(""),[datasetId,caseId]);
   return <main className="workspace-page evaluation-page">
-    <WorkspaceHeader title="真实 PR 评测" icon="chart" description="收录样本、独立复核，比较同一提交的审查效果。" actions={datasetId && <a href="#evaluations" className="ws-button-link">返回评测集</a>} />
+    <WorkspaceHeader title="效果评测" icon="chart" description="审查负责找问题；评测负责确认找得对不对、有没有漏掉。这里不会自动重新调用模型。" actions={datasetId && <a href="#evaluations" className="ws-button-link">返回评测集</a>} />
+    {!datasetId && <section className="evaluation-card evaluation-intro"><h2>什么时候用这里？</h2><p>完成一次审查后，把结果收录进来，逐条确认有效问题和误报，并填写代码中已知但可能漏掉的缺陷。</p><ol><li>收录已完成的审查：保存代码提交、实际模型和结果。</li><li>核对问题与参考缺陷：每条判断留下依据。</li><li>换模型或配置后：再收录同一提交的新结果，查看方案对比。</li></ol><p>日常看 PR 结论请回到审查控制台。只有一组结果，也能查看复核进度。</p><a href="#">返回审查控制台 →</a></section>}
     {error && <div role="alert" className="evaluation-error">{error}<button type="button" onClick={() => setError("")}>收起</button></div>}
     {datasetId ? <DatasetWorkspace key={datasetId} datasetId={datasetId} caseId={caseId} user={user} canEdit={canEdit} reviewRunId={reviewRunId} onError={onError} />
       : <DatasetList key={reviewRunId ?? "list"} canEdit={canEdit} reviewRunId={reviewRunId} onError={onError} />}
@@ -59,6 +61,7 @@ function DatasetWorkspace({ datasetId,caseId,user,canEdit,reviewRunId,onError }:
   const [split,setSplit]=useState<EvaluationSplit|undefined>();
   const [importing,setImporting]=useState(Boolean(reviewRunId));
   const [busy,setBusy]=useState(false);
+  const [refreshVersion,setRefreshVersion]=useState(0);
   useEffect(() => { if (caseId) setTab("samples"); }, [caseId]);
   const loadDataset=useCallback(async(signal?:AbortSignal)=>{
     try{const data=await api.evaluationDataset(datasetId,signal);if(!signal?.aborted)setDataset(data);}
@@ -69,7 +72,7 @@ function DatasetWorkspace({ datasetId,caseId,user,canEdit,reviewRunId,onError }:
   const loadAudits=useCallback((cursor?:string,signal?:AbortSignal,force?:boolean)=>api.evaluationAudits(datasetId,cursor,signal,force),[datasetId]);
   const cases=useCursorPage({cacheKey:"evaluation-cases:"+datasetId+":"+(split??"all"),load:loadCases,onError,enabled:tab==="samples" && !caseId && !importing});
   const audits=useCursorPage({cacheKey:"evaluation-audits:"+datasetId,load:loadAudits,onError,enabled:tab==="audits"});
-  const changed=useCallback(()=>{void loadDataset();void cases.refresh();},[loadDataset,cases.refresh]);
+  const changed=useCallback(()=>{setRefreshVersion(value=>value+1);void loadDataset();void cases.refresh();},[loadDataset,cases.refresh]);
   async function archive(){
     if(!dataset)return;setBusy(true);
     try{setDataset(await api.archiveEvaluationDataset(datasetId,dataset.revision,!dataset.archived_at));}
@@ -83,6 +86,7 @@ function DatasetWorkspace({ datasetId,caseId,user,canEdit,reviewRunId,onError }:
       {canEdit && <button type="button" disabled={busy} onClick={()=>void archive()}>{dataset.archived_at?"恢复评测集":"归档评测集"}</button>}</div>
       <nav className="evaluation-tabs" aria-label="评测集内容">{([["samples","样本管理"],["report","对比报告"],["audits","变更记录"]] as const).map(([key,label])=><button type="button" key={key} aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}</nav>
     </section>
+    {tab==="samples" && <EvaluationOverviewPanel datasetId={datasetId} version={refreshVersion} onError={onError}/>}
     {tab==="report" && <EvaluationReportPanel datasetId={datasetId} onError={onError}/>}
     {tab==="samples" && <>
       <section className="evaluation-card"><div className="evaluation-toolbar"><h3>PR 样本</h3>
