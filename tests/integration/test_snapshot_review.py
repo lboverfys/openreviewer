@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from domain.enums import ExecutionStatus
 from domain.model_review import materialize_findings
@@ -44,6 +44,27 @@ def test_cancel_running_task_stops_lease_and_all_timeline_nodes(database):
     assert detail.phase == "cancelled" and detail.current_stage == "result"
     assert all(stage.status not in {"current", "pending"} for stage in detail.stages)
     assert ReviewAction.REVIEW_SNAPSHOT in detail.available_actions
+
+
+@pytest.mark.parametrize("action", [ReviewAction.PAUSE, ReviewAction.CANCEL])
+def test_stop_action_accepts_progress_changes_but_rejects_another_head(database, action):
+    clock = MutableClock(datetime(2026, 9, 14, tzinfo=UTC))
+    queue, lease, _, run_id = _prepare_planning_lease(database, clock, complete_context=True)
+    service = ReviewManagementService(SqlAlchemyReviewManagementRepository(database.sessions, clock=clock))
+    before = service.details(run_id)
+    with database.sessions() as session, session.begin():
+        session.execute(update(ReviewTaskRecord).where(ReviewTaskRecord.id == lease.task_id)
+                        .values(updated_at=clock() + timedelta(seconds=5), workflow_status="planning"))
+        session.execute(update(ReviewRunRecord).where(ReviewRunRecord.id == run_id)
+                        .values(workflow_status="planning"))
+    with pytest.raises(ReviewActionConflictError, match="审查版本已变化"):
+        service.apply_action(run_id, action, actor="tester", request_id="wrong-head",
+                             state_version=before.stored.change_token, head_sha="f" * 40)
+    service.apply_action(run_id, action, actor="tester", request_id="stop-with-old-progress",
+                         state_version=before.stored.change_token, head_sha=before.stored.head_sha)
+    assert service.details(run_id).phase == ("paused" if action is ReviewAction.PAUSE else "cancelled")
+    with pytest.raises(TaskLeaseLostError):
+        queue.load_planning_input(lease)
 
 
 def test_closed_pr_snapshot_finishes_without_approval_publish_or_lifecycle_changes(database):

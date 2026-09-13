@@ -181,7 +181,9 @@ def apply_action(
                         raise ReviewActionConflictError("审查版本已变化，请刷新后重试")
             else:
                 normalized_head_sha = run.head_sha
-            if state_version is not None:
+            # 停止意图针对这条任务，而不是某一次心跳/批次进度快照。
+            # 已锁定任务并核对 head；下方仍校验当前节点，不能停止终态或发布过程。
+            if state_version is not None and action not in {ReviewAction.PAUSE, ReviewAction.CANCEL}:
                 latest_event_id = session.scalar(
                     select(OutboxEventRecord.id)
                     .where(OutboxEventRecord.aggregate_id == review_run_id)

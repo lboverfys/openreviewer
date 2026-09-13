@@ -2,6 +2,7 @@
 
 import json
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import replace
@@ -425,6 +426,11 @@ class _PersistentBatchedReviewer:
                 )
             except Exception as exc:
                 source_error = SafeError.from_exception(exc)
+                if source_error.code is ErrorCode.WORKER_UNEXPECTED_ERROR:
+                    # 仅记录代码位置，避免异常文本携带模型正文、SQL 参数或密钥。
+                    LOGGER.error("Agent %s 批次 %s 未预期异常 %s，代码位置=%s",
+                                 self._agent.value, batch.number, type(exc).__name__,
+                                 [(frame.name, frame.lineno) for frame in traceback.extract_tb(exc.__traceback__)[-8:]])
                 # 租约失效不是模型请求失败。此时旧 Worker 已经无权把批次
                 # 标记为失败或写入进度；直接向外传播，避免额外的数据库写入
                 # 和把租约错误伪装成普通 Agent 失败。

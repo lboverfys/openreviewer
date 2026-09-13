@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { api, clearSettingsCache } from "./api";
+import { api, ApiError, clearSettingsCache } from "./api";
 import fixture from "./fixtures/review-details.json";
 import ReviewDetailPage from "./ReviewDetailPage";
 import type { AuthUser, ReviewDetails } from "./types";
@@ -83,4 +83,18 @@ it("等待索引不会宣称模型调用失败", async () => {
   fireEvent.click(screen.getByRole("button", {name:/问题与结论/}));
   expect(await screen.findByText("正在准备关联代码")).toBeInTheDocument();
   expect(screen.queryByText(/AI 请求失败/)).not.toBeInTheDocument();
+});
+
+it("操作失败提示不会被随后成功的后台刷新清除", async () => {
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details, available_actions:["pause"]});
+  const action = vi.spyOn(api, "reviewAction").mockRejectedValue(new ApiError("操作尚未成功，请重试", 409));
+  render(<ReviewDetailPage user={{...user,permissions:["reviews:view","reviews:manage"]}} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", {name:"暂停"}));
+  await screen.findByText("操作尚未成功，请重试");
+  fireEvent.click(screen.getByRole("button", {name:"↻ 刷新"}));
+  await waitFor(() => expect(api.reviewDetails).toHaveBeenCalledTimes(2));
+  expect(screen.getByText("操作尚未成功，请重试")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name:"关闭提示"}));
+  expect(screen.queryByText("操作尚未成功，请重试")).not.toBeInTheDocument();
+  action.mockRestore();
 });

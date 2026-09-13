@@ -214,6 +214,8 @@ function ReviewDetailPage({
 
   const [loading, setLoading] = useState(cachedDetails === undefined);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
+  useEffect(() => setActionError(""), [reviewRunId]);
   const [actionBusy, setActionBusy] = useState<ReviewAction | null>(null);
   const [findingBusy, setFindingBusy] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -369,6 +371,7 @@ function ReviewDetailPage({
     if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
     if ((action === "rerun" || action === "new_review") && !window.confirm(`将使用提交 ${shortSha(details.head_sha)} 创建一条新的审查记录，当前任务和结果不会被覆盖。继续吗？`)) return;
     setActionBusy(action);
+    setActionError("");
     try {
       const failedNode = action === "retry_failed_node"
         || (action === "retry" && details.coverage_status === "partial");
@@ -406,7 +409,7 @@ function ReviewDetailPage({
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
       } else {
-        setError(errorMessage(reason));
+        setActionError(errorMessage(reason));
       }
     } finally {
       setActionBusy(null);
@@ -417,6 +420,7 @@ function ReviewDetailPage({
     if (!details || !canManageReviews || actionBusy !== null) return;
     const action = "retry_failed_node" as ReviewAction;
     setActionBusy(action);
+    setActionError("");
     try {
       await api.reviewAction(
         details.review_run_id,
@@ -440,7 +444,7 @@ function ReviewDetailPage({
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
       } else {
-        setError(errorMessage(reason));
+        setActionError(errorMessage(reason));
       }
     } finally {
       setActionBusy(null);
@@ -450,6 +454,7 @@ function ReviewDetailPage({
   async function decideFinding(finding: ReviewFinding, decision: FindingDecision) {
     if (!details || !canAdjudicate) return;
     setFindingBusy(finding.id);
+    setActionError("");
     try {
       const next = await api.decideFinding(
         details.review_run_id,
@@ -463,7 +468,7 @@ function ReviewDetailPage({
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
       } else {
-        setError(errorMessage(reason));
+        setActionError(errorMessage(reason));
       }
     } finally {
       setFindingBusy(null);
@@ -638,6 +643,7 @@ function ReviewDetailPage({
           </div>
         </div>
         {error && <div className="review-inline-error" role="alert">{error}</div>}
+        {actionError && <div className="review-inline-error" role="alert"><span>{actionError}</span><button type="button" onClick={() => setActionError("")}>关闭提示</button></div>}
         <section className={`review-hero review-hero-${details.phase}`}>
           <div className="review-hero-copy">
             <div className="review-hero-kicker"><span className="review-hero-pulse" />{details.repository} · PR #{details.pull_request_number}</div>
