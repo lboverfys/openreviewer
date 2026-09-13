@@ -453,7 +453,7 @@ def normalize_model_references(review_input: ModelReviewInput, output: ModelRevi
         if rule is not None and rule not in known_rules:
             # 规则字段保存文件路径；仅移除已提供文档的章节/版本后缀，不接受新来源。
             rule = rule.split("#", 1)[0].split("@", 1)[0]
-        if rule not in known_rules | {None}:
+        if rule is not None and rule not in known_rules:
             raise ValueError("model finding references an unknown repository rule")
         unit_key = unit_aliases.get(candidate.unit_key, candidate.unit_key)
         unit = units.get(unit_key)
@@ -489,7 +489,7 @@ def materialize_findings(
         unit = units_by_key.get(candidate.unit_key)
         if unit is None:
             raise ValueError("model finding references an unknown review unit")
-        if candidate.rule_reference not in known_rule_paths | {None}:
+        if candidate.rule_reference is not None and candidate.rule_reference not in known_rule_paths:
             raise ValueError("model finding references an unknown repository rule")
         location = None
         verification_status = VerificationStatus.UNVERIFIED
