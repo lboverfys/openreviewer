@@ -1,9 +1,11 @@
 import json
 from decimal import Decimal
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+import services.model_providers as model_providers
 from domain.enums import (
     ModelApiProtocol,
     ModelCallStatus,
@@ -2407,6 +2409,38 @@ def test_timeout_response_iterator_preserves_http_audit() -> None:
             "uncertain": True,
         }
     ]
+
+
+def test_sse_keepalives_cannot_extend_response_past_read_timeout(monkeypatch) -> None:
+    elapsed = [0.0]
+    closed = []
+    monkeypatch.setattr(model_providers, "time", SimpleNamespace(monotonic=lambda: elapsed[0], sleep=lambda _: None))
+
+    class KeepaliveStream(httpx.SyncByteStream):
+        def __iter__(self):
+            for stamp in (60.0, 120.0, 181.0):
+                elapsed[0] = stamp
+                yield b": keepalive\n\n"
+            raise AssertionError("超时后不得继续读取保活流")
+
+        def close(self):
+            closed.append(True)
+
+    def response(request):
+        return httpx.Response(200, headers={"content-type":"text/event-stream", "x-request-id":"slow-stream"},
+                              stream=KeepaliveStream())
+
+    accountant = RecordingBudgetAccountant()
+    reviewer = create_model_reviewer(_settings(ModelProvider.OPENAI),
+                                     client=httpx.Client(base_url="https://api.openai.test", transport=httpx.MockTransport(response)))
+    with model_budget_scope(accountant), pytest.raises(SafeApplicationError) as captured:
+        reviewer.review(make_model_input())
+    assert captured.value.error.code is ErrorCode.MODEL_TIMEOUT
+    assert captured.value.error.details["status_code"] == 200
+    assert captured.value.error.details["provider_request_id"] == "slow-stream"
+    assert closed and len(accountant.settlements) == 1
+    assert accountant.settlements[0]["uncertain"] is True
+    reviewer.close()
 
 
 def test_http_classification_iterator_exception_does_not_settle_twice() -> None:

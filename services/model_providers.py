@@ -1045,7 +1045,12 @@ class _StructuredModelReviewer(ModelReviewer):
                         max_response_bytes=self._settings.max_response_bytes,
                     )
                 decoded: object | None = None
+                response_started = time.monotonic()
                 for chunk in response.iter_bytes():
+                    # read timeout 只限制两次 socket 数据之间的间隔。中转站持续
+                    # 发送 SSE 保活时，还必须限制整个正文的读取时长。
+                    if time.monotonic() - response_started >= self._settings.read_timeout_seconds:
+                        raise httpx.ReadTimeout("模型响应超过配置的读取时限")
                     # Some relays omit Content-Type.  Detect their usual
                     # ``event:``/``data:`` prefix before falling back to JSON.
                     # Keep a small prefix in ``content`` while the protocol is
