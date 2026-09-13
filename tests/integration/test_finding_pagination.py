@@ -323,7 +323,7 @@ def test_dashboard_query_count_is_constant_for_page_size(database: Database) -> 
 
     def count_selects(_conn, _cursor, statement, _parameters, _context, _many):
         nonlocal current_count
-        if statement.lstrip().upper().startswith("SELECT"):
+        if statement.lstrip().upper().startswith(("SELECT", "WITH")):
             current_count += 1
 
     event.listen(database.engine, "before_cursor_execute", count_selects)

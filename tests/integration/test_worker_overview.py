@@ -14,6 +14,9 @@ from services.dashboard import DashboardService
 from services.rbac import ResourceScope
 from tests.integration.test_finding_pagination import _seed_review
 from tests.integration.test_management_api import database as database
+from tests.integration.test_postgres_contract import (
+    postgres_database as postgres_database,
+)
 
 NOW = datetime(2026, 9, 13, 7, tzinfo=UTC)
 ALL = ResourceScope.unrestricted_scope()
@@ -138,3 +141,17 @@ def test_empty_and_offline_overviews_still_use_one_statement(database, has_histo
     assert len(statements) == 1
     assert overview.online_count == overview.busy_count == 0
     assert len(overview.workers) == int(has_history)
+
+
+def test_worker_overview_and_history_on_postgresql(postgres_database):
+    seed_workers(postgres_database)
+    service = DashboardService(SqlAlchemyDashboardRepository(postgres_database.sessions), clock=lambda: NOW)
+    active = service.snapshot()
+    assert active.worker_online_count == 8 and len(active.workers) == 3
+    history = WorkerRepository(postgres_database.sessions, clock=lambda: NOW).page(ALL, state="offline")
+    assert len(history.items) == 10 and history.next_cursor
+    with postgres_database.sessions() as session, session.begin():
+        session.execute(update(WorkerHeartbeatRecord).where(WorkerHeartbeatRecord.worker_id.like("live-%")).values(status="stopping"))
+    offline = service.snapshot()
+    assert offline.worker_online_count == 0 and not offline.workers
+    assert offline.worker.configured and not offline.worker.online
