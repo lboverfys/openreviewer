@@ -305,6 +305,11 @@ def test_provider_failure_keeps_base_index_and_requests_are_bounded(retrieval):
     assert service.search(index.id, SearchQuery(query="user", strategy="bm25")).candidates
     assert FakeModels.embeddings == count
 
+    service.repository.retry(index.id, None, include_vectors=True)
+    queued = service.repository.get(index.id)
+    assert queued.status == "queued" and queued.vector_status == "pending"
+    assert queued.vector_error is None
+
 
 def test_repeated_search_reuses_embedding_and_rerank(retrieval):
     service, _, _ = retrieval

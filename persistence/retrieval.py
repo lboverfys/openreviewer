@@ -198,6 +198,8 @@ class RetrievalRepository:
                 raise RetrievalError("索引正在构建或排队")
             row.source_target = {**row.source_target, "include_vectors": include_vectors, "vector_operation_id": str(uuid4())}
             row.status, row.error = "queued", None
+            if include_vectors:
+                row.vector_status, row.vector_error = "pending", None
 
     def renew(self, index_id: str, owner: str) -> None:
         with self.sessions() as session, session.begin():

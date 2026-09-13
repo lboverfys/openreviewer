@@ -45,7 +45,7 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
         <option value="validation">验收集</option><option value="tuning">调参集</option></select></label>
       <button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)}>重新计算</button>
       <button type="button" disabled={!report} onClick={exportReport}>导出报告 JSON</button>
-      <button className="ws-primary" type="button" disabled={!report || split !== "validation"} onClick={() => void exportEvidence()}>导出面试证据</button>
+      <button className="ws-primary" type="button" disabled={!report || split !== "validation"} onClick={() => void exportEvidence()}>导出验收记录</button>
     </div></div>
     {loading && <p role="status">正在聚合评测结果…</p>}
     {report && <>
