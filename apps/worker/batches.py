@@ -114,7 +114,12 @@ class _PersistentBatchedReviewer:
             identity = reuse_identity(review_input, self._settings)
             loader = getattr(self._queue, "load_reused_review", None)
             writer = getattr(self._queue, "store_reusable_review", None)
-            if identity and loader and not self._queue.load_model_batches(self._lease_cursor.lease, agent=self._agent.value):
+            existing = self._queue.load_model_batches(self._lease_cursor.lease, agent=self._agent.value) if identity else ()
+            if len(existing) == 1 and existing[0].status.value == "succeeded" and existing[0].result is not None and existing[0].result.reused_from_run_id:
+                # 当前任务中已经封存的整 Agent 复用结果优先恢复，不能改为普通分批后制造定义冲突。
+                _raise_if_lease_lost(self._lease_cursor)
+                return existing[0].result
+            if identity and loader and not existing:
                 saved = loader(self._lease_cursor.lease, identity.key)
                 if saved and saved[1] != review_input.head_sha:
                     result = restore_reused(saved[2], identity, saved[0], review_input.head_sha)

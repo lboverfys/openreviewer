@@ -1073,7 +1073,9 @@ def combine_model_review_results(
         provider_request_id=(
             first.provider_request_id if len(results) == 1 else None
         ),
-        response_status=results[-1].response_status,
+        response_status=next((item.response_status for item in reversed(results) if item.response_status is not None), None),
+        reused_from_run_id=first.reused_from_run_id if all(item.reused_from_run_id for item in results) else None,
+        reused_input_tokens=sum(item.reused_input_tokens for item in results),
         duration_ms=sum(result.duration_ms for result in results),
         usage=usage,
         estimated_cost_microusd=(

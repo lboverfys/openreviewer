@@ -62,7 +62,7 @@ def _workflow_result(
         raise TaskQueueError("固定 Agent 仅能聚合全部成功的模型结果")
     # 旧表只能表达一组供应商配置。正常四 Agent 路径以最终汇总 Agent
     # 作为代表；各路真实配置、请求 ID 和计量仍保存在批次记录与结构化事件中。
-    representative = summary_result or results[0]
+    representative = summary_result or next((item for item in results if item.response_status is not None), results[0])
     aggregate_status = (
         ModelCallStatus.SKIPPED if all_skipped else ModelCallStatus.SUCCEEDED
     )
@@ -138,6 +138,8 @@ def _workflow_result(
             representative.provider_request_id if all_succeeded else None
         ),
         response_status=(representative.response_status if all_succeeded else None),
+        reused_from_run_id=representative.reused_from_run_id if all(item.reused_from_run_id for item in results) else None,
+        reused_input_tokens=sum(item.reused_input_tokens for item in results),
         duration_ms=sum(item.duration_ms for item in results),
         usage=usage,
         estimated_cost_microusd=estimated_cost_microusd,

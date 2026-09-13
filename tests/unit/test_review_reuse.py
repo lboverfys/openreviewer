@@ -1,12 +1,18 @@
 """跨 SHA 复用必须匹配所有可见输入，复用用量不能再次计费。"""
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from domain.enums import ModelProvider, ReviewAgent
+from apps.worker.batches import _PersistentBatchedReviewer
+from apps.worker.results import _workflow_result
+from domain.enums import ModelBatchStatus, ModelProvider, ReviewAgent
 from domain.repository_policy import RepositoryPolicySnapshot
-from services.model_review import ModelServiceSettings
+from services.agent_workflow import AgentExecution, WorkflowExecution
+from services.model_review import ModelServiceSettings, combine_model_review_results
 from services.review_reuse import restore_reused, reusable_payload, reuse_identity
 from tests.unit.test_model_review import make_model_input, make_output, make_result
 
@@ -71,3 +77,36 @@ def test_output_mentioning_old_sha_is_not_reused():
     source, _, settings = inputs()
     result = make_result(make_output().model_copy(update={"summary": source.head_sha}), "a" * 64)
     assert reusable_payload(result, reuse_identity(source, settings), source.head_sha) is None
+
+
+def test_reused_only_and_mixed_workflows_preserve_actual_request_semantics():
+    source, target, settings = inputs()
+    original = make_result(make_output(), "b" * 64)
+    reused = restore_reused(reusable_payload(original, reuse_identity(source, settings), source.head_sha),
+                            reuse_identity(target, settings), source.review_run_id, target.head_sha)
+    combined = combine_model_review_results(target, (reused,))
+    assert combined.response_status is None and combined.reused_from_run_id == source.review_run_id
+    now = datetime.now(UTC)
+    cached_agent = AgentExecution(ReviewAgent.LOGIC, "completed", reused, 0, None)
+    workflow = WorkflowExecution("completed", (cached_agent,), reused.output.findings, "复用结果", now, now)
+    aggregate = _workflow_result(target, workflow)
+    assert aggregate.response_status is None and aggregate.usage.total_input_tokens == 0
+    actual = make_result(reused.output, "b" * 64)
+    mixed = replace(workflow, agents=(cached_agent, AgentExecution(ReviewAgent.SECURITY, "completed", actual, 10, None)))
+    aggregate = _workflow_result(target, mixed)
+    assert aggregate.response_status == 200 and aggregate.usage.total_input_tokens == 10
+    assert aggregate.reused_from_run_id is None and aggregate.reused_input_tokens == 10
+
+
+def test_sealed_agent_reuse_resumes_without_replanning_or_calling_model():
+    source, target, settings = inputs()
+    reused = restore_reused(reusable_payload(make_result(make_output(), "b" * 64), reuse_identity(source, settings), source.head_sha),
+                            reuse_identity(target, settings), source.review_run_id, target.head_sha)
+    queue = SimpleNamespace(load_model_batches=lambda *args, **kwargs: (
+        SimpleNamespace(result=reused, status=ModelBatchStatus.SUCCEEDED),))
+    cursor = SimpleNamespace(lease=SimpleNamespace(review_run_id=target.review_run_id), raise_if_lease_lost=lambda: None)
+    reviewer = Mock()
+    reviewer.review.side_effect = AssertionError("已封存结果不应重新调用模型")
+    wrapped = _PersistentBatchedReviewer(queue, cursor, ReviewAgent.LOGIC, reviewer, settings, timedelta(minutes=5))
+    assert wrapped.review(target) == reused
+    reviewer.review.assert_not_called()
