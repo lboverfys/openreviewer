@@ -2,7 +2,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
 import EvaluationSourcePicker from "./EvaluationSourcePicker";
 import type { EvaluationCaseDetail, EvaluationDataset, EvaluationImport, EvaluationSplit, EvaluationVariant } from "./types";
-import { WorkspaceBack, WorkspaceBadge, WorkspaceSection } from "./Workspace";
+import { WorkspaceBadge, WorkspaceSection } from "./Workspace";
 
 export default function EvaluationImportPanel({ dataset, sample, initialRunId, onSaved, onCancel, onError }: {
   dataset?: EvaluationDataset; sample?: EvaluationCaseDetail; initialRunId?: string;
@@ -31,8 +31,8 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
     } catch (error) { onError(error); } finally { setBusy(false); }
   }
   const opposite = sample?.[variant === "baseline" ? "candidate" : "baseline"]?.source_run_id;
-  return <><WorkspaceBack onClick={() => { if (!busy) onCancel(); }}>{dataset ? "返回当前评测" : "返回评测列表"}</WorkspaceBack><section className="evaluation-card evaluation-editor" aria-label="收录评测样本">
-    <div className="ws-editor-heading"><div><h2>{dataset ? "收录到 " + dataset.name : "创建评测集并收录样本"}</h2><p>先设置评测分组，再选择要收录的审查运行。</p></div><WorkspaceBadge tone="accent">已选 {selected.length} 条</WorkspaceBadge></div>
+  return <section className="evaluation-card evaluation-editor" aria-label="收录评测样本">
+    <div className="ws-editor-heading"><div><h2>{dataset ? "收录到 " + dataset.name : "创建评测集并收录样本"}</h2><p>先设置评测分组，再选择要收录的审查运行。</p></div><div className="ws-actions"><WorkspaceBadge tone="accent">已选 {selected.length} 条</WorkspaceBadge><button type="button" disabled={busy} onClick={onCancel}>取消收录</button></div></div>
     <form onSubmit={submit}>
       <fieldset disabled={busy}>
         <WorkspaceSection title="评测设置" description="基线与候选用于对照，调参与验收样本分别保留。"><div className="evaluation-form-grid">
@@ -51,5 +51,5 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
           <button type="button" onClick={onCancel}>取消</button></div>
       </fieldset>
     </form>
-  </section></>;
+  </section>;
 }
