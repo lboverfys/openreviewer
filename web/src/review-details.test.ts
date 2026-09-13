@@ -8,6 +8,7 @@ import {
   eventDetail,
   isErrorEvent,
   latestBatchPlanEvent,
+  latestEvent,
   retryDetail,
 } from "./review-details";
 import type { ReviewDetails, ReviewEvent, ReviewFinding } from "./types";
@@ -107,6 +108,29 @@ function event(
 }
 
 describe("审查详情事件解释", () => {
+  it.each([1, 3])("人工重试归零后忽略上一轮的第 %i 次失败", (oldAttempt) => {
+    const oldPlan = event("old-plan", "review.model.batches_planned", {
+      agent: "security", model_attempt_count: oldAttempt, model: "old-model", batch_count: 2,
+    });
+    const oldFailed = event("old-failed", "review.model.batch_failed", {
+      agent: "security", model_attempt_count: oldAttempt, batch_number: 1, error_message: "旧错误",
+    });
+    const reset = {...event("reset", "review.manual.retry"), occurred_at: "2026-09-13T00:00:00Z"};
+    const newPlan = {...event("new-plan", "review.model.batches_planned", {
+      agent: "security", model_attempt_count: 1, model: "gpt-test", batch_count: 1,
+    }), occurred_at: "2026-09-13T00:00:01Z"};
+    const completed = {...event("completed", "review.model.agent_completed", {
+      agent: "security", model_attempt_count: 1, status: "completed", summary: "新结果",
+    }), occurred_at: "2026-09-13T00:00:02Z"};
+    const events = [oldPlan, oldFailed, reset, newPlan, completed];
+    const progress = agentProgress(events, "security");
+    expect(progress.status).toBe("completed");
+    expect(progress.errorMessage).toBeNull();
+    expect(progress.batchCount).toBe(1);
+    expect(latestBatchPlanEvent(events)).toBe(newPlan);
+    expect(latestEvent(events, "review.model.batch_failed", 1)).toBeUndefined();
+  });
+
   it("同一状态重试复用幂等键，不同 Agent 或批次使用不同键", () => {
     const first = actionKey("retry_failed_node", "run-1", {
       agent: "security",

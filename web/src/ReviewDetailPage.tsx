@@ -19,6 +19,7 @@ import {
   agentDefinitions,
   agentProgress,
   branchLabel,
+  currentReviewEvents,
   eventDetail,
   formatDuration,
   isErrorEvent,
@@ -489,6 +490,7 @@ function ReviewDetailPage({
   const availableActions = allowedReviewActions(user, details.available_actions);
   const hasActions = availableActions.length > 0;
   const latestBatchPlan = latestBatchPlanEvent(details.events);
+  const currentEvents = currentReviewEvents(details.events);
   const currentModelFailure = latestEvent(
     details.events,
     "review.model.batch_failed",
@@ -499,7 +501,7 @@ function ReviewDetailPage({
     "review.task.retry_scheduled",
     details.model_attempt_count,
   );
-  const latestRequestLifecycleEvent = [...details.events].reverse().find((event) => (
+  const latestRequestLifecycleEvent = [...currentEvents].reverse().find((event) => (
     payloadNumber(event, "model_attempt_count") === details.model_attempt_count
     && [
       "review.model.request_started",
@@ -514,7 +516,7 @@ function ReviewDetailPage({
   const retryStatus = retryDetail(currentRetryEvent);
   const requestInFlight = latestRequestLifecycleEvent?.event_type
     === "review.model.request_started";
-  const modelProgressActive = details.execution_status === "running" && !details.model_review_completed_at && details.events.some(
+  const modelProgressActive = details.execution_status === "running" && !details.model_review_completed_at && currentEvents.some(
     (event) => event.event_type === "review.model.batch_started",
   );
   const modelDisplayState = details.model_status === "succeeded"

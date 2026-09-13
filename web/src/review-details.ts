@@ -121,8 +121,15 @@ export function branchLabel(repository: string | null, ref: string | null): stri
   return `${repository ?? "未知仓库"}:${ref ?? "未知分支"}`;
 }
 
+export function currentReviewEvents(events: ReviewEvent[]): ReviewEvent[] {
+  const resetAt = Math.max(0, ...events
+    .filter((event) => event.event_type === "review.manual.retry")
+    .map((event) => Date.parse(event.occurred_at)));
+  return resetAt === 0 ? events : events.filter((event) => Date.parse(event.occurred_at) >= resetAt);
+}
+
 export function latestBatchPlanEvent(events: ReviewEvent[]): ReviewEvent | undefined {
-  return events
+  return currentReviewEvents(events)
     .filter((event) => event.event_type === "review.model.batches_planned")
     .reduce<ReviewEvent | undefined>((latest, event) => {
       if (!latest) return event;
@@ -138,7 +145,8 @@ export function latestEvent(
   eventType: string,
   modelAttempt?: number,
 ): ReviewEvent | undefined {
-  return [...events].reverse().find((event) => (
+  const current = modelAttempt === undefined ? events : currentReviewEvents(events);
+  return [...current].reverse().find((event) => (
     event.event_type === eventType
     && (modelAttempt === undefined
       || payloadNumber(event, "model_attempt_count") === modelAttempt)
@@ -230,7 +238,7 @@ function latestAgentEvents(
   events: ReviewEvent[],
   agent: ReviewAgentKey,
 ): ReviewEvent[] {
-  const matching = events.filter((event) => (
+  const matching = currentReviewEvents(events).filter((event) => (
     event.event_type.startsWith("review.model.") && eventAgent(event) === agent
   ));
   if (matching.length === 0) return [];

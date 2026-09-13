@@ -1907,6 +1907,35 @@ def test_agent_progress_projection_ignores_legacy_events_after_new_attempt() -> 
     assert failed == (ReviewAgent.SECURITY.value,)
 
 
+@pytest.mark.parametrize("old_attempt", [1, 3])
+def test_agent_progress_ignores_previous_manual_retry_window(old_attempt: int) -> None:
+    old_time = datetime(2026, 9, 11, tzinfo=UTC)
+    reset_time = datetime(2026, 9, 13, tzinfo=UTC)
+    events = (
+        StoredReviewEvent(
+            id="old-failed", event_type="review.model.agent_failed",
+            payload={"agent": "security", "status": "failed", "model_attempt_count": old_attempt},
+            occurred_at=old_time,
+        ),
+        StoredReviewEvent(
+            id="manual-retry", event_type="review.manual.retry", payload={},
+            occurred_at=reset_time,
+        ),
+        StoredReviewEvent(
+            id="new-completed", event_type="review.model.agent_completed",
+            payload={"agent": "security", "status": "completed", "model_attempt_count": 1,
+                     "summary": "本轮已完成"},
+            occurred_at=reset_time + timedelta(seconds=1),
+        ),
+    )
+    statuses, summaries, _aggregation, _summary, partial, failed, batches = _project_agent_progress(
+        events, coverage_status="complete", model_completed=True,
+    )
+    assert statuses["security"] == "completed"
+    assert summaries["security"]["summary"] == "本轮已完成"
+    assert not partial and failed == () and batches == ()
+
+
 def test_persistent_reviewer_exposes_prior_batch_after_later_failure(monkeypatch) -> None:
     """持久化批次循环失败时应把前置成功结果交给工作流。"""
 

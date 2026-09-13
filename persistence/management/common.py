@@ -118,6 +118,13 @@ def _project_agent_progress(
     summary_status = "not_executed"
     partial_result = coverage_status == "partial"
     failed_agents: set[str] = set()
+    # 人工重试会把模型次数归零；先隔开旧窗口，不能让旧的第 3 次压过新的第 1 次。
+    reset_at = max(
+        (event.occurred_at for event in events if event.event_type == "review.manual.retry"),
+        default=None,
+    )
+    if reset_at is not None:
+        events = tuple(event for event in events if event.occurred_at >= reset_at)
     # 新版事件会把模型代次写入 payload；旧版事件可能没有该字段。只要
     # 事件集中出现了任一明确代次，就把缺少代次的旧事件视为历史数据并
     # 忽略，避免第一次重试时旧的 completed/failed 状态覆盖当前代次。
