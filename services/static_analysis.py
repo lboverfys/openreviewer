@@ -26,7 +26,9 @@ def _parse(text: str, expected_sha: str):
         if any(item.get("revisionId") and item["revisionId"] != expected_sha
                for item in run.get("versionControlProvenance", [])):
             raise ValueError("SARIF 记录的提交与所选提交不一致")
-        raw = run.get("results", [])
+        raw = run["results"]
+        if not isinstance(raw, list):
+            raise ValueError("SARIF 必须包含明确的结果数组，不能把缺失报告当作零问题")
         if len(raw) > 500:
             raise ValueError("单份报告最多 500 条线索，请限定扫描范围")
         results = []

@@ -73,3 +73,14 @@ def test_sha_and_scan_limits_fail_before_persisting(database):
     with pytest.raises(ValueError):
         parse_upload(StaticReportUpload(head_sha="a" * 40, head_sarif=sarif(501)))
     assert repository.get(run_id, ALL) is None
+
+
+@pytest.mark.parametrize("results", [None, {}, ""])
+def test_missing_or_invalid_result_array_is_not_treated_as_clean_scan(results):
+    data = json.loads(sarif())
+    if results is None:
+        data["runs"][0].pop("results")
+    else:
+        data["runs"][0]["results"] = results
+    with pytest.raises(ValueError):
+        parse_upload(StaticReportUpload(head_sha="a" * 40, head_sarif=json.dumps(data)))

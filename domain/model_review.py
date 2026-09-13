@@ -333,7 +333,7 @@ class ModelReviewResult(ModelContract):
                 or self.usage.output_tokens
             ):
                 raise ValueError("skipped model calls cannot contain output or usage")
-        elif self.response_status is None:
+        elif self.response_status is None and self.reused_from_run_id is None:
             raise ValueError("successful model calls must contain an HTTP status")
         return self
 

@@ -39,6 +39,8 @@ def test_same_input_across_commits_rebinds_finding_identity_and_zeroes_usage():
     assert restored.reused_from_run_id == source.review_run_id
     assert restored.reused_input_tokens == 10
     assert restored.provider_request_id is None
+    assert restored.response_status is None
+    assert type(restored).model_validate(restored.model_dump(mode="json")).reused_from_run_id == source.review_run_id
     assert reusable_payload(restored, second, target.head_sha) is None
 
 

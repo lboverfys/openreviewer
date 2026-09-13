@@ -78,7 +78,7 @@ def reusable_payload(result: ModelReviewResult, identity: ReuseIdentity, head_sh
     payload["output"] = _translate(payload["output"], identity.normalize)
     text = json.dumps(payload, ensure_ascii=False)
     # 模型在自然语言中写入旧 SHA 时不能仅替换身份后复用。
-    if head_sha in text or len(text.encode()) > 256 * 1024:
+    if head_sha in json.dumps(payload["output"], ensure_ascii=False) or len(text.encode()) > 256 * 1024:
         return None
     return payload
 
@@ -91,6 +91,7 @@ def restore_reused(payload, identity: ReuseIdentity, source_run: str, current_he
         "usage": ModelTokenUsage(input_tokens=0, output_tokens=0),
         "duration_ms": 0, "estimated_cost_microusd": 0,
         "provider_request_id": None, "provider_response_id": None,
+        "response_status": None,
         "request_fingerprint": _digest(("reuse", identity.key, current_head)),
         "reused_from_run_id": source_run, "reused_input_tokens": original.usage.total_input_tokens,
     })
