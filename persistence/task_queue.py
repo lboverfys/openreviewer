@@ -175,6 +175,18 @@ class SqlAlchemyReviewTaskQueue:
     def monthly_accountant(self, lease: Callable[[], ReviewTaskLease], agent: str):
         return _store_budget.monthly_accountant(self, lease, agent)
 
+    def model_egress_context(self, repository: str, run_id: str):
+        from persistence.egress import repository_egress
+        return repository_egress(self._sessions, repository, run_id)
+
+    def load_reused_review(self, lease: ReviewTaskLease, key: str):
+        from persistence.review_reuse import load_reused_review
+        return load_reused_review(self, lease, key)
+
+    def store_reusable_review(self, lease: ReviewTaskLease, key: str, head_sha: str, payload):
+        from persistence.review_reuse import store_reusable_review
+        return store_reusable_review(self, lease, key, head_sha, payload)
+
     def task_profile_id(self, lease: ReviewTaskLease) -> str | None:
         return _store_budget.task_profile_id(self, lease)
 

@@ -442,6 +442,7 @@ class ReviewFindingRecord(Base):
             "id",
         ),
         Index("ix_review_findings_head_fingerprint", "head_sha", "fingerprint"),
+        Index("ix_review_findings_run_file_line", "review_run_id", "location_file", "location_start_line"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

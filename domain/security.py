@@ -58,6 +58,7 @@ class ErrorCode(StrEnum):
     RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"
     RETRIEVAL_INDEX_PENDING = "retrieval_index_pending"
     MODEL_BUDGET_EXCEEDED = "model_budget_exceeded"
+    MODEL_EGRESS_DENIED = "model_egress_denied"
 
 
 _SENSITIVE_KEYS = {

@@ -601,6 +601,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/platform/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Evidence Report */
+        get: operations["evidence_report_api_v1_platform_evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/platform/profiles": {
         parameters: {
             query?: never;
@@ -630,6 +647,58 @@ export interface paths {
         put?: never;
         /** Activate Profile */
         post: operations["activate_profile_api_v1_platform_profiles__identifier__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/profiles/{identifier}/quality": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Profile Quality */
+        get: operations["profile_quality_api_v1_platform_profiles__identifier__quality_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/reviews/{run_id}/static-findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Static Findings */
+        get: operations["static_findings_api_v1_platform_reviews__run_id__static_findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/reviews/{run_id}/static-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Static Report */
+        get: operations["static_report_api_v1_platform_reviews__run_id__static_report_get"];
+        put?: never;
+        /** Import Static Report */
+        post: operations["import_static_report_api_v1_platform_reviews__run_id__static_report_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2019,6 +2088,13 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** CursorPage[StaticFindingView] */
+        CursorPage_StaticFindingView_: {
+            /** Items */
+            items: components["schemas"]["StaticFindingView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** CursorPage[TeamAuditView] */
         CursorPage_TeamAuditView_: {
             /** Items */
@@ -2094,6 +2170,33 @@ export interface components {
              * Format: date-time
              */
             until: string;
+        };
+        /** EgressPolicy */
+        EgressPolicy: {
+            /**
+             * Allowed Hosts
+             * @default []
+             */
+            allowed_hosts: string[];
+            /**
+             * Block Secrets
+             * @default true
+             */
+            block_secrets: boolean;
+            /**
+             * Blocked Paths
+             * @default [
+             *       ".env",
+             *       ".env.*",
+             *       "**\/.env",
+             *       "**\/.env.*",
+             *       "*.pem",
+             *       "**\/*.pem",
+             *       "*.key",
+             *       "**\/*.key"
+             *     ]
+             */
+            blocked_paths: string[];
         };
         /** EvaluationArchive */
         EvaluationArchive: {
@@ -3003,6 +3106,8 @@ export interface components {
             protocol: string;
             /** Provider */
             provider: string;
+            /** Reused From Run Id */
+            reused_from_run_id?: string | null;
         };
         /** ObservationDetail */
         ObservationDetail: {
@@ -3112,8 +3217,17 @@ export interface components {
         };
         /** ProfileActivate */
         ProfileActivate: {
+            /** Evaluation Dataset Id */
+            evaluation_dataset_id?: string | null;
+            /** Evidence Token */
+            evidence_token?: string | null;
             /** Expected Repository Revision */
             expected_repository_revision: number;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
         };
         /** ProfileCreate */
         ProfileCreate: {
@@ -3128,6 +3242,23 @@ export interface components {
             note: string;
             /** Repository */
             repository: string;
+        };
+        /** ProfileQuality */
+        ProfileQuality: {
+            /** Baseline Profile Id */
+            baseline_profile_id: string | null;
+            /** Evidence Token */
+            evidence_token: string;
+            /** Profile Id */
+            profile_id: string;
+            /** Reasons */
+            reasons: string[];
+            report?: components["schemas"]["EvaluationComparisonReport"] | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "unverified" | "regression" | "reviewed";
         };
         /** ProfileView */
         ProfileView: {
@@ -3164,6 +3295,29 @@ export interface components {
             retrieval_settings: {
                 [key: string]: unknown;
             };
+        };
+        /** ProjectEvidence */
+        ProjectEvidence: {
+            evaluation: components["schemas"]["EvaluationComparisonReport"] | null;
+            /**
+             * Evaluation Status
+             * @enum {string}
+             */
+            evaluation_status: "awaiting_human_review" | "partial_review" | "reviewed_samples";
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Limitations */
+            limitations: string[];
+            /** Next Steps */
+            next_steps: string[];
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
         };
         /** ProviderChannelView */
         ProviderChannelView: {
@@ -3272,11 +3426,17 @@ export interface components {
              * @default 80
              */
             budget_warning_percent: number;
+            egress?: components["schemas"]["EgressPolicy"];
             /**
              * Enabled
              * @default true
              */
             enabled: boolean;
+            /**
+             * Incremental Review
+             * @default false
+             */
+            incremental_review: boolean;
             /** Knowledge Sources */
             knowledge_sources?: string[] | null;
             /** Max Concurrent Reviews */
@@ -3307,11 +3467,17 @@ export interface components {
              * @default 80
              */
             budget_warning_percent: number;
+            egress?: components["schemas"]["EgressPolicy"];
             /**
              * Enabled
              * @default true
              */
             enabled: boolean;
+            /**
+             * Incremental Review
+             * @default false
+             */
+            incremental_review: boolean;
             /** Knowledge Sources */
             knowledge_sources?: string[] | null;
             /** Max Concurrent Reviews */
@@ -4289,6 +4455,81 @@ export interface components {
          * @enum {string}
          */
         Severity: "critical" | "high" | "medium" | "low";
+        /** StaticFindingView */
+        StaticFindingView: {
+            /**
+             * Baseline State
+             * @enum {string}
+             */
+            baseline_state: "new" | "existing" | "unknown";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** End Line */
+            end_line: number;
+            /** File */
+            file: string;
+            /** Id */
+            id: string;
+            /** Level */
+            level: string;
+            /** Message */
+            message: string;
+            /**
+             * Overlapping Ai Count
+             * @default 0
+             */
+            overlapping_ai_count: number;
+            /** Rule Id */
+            rule_id: string;
+            /** Start Line */
+            start_line: number;
+        };
+        /** StaticReportUpload */
+        StaticReportUpload: {
+            /** Base Sarif */
+            base_sarif?: string | null;
+            /** Base Sha */
+            base_sha?: string | null;
+            /** Head Sarif */
+            head_sarif: string;
+            /** Head Sha */
+            head_sha: string;
+        };
+        /** StaticReportView */
+        StaticReportView: {
+            /** Base Sha */
+            base_sha: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Existing Count */
+            existing_count: number;
+            /** Finding Count */
+            finding_count: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Id */
+            id: string;
+            /** Imported By */
+            imported_by: string;
+            /** New Count */
+            new_count: number;
+            /** Report Hash */
+            report_hash: string;
+            /** Review Run Id */
+            review_run_id: string;
+            /** Tool */
+            tool: string;
+            /** Tool Version */
+            tool_version: string;
+            /** Unknown Count */
+            unknown_count: number;
+        };
         /** StrategyEvaluation */
         StrategyEvaluation: {
             /** Cases */
@@ -5667,6 +5908,37 @@ export interface operations {
             };
         };
     };
+    evidence_report_api_v1_platform_evidence_get: {
+        parameters: {
+            query?: {
+                dataset_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectEvidence"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     profiles_api_v1_platform_profiles_get: {
         parameters: {
             query?: {
@@ -5757,6 +6029,139 @@ export interface operations {
                     "application/json": {
                         [key: string]: number;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    profile_quality_api_v1_platform_profiles__identifier__quality_get: {
+        parameters: {
+            query?: {
+                dataset_id?: string | null;
+            };
+            header?: never;
+            path: {
+                identifier: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileQuality"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    static_findings_api_v1_platform_reviews__run_id__static_findings_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_StaticFindingView_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    static_report_api_v1_platform_reviews__run_id__static_report_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StaticReportView"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_static_report_api_v1_platform_reviews__run_id__static_report_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StaticReportUpload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StaticReportView"];
                 };
             };
             /** @description Validation Error */

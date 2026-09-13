@@ -3,6 +3,7 @@
 import json
 import time
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
 from hashlib import sha256
@@ -21,6 +22,7 @@ from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.agent_workflow import _PartialAgentReviewError
 from services.model_budget import model_budget_scope, model_request_scope
 from services.model_review import (
+    ModelReviewBatch,
     ModelReviewer,
     ModelServiceSettings,
     combine_model_review_results,
@@ -90,8 +92,48 @@ class _PersistentBatchedReviewer:
             if accountant_factory
             else None
         )
-        with model_request_scope(self._request_guard), model_budget_scope(accountant):
-            return self._review_batches(review_input)
+        egress_factory = getattr(self._queue, "model_egress_context", None)
+        egress = (egress_factory(review_input.repository, review_input.review_run_id)
+                  if egress_factory else nullcontext())
+        with egress, model_request_scope(self._request_guard), model_budget_scope(accountant):
+            from services.egress import check_paths, check_texts
+            from services.review_reuse import (
+                restore_reused,
+                reusable_payload,
+                reuse_identity,
+            )
+
+            check_paths(tuple(unit.file for unit in review_input.units)
+                        + tuple(rule.path for rule in review_input.rules)
+                        + tuple(item.file for item in review_input.context_evidence)
+                        + tuple(review_input.knowledge_versions))
+            check_texts(tuple(unit.patch for unit in review_input.units)
+                        + tuple(rule.content for rule in review_input.rules)
+                        + tuple(item.content for item in review_input.context_evidence)
+                        + review_input.knowledge_references)
+            identity = reuse_identity(review_input, self._settings)
+            loader = getattr(self._queue, "load_reused_review", None)
+            writer = getattr(self._queue, "store_reusable_review", None)
+            if identity and loader and not self._queue.load_model_batches(self._lease_cursor.lease, agent=self._agent.value):
+                saved = loader(self._lease_cursor.lease, identity.key)
+                if saved and saved[1] != review_input.head_sha:
+                    result = restore_reused(saved[2], identity, saved[0], review_input.head_sha)
+                    lease = self._lease_cursor.lease
+                    self._queue.ensure_model_batches(lease, (ModelReviewBatch(1, 1, review_input, 0),), agent=self._agent.value)
+                    claimed = self._queue.claim_model_batch(lease, 1, agent=self._agent.value, lease_duration=self._lease_duration)
+                    stored = self._queue.complete_model_batch(lease, 1, result, agent=self._agent.value, expected_attempt_count=claimed.attempt_count)
+                    result = stored.result or result
+                    self._queue.record_model_progress(self._lease_cursor.lease, "incremental_reused",
+                        {"agent": self._agent.value, "source_run_id": saved[0],
+                         "input_hash": identity.key, "reused_input_tokens": result.reused_input_tokens,
+                         "model_requests": 0}, agent=self._agent.value)
+                    return result
+            result = self._review_batches(review_input)
+            if identity and writer:
+                payload = reusable_payload(result, identity, review_input.head_sha)
+                if payload is not None:
+                    writer(self._lease_cursor.lease, identity.key, review_input.head_sha, payload)
+            return result
 
     def _review_batches(self, review_input: ModelReviewInput) -> ModelReviewResult:
         _raise_if_lease_lost(self._lease_cursor)

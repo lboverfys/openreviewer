@@ -37,6 +37,7 @@ jobs:
       OPENREVIEWER_TEST_POSTGRES_URL: >-
         postgresql+psycopg://openreviewer_test:ci-only-postgres-password@127.0.0.1:5432/openreviewer_test
       PIP_CONSTRAINT: ${{ github.workspace }}/requirements.lock
+      OPENREVIEWER_FAULT_REPORT_DIR: ${{ github.workspace }}/reports/fault-recovery
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -72,6 +73,14 @@ jobs:
 
       - name: Verify management queries at 10k and 100k rows
         run: python -m pytest tests/performance/management_scale.py -q -s -W error
+      - name: Upload isolated worker recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: worker-recovery-${{ github.sha }}
+          path: reports/fault-recovery/*.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Verify request ledger at 100k rows
         run: python -m pytest tests/performance/platform_scale.py -q -s -W error
 

@@ -1875,6 +1875,33 @@
         "title": "CursorPage[ReviewFindingResponse]",
         "type": "object"
       },
+      "CursorPage_StaticFindingView_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StaticFindingView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[StaticFindingView]",
+        "type": "object"
+      },
       "CursorPage_TeamAuditView_": {
         "properties": {
           "items": {
@@ -2093,6 +2120,45 @@
           "failures"
         ],
         "title": "DiagnosticReport",
+        "type": "object"
+      },
+      "EgressPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_hosts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Allowed Hosts",
+            "type": "array"
+          },
+          "block_secrets": {
+            "default": true,
+            "title": "Block Secrets",
+            "type": "boolean"
+          },
+          "blocked_paths": {
+            "default": [
+              ".env",
+              ".env.*",
+              "**/.env",
+              "**/.env.*",
+              "*.pem",
+              "**/*.pem",
+              "*.key",
+              "**/*.key"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Blocked Paths",
+            "type": "array"
+          }
+        },
+        "title": "EgressPolicy",
         "type": "object"
       },
       "EvaluationArchive": {
@@ -4391,6 +4457,17 @@
           "provider": {
             "title": "Provider",
             "type": "string"
+          },
+          "reused_from_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reused From Run Id"
           }
         },
         "required": [
@@ -4651,10 +4728,41 @@
       "ProfileActivate": {
         "additionalProperties": false,
         "properties": {
+          "evaluation_dataset_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Dataset Id"
+          },
+          "evidence_token": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Token"
+          },
           "expected_repository_revision": {
             "minimum": 1.0,
             "title": "Expected Repository Revision",
             "type": "integer"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Reason",
+            "type": "string"
           }
         },
         "required": [
@@ -4696,6 +4804,65 @@
           "expected_ai_revision"
         ],
         "title": "ProfileCreate",
+        "type": "object"
+      },
+      "ProfileQuality": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Profile Id"
+          },
+          "evidence_token": {
+            "title": "Evidence Token",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationComparisonReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "unverified",
+              "regression",
+              "reviewed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "baseline_profile_id",
+          "status",
+          "evidence_token",
+          "reasons"
+        ],
+        "title": "ProfileQuality",
         "type": "object"
       },
       "ProfileView": {
@@ -4773,6 +4940,63 @@
           "created_at"
         ],
         "title": "ProfileView",
+        "type": "object"
+      },
+      "ProjectEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationComparisonReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evaluation_status": {
+            "enum": [
+              "awaiting_human_review",
+              "partial_review",
+              "reviewed_samples"
+            ],
+            "title": "Evaluation Status",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "next_steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Next Steps",
+            "type": "array"
+          },
+          "schema_version": {
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generated_at",
+          "evaluation_status",
+          "evaluation",
+          "limitations",
+          "next_steps"
+        ],
+        "title": "ProjectEvidence",
         "type": "object"
       },
       "ProviderChannelView": {
@@ -5107,9 +5331,17 @@
             "title": "Budget Warning Percent",
             "type": "integer"
           },
+          "egress": {
+            "$ref": "#/components/schemas/EgressPolicy"
+          },
           "enabled": {
             "default": true,
             "title": "Enabled",
+            "type": "boolean"
+          },
+          "incremental_review": {
+            "default": false,
+            "title": "Incremental Review",
             "type": "boolean"
           },
           "knowledge_sources": {
@@ -5222,9 +5454,17 @@
             "title": "Budget Warning Percent",
             "type": "integer"
           },
+          "egress": {
+            "$ref": "#/components/schemas/EgressPolicy"
+          },
           "enabled": {
             "default": true,
             "title": "Enabled",
+            "type": "boolean"
+          },
+          "incremental_review": {
+            "default": false,
+            "title": "Incremental Review",
             "type": "boolean"
           },
           "knowledge_sources": {
@@ -8080,6 +8320,200 @@
         "title": "Severity",
         "type": "string"
       },
+      "StaticFindingView": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_state": {
+            "enum": [
+              "new",
+              "existing",
+              "unknown"
+            ],
+            "title": "Baseline State",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "end_line": {
+            "title": "End Line",
+            "type": "integer"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "level": {
+            "title": "Level",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "overlapping_ai_count": {
+            "default": 0,
+            "title": "Overlapping Ai Count",
+            "type": "integer"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "start_line": {
+            "title": "Start Line",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "rule_id",
+          "file",
+          "start_line",
+          "end_line",
+          "level",
+          "message",
+          "baseline_state",
+          "created_at"
+        ],
+        "title": "StaticFindingView",
+        "type": "object"
+      },
+      "StaticReportUpload": {
+        "additionalProperties": false,
+        "properties": {
+          "base_sarif": {
+            "anyOf": [
+              {
+                "maxLength": 1000000,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Sarif"
+          },
+          "base_sha": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{40,64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Sha"
+          },
+          "head_sarif": {
+            "maxLength": 1000000,
+            "minLength": 2,
+            "title": "Head Sarif",
+            "type": "string"
+          },
+          "head_sha": {
+            "pattern": "^[0-9a-f]{40,64}$",
+            "title": "Head Sha",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha",
+          "head_sarif"
+        ],
+        "title": "StaticReportUpload",
+        "type": "object"
+      },
+      "StaticReportView": {
+        "additionalProperties": false,
+        "properties": {
+          "base_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Sha"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "existing_count": {
+            "title": "Existing Count",
+            "type": "integer"
+          },
+          "finding_count": {
+            "title": "Finding Count",
+            "type": "integer"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "imported_by": {
+            "title": "Imported By",
+            "type": "string"
+          },
+          "new_count": {
+            "title": "New Count",
+            "type": "integer"
+          },
+          "report_hash": {
+            "title": "Report Hash",
+            "type": "string"
+          },
+          "review_run_id": {
+            "title": "Review Run Id",
+            "type": "string"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          },
+          "tool_version": {
+            "title": "Tool Version",
+            "type": "string"
+          },
+          "unknown_count": {
+            "title": "Unknown Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "review_run_id",
+          "tool",
+          "tool_version",
+          "head_sha",
+          "base_sha",
+          "report_hash",
+          "finding_count",
+          "new_count",
+          "existing_count",
+          "unknown_count",
+          "imported_by",
+          "created_at"
+        ],
+        "title": "StaticReportView",
+        "type": "object"
+      },
       "StrategyEvaluation": {
         "additionalProperties": false,
         "properties": {
@@ -10750,6 +11184,53 @@
         "summary": "Diagnostics"
       }
     },
+    "/api/v1/platform/evidence": {
+      "get": {
+        "operationId": "evidence_report_api_v1_platform_evidence_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "dataset_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dataset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEvidence"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evidence Report"
+      }
+    },
     "/api/v1/platform/profiles": {
       "get": {
         "operationId": "profiles_api_v1_platform_profiles_get",
@@ -10913,6 +11394,224 @@
           }
         },
         "summary": "Activate Profile"
+      }
+    },
+    "/api/v1/platform/profiles/{identifier}/quality": {
+      "get": {
+        "operationId": "profile_quality_api_v1_platform_profiles__identifier__quality_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dataset_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dataset Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileQuality"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Profile Quality"
+      }
+    },
+    "/api/v1/platform/reviews/{run_id}/static-findings": {
+      "get": {
+        "operationId": "static_findings_api_v1_platform_reviews__run_id__static_findings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_StaticFindingView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Static Findings"
+      }
+    },
+    "/api/v1/platform/reviews/{run_id}/static-report": {
+      "get": {
+        "operationId": "static_report_api_v1_platform_reviews__run_id__static_report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/StaticReportView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Static Report Api V1 Platform Reviews  Run Id  Static Report Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Static Report"
+      },
+      "post": {
+        "operationId": "import_static_report_api_v1_platform_reviews__run_id__static_report_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaticReportUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaticReportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Static Report"
       }
     },
     "/api/v1/platform/usage": {

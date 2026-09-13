@@ -35,10 +35,12 @@ from domain.retrieval import (
     stable_key,
 )
 from domain.security import ErrorCode, SafeApplicationError, SafeError
+from persistence.egress import index_egress, repository_egress
 from persistence.models import RetrievalSettingsRecord
 from persistence.retrieval import RetrievalRepository
 from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from services.ai_settings import AiSecretCipher
+from services.egress import check_paths
 from services.rbac import ResourceScope
 from services.retrieval_context import changed_symbols, merge_contexts, review_queries
 from services.retrieval_gateway import RetrievalGateway
@@ -189,9 +191,11 @@ class HybridRetrievalService:
         return True
 
     def _build(self, claim, sources: Sequence[SourceFile] | None, on_progress: Callable[[], None] | None) -> IndexView:
-        return build_index(self.repository, self.settings, self._client, self.source_loader, claim, sources, on_progress)
+        with repository_egress(self.repository.sessions, claim[2]["repository"], claim[0]):
+            return build_index(self.repository, self.settings, self._client, self.source_loader, claim, sources, on_progress)
     def _lexical(self, index_id: str) -> LexicalIndex:
         return self._lexical_cache.get(index_id, lambda: LexicalIndex(self.repository.lexical_documents(index_id)))
+    @index_egress
     def search(
         self, index_id: str, query: SearchQuery, scope: ResourceScope | None = None, *,
         review_run_id: str | None = None, agent: str | None = None,
@@ -261,6 +265,7 @@ class HybridRetrievalService:
         scores: dict[int, float] = {}
         rerank_cache_hit = False
         if query.strategy == "reranked" and fused and client is not None:
+            check_paths(tuple(chunks[item[0]].file for item in fused))
             # Keep query repetition and document bodies below the provider limit.
             per_document = min(6000, max(0, 110_000 // len(fused) - len(query.query.encode())))
             texts = tuple(chunks[item[0]].embedding_text.encode()[:per_document].decode("utf-8", errors="ignore") for item in fused)
@@ -311,6 +316,12 @@ class HybridRetrievalService:
 
     def review_context(self, model_input, on_progress: Callable[[], None], *,
                        frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None):
+        with repository_egress(self.repository.sessions, model_input.repository, model_input.review_run_id):
+            check_paths(tuple(unit.file for unit in model_input.units))
+            return self._review_context(model_input, on_progress, frozen_runtime=frozen_runtime)
+
+    def _review_context(self, model_input, on_progress: Callable[[], None], *,
+                        frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None):
         view = frozen_runtime[0] if frozen_runtime is not None else self.settings.get()
         if not model_input.units:
             return model_input
@@ -421,6 +432,7 @@ class HybridRetrievalService:
                 client.close()
         on_progress()
         return model_input.model_copy(update={"context_evidence": tuple(contexts)})
+    @index_egress
     def evaluate(
         self, index_id: str, cases: Sequence[RetrievalEvaluationCase], *,
         dataset_version: str, annotation_source: AnnotationSource,

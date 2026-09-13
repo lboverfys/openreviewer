@@ -133,6 +133,9 @@ class AliyunRetrievalClient:
             self.client.close()
 
     def _post(self, path: str, payload: dict[str, object]) -> dict[str, Any]:
+        from services.egress import check_payload
+
+        check_payload(self.settings.api_host, payload)
         if self._owns_client and external_retrieval_paused():
             raise RetrievalError("检索模型外部调用已暂停，需管理员明确开启")
         started = time.monotonic()

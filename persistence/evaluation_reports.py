@@ -129,7 +129,7 @@ def comparison_report(
     if number("missing_baseline") or number("missing_candidate"):
         notices.append("未配对样本单列，不参与基线与候选对比")
     if number("provenance_missing_pairs"):
-        notices.append("部分历史运行缺少完整的程序或知识版本记录")
+        notices.append("部分运行缺少独立调用的完整版本记录，或包含跨提交复用结果")
     if any(score.configuration_count > 1 for score in scores.values()):
         notices.append("同一分组包含多种配置记录，请结合样本版本信息解释整体差异")
     if number("performance_pairs") > number("priced_pairs"):

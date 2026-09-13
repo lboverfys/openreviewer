@@ -4,6 +4,7 @@ from fnmatch import fnmatchcase
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from domain.egress import EgressPolicy
 from domain.paths import normalize_repository_path
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 
@@ -22,6 +23,8 @@ class RepositoryPolicy(BaseModel):
     max_concurrent_reviews: int | None = Field(default=None, ge=1, le=100)
     approval_timeout_hours: int = Field(default=24, ge=1, le=720)
     review_profile_id: str | None = Field(default=None, min_length=1, max_length=36)
+    egress: EgressPolicy = Field(default_factory=EgressPolicy)
+    incremental_review: bool = False
 
     @field_validator("target_branches")
     @classmethod

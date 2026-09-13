@@ -93,6 +93,11 @@ from persistence.models.retrieval import (
     RetrievalSettingsRecord as RetrievalSettingsRecord,
 )
 from persistence.models.retrieval import RetrievalTraceRecord as RetrievalTraceRecord
+from persistence.models.review_evidence import ReviewReuseRecord as ReviewReuseRecord
+from persistence.models.review_evidence import (
+    StaticFindingRecord as StaticFindingRecord,
+)
+from persistence.models.review_evidence import StaticReportRecord as StaticReportRecord
 from persistence.models.tasks import OutboxEventRecord as OutboxEventRecord
 from persistence.models.tasks import ReviewQuotaBucketRecord as ReviewQuotaBucketRecord
 from persistence.models.tasks import ReviewRunRecord as ReviewRunRecord

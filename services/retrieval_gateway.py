@@ -36,6 +36,8 @@ class RetrievalGateway:
             self.budget.consume()
 
     def embed(self, texts: tuple[str, ...], *, purpose: str = "code") -> EmbeddingResult:
+        from services.egress import check_texts
+        check_texts(texts)
         digests = [sha256(text.encode()).hexdigest() for text in texts]
         keys = [stable_key(self.settings.embedding_fingerprint, digest) for digest in digests]
         cached = self.runtime.vectors(keys)
@@ -58,6 +60,8 @@ class RetrievalGateway:
             return EmbeddingResult(tuple(cached[key] for key in keys), duration, tokens)
 
     def rerank(self, query: str, texts: tuple[str, ...]) -> RerankResult:
+        from services.egress import check_texts
+        check_texts((query, *texts))
         key = stable_key(self.lane, self.settings.rerank_model, query, texts)
         cached = self.runtime.rerank(key)
         if cached is not None:

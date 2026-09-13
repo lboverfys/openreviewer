@@ -1206,6 +1206,7 @@ def _copy_model_input(
         context_evidence=tuple(item for item in source.context_evidence if not item.unit_keys or selected_unit_keys.intersection(item.unit_keys)),
         knowledge_references=source.knowledge_references,
         knowledge_versions=source.knowledge_versions,
+        reuse_dependencies=source.reuse_dependencies,
         prior_agent_results=source.prior_agent_results,
         review_agent=source.review_agent,
         connection_test=source.connection_test,

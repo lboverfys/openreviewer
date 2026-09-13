@@ -378,6 +378,13 @@ def test_platform_api_auth_scope_and_origin(database):
                 await client.get("/api/v1/platform/work-items?limit=101")
             ).status_code == 422
             assert (await client.get("/api/v1/platform/diagnostics")).status_code == 200
+            evidence = await client.get("/api/v1/platform/evidence")
+            assert evidence.status_code == 200
+            assert evidence.json()["evaluation_status"] == "awaiting_human_review"
+            assert (await client.get("/api/v1/platform/evidence?dataset_id=missing")).status_code == 404
+            assert (await client.post("/api/v1/platform/reviews/missing/static-report",
+                headers={"Origin": "https://other.example"},
+                json={"head_sha": "a" * 40, "head_sarif": "{}"})).status_code == 403
             await client.post("/api/v1/auth/logout")
             assert (
                 await client.post(
@@ -387,6 +394,9 @@ def test_platform_api_auth_scope_and_origin(database):
             ).status_code == 200
             assert (await client.get("/api/v1/platform/usage")).status_code == 403
             assert (await client.get("/api/v1/platform/profiles")).status_code == 403
+            assert (await client.get("/api/v1/platform/profiles/missing/quality")).status_code == 403
+            assert (await client.post("/api/v1/platform/reviews/missing/static-report",
+                json={"head_sha": "a" * 40, "head_sarif": "{}"})).status_code == 403
             assert (await client.get("/api/v1/platform/work-items")).status_code == 200
             assert (
                 await client.post(

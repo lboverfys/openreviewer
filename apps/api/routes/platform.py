@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from apps.api.platform_services import PlatformServices
+from domain.evaluation_workbench import EvaluationNotFoundError
 from domain.pagination import CursorPage
 from domain.platform import (
     ApprovalTodo,
@@ -19,6 +20,7 @@ from domain.platform import (
     PlatformNotFoundError,
     ProfileActivate,
     ProfileCreate,
+    ProfileQuality,
     ProfileView,
     UsageBreakdown,
     UsageMonth,
@@ -28,6 +30,14 @@ from domain.platform import (
     WorkItemView,
     WorkStatus,
 )
+from domain.project_evidence import ProjectEvidence, project_evidence
+from domain.static_analysis import (
+    StaticFindingView,
+    StaticReportUpload,
+    StaticReportView,
+)
+from persistence.evaluation_reports import comparison_report
+from persistence.static_analysis import StaticAnalysisRepository
 from services.ai_settings import AiSettingsError
 from services.auth import SessionPrincipal
 from services.rag import KnowledgePersistenceError
@@ -39,7 +49,7 @@ from services.review_profiles import ReviewProfileService
 def _guard[T](operation: Callable[[], T]) -> T:
     try:
         return operation()
-    except PlatformNotFoundError as exc:
+    except (PlatformNotFoundError, EvaluationNotFoundError) as exc:
         raise HTTPException(404, str(exc)) from exc
     except (PlatformConflictError, IntegrityError) as exc:
         raise HTTPException(
@@ -66,6 +76,37 @@ def register_platform_routes(
     require_manager: Callable[..., SessionPrincipal],
     require_same_origin: Callable[..., None],
 ) -> None:
+    def static_service():
+        return StaticAnalysisRepository(get_service().profiles.sessions)
+
+    @application.get("/api/v1/platform/evidence", response_model=ProjectEvidence)
+    def evidence_report(
+        principal: Annotated[SessionPrincipal, Depends(require_viewer)],
+        dataset_id: Annotated[str | None, Query(max_length=36)] = None,
+    ):
+        def build():
+            with get_service().profiles.sessions() as session:
+                report = comparison_report(session, dataset_id, principal.resource_scope, "validation") if dataset_id else None
+                return project_evidence(report)
+        return _guard(build)
+
+    @application.get("/api/v1/platform/reviews/{run_id}/static-report", response_model=StaticReportView | None)
+    def static_report(run_id: str, principal: Annotated[SessionPrincipal, Depends(require_viewer)]):
+        return _guard(lambda: static_service().get(run_id, principal.resource_scope))
+
+    @application.post("/api/v1/platform/reviews/{run_id}/static-report", response_model=StaticReportView)
+    def import_static_report(run_id: str, body: StaticReportUpload,
+        principal: Annotated[SessionPrincipal, Depends(require_editor)],
+        _: Annotated[None, Depends(require_same_origin)]):
+        return _guard(lambda: static_service().upload(run_id, body, principal.username, principal.resource_scope))
+
+    @application.get("/api/v1/platform/reviews/{run_id}/static-findings", response_model=CursorPage[StaticFindingView])
+    def static_findings(run_id: str,
+        principal: Annotated[SessionPrincipal, Depends(require_viewer)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        cursor: Annotated[str | None, Query(max_length=512)] = None):
+        return _guard(lambda: static_service().findings(run_id, principal.resource_scope, limit=limit, cursor=cursor))
+
     @application.get("/api/v1/platform/usage", response_model=CursorPage[UsageMonth])
     def usage(
         principal: Annotated[SessionPrincipal, Depends(require_manager)],
@@ -229,6 +270,14 @@ def register_platform_routes(
             )
         )
 
+    @application.get("/api/v1/platform/profiles/{identifier}/quality", response_model=ProfileQuality)
+    def profile_quality(
+        identifier: str,
+        principal: Annotated[SessionPrincipal, Depends(require_manager)],
+        dataset_id: Annotated[str | None, Query(max_length=36)] = None,
+    ):
+        return _guard(lambda: get_service().profiles.quality(identifier, principal.resource_scope, dataset_id))
+
     @application.post(
         "/api/v1/platform/profiles/{identifier}/activate", response_model=dict[str, int]
     )
@@ -244,6 +293,8 @@ def register_platform_routes(
                 body.expected_repository_revision,
                 principal.username,
                 principal.resource_scope,
+                dataset_id=body.evaluation_dataset_id, evidence_token=body.evidence_token,
+                reason=body.reason,
             )
         )
         return {"revision": revision}

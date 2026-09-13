@@ -10,6 +10,7 @@ from domain.security import SafeError
 from persistence.retrieval import RetrievalRepository
 from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from services.code_indexing import parse_cache_key, parse_sources
+from services.egress import check_paths
 from services.retrieval_providers import RequestBudget, RetrievalError
 
 
@@ -91,6 +92,7 @@ def build_index(repository: RetrievalRepository, settings_service: Any, client_f
                         for page in repository.missing_chunk_pages(index_id):
                             for batch in embedding_batches(page):
                                 heartbeat()
+                                check_paths(tuple(chunk.file for chunk in batch))
                                 client.embed(tuple(chunk.embedding_text for chunk in batch))
                                 embedded += len(batch)
                                 repository.progress(index_id, owner, index.file_count, index.chunk_count, embedded, reused)

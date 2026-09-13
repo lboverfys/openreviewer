@@ -111,7 +111,7 @@ def _observation_values(source: EvaluationSource) -> dict[str, Any]:
         "snapshot_sha256": _digest(snapshot), "configuration_fingerprint": _digest(configuration),
         "model_label": " / ".join(dict.fromkeys(model.model for model in source.models))[:600],
         "provenance_complete": all(
-            model.context_recorded and model.application_revision is not None
+            model.context_recorded and model.application_revision is not None and model.reused_from_run_id is None
             for model in source.models
         ),
         "finding_count": len(source.findings), "input_tokens": source.input_tokens,

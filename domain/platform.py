@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from domain.evaluation_workbench import EvaluationComparisonReport
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 
 
@@ -198,6 +199,18 @@ class ProfileView(PlatformModel):
 
 class ProfileActivate(PlatformModel):
     expected_repository_revision: int = Field(ge=1)
+    evaluation_dataset_id: str | None = Field(default=None, min_length=1, max_length=36)
+    evidence_token: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(default="", max_length=1000)
+
+
+class ProfileQuality(PlatformModel):
+    profile_id: str
+    baseline_profile_id: str | None
+    status: Literal["unverified", "regression", "reviewed"]
+    evidence_token: str
+    reasons: tuple[str, ...]
+    report: EvaluationComparisonReport | None = None
 
 
 class PlatformAudit(PlatformModel):

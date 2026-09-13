@@ -143,6 +143,7 @@ def capture_review_sources(
         ModelReviewBatchRecord.result["model"].as_string().label("model"),
         ModelReviewBatchRecord.result["prompt_version"].as_string().label("prompt_version"),
         ModelReviewBatchRecord.result["provenance"].as_string().label("provenance"),
+        ModelReviewBatchRecord.result["reused_from_run_id"].as_string().label("reused_from_run_id"),
     ).where(
         ModelReviewBatchRecord.review_plan_id.in_(plan_ids),
         ModelReviewBatchRecord.status == "succeeded",
@@ -159,6 +160,7 @@ def capture_review_sources(
             application_revision=context.get("application_revision"),
             knowledge_versions=context.get("knowledge_versions") or {},
             context_recorded=bool(context) and context.get("knowledge_versions") is not None,
+            reused_from_run_id=row.reused_from_run_id,
         ))
     rules: dict[str, list[dict[str, str]]] = defaultdict(list)
     for row in session.execute(select(
@@ -208,6 +210,8 @@ def capture_review_sources(
         if turnaround < 0:
             raise ValueError("审查时间记录不完整，无法计算耗时")
         limitations = []
+        if any(version.reused_from_run_id for version in versions[run_id]):
+            limitations.append("含跨提交复用结果，不属于独立模型调用对照；需要关闭增量复用后重新收录")
         if any(not version.context_recorded or version.application_revision is None for version in versions[run_id]):
             limitations.append("历史批次未记录完整的程序版本或知识引用版本")
         if row.estimated_cost_microusd is None:

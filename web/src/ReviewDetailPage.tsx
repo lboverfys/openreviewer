@@ -6,6 +6,7 @@ import FindingCard from "./ReviewFindingCard";
 import Pagination from "./Pagination";
 import { useCursorPage } from "./useCursorPage";
 import RetrievalTracePanel from "./RetrievalTracePanel";
+import StaticAnalysisPanel from "./StaticAnalysisPanel";
 import "./styles/retrieval.css";
 import {
   DetailIcon,
@@ -750,6 +751,7 @@ function ReviewDetailPage({
                 {hasPermission(user, "knowledge:manage") && <button type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</button>}
               </div>
               {retrievalLoadError ? <p className="retrieval-warning">{retrievalLoadError}</p> : <RetrievalTracePanel traces={retrievalTraces} compact />}
+              <StaticAnalysisPanel key={reviewRunId} runId={reviewRunId} headSha={details.head_sha} editable={hasPermission(user, "findings:adjudicate")} onError={handlePageError} />
             </section>
             </>}
             {activeTab === "agents" && <>

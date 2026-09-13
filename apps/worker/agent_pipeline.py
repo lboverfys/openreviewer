@@ -32,6 +32,11 @@ def _run_fixed_agent_workflow(
     # 普通领取租约升级为模型阶段租约，避免忙碌心跳在这段窗口内续成短租约。
     cursor.renew(self._settings.model_review_lease_duration)
     model_input = self._queue.load_model_review_input(cursor.lease)
+    # MVP 以本次全部非文档变更为保守失效范围；依赖变化时不复用局部旧判断。
+    model_input = model_input.model_copy(update={"reuse_dependencies": {
+        unit.file: f"{unit.blob_sha}:{unit.patch_sha256}" for unit in model_input.units
+        if not unit.file.lower().endswith((".md", ".txt", ".rst"))
+    }})
     budget_exhausted = Event()
     request_guard = self._repository_request_guard(
         cursor, model_input, budget_exhausted
@@ -186,6 +191,8 @@ def _run_fixed_agent_workflow(
         raise RepositoryRequestLimitError()
     for agent_result in (*execution.agents, execution.summary_execution):
         if agent_result is not None and agent_result.safe_error is not None:
+            if agent_result.safe_error.details.get("egress_reason"):
+                raise SafeApplicationError(agent_result.safe_error)
             if (
                 agent_result.safe_error.details.get("budget_reason")
                 == "repository_monthly_budget"

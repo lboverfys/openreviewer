@@ -1,5 +1,21 @@
 # 性能与证据
 
+## 本轮新增查询与故障证据
+
+新增访问 `static_analysis_reports`、`static_analysis_findings`、`review_reuse_entries`，并复用
+任务、PR 版本、问题、仓库策略及评测三张表。静态线索按万至十万行设计，每页三条 SQL（授权、
+报告身份、当前页），页内 AI 位置重合统计使用数据库子查询和 `(review_run_id, location_file,
+location_start_line)` 索引；静态页使用 `(report_id, created_at, id)` 索引，查询次数 O(1)。
+
+一次静态导入最多 500 条，批量 INSERT；解析在事务外。复用查询按主键哈希单次读取，正文上限
+256 KiB；不随文件数量逐条查库。方案质量复用数据库聚合，并有界读取最多 400 条观察元数据，
+不读取评测正文；限定单个最多 200 PR 的评测集，查询次数 O(1)。
+
+`tests/integration/test_fault_recovery.py` 只在 CI 隔离 PostgreSQL 中启动真实子进程和回环 HTTP
+桩。故障点位于 HTTP 返回之后、费用结算之前：终止子进程，确认预占保留、旧租约拒绝、替代
+Worker 可领取及迟到结算重复调用只生效一次。全部断言通过后才生成 JSON 证据；Actions 产物
+名称带完整提交 SHA，保留 30 天。它不测真实模型准确率、生产恢复耗时或供应商实际账单。
+
 本页区分代码约束、CI 隔离验证和历史性能测量。它们不能互相替代。
 
 ## 当前查询设计

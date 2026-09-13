@@ -175,6 +175,10 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
   const [concurrency, setConcurrency] = useState(current?.policy.max_concurrent_reviews?.toString() ?? "");
   const [approvalHours, setApprovalHours] = useState(String(current?.policy.approval_timeout_hours ?? 24));
   const [useProfile, setUseProfile] = useState(Boolean(current?.policy.review_profile_id));
+  const [blockedPaths, setBlockedPaths] = useState(current?.policy.egress?.blocked_paths?.join("\n") ?? ".env\n.env.*\n**/.env\n**/.env.*\n*.pem\n**/*.pem\n*.key\n**/*.key");
+  const [allowedHosts, setAllowedHosts] = useState(current?.policy.egress?.allowed_hosts?.join("\n") ?? "");
+  const [blockSecrets, setBlockSecrets] = useState(current?.policy.egress?.block_secrets ?? true);
+  const [incremental, setIncremental] = useState(current?.policy.incremental_review ?? false);
   const initialSources = current?.policy.knowledge_sources;
   const [knowledgeMode, setKnowledgeMode] = useState(initialSources == null ? "inherit" : initialSources.length ? "selected" : "none");
   const [sources, setSources] = useState(initialSources?.join("\n") ?? "");
@@ -189,6 +193,8 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
         budget_warning_percent: Number(warningPercent), max_concurrent_reviews: concurrency ? Number(concurrency) : null,
         approval_timeout_hours: Number(approvalHours), review_profile_id: useProfile ? current?.policy.review_profile_id ?? null : null,
         knowledge_sources: knowledgeMode === "inherit" ? null : knowledgeMode === "none" ? [] : lines(sources),
+        egress: { blocked_paths: lines(blockedPaths), allowed_hosts: lines(allowedHosts), block_secrets: blockSecrets },
+        incremental_review: incremental,
       },
     }, current?.id);
   };
@@ -208,6 +214,11 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
           {current?.policy.review_profile_id && <label className="team-check"><input type="checkbox" checked={useProfile} onChange={event => setUseProfile(event.target.checked)} />继续固定已启用的审查方案</label>}
         </div>
         <label>目标分支（每行一个，留空审查全部分支）<textarea value={branches} rows={3} placeholder={"main\nrelease/*"} onChange={(event) => setBranches(event.target.value)} /></label>
+        <label>禁止外发的文件（每行一项，支持 * 通配符）<textarea rows={4} value={blockedPaths} onChange={event => setBlockedPaths(event.target.value)} /></label>
+        <label>允许的模型供应商域名（每行一个，留空使用已配置连接）<textarea rows={2} value={allowedHosts} onChange={event => setAllowedHosts(event.target.value)} placeholder="api.openai.com" /></label>
+        <label className="team-check"><input type="checkbox" checked={blockSecrets} onChange={event => setBlockSecrets(event.target.checked)} />检测到凭据形状时阻止整次外发</label>
+        <label className="team-check"><input type="checkbox" checked={incremental} onChange={event => setIncremental(event.target.checked)} />启用跨提交的精确输入复用（需绑定审查方案）</label>
+        <p className="team-hint">外发限制覆盖审查、向量和精排；命中限制时保留原代码并拒绝请求。增量复用只适用于相同方案和输入，关联代码变化会失效，汇总仍重新执行。</p>
         <label>知识规则<select value={knowledgeMode} onChange={(event) => setKnowledgeMode(event.target.value)}><option value="inherit">继承已启用知识库</option><option value="selected">仅使用指定文档</option><option value="none">不使用知识库</option></select></label>
         {knowledgeMode === "selected" && <label>知识文档来源（从知识库复制，每行一个）<textarea value={sources} rows={3} required placeholder="security.md" onChange={(event) => setSources(event.target.value)} /></label>}
         <p className="team-hint">仓库内的 AGENTS.md 始终生效。审查范围和方案用于新任务；预算与仓库并发限制在后续请求、任务领取时生效。<a href="#platform?tab=profiles">管理审查方案</a></p>

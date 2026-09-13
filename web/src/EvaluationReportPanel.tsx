@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { platformApi } from "./platform-api";
 import { formatDuration } from "./review-details";
 import type { EvaluationReport, EvaluationSplit } from "./types";
 
@@ -29,12 +30,21 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
     link.href = url; link.download = "evaluation-" + datasetId + "-" + split + ".json";
     link.click(); URL.revokeObjectURL(url);
   }
+  async function exportEvidence() {
+    try {
+      const evidence = await platformApi.projectEvidence(datasetId);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(evidence, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a"); link.href = url;
+      link.download = `openreviewer-evidence-${datasetId}.json`; link.click(); URL.revokeObjectURL(url);
+    } catch (error) { onError(error); }
+  }
   return <section className="evaluation-card" aria-label="配对对比报告">
     <div className="evaluation-toolbar"><h2>配对对比报告</h2>
       <label>报告样本集<select value={split} onChange={event => setSplit(event.target.value as EvaluationSplit)}>
         <option value="validation">验收集</option><option value="tuning">调参集</option></select></label>
       <button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)}>重新计算</button>
       <button type="button" disabled={!report} onClick={exportReport}>导出报告 JSON</button>
+      <button type="button" disabled={!report || split !== "validation"} onClick={() => void exportEvidence()}>导出面试证据</button>
     </div>
     {loading && <p role="status">正在聚合评测结果…</p>}
     {report && <>

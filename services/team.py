@@ -267,6 +267,11 @@ class TeamService:
 
     def _validate_policy(self, session: Session, draft: RepositoryWrite) -> None:
         if draft.policy.review_profile_id:
+            active_policy = session.scalar(select(RepositoryPolicyRecord.policy).where(
+                RepositoryPolicyRecord.repository_key == draft.repository.casefold(),
+            ))
+            if not active_policy or active_policy.get("review_profile_id") != draft.policy.review_profile_id:
+                raise ValueError("切换方案请使用审查方案页面，查看质量提示并填写启用理由")
             if session.scalar(select(ReviewProfileRecord.id).where(
                 ReviewProfileRecord.id == draft.policy.review_profile_id,
                 ReviewProfileRecord.repository_key == draft.repository.casefold(),

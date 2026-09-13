@@ -27,6 +27,11 @@ flowchart LR
 
 ## 模块边界
 
+新增外发检查放在模型请求边界；静态报告解析与存储分别归入 `services/static_analysis.py`
+和 `persistence/static_analysis.py`；方案质量使用 `persistence/profile_quality.py` 复用现有
+评测聚合；精确输入归一化与复用存储分别放在 `services/review_reuse.py` 和
+`persistence/review_reuse.py`。这些模块继续共享现有事务、授权和分页机制，不增加服务进程。
+
 | 目录 | 职责 |
 | --- | --- |
 | `domain/` | 状态、结构化输出、版本和输入规则，不依赖 Web 或数据库 |

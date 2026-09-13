@@ -174,9 +174,17 @@ class ReviewProfileRepository:
             raise PlatformNotFoundError("审查方案不存在")
         return dict(row)
 
+    def quality(self, identifier: str, scope: ResourceScope, dataset_id: str | None = None):
+        from persistence.profile_quality import profile_quality
+        with self.sessions() as session:
+            return profile_quality(session, identifier, scope, dataset_id)
+
     def activate(
-        self, identifier: str, expected_revision: int, actor: str, scope: ResourceScope
+        self, identifier: str, expected_revision: int, actor: str, scope: ResourceScope,
+        *, dataset_id: str | None = None, evidence_token: str | None = None, reason: str = "",
     ) -> int:
+        from domain.security import redact_text
+        from persistence.profile_quality import profile_quality
         now = datetime.now(UTC)
         with self.sessions() as session, session.begin():
             profile = session.execute(
@@ -199,6 +207,13 @@ class ReviewProfileRepository:
             ).one_or_none()
             if row is None:
                 raise PlatformConflictError("仓库策略已变化，请刷新后重试")
+            quality = profile_quality(session, identifier, scope, dataset_id, lock=True)
+            if evidence_token is not None and quality.evidence_token != evidence_token:
+                raise PlatformConflictError("评测或当前方案已变化，请重新查看质量提示")
+            if dataset_id and evidence_token is None:
+                raise ValueError("请先查看评测质量提示再启用")
+            if quality.status != "reviewed" and not reason.strip():
+                raise ValueError("方案尚未验证或出现退步，请填写人工启用理由")
             previous = RepositoryPolicy.model_validate(row.policy)
             policy = previous.model_copy(update={"review_profile_id": identifier})
             session.execute(
@@ -219,6 +234,11 @@ class ReviewProfileRepository:
                 actor,
                 now,
                 revision=expected_revision + 1,
-                details={"previous_profile_id": previous.review_profile_id},
+                details={"previous_profile_id": previous.review_profile_id,
+                         "quality_status": quality.status,
+                         "evidence_token": quality.evidence_token,
+                         "evaluation_dataset_id": dataset_id,
+                         "quality_reasons": list(quality.reasons),
+                         "reason": redact_text(reason.strip())[:1000]},
             )
         return expected_revision + 1

@@ -103,6 +103,7 @@ class ModelVersion(EvaluationContract):
     application_revision: str | None = None
     knowledge_versions: dict[str, str] = Field(default_factory=dict)
     context_recorded: bool = False
+    reused_from_run_id: str | None = None
 
 
 class RetrievalVersion(EvaluationContract):

@@ -95,17 +95,17 @@ def test_profile_freezes_configuration_and_restores_without_changing_old_runs(
     _, policy, repository, service, _, models = profile_services(database, tmp_path)
     first = service.create(draft(), TEST_USERNAME, ALL)
     assert "fixture-private-key" not in first.model_dump_json()
-    revision = repository.activate(first.id, policy.revision, TEST_USERNAME, ALL)
+    revision = repository.activate(first.id, policy.revision, TEST_USERNAME, ALL, reason="隔离测试首次启用")
     _, run_id = _submit(database, "profile-bound", "a" * 40)
     models[ReviewAgent.LOGIC] = ModelServiceSettings(
         ModelProvider.OPENAI, "fixture-candidate", "fixture-new-key"
     )
     second = service.create(draft("候选方案"), TEST_USERNAME, ALL)
     assert second.fingerprint != first.fingerprint
-    revision = repository.activate(second.id, revision, TEST_USERNAME, ALL)
+    revision = repository.activate(second.id, revision, TEST_USERNAME, ALL, reason="隔离测试切换方案")
     with pytest.raises(PlatformConflictError):
         repository.activate(first.id, revision - 1, TEST_USERNAME, ALL)
-    repository.activate(first.id, revision, TEST_USERNAME, ALL)
+    repository.activate(first.id, revision, TEST_USERNAME, ALL, reason="隔离测试恢复方案")
     with database.sessions() as session:
         assert (
             session.get(ReviewRunRecord, run_id).repository_policy["review_profile_id"]

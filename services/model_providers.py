@@ -169,6 +169,18 @@ class _StructuredModelReviewer(ModelReviewer):
             self._client.close()
 
     def review(self, review_input: ModelReviewInput) -> ModelReviewResult:
+        from domain.egress import EgressPolicy
+        from services.egress import check_paths, review_egress
+
+        policy = review_input.repository_policy
+        with review_egress(policy.egress if policy else EgressPolicy()):
+            check_paths(tuple(unit.file for unit in review_input.units)
+                        + tuple(rule.path for rule in review_input.rules)
+                        + tuple(item.file for item in review_input.context_evidence)
+                        + tuple(review_input.knowledge_versions))
+            return self._review_guarded(review_input)
+
+    def _review_guarded(self, review_input: ModelReviewInput) -> ModelReviewResult:
         # 汇总节点只需要前三路的结构化候选；即使调用方忘记在编排层
         # 清空计划，也不能把完整 rules/patch 再发送给中转站。
         prompt_input = _summary_prompt_input(review_input)
@@ -885,6 +897,9 @@ class _StructuredModelReviewer(ModelReviewer):
                     retryable=False,
                 ) from exc
 
+        from services.egress import check_payload
+
+        check_payload(self._settings.resolved_api_base_url, body)
         reservation = self._reserve_budget(request_content, body)
         started = self._monotonic()
         audit: ModelHttpAudit | None = None

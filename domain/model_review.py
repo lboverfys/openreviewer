@@ -185,6 +185,7 @@ class ModelReviewInput(ModelContract):
     context_evidence: tuple[ContextEvidence, ...] = Field(default=(), max_length=60, exclude=True)
     repository_policy: RepositoryPolicySnapshot | None = Field(default=None, exclude=True)
     knowledge_versions: dict[str, str] = Field(default_factory=dict, exclude=True)
+    reuse_dependencies: dict[str, str] = Field(default_factory=dict, exclude=True)
     review_plan_id: str = Field(min_length=1, max_length=36)
     review_run_id: str = Field(min_length=1, max_length=36)
     plan_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -315,6 +316,8 @@ class ModelReviewResult(ModelContract):
     )
     output: ModelReviewOutput
     provenance: ReviewExecutionProvenance | None = None
+    reused_from_run_id: str | None = Field(default=None, max_length=36)
+    reused_input_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_status_shape(self) -> Self:
