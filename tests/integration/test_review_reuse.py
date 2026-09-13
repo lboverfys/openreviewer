@@ -8,7 +8,9 @@ from sqlalchemy import delete, select, update
 from persistence.models import ReviewReuseRecord, ReviewRunRecord, ReviewTaskRecord
 from services.task_queue import TaskLeaseLostError
 from tests.integration.test_github_context_persistence import _submit
-from tests.integration.test_postgres_contract import postgres_database as postgres_database
+from tests.integration.test_postgres_contract import (
+    postgres_database as postgres_database,
+)
 from tests.integration.test_team_platform import setup_ledger
 from tests.unit.test_model_review import make_output, make_result
 
