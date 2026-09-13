@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -126,6 +127,7 @@ class ReviewRunRecord(Base):
     )
     pull_request_number: Mapped[int] = mapped_column(Integer, nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
     workflow_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default=ExecutionStatus.QUEUED.value

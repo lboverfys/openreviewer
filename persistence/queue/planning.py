@@ -282,12 +282,13 @@ def store_review_plan(
                     ReviewRunRecord.pull_request_number == run.pull_request_number,
                     ReviewRunRecord.id != run.id,
                     ReviewRunRecord.head_sha != run.head_sha,
+                    ReviewRunRecord.snapshot_review.is_(False),
                     ReviewRunRecord.created_at >= run.created_at,
                 )
                 .order_by(ReviewRunRecord.created_at.desc())
                 .limit(1)
             )
-            if newer_run_id is not None:
+            if newer_run_id is not None and not run.snapshot_review:
                 _set_owned_status(
                     task,
                     run,

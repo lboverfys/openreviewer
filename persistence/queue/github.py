@@ -513,6 +513,9 @@ def _supersede_previous_versions(
 ) -> int:
     """用两条批量 UPDATE 淘汰同一 PR 的其他 head SHA，查询次数为常数。"""
 
+    if current_run.snapshot_review:
+        return 0
+
     replaceable_statuses = (
         ExecutionStatus.QUEUED.value,
         ExecutionStatus.WAITING_FOR_CI.value,
@@ -525,6 +528,7 @@ def _supersede_previous_versions(
         ReviewRunRecord.pull_request_number == current_run.pull_request_number,
         ReviewRunRecord.id != current_run.id,
         ReviewRunRecord.head_sha != current_run.head_sha,
+        ReviewRunRecord.snapshot_review.is_(False),
         ReviewRunRecord.execution_status.in_(replaceable_statuses),
     )
     session.execute(

@@ -121,6 +121,7 @@ class WebhookReceiptResponse(BaseModel):
 
 class ReviewItemResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
+    snapshot_review: bool = False
 
     review_run_id: str
     review_task_id: str
@@ -265,6 +266,7 @@ class ReviewStageResponse(BaseModel):
 
 
 class ReviewDetailsResponse(BaseModel):
+    snapshot_review: bool = False
     model_config = ConfigDict(frozen=True)
 
     repository_policy: RepositoryPolicySnapshot | None = None
@@ -875,6 +877,10 @@ class KnowledgeDocumentStateRequest(BaseModel):
 
     expected_revision: int = Field(ge=0)
     expected_document_version: int = Field(ge=1)
+
+
+class KnowledgeDocumentRestoreRequest(KnowledgeDocumentStateRequest):
+    enabled: bool = False
 
 
 class AiProviderUpdateRequest(BaseModel):

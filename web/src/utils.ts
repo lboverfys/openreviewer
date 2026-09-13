@@ -79,11 +79,19 @@ export const phaseLabels: Record<string, string> = {
   superseded: "任务已被同一 PR 的新提交替代",
 };
 
-export function reviewDisplayLabel(review: Pick<ReviewItem, "execution_status" | "model_review_completed_at">): string {
+export function reviewDisplayStatus(review: Pick<ReviewItem, "execution_status" | "model_review_completed_at"> & Partial<Pick<ReviewItem, "workflow_status">>): ExecutionStatus {
+  if (review.workflow_status && ["cancelled", "superseded", "paused", "rejected", "completed"].includes(review.workflow_status)) return review.workflow_status;
+  if (review.execution_status === "failed") return "failed";
+  if (review.workflow_status && ["awaiting_approval", "awaiting_publish", "publishing"].includes(review.workflow_status)) return review.workflow_status;
   if (review.execution_status === "ready_for_review" && review.model_review_completed_at) {
-    return "已完成";
+    return "completed";
   }
-  return statusLabels[review.execution_status];
+  return review.execution_status;
+}
+
+export function reviewDisplayLabel(review: Pick<ReviewItem, "execution_status" | "model_review_completed_at"> & Partial<Pick<ReviewItem, "workflow_status">>): string {
+  const state = reviewDisplayStatus(review);
+  return state === "awaiting_approval" ? "待核对结果" : state === "awaiting_publish" ? "待发布" : statusLabels[state];
 }
 
 export function shortSha(sha: string): string {

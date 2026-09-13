@@ -6,9 +6,9 @@ import type {
 } from "./types";
 
 export const roleLabels: Record<AccessRole, string> = {
-  viewer: "只读观察员",
-  adjudicator: "问题裁决员",
-  publisher: "发布员",
+  viewer: "只读成员",
+  adjudicator: "问题核对员",
+  publisher: "结果发布员",
   administrator: "管理员",
 };
 
@@ -26,6 +26,7 @@ const actionPermissions: Record<ReviewAction, Permission> = {
   rerun: "reviews:manage",
   retry_failed_node: "reviews:manage",
   new_review: "reviews:manage",
+  review_snapshot: "reviews:manage",
 };
 
 export function hasPermission(user: AuthUser, permission: Permission): boolean {

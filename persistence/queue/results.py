@@ -348,12 +348,13 @@ def store_model_review(
                     ReviewRunRecord.pull_request_number == run.pull_request_number,
                     ReviewRunRecord.id != run.id,
                     ReviewRunRecord.head_sha != run.head_sha,
+                    ReviewRunRecord.snapshot_review.is_(False),
                     ReviewRunRecord.created_at >= run.created_at,
                 )
                 .order_by(ReviewRunRecord.created_at.desc())
                 .limit(1)
             )
-            if newer_run_id is not None:
+            if newer_run_id is not None and not run.snapshot_review:
                 _set_owned_status(
                     task,
                     run,
@@ -395,13 +396,17 @@ def store_model_review(
             coverage_complete = bool(
                 plan.rules_complete and not incomplete_file_count and not partial
             )
-            lifecycle_occurrences, fixed_finding_count = _reconcile_finding_lifecycles(
-                session,
-                run,
-                findings,
-                now,
-                coverage_complete=coverage_complete,
-            )
+            lifecycle_occurrences: dict[str, tuple[FindingOccurrenceStatus, int, str | None]]
+            if run.snapshot_review:
+                # 历史检查保留自己的问题，不改变当前 PR 的缺陷生命周期。
+                lifecycle_occurrences = {
+                    item.finding.fingerprint: (FindingOccurrenceStatus.NEW, 1, None) for item in findings
+                }
+                fixed_finding_count = 0
+            else:
+                lifecycle_occurrences, fixed_finding_count = _reconcile_finding_lifecycles(
+                    session, run, findings, now, coverage_complete=coverage_complete,
+                )
             model_call_id = str(
                 uuid5(
                     NAMESPACE_URL,
@@ -601,18 +606,18 @@ def store_model_review(
                 _set_workflow_status(
                     task,
                     run,
-                    ExecutionStatus.AWAITING_APPROVAL,
+                    ExecutionStatus.COMPLETED if run.snapshot_review else ExecutionStatus.AWAITING_APPROVAL,
                     now,
                 )
                 event_type = "review.model.completed"
                 approval_policy = review_input.repository_policy
                 run.approval_assignee = (
                     approval_policy.approver.casefold()
-                    if approval_policy and approval_policy.approver
+                    if not run.snapshot_review and approval_policy and approval_policy.approver
                     else None
                 )
-                run.approval_requested_at = now
-                run.approval_due_at = now + timedelta(
+                run.approval_requested_at = None if run.snapshot_review else now
+                run.approval_due_at = None if run.snapshot_review else now + timedelta(
                     hours=approval_policy.approval_timeout_hours
                     if approval_policy
                     else 24

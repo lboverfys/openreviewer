@@ -5,9 +5,11 @@ import type { BatchSnapshot } from "./types";
 import { useCursorPage } from "./useCursorPage";
 import { errorMessage } from "./utils";
 
-export default function ReviewBatchList({ runId, agent, total, changeToken, onRetry, busy }: {
+export default function ReviewBatchList({ runId, agent, total, changeToken, onRetry, busy, stopped = false, paused = false }: {
   runId: string; agent: string; total: number; changeToken: string;
   onRetry?: (agent: string, number?: number) => void; busy: boolean;
+  stopped?: boolean;
+  paused?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
@@ -22,9 +24,9 @@ export default function ReviewBatchList({ runId, agent, total, changeToken, onRe
       {error && <p role="alert">{error}</p>}
       {page.loading && !page.data && <p role="status">正在读取批次…</p>}
       {page.data?.items.map(batch => <div className="review-agent-batch-row" key={batch.batch_number}>
-        <span>第 {batch.batch_number}/{total} 批</span><b>{labels[batch.status] ?? batch.status}</b>
+        <span>第 {batch.batch_number}/{total} 批</span><b>{stopped && batch.status !== "succeeded" ? paused ? "已暂停" : "已停止" : labels[batch.status] ?? batch.status}</b>
         <small>{batch.error_message ?? (batch.duration_ms === null ? "" : `${batch.duration_ms} ms`)}</small>
-        {batch.status === "failed" && onRetry && <button type="button" disabled={busy}
+        {batch.status === "failed" && onRetry && !stopped && <button type="button" disabled={busy}
           onClick={() => onRetry(agent, batch.batch_number)}>重试第 {batch.batch_number} 批</button>}
       </div>)}
       <Pagination page={page.page} count={page.data?.items.length ?? 0} total={total}

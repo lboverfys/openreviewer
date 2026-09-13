@@ -59,7 +59,7 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
       {!report.performance_pairs && <p className="ws-note">当前已有的单组复核不会丢失，请在“样本管理”查看。这里仅比较同一提交的两条独立运行，没有候选运行时不计算对比指标。</p>}
       <details className="ws-disclosure evaluation-report-notes" open={!report.quality_pairs}><summary>数据完整性与统计口径</summary><div className="ws-disclosure-body">{report.notices.map(notice => <p key={notice} className="evaluation-notice">{notice}</p>)}<p className="evaluation-hint">缺基线 {report.missing_baseline} · 缺候选 {report.missing_candidate} · 待完成复核 {report.pending_pairs} 对 · 有分歧 {report.disputed_pairs} 对</p></div></details>
       <div className="evaluation-table-wrap"><table>
-        <thead><tr><th>指标</th><th>基线</th><th>候选</th><th>统计范围</th></tr></thead>
+        <thead><tr><th>指标</th><th>原结果</th><th>新结果</th><th>统计范围</th></tr></thead>
         <tbody>
           <tr><td>有效问题比例</td><td>{evaluationPercent(report.baseline.precision)}</td><td>{evaluationPercent(report.candidate.precision)}</td><td>{report.quality_pairs} 对，双方复核一致</td></tr>
           <tr><td>有效问题 / 已复核问题</td><td>{report.baseline.valid_count} / {report.baseline.finding_count}</td><td>{report.candidate.valid_count} / {report.candidate.finding_count}</td><td>按问题计数</td></tr>
@@ -75,7 +75,7 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
       </table></div>
       <div className="evaluation-form-grid">
         {(["baseline", "candidate"] as const).map(variant => <div key={variant} className="evaluation-confidence">
-          <strong>{variant === "baseline" ? "基线" : "候选"} · 95% 区间</strong>
+          <strong>{variant === "baseline" ? "原结果" : "新结果"} · 95% 区间</strong>
           <p>有效问题比例：{report[variant].precision_ci95 ? evaluationPercent(report[variant].precision_ci95.lower) + " ～ " + evaluationPercent(report[variant].precision_ci95.upper) : "样本不足，暂不计算"}</p>
           <p>已知缺陷找回率：{report[variant].recall_ci95 ? evaluationPercent(report[variant].recall_ci95.lower) + " ～ " + evaluationPercent(report[variant].recall_ci95.upper) : "样本不足，暂不计算"}</p>
         </div>)}

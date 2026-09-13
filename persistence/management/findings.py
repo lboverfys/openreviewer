@@ -410,7 +410,7 @@ def review_finding(
             ):
                 return
             finding_row = session.execute(
-                select(ReviewFindingRecord, ReviewRunRecord.repository_id)
+                select(ReviewFindingRecord, ReviewRunRecord.repository_id, ReviewRunRecord.snapshot_review)
                 .join(
                     ReviewRunRecord,
                     ReviewRunRecord.id == ReviewFindingRecord.review_run_id,
@@ -429,7 +429,7 @@ def review_finding(
             ).one_or_none()
             if finding_row is None:
                 raise FindingDecisionError("候选问题不存在")
-            finding, repository_id = finding_row
+            finding, repository_id, snapshot_review = finding_row
             # 与任务动作相同，第一次事件查询可能早于并发事务提交；
             # Finding 行锁之后复查才能把重复请求当作成功处理。
             if (
@@ -446,24 +446,22 @@ def review_finding(
             finding.reviewed_at = now
             finding.reviewed_by = actor[:100]
             verdict = FindingEvaluationVerdict(decision.value)
-            evaluation = session.get(FindingEvaluationRecord, finding_id)
-            if evaluation is None:
-                evaluation = FindingEvaluationRecord(
-                    finding_id=finding_id,
-                    repository_id=repository_id,
-                    category=finding.category,
-                    severity=finding.severity,
-                    verdict=verdict.value,
-                    adjudicated_at=now,
-                    adjudicated_by=actor[:100],
-                    updated_at=now,
-                )
-                session.add(evaluation)
-            else:
-                evaluation.verdict = verdict.value
-                evaluation.adjudicated_at = now
-                evaluation.adjudicated_by = actor[:100]
-                evaluation.updated_at = now
+            # 复查的判断保存在本次记录中，不改变正式 PR 发布使用的质量门槛。
+            if not snapshot_review:
+                evaluation = session.get(FindingEvaluationRecord, finding_id)
+                if evaluation is None:
+                    evaluation = FindingEvaluationRecord(
+                        finding_id=finding_id, repository_id=repository_id,
+                        category=finding.category, severity=finding.severity,
+                        verdict=verdict.value, adjudicated_at=now,
+                        adjudicated_by=actor[:100], updated_at=now,
+                    )
+                    session.add(evaluation)
+                else:
+                    evaluation.verdict = verdict.value
+                    evaluation.adjudicated_at = now
+                    evaluation.adjudicated_by = actor[:100]
+                    evaluation.updated_at = now
             session.add(
                 OutboxEventRecord(
                     id=str(self._uuid_factory()),

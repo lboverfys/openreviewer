@@ -17,18 +17,21 @@ export default function PlatformPage({ user, findingId, initialTab, onSignedOut 
   user: AuthUser; findingId?: string; initialTab?: PlatformTab; onSignedOut: (message?: string) => void;
 }) {
   const manager = hasPermission(user, "settings:manage");
-  const [tab, setTab] = useState<PlatformTab>(manager ? initialTab ?? "work" : "work");
+  const tab: PlatformTab = manager ? initialTab ?? "work" : "work";
   const [error, setError] = useState("");
   const onError = useCallback((failure: unknown) => {
     if (failure instanceof ApiError && failure.status === 401) { onSignedOut("登录已失效，请重新登录"); return; }
     setError(failure instanceof Error ? failure.message : "操作暂时无法完成");
   }, [onSignedOut]);
+  const headings = {
+    work: ["问题处理", "跟进需要修复的问题，处理等待核对与批准的审查结果。"],
+    usage: ["用量与费用", "按项目查看模型请求和费用估算，核对预算与待确认支出。"],
+    profiles: ["配置版本", "保存一套固定的模型与规则，用于重复验证或对比；日常审查可沿用当前设置。"],
+    diagnostics: ["运行状态", "任务不动或调用失败时，在这里检查后台服务、请求与错误。"],
+  };
   return <main className="workspace-page platform-page">
-    <WorkspaceHeader title="待办与用量" icon="review" description="审查后的处理中心：跟进问题修复、审批待办和模型开销。方案版本与诊断供需要时使用。" />
-    <nav className="team-tabs" aria-label="协作与运营分类">
-      {([["work", "审查待办"], ["usage", "用量与预算"], ["profiles", "审查方案"], ["diagnostics", "运行诊断"]] as const).filter(([key]) => manager || key === "work").map(([key, label]) =>
-        <button key={key} aria-pressed={tab === key} onClick={() => { setTab(key); setError(""); }}>{label}</button>)}
-    </nav>
+    <WorkspaceHeader title={headings[tab][0]} icon="review" description={headings[tab][1]} />
+    {tab === "profiles" && <p className="workspace-purpose"><a href="#settings">返回模型与审查设置 →</a></p>}
     {error && <p role="alert" className="team-error">{error}<button onClick={() => setError("")}>收起提示</button></p>}
     {tab === "work" && <WorkItemsPanel user={user} findingId={findingId} onError={onError} />}
     {tab === "usage" && manager && <UsagePanel onError={onError} />}

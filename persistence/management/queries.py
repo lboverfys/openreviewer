@@ -277,6 +277,7 @@ def get(
                         ReviewTaskRecord.id.label("review_task_id"),
                         ReviewRunRecord.repository_policy,
                         ReviewRunRecord.model_request_count,
+                        ReviewRunRecord.snapshot_review,
                         ReviewRunRecord.review_version_key,
                         ReviewRunRecord.installation_id,
                         ReviewRunRecord.repository_id,
@@ -450,6 +451,7 @@ def get(
                 model_completed=row["model_review_completed_at"] is not None,
             )
             return StoredReviewDetails(
+                snapshot_review=row["snapshot_review"],
                 repository_policy=(
                     RepositoryPolicySnapshot.model_validate(row["repository_policy"])
                     if row["repository_policy"] is not None

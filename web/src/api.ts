@@ -29,9 +29,9 @@ export { ApiError, ApiTimeoutError, DASHBOARD_CACHE_TTL_MS, reviewListKey, peekR
 
 export const api = {
   evaluationOverview: (id: string, signal?: AbortSignal) => request<import("./types").EvaluationOverview>(`/api/v1/evaluations/datasets/${encodeURIComponent(id)}/overview`, {signal}),
-  evaluationDatasets: (includeArchived = false, cursor?: string, signal?: AbortSignal, force = false) =>
-    cachedGet("evaluation-datasets:" + includeArchived + ":" + (cursor ?? "first"), (cacheSignal) =>
-      request<CursorPage<import("./types").EvaluationDataset>>("/api/v1/evaluations/datasets?" + new URLSearchParams({limit: "10", include_archived: String(includeArchived), ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  evaluationDatasets: (includeArchived = false, cursor?: string, signal?: AbortSignal, force = false, archivedOnly = false) =>
+    cachedGet("evaluation-datasets:" + (archivedOnly ? "removed" : includeArchived) + ":" + (cursor ?? "first"), (cacheSignal) =>
+      request<CursorPage<import("./types").EvaluationDataset>>("/api/v1/evaluations/datasets?" + new URLSearchParams({limit: "10", include_archived: String(includeArchived), ...(archivedOnly ? {archived_only: "true"} : {}), ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
   evaluationSources: (datasetId?: string, caseId?: string, cursor?: string, signal?: AbortSignal, force = false) =>
     cachedGet("evaluation-sources:" + (datasetId ?? "all") + ":" + (caseId ?? "all") + ":" + (cursor ?? "first"), (cacheSignal) =>
       request<CursorPage<import("./types").EvaluationRunOption>>("/api/v1/evaluations/sources?" + new URLSearchParams({limit: "10", ...(datasetId ? {dataset_id:datasetId} : {}), ...(caseId ? {case_id:caseId} : {}), ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
@@ -399,11 +399,12 @@ export const api = {
     force = false,
     offset = 0,
     query = "",
+    archivedOnly = false,
   ) =>
     cachedGet(
-      `knowledge-documents:${includeArchived ? "archived" : "active"}:${offset}:${query}`,
+      `knowledge-documents:${archivedOnly ? "archived-only" : includeArchived ? "archived" : "active"}:${offset}:${query}`,
       (cacheSignal) => request<KnowledgeLibrary>(
-        `/api/v1/knowledge/documents?${new URLSearchParams({include_archived: String(includeArchived), limit: "10", offset: String(offset), q: query})}`,
+        `/api/v1/knowledge/documents?${new URLSearchParams({include_archived: String(includeArchived), ...(archivedOnly ? {archived_only: "true"} : {}), limit: "10", offset: String(offset), q: query})}`,
         { cache: "no-store", signal: cacheSignal },
       ),
       signal,
@@ -455,6 +456,7 @@ export const api = {
     archived: boolean,
     expectedRevision: number,
     expectedDocumentVersion: number,
+    restoreEnabled = false,
   ) => mutation(() => request<KnowledgeMutation>(
     `/api/v1/knowledge/documents/${encodeURIComponent(documentId)}/${archived ? "archive" : "restore"}`,
     {
@@ -462,6 +464,7 @@ export const api = {
       body: JSON.stringify({
         expected_revision: expectedRevision,
         expected_document_version: expectedDocumentVersion,
+        ...(!archived ? { enabled: restoreEnabled } : {}),
       }),
     },
   )),

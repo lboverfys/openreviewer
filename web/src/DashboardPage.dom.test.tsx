@@ -42,9 +42,9 @@ describe("登录组件", () => {
     });
     render(<Login onAuthenticated={onAuthenticated} />);
 
-    await user.type(screen.getByLabelText("管理员账号"), "  reviewer  ");
-    await user.type(screen.getByLabelText("安全密码"), "correct-password");
-    const submit = screen.getByRole("button", { name: /进入审查控制台/ });
+    await user.type(screen.getByLabelText("账号"), "  reviewer  ");
+    await user.type(screen.getByLabelText("密码"), "correct-password");
+    const submit = screen.getByRole("button", { name: /登录平台/ });
     expect(submit).toHaveAttribute("type", "submit");
     await user.click(submit);
 

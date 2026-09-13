@@ -49,11 +49,11 @@ it("登录与权限判断后才加载页面，并保留深链接导航", async (
   vi.mocked(api.me).mockRejectedValue(new ApiError("未登录", 401));
   vi.mocked(api.login).mockResolvedValue(user);
   render(<App />);
-  await screen.findByLabelText("安全密码");
+  await screen.findByLabelText("密码");
   expect(Object.values(loaded).every(loader => loader.mock.calls.length === 0)).toBe(true);
-  fireEvent.change(screen.getByPlaceholderText("输入管理员账号"), { target: { value: "viewer" } });
-  fireEvent.change(screen.getByLabelText("安全密码"), { target: { value: "test-password" } });
-  fireEvent.click(screen.getByRole("button", { name: "进入审查控制台" }));
+  fireEvent.change(screen.getByPlaceholderText("输入你的账号"), { target: { value: "viewer" } });
+  fireEvent.change(screen.getByLabelText("密码"), { target: { value: "test-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "登录平台" }));
   await screen.findByRole("heading", { name: "测试仪表盘" });
   expect(loaded.settings).not.toHaveBeenCalled();
   expect(loaded.dashboard).toHaveBeenCalledTimes(1);
@@ -82,7 +82,7 @@ it("页面资源加载失败后展示刷新入口，不自动反复请求", asyn
   const loader = vi.fn(() => new Promise<{ default: () => null }>((_, fail) => { reject = fail; }));
   const Page = lazy(loader);
   render(<PageBoundary><Page /></PageBoundary>);
-  expect(screen.getByText(/正在唤醒/)).toBeInTheDocument();
+  expect(screen.getByText(/正在加载页面/)).toBeInTheDocument();
   await act(async () => { reject(new Error("Chunk unavailable")); });
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("页面加载失败"));
   expect(screen.getByRole("button", { name: "刷新页面" })).toBeEnabled();

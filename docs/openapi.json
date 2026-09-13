@@ -4038,6 +4038,32 @@
         "title": "KnowledgeDocumentResponse",
         "type": "object"
       },
+      "KnowledgeDocumentRestoreRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expected_document_version": {
+            "minimum": 1.0,
+            "title": "Expected Document Version",
+            "type": "integer"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "expected_document_version"
+        ],
+        "title": "KnowledgeDocumentRestoreRequest",
+        "type": "object"
+      },
       "KnowledgeDocumentStateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6466,6 +6492,7 @@
           "expedite",
           "retry",
           "cancel",
+          "review_snapshot",
           "rerun",
           "retry_failed_node",
           "new_review"
@@ -7448,6 +7475,11 @@
             "title": "Review Version Key",
             "type": "string"
           },
+          "snapshot_review": {
+            "default": false,
+            "title": "Snapshot Review",
+            "type": "boolean"
+          },
           "stages": {
             "items": {
               "$ref": "#/components/schemas/ReviewStageResponse"
@@ -8145,6 +8177,11 @@
           "review_task_id": {
             "title": "Review Task Id",
             "type": "string"
+          },
+          "snapshot_review": {
+            "default": false,
+            "title": "Snapshot Review",
+            "type": "boolean"
           },
           "unreviewed_finding_count": {
             "title": "Unreviewed Finding Count",
@@ -10280,6 +10317,16 @@
               "title": "Include Archived",
               "type": "boolean"
             }
+          },
+          {
+            "in": "query",
+            "name": "archived_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Archived Only",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -10848,6 +10895,16 @@
           },
           {
             "in": "query",
+            "name": "archived_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Archived Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
@@ -11125,7 +11182,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/KnowledgeDocumentStateRequest"
+                "$ref": "#/components/schemas/KnowledgeDocumentRestoreRequest"
               }
             }
           },

@@ -42,7 +42,7 @@ beforeEach(() => {
 });
 afterEach(() => {cleanup(); clearSettingsCache(); vi.unstubAllGlobals();});
 
-it("模型阶段失败显示模型尝试次数，准备阶段继续显示准备次数", async () => {
+it("任务列表显示结果状态，不把尝试次数画成完成进度", async () => {
   const modelFailure = {...review(92), execution_status: "failed", workflow_status: "failed",
     attempt_count: 0, model_attempt_count: 3};
   const preparation = {...review(91), attempt_count: 2, model_attempt_count: 0};
@@ -52,9 +52,9 @@ it("模型阶段失败显示模型尝试次数，准备阶段继续显示准备�
   render(<DashboardPage user={user} onSignedOut={vi.fn()} onOpenReview={vi.fn()} />);
   const failedRow = (await screen.findByText("PR #92")).closest("tr")!;
   const preparingRow = screen.getByText("PR #91").closest("tr")!;
-  expect(failedRow.querySelector(".attempts-num")).toHaveTextContent("3/3");
-  expect(failedRow.querySelector(".dash-progress-bar-fill")).toHaveStyle({width: "100%"});
-  expect(preparingRow.querySelector(".attempts-num")).toHaveTextContent("2/3");
+  expect(failedRow.querySelector(".review-result-column")).toHaveTextContent("尚未产出结果");
+  expect(failedRow.querySelector(".dash-progress-bar-fill")).toBeNull();
+  expect(preparingRow.querySelector(".review-result-column")).toHaveTextContent("尚未产出结果");
 });
 
 it("不等实时连接便读取10条，翻页替换内容，实时消息不把第二页挤回首页", async () => {
@@ -86,7 +86,7 @@ it("在后续页搜索会返回首页并请求服务端筛选，能找到当前�
   await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("q=target"))).toBe(true));
 });
 
-it("首页只显示三个在线节点，在线统计不使用预览条数", async () => {
+it("任务首页不混排技术节点，后台详情有独立入口", async () => {
   const workers = Array.from({ length: 29 }, (_, number) => ({
     configured: true, worker_id: number < 8 ? `live-${number}` : `old-${number}`,
     online: number < 8, status: number < 8 ? "idle" : "stopping", current_task_id: null,
@@ -95,18 +95,18 @@ it("首页只显示三个在线节点，在线统计不使用预览条数", asyn
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...snapshot,
     worker: workers[0], workers, worker_online_count: 8, worker_busy_count: 0,
   }))));
-  render(<DashboardPage user={user} onSignedOut={vi.fn()} onOpenReview={vi.fn()} />);
-  await screen.findByText("8 ONLINE");
-  expect(document.querySelectorAll(".worker-node-row")).toHaveLength(3);
+  render(<DashboardPage user={{...user, role:"administrator", permissions:["reviews:view","settings:manage"]}} onSignedOut={vi.fn()} onOpenReview={vi.fn()} />);
+  await screen.findByText("后台可用 →");
+  expect(document.querySelectorAll(".worker-node-row")).toHaveLength(0);
   expect(screen.queryByText("old-8")).not.toBeInTheDocument();
-  expect(screen.getByText("首页仅展示前 3 个在线节点。")).toBeInTheDocument();
+  expect(screen.getByRole("link", {name:"后台可用 →"})).toHaveAttribute("href", "#platform?tab=diagnostics");
 });
 
 it("手动审查由顶部按钮打开，取消后返回任务列表", async () => {
   render(<DashboardPage user={{ ...user, role: "administrator", permissions: ["reviews:view", "reviews:manage", "settings:manage"] }} onSignedOut={vi.fn()} onOpenReview={vi.fn()} />);
   await screen.findByText("PR #1");
   expect(screen.queryByLabelText("Installation ID")).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "发起审查" }));
+  fireEvent.click(screen.getByRole("button", { name: "管理员补录" }));
   expect(screen.getByLabelText("Installation ID")).toHaveValue(null);
   expect(screen.queryByText("Demo 样例")).not.toBeInTheDocument();
   expect(screen.queryByText("Worker 执行节点")).not.toBeInTheDocument();

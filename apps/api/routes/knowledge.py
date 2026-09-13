@@ -12,6 +12,7 @@ from apps.api.schemas import (
     KnowledgeDocumentCreateRequest,
     KnowledgeDocumentListResponse,
     KnowledgeDocumentResponse,
+    KnowledgeDocumentRestoreRequest,
     KnowledgeDocumentStateRequest,
     KnowledgeDocumentUpdateRequest,
     KnowledgeMutationResponse,
@@ -90,6 +91,7 @@ def register_knowledge_routes(
     def list_knowledge_documents(
         _: Annotated[SessionPrincipal, Depends(require_knowledge_manager)],
         include_archived: bool = False,
+        archived_only: bool = False,
         limit: Annotated[int, Query(ge=1, le=128)] = 10,
         offset: Annotated[int, Query(ge=0, le=10000)] = 0,
         q: Annotated[str, Query(max_length=200)] = "",
@@ -97,6 +99,7 @@ def register_knowledge_routes(
         try:
             view = get_managed_knowledge_base().list_documents(
                 include_archived=include_archived,
+                archived_only=archived_only,
                 limit=limit, offset=offset, query=q.strip(),
             )
         except (
@@ -222,7 +225,7 @@ def register_knowledge_routes(
     )
     def restore_knowledge_document(
         document_id: str,
-        request_body: KnowledgeDocumentStateRequest,
+        request_body: KnowledgeDocumentRestoreRequest,
         principal: Annotated[
             SessionPrincipal,
             Depends(require_knowledge_manager),
@@ -233,6 +236,7 @@ def register_knowledge_routes(
             view = get_managed_knowledge_base().archive_document(
                 document_id,
                 archived=False,
+                restore_enabled=request_body.enabled,
                 expected_revision=request_body.expected_revision,
                 expected_document_version=request_body.expected_document_version,
                 actor=principal.username,
@@ -241,6 +245,7 @@ def register_knowledge_routes(
             KnowledgeConflictError,
             KnowledgeNotFoundError,
             KnowledgePersistenceError,
+            KnowledgeValidationError,
         ) as exc:
             raise translate_knowledge_error(exc) from exc
         return KnowledgeMutationResponse.from_view(view)

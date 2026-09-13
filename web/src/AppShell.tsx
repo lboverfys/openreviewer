@@ -1,153 +1,93 @@
-import { useCallback, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { api } from "./api";
 import type { AppView } from "./App";
-import { Brand } from "./Auth";
 import { hasPermission, roleLabels } from "./rbac";
 import { preloadPage } from "./page-loaders";
 import type { AuthUser } from "./types";
+import { WorkspaceIcon } from "./Workspace";
+import "./styles/enterprise.css";
 
-interface ShellNavItem {
-  key: "dashboard" | "retrieval" | "knowledge" | "settings" | "team" | "evaluations" | "platform";
-  label: string;
-  hash: string;
+const UserManual = lazy(() => import("./UserManual"));
+type NavKey = "dashboard" | "work" | "settings" | "knowledge" | "team" | "evaluations" | "usage" | "diagnostics";
+interface NavItem {
+  key: NavKey; label: string; hash: string;
+  page: "dashboard" | "platform" | "settings" | "knowledge" | "team" | "evaluations";
   permission?: "knowledge:manage" | "settings:manage";
-  icon: ReactNode;
+  icon: "grid" | "team" | "review" | "chart" | "file" | "check";
 }
-
-const iconProps = {
-  width: 13,
-  height: 13,
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 2.2,
-} as const;
-
-const NAV_ITEMS: ReadonlyArray<ShellNavItem> = [
-  {
-    key: "dashboard",
-    label: "审查控制台",
-    hash: "",
-    icon: (
-      <svg {...iconProps}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
-    ),
-  },
-  { key: "platform", label: "待办与用量", hash: "platform", icon: <svg {...iconProps}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg> },
-  {
-    key: "knowledge",
-    label: "审查依据",
-    hash: "knowledge",
-    permission: "knowledge:manage",
-    icon: (
-      <svg {...iconProps}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-    ),
-  },
-  {
-    key: "settings",
-    label: "模型配置",
-    hash: "settings",
-    permission: "settings:manage",
-    icon: (
-      <svg {...iconProps}>
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.96a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.14.6.67 1.02 1.29 1.03H21v4h-.31c-.62 0-1.15.42-1.29 1.03Z" />
-      </svg>
-    ),
-  },
-  {
-    key: "team", label: "团队管理", hash: "team", permission: "settings:manage",
-    icon: <svg {...iconProps}><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 4v2"/></svg>,
-  },
-  {
-    key: "evaluations", label: "效果评测", hash: "evaluations",
-    icon: <svg {...iconProps}><path d="M4 19h16M7 15V9m5 6V5m5 10v-4"/></svg>,
-  },
+const NAV_GROUPS: ReadonlyArray<{ label: string; items: NavItem[] }> = [
+  { label: "审查工作", items: [
+    { key: "dashboard", label: "审查任务", hash: "", page: "dashboard", icon: "review" },
+    { key: "work", label: "问题处理", hash: "platform?tab=work", page: "platform", icon: "check" },
+  ] },
+  { label: "项目配置", items: [
+    { key: "settings", label: "模型与审查设置", hash: "settings", page: "settings", permission: "settings:manage", icon: "grid" },
+    { key: "knowledge", label: "规则文档", hash: "knowledge", page: "knowledge", permission: "knowledge:manage", icon: "file" },
+    { key: "team", label: "项目与成员", hash: "team", page: "team", permission: "settings:manage", icon: "team" },
+  ] },
+  { label: "分析与维护", items: [
+    { key: "evaluations", label: "效果评测", hash: "evaluations", page: "evaluations", icon: "chart" },
+    { key: "usage", label: "用量与费用", hash: "platform?tab=usage", page: "platform", permission: "settings:manage", icon: "chart" },
+    { key: "diagnostics", label: "运行状态", hash: "platform?tab=diagnostics", page: "platform", permission: "settings:manage", icon: "grid" },
+  ] },
 ];
 
-function activeNavKey(view: AppView): ShellNavItem["key"] {
-  if (view.kind === "platform") return "platform";
-  if (view.kind === "evaluations") return "evaluations";
-  if (view.kind === "team") return "team";
-  if (view.kind === "retrieval") return "knowledge";
-  if (view.kind === "knowledge") return "knowledge";
-  if (view.kind === "settings") return "settings";
+function activeKey(view: AppView): NavKey {
+  if (view.kind === "platform") return view.tab === "profiles" ? "settings" : view.tab === "usage" || view.tab === "diagnostics" ? view.tab : "work";
+  if (view.kind === "retrieval" || view.kind === "knowledge") return "knowledge";
+  if (view.kind === "team" || view.kind === "settings" || view.kind === "evaluations") return view.kind;
   return "dashboard";
 }
 
-interface AppShellProps {
-  user: AuthUser;
-  view: AppView;
-  onSignedOut: (message?: string) => void;
-  children: ReactNode;
-}
-
-/**
- * 登录后的统一外壳：持久顶栏 + 全局导航。
- * 导航只改 hash，由 App 的 hashchange 监听切换内容区，
- * 顶栏本身不随页面切换重建。
- */
-export default function AppShell({ user, view, onSignedOut, children }: AppShellProps) {
-  const current = activeNavKey(view);
+export default function AppShell({ user, view, onSignedOut, children }: {
+  user: AuthUser; view: AppView; onSignedOut: (message?: string) => void; children: ReactNode;
+}) {
+  const current = activeKey(view);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const closeManual = useCallback(() => setManualOpen(false), []);
+  useEffect(() => {
+    const closeMenu = (event: KeyboardEvent) => { if (event.key === "Escape") setMenuOpen(false); };
+    window.addEventListener("keydown", closeMenu);
+    return () => window.removeEventListener("keydown", closeMenu);
+  }, []);
   const logout = useCallback(async () => {
-    try {
-      await api.logout();
-    } finally {
-      onSignedOut();
-    }
+    try { await api.logout(); } finally { onSignedOut(); }
   }, [onSignedOut]);
 
-  return (
-    <div className="app-shell">
-      <header className="console-topbar app-shell-topbar">
-        <div className="app-shell-brand">
-          <Brand />
-        </div>
-
-        <nav className="app-shell-nav" aria-label="工作区导航">
-          {NAV_ITEMS.filter((item) => !item.permission || hasPermission(user, item.permission)).map((item) =>
-            item.key === current ? (
-              <span key={item.key} className="switch-item is-current" aria-current="page">
-                {item.icon}
-                {item.label}
-              </span>
-            ) : (
-              <button
-                key={item.key}
-                type="button"
-                className="switch-item"
-                onPointerEnter={() => preloadPage(item.key)}
-                onFocus={() => preloadPage(item.key)}
-                onClick={() => {
-                  preloadPage(item.key);
-                  window.location.hash = item.hash;
-                }}
-              >
-                {item.icon}
-                {item.label}
-              </button>
-            ),
-          )}
-        </nav>
-
-        <div className="app-shell-topbar-right">
-          <div className="console-user-pill">
-            <div className="user-avatar-sun">{user.username.slice(0, 1).toUpperCase()}</div>
-            <span className="user-identity">
-              <span className="user-username">{user.username}</span>
-              <small>{roleLabels[user.role]}</small>
-            </span>
-          </div>
-          <button type="button" className="console-icon-btn" onClick={() => void logout()} title="退出登录" aria-label="退出登录">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-              <polyline points="16 17 21 12 16 7"/>
-              <line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-          </button>
-        </div>
-      </header>
-      {children}
+  return <div className="app-shell enterprise-shell">
+    <header className="enterprise-topbar">
+      <div className="enterprise-brand">
+        <button type="button" className="enterprise-menu-toggle" aria-label="展开导航菜单" aria-expanded={menuOpen}
+          aria-controls="primary-navigation" onClick={() => setMenuOpen(value => !value)}>☰</button>
+        <a href="#" onClick={() => setMenuOpen(false)}><strong>OpenReviewer</strong><span>代码审查平台</span></a>
+      </div>
+      <div className="enterprise-account">
+        <button type="button" className="enterprise-help-button" onClick={() => { setMenuOpen(false); setManualOpen(true); }}>使用手册</button>
+        <span className="enterprise-user"><strong>{user.username}</strong><small>{roleLabels[user.role]}</small></span>
+        <button type="button" className="enterprise-logout" onClick={() => void logout()}>退出登录</button>
+      </div>
+    </header>
+    <div className="enterprise-body">
+      {menuOpen && <button className="enterprise-menu-backdrop" aria-label="关闭导航菜单" onClick={() => setMenuOpen(false)} />}
+      <aside id="primary-navigation" className={"enterprise-sidebar" + (menuOpen ? " is-open" : "")}>
+        <nav aria-label="工作区导航">{NAV_GROUPS.map(group => {
+          const items = group.items.filter(item => !item.permission || hasPermission(user, item.permission));
+          return items.length > 0 && <section className="enterprise-nav-group" key={group.label}>
+            <h2>{group.label}</h2>
+            {items.map(item => <a key={item.key} href={"#" + item.hash} aria-current={current === item.key ? "page" : undefined}
+              onPointerEnter={() => preloadPage(item.page)} onFocus={() => preloadPage(item.page)}
+              onClick={() => { preloadPage(item.page); setMenuOpen(false); }}>
+              <WorkspaceIcon kind={item.icon} /><span>{item.label}</span>
+            </a>)}
+          </section>;
+        })}<div className="enterprise-sidebar-account"><strong>{user.username}</strong><small>{roleLabels[user.role]}</small><button type="button" onClick={() => void logout()}>退出当前账号</button></div></nav>
+      </aside>
+      <div className="enterprise-content">{children}</div>
     </div>
-  );
+    {manualOpen && <Suspense fallback={<div className="manual-loading" role="status">正在打开使用手册…</div>}>
+      <UserManual initialTopic={view.kind === "review" ? "review" : current} onClose={closeManual} />
+    </Suspense>}
+  </div>;
 }

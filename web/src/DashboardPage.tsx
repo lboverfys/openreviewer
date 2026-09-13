@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, DASHBOARD_CACHE_TTL_MS, peekReadCache, primeReadCache, subscribeReadCache, reviewListKey } from "./api";
 import CreateReviewForm from "./CreateReviewForm";
-import WorkflowGuide from "./WorkflowGuide";
 import Pagination, { PAGE_SIZE } from "./Pagination";
 import { useCursorPage } from "./useCursorPage";
 import { preloadPage } from "./page-loaders";
@@ -10,7 +9,6 @@ import {
   applyLiveDashboardSnapshot,
   DASHBOARD_FALLBACK_REFRESH_MS,
   DASHBOARD_INITIAL_FALLBACK_MS,
-  DASHBOARD_STATUS_ORDER,
 } from "./dashboard";
 import type { DashboardRefreshOptions, DashboardStreamState } from "./dashboard";
 import { hasPermission } from "./rbac";
@@ -26,8 +24,8 @@ import {
   formatDate,
   shortSha,
   statusLabels,
-  workerLabels,
   reviewDisplayLabel,
+  reviewDisplayStatus,
 } from "./utils";
 function StatusBadge({ status, label }: { status: ExecutionStatus; label?: string }) {
   return (
@@ -38,30 +36,10 @@ function StatusBadge({ status, label }: { status: ExecutionStatus; label?: strin
   );
 }
 
-function greetingByHour(): string {
-  const hour = new Date().getHours();
-  if (hour < 6) return "夜深了";
-  if (hour < 12) return "上午好";
-  if (hour < 18) return "下午好";
-  return "晚上好";
-}
-
-const statCardIcons: Record<string, string> = {
-  all: "▣",
-  queued: "⏳",
-  running: "⚡",
-  waiting_for_ci: "🛠",
-  ready_for_review: "🤖",
-  completed: "✓",
-  failed: "!",
-};
-
 function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunId: string) => void }) {
   const hasBranchRoute = Boolean(review.head_ref || review.base_ref);
   const headRepository = review.head_repository ?? review.repository;
   const baseRepository = review.base_repository ?? review.repository;
-  const modelAttempted = review.model_attempt_count > 0;
-  const attempts = modelAttempted ? review.model_attempt_count : review.attempt_count;
 
   return (
     <tr className="dash-table-row">
@@ -77,6 +55,7 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
             <div className="review-repository-line">
               <strong>{review.repository}</strong>
               <span className="dash-pr-badge">PR #{review.pull_request_number}</span>
+              {review.snapshot_review && <span className="dash-pr-badge">历史复查</span>}
               {review.pr_html_url && (
                 <a
                   className="review-github-link"
@@ -123,34 +102,17 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
         )}
       </td>
       <td>
-        <StatusBadge status={review.execution_status} label={reviewDisplayLabel(review)} />
-        {review.finding_count > 0 && (
-          <small className="dash-row-substatus dash-row-findings">
-            {review.unreviewed_finding_count > 0
-              ? `${review.unreviewed_finding_count} 条待裁决问题`
-              : `${review.finding_count} 条审查问题`}
-          </small>
-        )}
-        {review.last_error && (
+        <StatusBadge status={reviewDisplayStatus(review)} label={reviewDisplayLabel(review)} />
+        {review.last_error && reviewDisplayStatus(review) === "failed" && (
           <small className="dash-row-error" title={review.last_error}>
             {review.last_error}
           </small>
         )}
       </td>
-      <td>
-        <div className="dash-attempts-track-block" title={modelAttempted ? "模型阶段尝试次数" : "准备阶段尝试次数"}>
-          <div className="attempts-num">
-            <span>{attempts}</span>/{review.max_attempts}
-          </div>
-          <div className="dash-progress-bar-bg">
-            <div
-              className="dash-progress-bar-fill"
-              style={{
-                width: `${Math.min(100, (attempts / Math.max(1, review.max_attempts)) * 100)}%`,
-              }}
-            />
-          </div>
-        </div>
+      <td className="review-result-column">
+        {review.model_review_completed_at ? <><strong>{review.finding_count} 条候选问题</strong>
+          <small>{review.unreviewed_finding_count > 0 ? review.unreviewed_finding_count + " 条待核对" : "查看详情核对检查范围"}</small></>
+          : <span className="is-muted">{review.execution_status === "cancelled" ? "已停止" : reviewDisplayStatus(review) === "completed" ? "旧记录未保存 AI 结果" : "尚未产出结果"}</span>}
       </td>
       <td>
         <span className="dash-time-badge">
@@ -345,15 +307,6 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
     };
   }, [refresh]);
 
-  const statusCards = useMemo(
-    () =>
-      DASHBOARD_STATUS_ORDER.map((status) => ({
-        status,
-        count: snapshot?.status_counts[status] ?? 0,
-      })),
-    [snapshot],
-  );
-
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(searchKeyword.trim().length >= 3 || /^\d+$/.test(searchKeyword.trim()) ? searchKeyword.trim() : ""), 300);
@@ -376,17 +329,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
     setLoading(false);
   }), []);
 
-  const workers = snapshot?.workers?.length
-    ? snapshot.workers
-    : snapshot?.worker.configured
-      ? [snapshot.worker]
-      : [];
-  const onlineWorkers = workers.filter((item) => item.online && item.status !== "stopping");
-  const workerPreview = onlineWorkers.slice(0, 3);
-  const onlineCount = snapshot?.worker_online_count ?? onlineWorkers.length;
-  const busyCount = snapshot?.worker_busy_count ?? onlineWorkers.filter(item => item.status === "busy").length;
-  const worker = onlineWorkers[0] ?? workers[0] ?? snapshot?.worker;
-  const workerHealthy = onlineCount > 0;
+  const onlineCount = snapshot?.worker_online_count ?? (snapshot?.worker.online ? 1 : 0);
   const canManageReviews = hasPermission(user, "reviews:manage");
   const canInspectWorkers = hasPermission(user, "settings:manage");
 
@@ -416,11 +359,11 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
         {/* 概览条：问候 + 任务概况 + 同步状态与刷新，单行紧凑 */}
         <section className="dash-hero">
           <div className="dash-hero-copy">
-            <h1>{greetingByHour()}，{user.username}</h1>
-            <p>共 {snapshot?.total_reviews ?? 0} 个任务 · {onlineCount} 个 Worker 节点在线</p>
+            <h1>审查任务</h1>
+            <p>共 {snapshot?.total_reviews ?? 0} 条审查记录。打开任务查看进度、问题和处理结果。</p>
           </div>
           <div className="dash-hero-actions">
-            {canManageReviews && <button type="button" className="btn-aurora dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>发起审查</button>}
+            {canManageReviews && <button type="button" className="btn-aurora dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>管理员补录</button>}
             <div className={`dash-stream-pill state-${streamState}`}>
               <span className="beacon-circle" />
               <span className="beacon-label">
@@ -453,41 +396,11 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
           </div>
         </section>
 
-        <WorkflowGuide user={user} />
-        {/* 状态统计轨道：7 张卡，点击筛选表格 */}
-        <section className="dash-stat-rail" aria-label="任务状态统计">
-          <div
-            className={`dash-stat-card total-card ${activeFilter === "all" ? "is-active-tab" : ""}`}
-            onClick={() => setActiveFilter("all")}
-          >
-            <div className="stat-card-top">
-              <span className="stat-icon-chip" aria-hidden="true">{statCardIcons.all}</span>
-              <span className="stat-card-name">全部任务</span>
-            </div>
-            <div className="stat-card-number">{loading ? "—" : snapshot?.total_reviews ?? 0}</div>
-            <div className="stat-card-bar" aria-hidden="true"><span style={{ width: "100%" }} /></div>
-          </div>
-          {statusCards.map(({ status, count }) => {
-            const total = snapshot?.total_reviews ?? 0;
-            const percent = total > 0 ? Math.round((count / total) * 100) : 0;
-            return (
-              <div
-                key={status}
-                className={`dash-stat-card status-card-${status} ${activeFilter === status ? "is-active-tab" : ""}`}
-                onClick={() =>
-                  setActiveFilter(activeFilter === status ? "all" : status)
-                }
-                title={`筛选 ${statusLabels[status]} 状态`}
-              >
-                <div className="stat-card-top">
-                  <span className="stat-icon-chip" aria-hidden="true">{statCardIcons[status]}</span>
-                  <span className="stat-card-name">{statusLabels[status]}</span>
-                </div>
-                <div className="stat-card-number">{loading ? "—" : count}</div>
-                <div className="stat-card-bar" aria-hidden="true"><span style={{ width: `${percent}%` }} /></div>
-              </div>
-            );
-          })}
+        <section className="dash-status-filters" aria-label="任务状态筛选">
+          {([["all", "全部"], ["running", "执行中"], ["awaiting_approval", "待核对"], ["awaiting_publish", "待发布"],
+            ["paused", "已暂停"], ["failed", "失败"], ["cancelled", "已取消"], ["completed", "AI 已结束"]] as const).map(([value, label]) =>
+              <button type="button" key={value} aria-pressed={activeFilter === value} onClick={() => setActiveFilter(value)}>{label}</button>)}
+          {canInspectWorkers && <a href="#platform?tab=diagnostics">{loading ? "正在连接后台…" : onlineCount > 0 ? "后台可用" : "后台暂无在线节点"} →</a>}
         </section>
 
         {/* 主区域：表格 + 右侧栏（Worker + 发起审查） */}
@@ -495,7 +408,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
           <section className="dash-table-card panel-card">
             <div className="dash-table-toolbar">
               <div className="toolbar-left-group">
-                <h3>实时审查流水线</h3>
+                <h3>PR 审查记录</h3>
               </div>
 
               <div className="toolbar-right-group">
@@ -531,8 +444,8 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                   <tr>
                     <th>Pull Request</th>
                     <th>合并方向</th>
-                    <th>流转状态</th>
-                    <th>本阶段尝试</th>
+                    <th>当前状态</th>
+                    <th>审查结果</th>
                     <th>更新时间</th>
                     <th>操作</th>
                   </tr>
@@ -558,7 +471,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                   <p>
                     {searchKeyword || activeFilter !== "all"
                       ? "当前筛选条件下无记录，您可以重置筛选或清除搜索关键词。"
-                      : "调度队列当前为空，请在右侧提交一条新的审查任务！"}
+                      : "在已接入的 GitHub 项目提交 PR 后，审查记录会自动出现在这里。"}
                   </p>
                   {(searchKeyword || activeFilter !== "all") && (
                     <button
@@ -581,71 +494,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
             </div>
           </section>
 
-          <aside className="dash-side-rail">
-            {/* Worker 节点卡 */}
-            <section className={`dash-worker-card panel-card ${workerHealthy ? "is-ready" : "is-offline"}`}>
-              <div className="worker-header-bar">
-                <div className="worker-core-badge">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="4" y="4" width="16" height="16" rx="2" />
-                    <rect x="9" y="9" width="6" height="6" />
-                    <line x1="9" y1="1" x2="9" y2="4" />
-                    <line x1="15" y1="1" x2="15" y2="4" />
-                    <line x1="9" y1="20" x2="9" y2="23" />
-                    <line x1="15" y1="20" x2="15" y2="23" />
-                    <line x1="20" y1="9" x2="23" y2="9" />
-                    <line x1="20" y1="14" x2="23" y2="14" />
-                    <line x1="1" y1="9" x2="4" y2="9" />
-                    <line x1="1" y1="14" x2="4" y2="14" />
-                  </svg>
-                </div>
-                <div className="worker-title-area">
-                  <div className="worker-name-line">
-                    <h4>Worker 执行节点</h4>
-                    <span className="worker-status-badge">
-                      <span className="status-ping-dot" />
-                      {workerHealthy
-                        ? `${onlineCount} ONLINE`
-                        : "OFFLINE"}
-                    </span>
-                  </div>
-                  <span className="worker-node-id">
-                    {canInspectWorkers ? "当前活跃状态 · 历史记录在运行诊断中查看" : "当前活跃节点状态"}
-                  </span>
-                </div>
-              </div>
 
-              <div className="worker-specs-grid worker-overview-counts">
-                <div className="spec-cell">
-                  <span className="spec-label">在线节点</span>
-                  <strong className="spec-val">
-                    {onlineCount}
-                  </strong>
-                </div>
-                <div className="spec-cell">
-                  <span className="spec-label">忙碌节点</span>
-                  <strong className="spec-val">
-                    {busyCount}
-                  </strong>
-                </div>
-              </div>
-              {workerPreview.length > 0 && (
-                <div className="worker-node-list" aria-label="Worker 节点列表">
-                  {workerPreview.map((item) => (
-                    <div className="worker-node-row" key={item.worker_id ?? "unknown"}>
-                      <span className={item.online ? "is-online" : "is-offline"} />
-                      <code>{item.worker_id}</code>
-                      <strong>{item.status ? workerLabels[item.status] : "未知"}</strong>
-                      <small title={formatDate(item.last_seen_at)}>{item.last_seen_at ? new Date(item.last_seen_at).toLocaleTimeString("zh-CN", { hour12: false }) : "—"}</small>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {!workerHealthy && <p className="worker-preview-note">暂无在线节点。{worker?.last_seen_at && <>最后心跳：{formatDate(worker.last_seen_at)}。</>}</p>}
-              {onlineCount > workerPreview.length && <p className="worker-preview-note">首页仅展示前 {workerPreview.length} 个在线节点。</p>}
-              {canInspectWorkers && <a className="worker-history-link" href="#platform?tab=diagnostics">查看节点与历史 →</a>}
-            </section>
-          </aside>
         </div>
       </main>
     </div>

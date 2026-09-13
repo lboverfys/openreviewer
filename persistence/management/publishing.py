@@ -89,6 +89,8 @@ def publish(
                     latest_event_id,
                 ):
                     raise ReviewActionConflictError("审查状态已变化，请刷新后重试")
+            if run.snapshot_review:
+                raise ReviewActionConflictError("历史版本复查只在平台内查看，不能发布到 GitHub")
             if self._publisher is None:
                 raise ReviewPublishUnavailableError("GitHub 人工发布器尚未配置")
             if run.coverage_status in {"partial", "stale"}:

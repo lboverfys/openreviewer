@@ -664,7 +664,7 @@ export default function SettingsPage({
         {/* 页头：标题 + 版本信息 + 运行状态 + 刷新，单行紧凑 */}
         <section className="settings-hero">
           <div className="settings-hero-copy">
-            <h1>模型配置</h1>
+            <h1>模型与审查设置</h1>
             <p>先设置审查模型和费用，再选择是否使用关联代码与检索模型。已保存的历史结果保留当时版本。</p>
             <div className="settings-meta-line">
               <span>配置版本 {settings?.revision ?? "--"}</span>
@@ -697,7 +697,7 @@ export default function SettingsPage({
           <nav className="settings-tab-nav" aria-label="设置分区">
             <button type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => {setActiveTab("provider"); window.location.hash="settings";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
-              <span className="settings-tab-copy"><strong>审查模型</strong><small>连接、价格与启用</small></span>
+              <span className="settings-tab-copy"><strong>AI 模型</strong><small>连接、价格与启用</small></span>
             </button>
             <button type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => {setActiveTab("agents"); window.location.hash="settings?section=agents";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
@@ -705,9 +705,10 @@ export default function SettingsPage({
             </button>
             <button type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => {setActiveTab("policy"); window.location.hash="settings?section=policy";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              <span className="settings-tab-copy"><strong>审查范围</strong><small>输入规模与层级上限</small></span>
+              <span className="settings-tab-copy"><strong>处理上限</strong><small>高级设置，通常保留默认值</small></span>
             </button>
-            <button type="button" className={activeTab === "retrieval" ? "is-active" : ""} aria-pressed={activeTab === "retrieval"} onClick={() => {setActiveTab("retrieval"); window.location.hash="settings?section=retrieval";}}><span className="settings-tab-copy"><strong>代码上下文</strong><small>检索开关、向量与精排</small></span></button>
+            <button type="button" className={activeTab === "retrieval" ? "is-active" : ""} aria-pressed={activeTab === "retrieval"} onClick={() => {setActiveTab("retrieval"); window.location.hash="settings?section=retrieval";}}><span className="settings-tab-copy"><strong>关联代码</strong><small>补充上下文与检索开关</small></span></button>
+            <details className="settings-advanced-links"><summary>配置版本（高级）</summary><p>保存固定的一套模型和规则，便于复查或比较。</p><a href="#platform?tab=profiles">管理配置版本 →</a></details>
           </nav>
 
           <div className="settings-tab-content">

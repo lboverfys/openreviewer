@@ -63,7 +63,7 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
     </div>
     <nav className="evaluation-tabs" aria-label="观察分组">
       {(["baseline","candidate"] as const).map(group => <button type="button" key={group} aria-pressed={variant === group} onClick={() => {setVariant(group); setImporting(false);}}>
-        {group === "baseline" ? "基线" : "候选"} · {sample[group] ? assessmentLabels[sample[group].assessment_status] : "未收录"}
+        {group === "baseline" ? "原结果" : "新结果"} · {sample[group] ? assessmentLabels[sample[group].assessment_status] : "未收录"}
       </button>)}
     </nav>
     {sample[variant] ? <ObservationPanel key={caseId + ":" + variant} sample={sample} variant={variant} user={user} editable={editable} onError={onError} onChanged={updated} />
@@ -169,7 +169,7 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged 
   }
   const page = tab === "changes" ? changes : findings;
   return <section className="evaluation-card" aria-label="观察结果复核">
-    <div className="evaluation-toolbar"><div><h3>{variant === "baseline" ? "基线" : "候选"}观察</h3><p>{assessmentLabels[detail?.observation.assessment_status ?? slot.assessment_status]}</p></div><div className="ws-actions">
+    <div className="evaluation-toolbar"><div><h3>{variant === "baseline" ? "原结果" : "新结果"}观察</h3><p>{assessmentLabels[detail?.observation.assessment_status ?? slot.assessment_status]}</p></div><div className="ws-actions">
       <button type="button" disabled={busy} onClick={() => {void load(); void page.refresh();}}>刷新观察</button>
       {editable && <button type="button" disabled={busy} onClick={() => setReplacing(value => !value)}>{replacing ? "取消更换" : "更换来源运行"}</button>}
     </div></div>

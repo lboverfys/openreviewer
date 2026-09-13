@@ -9,6 +9,7 @@ import type {
 
 function review(id: string, status: ExecutionStatus = "queued"): ReviewItem {
   return {
+    snapshot_review: false,
     review_run_id: id,
     review_task_id: `task-${id}`,
     repository: "example/repository",

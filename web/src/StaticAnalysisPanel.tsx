@@ -32,7 +32,7 @@ export default function StaticAnalysisPanel({ runId, headSha, editable, onError 
     try { setReport(await platformApi.importStaticReport(runId, { head_sha: headSha, base_sha: base ? baseSha : null, head_sarif: head, base_sarif: base || null })); setHead(""); setBase(""); await findings.refresh(); }
     catch (error) { onError(error); } finally { setBusy(false); }
   };
-  return <details className="workspace-surface static-analysis" onToggle={event => setOpen(event.currentTarget.open)}><summary><strong>静态检查佐证</strong><span className="ws-hint">Semgrep · SARIF</span></summary>
+  return <details className="workspace-surface static-analysis" onToggle={event => setOpen(event.currentTarget.open)}><summary><strong>扫描工具报告（可选）</strong><span className="ws-hint">有 Semgrep 报告时再导入</span></summary>
     {open && <div className="static-analysis-content"><p className="ws-hint">核对静态线索与 AI 判断，同一位置不代表同一个缺陷。</p>
       {!loaded && <WorkspaceEmpty loading title="正在读取报告…" />}
       {report && <><div className="ws-toolbar"><div className="profile-heading"><strong>{report.tool} {report.tool_version}</strong><WorkspaceBadge tone="accent">基线未出现 {report.new_count}</WorkspaceBadge><WorkspaceBadge>已有 {report.existing_count}</WorkspaceBadge><WorkspaceBadge tone="warning">待判断 {report.unknown_count}</WorkspaceBadge></div></div>

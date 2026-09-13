@@ -55,11 +55,11 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
   };
 
   return <main className="workspace-page team-page">
-    <WorkspaceHeader title="团队管理" icon="team" description="管理成员权限、仓库范围与审查策略。" actions={member || repository
+    <WorkspaceHeader title="项目与成员" icon="team" description="项目设置决定审查哪些代码，成员权限决定谁能查看、核对和发布结果。" actions={member || repository
       ? <WorkspaceBack onClick={() => { if (!busy) { setMember(null); setRepository(null); setError(""); } }} />
       : <button type="button" disabled={busy || page.loading} onClick={() => {setError(""); void page.refresh();}}>刷新列表</button>} />
     {!member && !repository && <nav className="team-tabs" aria-label="团队管理分类">
-      {([["repositories", "仓库策略"], ["members", "团队成员"], ["audits", "变更记录"]] as const).map(([key, label]) =>
+      {([["repositories", "项目设置"], ["members", "成员权限"], ["audits", "操作记录"]] as const).map(([key, label]) =>
         <button key={key} type="button" aria-pressed={tab === key} disabled={busy} onClick={() => changeTab(key)}>{label}</button>,
       )}
     </nav>}
@@ -71,7 +71,7 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
         {tab !== "audits" && <button type="button" className="team-primary" disabled={busy} onClick={() => {
           setError(""); setMessage("");
           if (tab === "members") setMember("new"); else setRepository("new");
-        }}>{tab === "members" ? "新增成员" : "添加仓库策略"}</button>}
+        }}>{tab === "members" ? "添加成员" : "添加项目设置"}</button>}
       </div>
       {tab === "repositories" && <p className="team-hint">仓库需已授权给 GitHub App。尚未配置策略的仓库沿用原有审查流程；保存后对新任务生效。</p>}
       {tab === "members" && <p className="team-hint">配置管理员 {administrator || "正在读取…"} 保留完整权限。修改成员角色、范围或密码后，该成员需要重新登录。</p>}
@@ -201,7 +201,7 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
     }, current?.id);
   };
   return <section className="team-card team-editor ws-editor" aria-label="仓库策略编辑">
-    <div className="ws-editor-heading"><div><h2>{current ? "编辑策略 · " + current.repository : "添加仓库策略"}</h2><p>按范围、协作与费用组织配置，高级选项可按需展开。</p></div>{current && <WorkspaceBadge>策略 v{current.revision}</WorkspaceBadge>}</div>
+    <div className="ws-editor-heading"><div><h2>{current ? "项目设置 · " + current.repository : "添加项目设置"}</h2><p>先确认仓库和目标分支，其他选项可沿用默认值。</p></div>{current && <WorkspaceBadge>第 {current.revision} 版设置</WorkspaceBadge>}</div>
     <form onSubmit={submit}><fieldset disabled={busy}>
       <WorkspaceSection title="审查范围" description="选择接入仓库、目标分支和团队知识。">
         <div className="team-form-grid"><label>仓库名称<input value={name} required disabled={Boolean(current)} maxLength={255} pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} placeholder="owner/repository" onChange={event => setName(event.target.value)} /></label>
@@ -211,13 +211,14 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
         {knowledgeMode === "selected" && <label>知识文档来源（从知识库复制，每行一个）<textarea value={sources} rows={3} required placeholder="security.md" onChange={event => setSources(event.target.value)} /></label>}
         <p className="team-hint">仓库内的 AGENTS.md 始终生效。<a href="#knowledge">管理知识库</a></p>
       </WorkspaceSection>
-      <WorkspaceSection title="审批与方案" description="明确审批负责人，控制结果发布前的人工确认。">
+      <WorkspaceSection title="结果由谁批准" description="指定审核负责人，或按成员角色分配审批权限。">
         <div className="team-form-grid"><label>审批负责人（用户名，可留空）<input value={approver} maxLength={100} onChange={event => setApprover(event.target.value)} /><small>留空时按角色审批。</small></label>
           <label>审批时限（小时）<input required type="number" min={1} max={720} value={approvalHours} onChange={event => setApprovalHours(event.target.value)} /></label></div>
         {current?.policy.review_profile_id && <label className="team-check"><input type="checkbox" checked={useProfile} onChange={event => setUseProfile(event.target.checked)} />继续固定已启用的审查方案</label>}
-        <p className="team-hint">审查范围和方案应用于新任务。<a href="#platform?tab=profiles">管理审查方案 →</a></p>
+        <p className="team-hint">设置应用于新任务。需要固定模型和规则时，可使用<a href="#platform?tab=profiles">配置版本</a>。</p>
       </WorkspaceSection>
-      <WorkspaceSection title="费用与执行" description="设置月度预算与执行上限，让审查用量可控。">
+      <details className="ws-disclosure"><summary>预算与执行上限<small>需要限制费用时展开</small></summary><div className="ws-disclosure-body">
+      <WorkspaceSection title="费用与执行" description="留空表示沿用平台限制；请求数包含实际审查和重试。">
         <div className="team-form-grid">
           <label>月度预算（美元，可留空）<input type="number" min={0.000001} max={1000000} step={0.000001} value={monthlyBudget} placeholder="不限制" onChange={event => setMonthlyBudget(event.target.value)} /><small>按 UTC 月份估算，启用前需配置模型价格。</small></label>
           <label>预算提醒比例（%）<input required type="number" min={1} max={100} value={warningPercent} onChange={event => setWarningPercent(event.target.value)} /></label>
@@ -225,6 +226,7 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
           <label>仓库同时执行的任务上限<input type="number" min={1} max={100} value={concurrency} placeholder="不限制" onChange={event => setConcurrency(event.target.value)} /></label>
         </div>
       </WorkspaceSection>
+      </div></details>
       <details className="ws-disclosure"><summary>数据外发与增量复用<small>高级设置</small></summary><div className="ws-disclosure-body">
         <p className="team-hint">外发限制覆盖审查、向量与精排；命中限制时拒绝请求并保留原代码。</p>
         <div className="team-form-grid"><label>禁止外发的文件（每行一项，支持 * 通配符）<textarea rows={5} value={blockedPaths} onChange={event => setBlockedPaths(event.target.value)} /></label>
@@ -233,7 +235,7 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
         <label className="team-check"><input type="checkbox" checked={incremental} onChange={event => setIncremental(event.target.checked)} />启用跨提交的精确输入复用（需绑定审查方案）</label>
         <p className="team-hint">仅复用相同方案和输入，关联代码变化后重新审查。</p>
       </div></details>
-      <div className="ws-form-actions is-sticky"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存仓库策略"}</button><button type="button" onClick={onCancel}>取消编辑</button><span className="ws-hint">保存时会核对当前策略版本</span></div>
+      <div className="ws-form-actions is-sticky"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存项目设置"}</button><button type="button" onClick={onCancel}>取消编辑</button><span className="ws-hint">保存前会检查是否有其他人的修改</span></div>
     </fieldset></form>
   </section>;
 }

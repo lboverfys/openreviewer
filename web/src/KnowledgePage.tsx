@@ -1,21 +1,10 @@
 import { ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
-import {
-  api,
-  ApiError,
-  peekReadCache,
-  subscribeReadCache,
-} from "./api";
-import type {
-  KnowledgeCitation,
-  KnowledgeDocument,
-  KnowledgeLibrary,
-  KnowledgeMutation,
-} from "./types";
-import { errorMessage, formatDate } from "./utils";
+import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
 import Pagination, { PAGE_SIZE } from "./Pagination";
+import type { KnowledgeCitation, KnowledgeDocument, KnowledgeLibrary, KnowledgeMutation, KnowledgeVersion } from "./types";
 import { useCursorPage } from "./useCursorPage";
-import type { KnowledgeVersion } from "./types";
+import { errorMessage, formatDate } from "./utils";
 
 const ReactMarkdown = lazy(() => import("react-markdown"));
 
@@ -33,107 +22,56 @@ interface DocumentDraft {
 const EMPTY_DRAFT: DocumentDraft = {
   source: "new-rule.md",
   content: "# 新规则\n\n在这里填写审查规则。\n",
-  enabled: false,
+  enabled: true,
   repository_scope: "lboverfys/NiuMa",
 };
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KiB`;
-}
-
 function documentDraft(document: KnowledgeDocument): DocumentDraft {
-  return {
-    source: document.source,
-    content: document.content,
-    enabled: document.enabled,
-    repository_scope: document.repository_scope ?? "",
-  };
+  return { source: document.source, content: document.content, enabled: document.enabled,
+    repository_scope: document.repository_scope ?? "" };
 }
 
-function documentDraftIsDirty(
-  document: KnowledgeDocument | null,
-  draft: DocumentDraft,
-): boolean {
-  return Boolean(document && (
-    draft.source !== document.source
-    || draft.content !== document.content
-    || draft.enabled !== document.enabled
-    || draft.repository_scope !== (document.repository_scope ?? "")
-  ));
+function draftChanged(document: KnowledgeDocument | null, draft: DocumentDraft): boolean {
+  const original = document ? documentDraft(document) : EMPTY_DRAFT;
+  return draft.source !== original.source || draft.content !== original.content
+    || draft.enabled !== original.enabled || draft.repository_scope !== original.repository_scope;
 }
 
-export default function KnowledgePage({
-  onSignedOut,
-}: KnowledgePageProps) {
-  // 左侧列表是短时缓存数据；先同步绘制它，详情请求会在后台继续校验，
-  // 避免从设置页/仪表盘返回时知识库整栏先显示空状态。
-  const [includeArchived, setIncludeArchived] = useState(false);
+function libraryKey(archived: boolean, offset: number, query: string): string {
+  return "knowledge-documents:" + (archived ? "archived-only" : "active") + ":" + offset + ":" + query;
+}
+
+export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
+  const [archivedView, setArchivedView] = useState(false);
   const [offset, setOffset] = useState(0);
   const [listQuery, setListQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const cachedLibrary = peekReadCache<KnowledgeLibrary>(
-    `knowledge-documents:${includeArchived ? "archived" : "active"}:${offset}:${debouncedQuery}`,
-  );
-  const cachedFirstDocumentId = cachedLibrary?.items[0]?.id;
-  const cachedFirstDocument = cachedFirstDocumentId
-    ? peekReadCache<KnowledgeDocument>(`knowledge-document:${cachedFirstDocumentId}`)
-    : undefined;
+  const cachedLibrary = peekReadCache<KnowledgeLibrary>(libraryKey(archivedView, offset, debouncedQuery));
+  const firstId = cachedLibrary?.items[0]?.id;
+  const cachedDocument = firstId ? peekReadCache<KnowledgeDocument>("knowledge-document:" + firstId) : undefined;
   const [library, setLibrary] = useState<KnowledgeLibrary | null>(cachedLibrary ?? null);
-  const [document, setDocument] = useState<KnowledgeDocument | null>(cachedFirstDocument ?? null);
-  const [draft, setDraft] = useState<DocumentDraft>(
-    cachedFirstDocument ? documentDraft(cachedFirstDocument) : EMPTY_DRAFT,
-  );
-  // 订阅缓存更新时用 ref 读取最新文档/草稿，避免后台校验响应覆盖用户
-  // 尚未保存的编辑内容。
-  const documentRef = useRef<KnowledgeDocument | null>(cachedFirstDocument ?? null);
-  const draftRef = useRef<DocumentDraft>(
-    cachedFirstDocument ? documentDraft(cachedFirstDocument) : EMPTY_DRAFT,
-  );
-  documentRef.current = document;
-  draftRef.current = draft;
+  const [document, setDocument] = useState<KnowledgeDocument | null>(cachedDocument ?? null);
+  const [draft, setDraft] = useState<DocumentDraft>(cachedDocument ? documentDraft(cachedDocument) : EMPTY_DRAFT);
   const [creating, setCreating] = useState(false);
-  const [editorMode, setEditorMode] = useState<"edit" | "preview">("preview");
+  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
+  const [lastRemoved, setLastRemoved] = useState<KnowledgeDocument | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [citations, setCitations] = useState<KnowledgeCitation[]>([]);
   const uploadRef = useRef<HTMLInputElement>(null);
-
-  const dirty = creating
-    ? draft.source !== EMPTY_DRAFT.source
-      || draft.content !== EMPTY_DRAFT.content
-      || draft.enabled !== EMPTY_DRAFT.enabled
-    : Boolean(document && (
-      draft.source !== document.source
-      || draft.content !== document.content
-      || draft.enabled !== document.enabled
-    ));
-
-  useEffect(() => subscribeReadCache<KnowledgeLibrary>(
-    `knowledge-documents:${includeArchived ? "archived" : "active"}:${offset}:${debouncedQuery}`,
-    (next) => {
-      setLibrary(next);
-    },
-  ), [includeArchived, offset, debouncedQuery]);
-
-  useEffect(() => {
-    const documentId = document?.id;
-    if (!documentId) return undefined;
-    return subscribeReadCache<KnowledgeDocument>(
-      `knowledge-document:${documentId}`,
-      (next) => {
-        const current = documentRef.current;
-        if (!current || current.id !== next.id) return;
-        if (documentDraftIsDirty(current, draftRef.current)) return;
-        documentRef.current = next;
-        draftRef.current = documentDraft(next);
-        setDocument(next);
-        setDraft(documentDraft(next));
-      },
-    );
-  }, [document?.id]);
+  const documentRef = useRef(document);
+  const draftRef = useRef(draft);
+  const creatingRef = useRef(creating);
+  const openRequest = useRef(0);
+  documentRef.current = document;
+  draftRef.current = draft;
+  creatingRef.current = creating;
+  const dirty = draftChanged(document, draft);
+  const visibleItems = library?.items ?? [];
 
   const handleError = useCallback((reason: unknown) => {
     if (reason instanceof ApiError && reason.status === 401) {
@@ -144,94 +82,126 @@ export default function KnowledgePage({
     setMessage(errorMessage(reason));
   }, [onSignedOut]);
 
-  const openDocument = useCallback(async (
-    documentId: string,
-    clearFeedback = true,
-    signal?: AbortSignal,
-  ) => {
+  const selectDocument = useCallback((next: KnowledgeDocument | null) => {
+    const nextDraft = next ? documentDraft(next) : EMPTY_DRAFT;
+    documentRef.current = next;
+    draftRef.current = nextDraft;
+    creatingRef.current = false;
+    setDocument(next);
+    setDraft(nextDraft);
+    setCreating(false);
+    setEditing(false);
+    setHistoryOpen(false);
+  }, []);
+
+  const openDocument = useCallback(async (id: string, signal?: AbortSignal) => {
+    const request = ++openRequest.current;
     setBusy("open");
     try {
-      const next = await api.knowledgeDocument(documentId, signal);
-      setDocument(next);
-      setDraft(documentDraft(next));
-      setCreating(false);
-      if (clearFeedback) setMessage("");
+      const next = await api.knowledgeDocument(id, signal);
+      if (signal?.aborted || request !== openRequest.current) return;
+      selectDocument(next);
     } catch (reason) {
-      if (signal?.aborted) return;
-      handleError(reason);
+      if (!signal?.aborted && request === openRequest.current) handleError(reason);
     } finally {
-      if (!signal?.aborted) setBusy("");
+      if (!signal?.aborted && request === openRequest.current) setBusy("");
     }
-  }, [handleError]);
+  }, [handleError, selectDocument]);
 
-  const refreshLibrary = useCallback(async (
-    preferredId?: string,
-    signal?: AbortSignal,
-    openTarget = true,
-  ) => {
-    setBusy((current) => current || "refresh");
+  const refreshLibrary = useCallback(async (signal?: AbortSignal, openTarget = true) => {
+    const selection = openRequest.current;
+    setBusy(current => current || "refresh");
     try {
-      const next = await api.knowledgeDocuments(includeArchived, signal, false, offset, debouncedQuery);
+      const next = await api.knowledgeDocuments(archivedView, signal, false, offset, debouncedQuery, archivedView);
       if (signal?.aborted) return;
       setLibrary(next);
-      if (!openTarget) return;
-      const target = preferredId
-        ? next.items.find((item) => item.id === preferredId)
-        : next.items.find((item) => item.id === document?.id) ?? next.items[0];
-      if (target) {
-        await openDocument(target.id, false, signal);
-      } else if (!documentRef.current) {
-        setDocument(null);
+      if (next.items.length === 0 && offset > 0 && next.total > 0) {
+        setOffset(Math.max(0, offset - PAGE_SIZE));
+        return;
       }
+      if (!openTarget || creatingRef.current || selection !== openRequest.current
+          || draftChanged(documentRef.current, draftRef.current)) return;
+      const target = next.items.find(item => item.id === documentRef.current?.id) ?? next.items[0];
+      if (target) await openDocument(target.id, signal);
+      else selectDocument(null);
     } catch (reason) {
-      if (signal?.aborted) return;
-      handleError(reason);
+      if (!signal?.aborted) handleError(reason);
     } finally {
       if (!signal?.aborted) setBusy("");
     }
-  }, [document?.id, handleError, includeArchived, offset, debouncedQuery, openDocument]);
+  }, [archivedView, offset, debouncedQuery, openDocument, selectDocument, handleError]);
+
+  useEffect(() => subscribeReadCache<KnowledgeLibrary>(
+    libraryKey(archivedView, offset, debouncedQuery), setLibrary,
+  ), [archivedView, offset, debouncedQuery]);
+
+  useEffect(() => {
+    const id = document?.id;
+    if (!id) return undefined;
+    return subscribeReadCache<KnowledgeDocument>("knowledge-document:" + id, next => {
+      const current = documentRef.current;
+      if (!current || current.id !== next.id || draftChanged(current, draftRef.current)) return;
+      documentRef.current = next;
+      draftRef.current = documentDraft(next);
+      setDocument(next);
+      setDraft(documentDraft(next));
+    });
+  }, [document?.id]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void refreshLibrary(undefined, controller.signal, !documentRef.current);
+    void refreshLibrary(controller.signal, !documentRef.current);
     return () => controller.abort();
-  }, [includeArchived, offset, debouncedQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refreshLibrary]);
 
   useEffect(() => {
-    if (!message || messageKind !== "success") return undefined;
-    const timer = window.setTimeout(() => setMessage(""), 4000);
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(listQuery.trim());
+      setOffset(0);
+    }, 300);
     return () => window.clearTimeout(timer);
-  }, [message, messageKind]);
+  }, [listQuery]);
 
   useEffect(() => {
     function warnBeforeUnload(event: BeforeUnloadEvent) {
-      if (!dirty) return;
-      event.preventDefault();
+      if (dirty) event.preventDefault();
     }
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [dirty]);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {setDebouncedQuery(listQuery.trim()); setOffset(0);}, 300);
-    return () => window.clearTimeout(timer);
-  }, [listQuery]);
-  const visibleItems = library?.items ?? [];
   const loadHistory = useCallback(async (cursor?: string, signal?: AbortSignal, force = false) => {
     const next = await api.knowledgeDocument(document!.id, signal, force, cursor);
-    return {items: next.versions, next_cursor: next.version_next_cursor};
+    return { items: next.versions, next_cursor: next.version_next_cursor };
   }, [document?.id]);
-  const history = useCursorPage<KnowledgeVersion>({cacheKey: `knowledge-history:${document?.id ?? "none"}:${document?.current_version ?? 0}`, load: loadHistory, onError: handleError, enabled: Boolean(document)});
+  const history = useCursorPage<KnowledgeVersion>({
+    cacheKey: "knowledge-history:" + (document?.id ?? "none") + ":" + (document?.current_version ?? 0),
+    load: loadHistory, onError: handleError, enabled: Boolean(document) && historyOpen,
+  });
 
-  function applyMutation(result: KnowledgeMutation, successMessage: string) {
-    setDocument(result.document);
-    setDraft(documentDraft(result.document));
-    setCreating(false);
+  function allowLeavingDraft() {
+    return !dirty || window.confirm("当前修改还没保存。放弃修改并继续吗？");
+  }
+
+  function changeView(archived: boolean) {
+    if (archived === archivedView || !allowLeavingDraft()) return;
+    ++openRequest.current;
+    selectDocument(null);
+    setLibrary(null);
+    setOffset(0);
+    setListQuery("");
+    setDebouncedQuery("");
+    setArchivedView(archived);
+  }
+
+  function applyMutation(result: KnowledgeMutation, feedback: string, removed: KnowledgeDocument | null = null, refreshList = true) {
+    selectDocument(result.document);
+    setLibrary(current => current ? { ...current, revision: result.revision } : current);
     setMessageKind("success");
-    setMessage(successMessage);
-    // 变更接口已经返回完整文档；这里只需刷新左侧列表统计，避免
-    // refreshLibrary 再为同一文档发起一次详情 GET。
-    void refreshLibrary(undefined, undefined, false);
+    setMessage(feedback);
+    setLastRemoved(removed);
+    // 变更结果已经带正文，刷新列表时不重复请求详情。
+    if (refreshList) void refreshLibrary(undefined, false);
   }
 
   async function saveDocument() {
@@ -239,69 +209,76 @@ export default function KnowledgePage({
     setBusy("save");
     setMessage("");
     try {
+      const payload = { expected_revision: library.revision, source: draft.source,
+        content: draft.content, enabled: draft.enabled, repository_scope: draft.repository_scope.trim() || null };
       const result = creating
-        ? await api.createKnowledgeDocument({
-          expected_revision: library.revision,
-          source: draft.source,
-          content: draft.content,
-          enabled: draft.enabled,
-          repository_scope: draft.repository_scope.trim() || null,
-        })
-        : await api.updateKnowledgeDocument(document!.id, {
-          expected_revision: library.revision,
-          expected_document_version: document!.current_version,
-          source: draft.source,
-          content: draft.content,
-          enabled: draft.enabled,
-          repository_scope: draft.repository_scope.trim() || null,
-        });
-      applyMutation(result, creating ? "知识文档已创建" : "知识文档已保存");
+        ? await api.createKnowledgeDocument(payload)
+        : await api.updateKnowledgeDocument(document!.id, { ...payload, expected_document_version: document!.current_version });
+      applyMutation(result, creating ? "文档已保存并开启使用。" : "修改已保存。");
     } catch (reason) {
       handleError(reason);
-      if (reason instanceof ApiError && reason.status === 409) {
-        await refreshLibrary(document?.id);
-      }
+      // 冲突时保留草稿，避免刷新详情吞掉尚未保存的正文。
+      if (reason instanceof ApiError && reason.status === 409) void refreshLibrary(undefined, false);
     } finally {
       setBusy("");
     }
   }
 
-  async function setArchived(archived: boolean) {
-    if (!library || !document) return;
-    if (archived && !window.confirm("归档后文档不会参与新的审查，确定继续吗？")) return;
-    setBusy(archived ? "archive" : "restore");
+  async function toggleEnabled() {
+    if (!library || !document || dirty) return;
+    setBusy("enable");
+    setMessage("");
     try {
-      const result = await api.setKnowledgeDocumentArchived(
-        document.id,
-        archived,
-        library.revision,
-        document.current_version,
-      );
-      applyMutation(result, archived ? "知识文档已归档" : "知识文档已恢复，默认保持停用");
-    } catch (reason) {
-      handleError(reason);
-    } finally {
-      setBusy("");
-    }
+      const result = await api.updateKnowledgeDocument(document.id, {
+        expected_revision: library.revision, expected_document_version: document.current_version,
+        source: document.source, content: document.content, enabled: !document.enabled,
+        repository_scope: document.repository_scope ?? null,
+      });
+      applyMutation(result, result.document.enabled
+        ? "已开启使用，AI 可以按相关性检索这份规则。"
+        : "已暂停使用，文档仍留在列表中。");
+    } catch (reason) { handleError(reason); }
+    finally { setBusy(""); }
+  }
+
+  async function removeDocument() {
+    if (!library || !document || dirty) return;
+    setBusy("archive");
+    setMessage("");
+    try {
+      const previous = document;
+      const result = await api.setKnowledgeDocumentArchived(document.id, true, library.revision, document.current_version);
+      applyMutation(result, "《" + previous.title + "》已移出列表，可撤销或在“已移出文档”中找回。", previous);
+    } catch (reason) { handleError(reason); }
+    finally { setBusy(""); }
+  }
+
+  async function restoreDocument(target: KnowledgeDocument, enabled = true) {
+    if (!library || dirty) return;
+    setBusy("restore");
+    setMessage("");
+    try {
+      const result = await api.setKnowledgeDocumentArchived(target.id, false, library.revision, target.current_version, enabled);
+      applyMutation(result, enabled ? "文档已恢复并开启使用。" : "文档已恢复到列表，保持暂停使用。", null, !archivedView);
+      if (archivedView) {
+        setArchivedView(false);
+        setOffset(0);
+        setListQuery("");
+        setDebouncedQuery("");
+      }
+    } catch (reason) { handleError(reason); }
+    finally { setBusy(""); }
   }
 
   async function restoreVersion(version: number) {
     if (!library || !document || version === document.current_version) return;
-    if (!window.confirm(`将第 ${version} 版内容恢复为一个新版本，确定继续吗？`)) return;
-    setBusy(`version-${version}`);
+    if (!window.confirm("把正文改回第 " + version + " 版吗？当前正文仍会保存在历史版本中。")) return;
+    setBusy("version");
     try {
-      const result = await api.restoreKnowledgeVersion(
-        document.id,
-        version,
-        library.revision,
-        document.current_version,
-      );
-      applyMutation(result, `已从第 ${version} 版恢复并生成新版本`);
-    } catch (reason) {
-      handleError(reason);
-    } finally {
-      setBusy("");
-    }
+      const result = await api.restoreKnowledgeVersion(document.id, version, library.revision, document.current_version);
+      applyMutation(result, "已采用第 " + version + " 版的内容，原正文仍保留在历史中。");
+    } catch (reason) { handleError(reason); }
+    finally { setBusy(""); }
   }
 
   async function testSearch() {
@@ -309,107 +286,197 @@ export default function KnowledgePage({
     setBusy("search");
     try {
       setCitations((await api.searchKnowledge(searchQuery.trim(), 8, draft.repository_scope.trim() || undefined)).items);
-    } catch (reason) {
-      handleError(reason);
-    } finally {
-      setBusy("");
-    }
+    } catch (reason) { handleError(reason); }
+    finally { setBusy(""); }
+  }
+
+  function startNewDocument() {
+    if (!allowLeavingDraft()) return;
+    ++openRequest.current;
+    selectDocument(null);
+    creatingRef.current = true;
+    setCreating(true);
+    setEditing(true);
+    setMessage("");
+    setLastRemoved(null);
   }
 
   async function uploadMarkdown(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file) return;
-    if (dirty && !window.confirm("当前修改尚未保存，仍要导入其他文档吗？")) return;
+    if (!file || !allowLeavingDraft()) return;
     if (!file.name.toLocaleLowerCase().endsWith(".md") || file.size > 512 * 1024) {
       setMessageKind("error");
-      setMessage("请选择不超过 512 KiB 的 .md 文件");
+      setMessage("请选择不超过 512 KiB 的 .md 文件。");
       return;
     }
     try {
       const content = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+      ++openRequest.current;
+      selectDocument(null);
+      creatingRef.current = true;
+      const next = { ...EMPTY_DRAFT, source: file.name, content };
+      draftRef.current = next;
+      setDraft(next);
       setCreating(true);
-      setDocument(null);
-      setDraft({ source: file.name, content, enabled: false, repository_scope: "lboverfys/NiuMa" });
-      setEditorMode("edit");
+      setEditing(true);
       setMessage("");
+      setLastRemoved(null);
     } catch {
       setMessageKind("error");
-      setMessage("文件不是可读取的 UTF-8 Markdown");
+      setMessage("文件编码无法识别，请另存为 UTF-8 后导入。");
     }
   }
 
-  function startNewDocument() {
-    if (dirty && !window.confirm("当前修改尚未保存，仍要新建文档吗？")) return;
-    setCreating(true);
-    setDocument(null);
-    setDraft(EMPTY_DRAFT);
-    setEditorMode("edit");
-    setMessage("");
+  async function installPack() {
+    if (!library) return;
+    setBusy("pack");
+    try {
+      const result = await api.installKnowledgeProjectPack(library.revision);
+      setLibrary(current => current ? { ...current, revision: result.revision } : current);
+      setMessageKind("success");
+      setMessage("已补充缺少的内置规则。已移出的文档请从“已移出文档”恢复。");
+      setLastRemoved(null);
+      void refreshLibrary(undefined, false);
+    } catch (reason) { handleError(reason); }
+    finally { setBusy(""); }
   }
 
   return (
     <div className="knowledge-shell">
       <main className="knowledge-main">
-        <section className="knowledge-hero">
-          <div className="knowledge-hero-copy">
-            <h1>审查依据</h1>
-            <p>这里保存业务规则和团队约定。启用文档按仓库及相关性进入 AI 审查；任务详情的“知识引用”会显示实际使用的版本。</p>
-            <nav className="workspace-links" aria-label="审查依据分类"><span aria-current="page">知识文档</span><a href="#retrieval">代码检索 →</a><a href="#settings?section=retrieval">配置自动补充代码</a></nav>
+        <header className="knowledge-hero">
+          <div>
+            <h1>规则文档</h1>
+            <p>保存 AI 审查时可以参考的规则。按仓库和相关性选取，不会每次把全部文档都发给 AI。</p>
           </div>
-          <div className="knowledge-stats">
-            <span className="knowledge-stat-chip is-enabled"><b>{library?.enabled_count ?? 0}</b>启用</span>
-            <span className="knowledge-stat-chip"><b>{library?.total ?? 0}</b>文档</span>
-            <span className="knowledge-stat-chip"><b>{formatSize(library?.total_enabled_bytes ?? 0)}</b>启用内容</span>
-            <span className="knowledge-stat-chip"><b>r{library?.revision ?? 0}</b>版本</span>
-          </div>
-        </section>
-
-        <section className="knowledge-pack-note"><div><strong>NiuMa 项目资料</strong><p>业务、鉴权、积分、游戏入驻和工程约定已整理为有来源的项目资料。只补充缺少的文档，已有编辑会保留。</p></div><button type="button" disabled={!library || Boolean(busy)} onClick={async () => {
-          if (!library) return; setBusy("pack");
-          try {const next = await api.installKnowledgeProjectPack(library.revision); setLibrary(next); setMessageKind("success"); setMessage("项目资料已补充，现有文档保持原样。");}
-          catch (error) {handleError(error);} finally {setBusy("");}
-        }}>补充项目资料</button></section>
+          <a href="#retrieval">搜索代码 →</a>
+        </header>
+        {message && <div className={"knowledge-feedback is-" + messageKind} role={messageKind === "error" ? "alert" : "status"}>
+          <span>{message}</span>
+          {lastRemoved && messageKind === "success" && <button type="button" disabled={Boolean(busy) || dirty}
+            onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销移出</button>}
+          <button type="button" aria-label="关闭提示" onClick={() => { setMessage(""); setLastRemoved(null); }}>×</button>
+        </div>}
         <div className="knowledge-workspace">
-          <aside className="knowledge-document-pane">
-            <div className="knowledge-pane-heading"><div><strong>文档</strong><small>{visibleItems.length} 条</small></div><button type="button" onClick={startNewDocument} title="新建 Markdown 文档">＋</button></div>
+          <aside className="knowledge-document-pane" aria-label="知识文档列表">
+            <div className="knowledge-pane-heading"><strong>规则文档</strong><span>{library?.enabled_count ?? 0} 份使用中</span></div>
             <div className="knowledge-list-tools">
-              <input id="knowledge-list-query" name="knowledge-list-query" value={listQuery} onChange={(event) => setListQuery(event.target.value)} placeholder="搜索文档名称或内容" />
-              <label><input id="knowledge-include-archived" name="knowledge-include-archived" type="checkbox" checked={includeArchived} onChange={(event) => {setIncludeArchived(event.target.checked); setOffset(0);}} />显示归档</label>
+              <div className="knowledge-view-tabs" role="tablist" aria-label="文档范围">
+                <button type="button" role="tab" aria-selected={!archivedView} disabled={Boolean(busy)}
+                  onClick={() => changeView(false)}>文档列表</button>
+                <button type="button" role="tab" aria-selected={archivedView} disabled={Boolean(busy)}
+                  onClick={() => changeView(true)}>已移出文档</button>
+              </div>
+              <input aria-label="搜索文档" value={listQuery} onChange={event => setListQuery(event.target.value)} placeholder="搜索名称或正文" />
+              {archivedView && <p>移出的文档保留在这里，选择后可以恢复。</p>}
             </div>
             <div className="knowledge-document-list">
-              {visibleItems.map((item) => <button key={item.id} type="button" className={`${document?.id === item.id ? "is-selected" : ""} ${item.archived ? "is-archived" : ""}`} onClick={() => void openDocument(item.id)}><span><strong>{item.title}</strong><small>{item.source}</small></span><i className={item.enabled ? "is-enabled" : ""}>{item.archived ? "归档" : item.enabled ? "启用" : "停用"}</i></button>)}
-              {!busy && visibleItems.length === 0 && <div className="knowledge-list-empty">没有符合条件的文档</div>}
-              <Pagination page={Math.floor(offset / PAGE_SIZE) + 1} count={visibleItems.length} total={library?.total} busy={Boolean(busy)} hasNext={Boolean(library?.has_more)} onPrevious={() => setOffset(value => Math.max(0, value - PAGE_SIZE))} onNext={() => setOffset(value => value + PAGE_SIZE)} label="知识文档分页" />
+              {visibleItems.map(item => <button key={item.id} type="button"
+                className={document?.id === item.id ? "is-selected" : ""}
+                disabled={Boolean(busy) && busy !== "open"}
+                onClick={() => { if (allowLeavingDraft()) void openDocument(item.id); }}>
+                <span><strong>{item.title}</strong><small>{item.source}</small></span>
+                <i>{item.archived ? "已移出" : item.enabled ? "使用中" : "已暂停"}</i>
+              </button>)}
+              {!busy && visibleItems.length === 0 && <p className="knowledge-list-empty">
+                {archivedView ? "没有已移出的文档。" : "没有符合条件的文档。"}
+              </p>}
             </div>
+            <Pagination page={Math.floor(offset / PAGE_SIZE) + 1} count={visibleItems.length} total={library?.total}
+              busy={Boolean(busy)} hasNext={Boolean(library?.has_more)}
+              onPrevious={() => setOffset(value => Math.max(0, value - PAGE_SIZE))}
+              onNext={() => setOffset(value => value + PAGE_SIZE)} label="知识文档分页" />
             <div className="knowledge-list-actions">
-              <button type="button" onClick={() => uploadRef.current?.click()}>上传 .md</button>
-              <input ref={uploadRef} id="knowledge-upload" name="knowledge-upload" type="file" accept=".md,text/markdown,text/plain" hidden onChange={(event) => void uploadMarkdown(event)} />
+              <button type="button" disabled={Boolean(busy)} onClick={startNewDocument}>新建文档</button>
+              <button type="button" disabled={Boolean(busy)} onClick={() => uploadRef.current?.click()}>导入 .md 文件</button>
+              <input ref={uploadRef} type="file" accept=".md,text/markdown,text/plain" hidden onChange={event => void uploadMarkdown(event)} />
             </div>
+            <details className="knowledge-pack-tools">
+              <summary>补充内置规则</summary>
+              <p>只添加缺少的规则，保留已有修改和移出状态。</p>
+              <button type="button" disabled={!library || Boolean(busy) || dirty} onClick={() => void installPack()}>补充缺少的规则</button>
+            </details>
           </aside>
 
-          <section className="knowledge-editor-pane">
+          <section className="knowledge-editor-pane" aria-label="文档内容">
             {creating || document ? <>
-              <div className="knowledge-editor-heading">
-                <label><span>文档路径</span><input id="knowledge-source" name="knowledge-source" value={draft.source} maxLength={200} disabled={Boolean(busy) || Boolean(document?.archived)} onChange={(event) => setDraft((current) => ({ ...current, source: event.target.value }))} /></label>
-                <div className="knowledge-editor-status"><label><input id="knowledge-enabled" name="knowledge-enabled" type="checkbox" checked={draft.enabled} disabled={Boolean(busy) || Boolean(document?.archived)} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} />参与审查</label><span>{creating ? "新文档" : `第 ${document?.current_version} 版`}</span></div>
+              <div className="knowledge-document-heading">
+                <div><h2>{creating ? "新建规则文档" : document?.title}</h2>
+                  <small>{creating ? "写好后保存即可使用。" : document?.source + " · 正文第 " + document?.current_version + " 版"}</small></div>
+                {document && !document.archived && !editing && <button type="button" onClick={() => setEditing(true)} disabled={Boolean(busy)}>编辑文档</button>}
               </div>
-              <label className="knowledge-scope">适用仓库<input value={draft.repository_scope} maxLength={255} placeholder="留空为所有仓库通用" disabled={Boolean(busy) || Boolean(document?.archived)} onChange={event => setDraft(current => ({...current, repository_scope: event.target.value}))} /><small>例如 lboverfys/NiuMa。保存后新审查按这个范围选择规则。</small></label>
-              <div className="knowledge-editor-tabs"><button type="button" className={editorMode === "edit" ? "is-active" : ""} onClick={() => setEditorMode("edit")}>编辑</button><button type="button" className={editorMode === "preview" ? "is-active" : ""} onClick={() => setEditorMode("preview")}>预览</button><small>{formatSize(new TextEncoder().encode(draft.content).length)} / 512 KiB</small></div>
-              {editorMode === "edit" ? <textarea id="knowledge-content" name="knowledge-content" className="knowledge-editor" value={draft.content} disabled={Boolean(busy) || Boolean(document?.archived)} spellCheck={false} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /> : <article className="knowledge-markdown-preview"><Suspense fallback={<p role="status">正在加载预览…</p>}><ReactMarkdown skipHtml>{draft.content}</ReactMarkdown></Suspense></article>}
-              <div className="knowledge-editor-actions">
-                <button type="button" className="knowledge-primary-btn" disabled={Boolean(busy) || Boolean(document?.archived) || (!creating && !dirty)} onClick={() => void saveDocument()}>{busy === "save" ? "保存中..." : creating ? "创建文档" : "保存新版本"}</button>
-                {document && !document.archived && <button type="button" className="knowledge-secondary-btn" disabled={Boolean(busy)} onClick={() => void setArchived(true)}>归档</button>}
-                {document?.archived && <button type="button" className="knowledge-secondary-btn" disabled={Boolean(busy)} onClick={() => void setArchived(false)}>恢复文档</button>}
-                {message && <span className={`knowledge-feedback is-${messageKind}`} role="status">{message}</span>}
+              {document && <section className={"knowledge-use-status" + (document.archived ? " is-removed" : "")} aria-label="文档使用状态">
+                <div><strong>{document.archived ? "已移出列表" : document.enabled ? "AI 可以使用这份规则" : "已暂停使用"}</strong>
+                  <p>{document.archived ? "正文和历史版本都在，恢复后即可重新使用。"
+                    : document.enabled ? "暂停后仍留在列表，点击按钮直接保存，无需再点保存。"
+                    : "文档仍保留。开启后，AI 才能从当前知识库检索这份规则。"}</p></div>
+                {document.archived ? <button type="button" className="knowledge-primary-btn" disabled={Boolean(busy)}
+                  onClick={() => void restoreDocument(document)}>恢复并使用</button>
+                  : <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void toggleEnabled()}>
+                    {busy === "enable" ? "正在保存…" : document.enabled ? "暂停使用" : "开启使用"}</button>}
+              </section>}
+              {editing ? <>
+                <div className="knowledge-document-fields">
+                  <label>文件名<input value={draft.source} maxLength={200} disabled={Boolean(busy)}
+                    onChange={event => setDraft(current => ({ ...current, source: event.target.value }))} /></label>
+                  <label>适用仓库<input value={draft.repository_scope} maxLength={255} placeholder="留空表示通用规则" disabled={Boolean(busy)}
+                    onChange={event => setDraft(current => ({ ...current, repository_scope: event.target.value }))} /></label>
+                  <small>文件名以 .md 结尾；仓库填写 owner/repository，留空表示所有仓库通用。</small>
+                </div>
+                <label className="knowledge-body-label">规则正文
+                  <textarea className="knowledge-editor" value={draft.content} spellCheck={false} disabled={Boolean(busy)}
+                    onChange={event => setDraft(current => ({ ...current, content: event.target.value }))} />
+                </label>
+                <div className="knowledge-editor-actions">
+                  <button type="button" className="knowledge-primary-btn" disabled={Boolean(busy) || (!creating && !dirty)}
+                    onClick={() => void saveDocument()}>{busy === "save" ? "正在保存…" : creating ? "保存并使用" : "保存修改"}</button>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => selectDocument(document)}>取消编辑</button>
+                  {dirty && <span>有未保存的修改</span>}
+                </div>
+              </> : <article className="knowledge-markdown-preview">
+                <Suspense fallback={<p role="status">正在显示正文…</p>}><ReactMarkdown skipHtml>{draft.content}</ReactMarkdown></Suspense>
+              </article>}
+              {document && !document.archived && <div className="knowledge-remove-action">
+                <p>暂时不用可“暂停使用”；不再常用可移出列表，之后仍能恢复。</p>
+                <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void removeDocument()}>移出列表</button>
+              </div>}
+              <p className="knowledge-snapshot-note">这些操作影响当前知识库；已有审查和固定方案保留原来的规则快照。</p>
+              <div className="knowledge-extra-tools">
+                {document && <details open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
+                  <summary>历史版本</summary>
+                  {historyOpen && <div className="knowledge-history">
+                    <p>查看以前的正文，或采用某一版内容。恢复正文不会删除其他版本。</p>
+                    <div className="knowledge-version-list">{(history.data?.items ?? document.versions).map(version =>
+                      <div key={version.version}><span><strong>第 {version.version} 版</strong>
+                        <small>{formatDate(version.created_at)} · {version.created_by}</small></span>
+                        {version.version === document.current_version ? <b>当前正文</b>
+                          : <button type="button" disabled={Boolean(busy) || document.archived || dirty}
+                            onClick={() => void restoreVersion(version.version)}>采用这版内容</button>}
+                      </div>)}</div>
+                    <Pagination page={history.page} count={(history.data?.items ?? document.versions).length}
+                      hasNext={Boolean(history.data ? history.data.next_cursor : document.version_next_cursor)}
+                      busy={history.loading} onPrevious={history.previous} onNext={history.next} label="文档版本分页" />
+                  </div>}
+                </details>}
+                <details open={searchOpen} onToggle={event => setSearchOpen(event.currentTarget.open)}>
+                  <summary>试搜可用规则</summary>
+                  {searchOpen && <section className="knowledge-search-test">
+                    <p>只查询已经保存并启用的规则，不发起模型审查。</p>
+                    <form onSubmit={event => { event.preventDefault(); void testSearch(); }}>
+                      <input aria-label="规则关键词" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="例如：退款、权限、标签删除" />
+                      <button type="submit" disabled={!searchQuery.trim() || Boolean(busy)}>{busy === "search" ? "查找中…" : "查找规则"}</button>
+                    </form>
+                    <div className="knowledge-citations">{citations.map((item, index) =>
+                      <article key={item.source + ":" + item.heading + ":" + index}><strong>{item.heading}</strong><small>{item.source}</small><p>{item.excerpt}</p></article>
+                    )}</div>
+                  </section>}
+                </details>
               </div>
-            </> : <div className="knowledge-editor-empty"><strong>选择或新建一份 Markdown 文档</strong><p>左侧文档会按文件路径稳定排序。</p></div>}
+            </> : <div className="knowledge-editor-empty"><h2>{archivedView ? "找回已移出的文档" : "选择一份规则文档"}</h2>
+              <p>{archivedView ? "从左侧选择文档，点击“恢复并使用”。" : "从左侧选择文档阅读，也可以新建或导入自己的规则。"}</p>
+            </div>}
           </section>
-
-          <aside className="knowledge-inspector-pane">
-            <section className="knowledge-search-test"><div><span className="eyebrow">RETRIEVAL TEST</span><h2>检索测试</h2></div><form onSubmit={(event) => { event.preventDefault(); void testSearch(); }}><input id="knowledge-search-query" name="knowledge-search-query" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="输入代码或规则关键词" /><button type="submit" disabled={!searchQuery.trim() || busy === "search"}>{busy === "search" ? "检索中" : "检索"}</button></form><div className="knowledge-citations">{citations.map((item, index) => <article key={`${item.source}-${item.heading}-${index}`}><div><strong>{item.heading}</strong><b>{item.score.toFixed(3)}</b></div><small>{item.source} · {item.version}</small><p>{item.excerpt}</p></article>)}{citations.length === 0 && <p className="knowledge-no-citation">输入关键词可验证当前已启用文档的召回结果。</p>}</div></section>
-            {document && <section className="knowledge-history"><div><span className="eyebrow">VERSION HISTORY</span><h2>版本记录</h2></div><dl><div><dt>当前版本</dt><dd>v{document.current_version}</dd></div><div><dt>内容指纹</dt><dd><code>{document.content_sha256.slice(0, 12)}</code></dd></div><div><dt>更新人</dt><dd>{document.updated_by}</dd></div><div><dt>更新时间</dt><dd>{formatDate(document.updated_at)}</dd></div></dl><div className="knowledge-version-list">{(history.data?.items ?? document.versions).map((version) => <div key={version.version}><span><strong>v{version.version}</strong><small>{formatDate(version.created_at)} · {version.created_by}</small></span>{version.version === document.current_version ? <b>当前</b> : <button type="button" disabled={Boolean(busy) || document.archived} onClick={() => void restoreVersion(version.version)}>恢复</button>}</div>)}</div><Pagination page={history.page} count={(history.data?.items ?? document.versions).length} hasNext={Boolean(history.data ? history.data.next_cursor : document.version_next_cursor)} busy={history.loading} onPrevious={history.previous} onNext={history.next} label="文档版本分页" /></section>}
-          </aside>
         </div>
       </main>
     </div>

@@ -2964,6 +2964,18 @@ export interface components {
             /** Versions */
             versions: components["schemas"]["KnowledgeVersionResponse"][];
         };
+        /** KnowledgeDocumentRestoreRequest */
+        KnowledgeDocumentRestoreRequest: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /** Expected Document Version */
+            expected_document_version: number;
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** KnowledgeDocumentStateRequest */
         KnowledgeDocumentStateRequest: {
             /** Expected Document Version */
@@ -3961,7 +3973,7 @@ export interface components {
          * ReviewAction
          * @enum {string}
          */
-        ReviewAction: "start" | "pause" | "resume" | "retry_stage" | "approve" | "reject" | "publish" | "expedite" | "retry" | "cancel" | "rerun" | "retry_failed_node" | "new_review";
+        ReviewAction: "start" | "pause" | "resume" | "retry_stage" | "approve" | "reject" | "publish" | "expedite" | "retry" | "cancel" | "review_snapshot" | "rerun" | "retry_failed_node" | "new_review";
         /** ReviewActionRequest */
         ReviewActionRequest: {
             action: components["schemas"]["ReviewAction"];
@@ -4235,6 +4247,11 @@ export interface components {
             review_task_id: string;
             /** Review Version Key */
             review_version_key: string;
+            /**
+             * Snapshot Review
+             * @default false
+             */
+            snapshot_review: boolean;
             /** Stages */
             stages: components["schemas"]["ReviewStageResponse"][];
             /** Still Present Finding Count */
@@ -4437,6 +4454,11 @@ export interface components {
             review_run_id: string;
             /** Review Task Id */
             review_task_id: string;
+            /**
+             * Snapshot Review
+             * @default false
+             */
+            snapshot_review: boolean;
             /** Unreviewed Finding Count */
             unreviewed_finding_count: number;
             /**
@@ -5364,6 +5386,7 @@ export interface operations {
                 limit?: number;
                 cursor?: string | null;
                 include_archived?: boolean;
+                archived_only?: boolean;
             };
             header?: never;
             path?: never;
@@ -5698,6 +5721,7 @@ export interface operations {
         parameters: {
             query?: {
                 include_archived?: boolean;
+                archived_only?: boolean;
                 limit?: number;
                 offset?: number;
                 q?: string;
@@ -5876,7 +5900,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["KnowledgeDocumentStateRequest"];
+                "application/json": components["schemas"]["KnowledgeDocumentRestoreRequest"];
             };
         };
         responses: {

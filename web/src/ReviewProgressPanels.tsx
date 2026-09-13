@@ -13,50 +13,45 @@ export function DetailIcon({ children }: { children: string }) {
   return <span className="review-detail-icon" aria-hidden="true">{children}</span>;
 }
 
+function stageCaption(status: string, detail?: string | null): string {
+  if (status === "current") return detail ? phaseLabels[detail] ?? "进行中" : "进行中";
+  return ({ completed: "已完成", failed: "失败", blocked: "等待前置操作", pending: "待执行",
+    cancelled: "已取消", superseded: "已被替代", rejected: "已驳回", paused: "已暂停", skipped: "未执行" } as Record<string, string>)[status] ?? status;
+}
+
 export function StageTimeline({ details }: { details: ReviewDetails }) {
-  return (
-    <section className="review-panel review-stage-panel">
-      <div className="review-panel-heading">
-        <div>
-          <span className="review-eyebrow">PIPELINE</span>
-          <h2>审查流程</h2>
-        </div>
-        <span className="review-stage-readout">
-          当前：{stageLabels[details.current_stage] ?? details.current_stage}
-        </span>
-      </div>
-      <div className="review-stage-timeline">
-        {details.stages.map((stage, index) => (
-          <div className={`review-stage-row stage-${stage.status}`} key={stage.key}>
-            <div className="review-stage-marker">
-              {stage.status === "completed" ? "✓" : stage.status === "failed" ? "!" : index + 1}
-            </div>
-            {index < details.stages.length - 1 && <span className="review-stage-connector" />}
-            <div className="review-stage-copy">
-              <div className="review-stage-title-line">
-                <strong>{stageLabels[stage.key] ?? stage.key}</strong>
-                <span>
-                  {stage.status === "completed"
-                    ? "已完成"
-                    : stage.status === "current"
-                      ? "进行中"
-                      : stage.status === "failed"
-                        ? "失败"
-                        : stage.status === "blocked"
-                          ? "等待前置操作"
-                          : "等待中"}
-                </span>
-              </div>
-              {stage.detail_code && stage.key === details.current_stage && (
-                <small>{phaseLabels[stage.detail_code] ?? stage.detail_code}</small>
-              )}
-              {stage.completed_at && <time>{formatDate(stage.completed_at)}</time>}
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
+  const stopped = ["cancelled", "superseded", "rejected", "paused"].includes(details.phase);
+  const stages = details.stages.map(stage => ({ ...stage, status: stopped && stage.status === "current" ? details.phase : stage.status }));
+  const groups = [
+    { title: "获取代码", keys: ["intake", "context", "ci"] },
+    { title: "AI 检查", keys: ["planning", "model", "agent_batches", "aggregating"] },
+    { title: "核对结果", keys: ["approval"] },
+    { title: "完成处理", keys: ["publish", "result"] },
+  ];
+  return <section className="review-panel review-stage-panel">
+    <div className="review-panel-heading"><h2>审查流程</h2><span className="review-stage-readout">
+      {phaseLabels[details.phase] ?? details.phase}
+    </span></div>
+    <div className="review-stage-timeline">{groups.map((group, index) => {
+      const relevant = stages.filter(stage => group.keys.includes(stage.key));
+      const required = relevant.filter(stage => stage.status !== "skipped");
+      const active = required.find(stage => ["cancelled", "superseded", "rejected", "failed", "paused", "current"].includes(stage.status));
+      const status = active?.status ?? (required.length === 0 ? "skipped"
+        : required.every(stage => stage.status === "completed") ? "completed" : stopped ? "skipped" : "pending");
+      return <div className={"review-stage-row stage-" + status} key={group.title}>
+        <div className="review-stage-marker">{status === "completed" ? "✓" : index + 1}</div>
+        <div className="review-stage-copy"><div className="review-stage-title-line"><strong>{group.title}</strong>
+          <span>{status === "skipped" && details.snapshot_review ? "无需此步" : stageCaption(status, active?.detail_code)}</span>
+        </div></div>
+      </div>;
+    })}</div>
+    <details className="review-stage-details"><summary>查看详细步骤</summary>
+      {stages.map(stage => <div className="review-stage-history-row" key={stage.key}>
+        <strong>{stageLabels[stage.key] ?? stage.key}</strong><span>{stageCaption(stage.status, stage.detail_code)}</span>
+        {stage.completed_at && <time>{formatDate(stage.completed_at)}</time>}
+      </div>)}
+    </details>
+  </section>;
 }
 
 export function ModelBatchPanel({
@@ -74,11 +69,12 @@ export function ModelBatchPanel({
   })), [details.events, details.batch_progress]);
   const hasModelEvents = activeAgents.some((item) => item.progress.events.length > 0);
   if (!hasModelEvents && !details.model_review_completed_at) return null;
+  const stopped = ["cancelled", "superseded", "rejected", "paused"].includes(details.phase);
 
   return (
     <section className="review-panel review-batch-panel">
       <div className="review-panel-heading">
-        <div><span className="review-eyebrow">LIVE MODEL PROGRESS</span><h2>四路 Agent 进度</h2></div>
+        <div><span className="review-eyebrow">LIVE MODEL PROGRESS</span><h2>各项 AI 检查结果</h2></div>
         <span className="review-batch-readout">安全 · 规范 · 逻辑 · 汇总</span>
       </div>
       <div className="review-agent-grid">
@@ -105,12 +101,12 @@ export function ModelBatchPanel({
                   : progress.status === "planned"
                     ? "已规划"
                     : "等待开始";
-          const displayStatusLabel = progress.status === "failed"
+          const displayStatusLabel = stopped && progress.status !== "completed" && !programSummary ? details.phase === "paused" ? "已暂停" : "已停止" : progress.status === "failed"
             && completeCount > 0
             ? "部分完成"
             : statusLabel;
           return (
-            <article className={`review-agent-card is-${progress.status}`} key={key}>
+            <article className={`review-agent-card is-${stopped && progress.status !== "completed" ? "cancelled" : progress.status}`} key={key}>
               <header className="review-agent-card-header">
                 <div><strong>{label}</strong><span>{description}</span></div>
                 <b>{displayStatusLabel}</b>
@@ -118,7 +114,7 @@ export function ModelBatchPanel({
               {!programSummary && <div className="review-agent-progress-meta">
                 <span>{completeCount}/{progress.batchCount || "—"} 批</span>
                 {failedCount > 0 && <span className="is-error">{failedCount} 批失败</span>}
-                <span>{progress.findingCount} 条 Finding</span>
+                <span>{progress.findingCount} 条候选问题</span>
               </div>}
               <div className="review-batch-progress" aria-hidden="true"><span style={{ width: `${programSummary ? 100 : progressPercent}%` }} /></div>
               {!programSummary && <dl className="review-agent-metrics">
@@ -199,7 +195,7 @@ export function ModelBatchPanel({
                 </details>
               )}
               {progress.batchCount > 0 && <ReviewBatchList runId={details.review_run_id} agent={key}
-                total={progress.batchCount} changeToken={details.change_token} onRetry={onRetry} busy={retryBusy} />}
+                total={progress.batchCount} changeToken={details.change_token} onRetry={onRetry} busy={retryBusy} stopped={stopped} paused={details.phase === "paused"} />}
             </article>
           );
         })}

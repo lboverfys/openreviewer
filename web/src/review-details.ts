@@ -305,7 +305,8 @@ export function workflowReadout(
   if (details.phase.endsWith("failed") || details.phase === "ci_timed_out") {
     return "需要处理";
   }
-  if (details.phase === "cancelled" || details.phase === "superseded") return "已结束";
+  if (details.phase === "cancelled") return "已取消";
+  if (details.phase === "superseded") return "已被新提交替代";
   return "运行中";
 }
 

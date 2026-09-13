@@ -1,0 +1,83 @@
+{
+  "sources": [
+    "coding.md",
+    "database.md",
+    "niuma/architecture.md",
+    "niuma/authorization.md",
+    "niuma/companion-games.md",
+    "niuma/media-messaging.md",
+    "niuma/orders-points.md",
+    "reliability.md",
+    "repository-rules.md",
+    "security.md"
+  ],
+  "previous": {
+    "coding.md": [
+      "505fd0f5f78830d28633bf3a63125be968e8c35a872a8dd2f1de09f97a43dee2"
+    ],
+    "database.md": [
+      "e505460026143934e7392dc8460a4b3d59d1b3b9d78d2dc86a5846a68f35fef2"
+    ],
+    "historical-findings.md": [
+      "14896045215ef00fbbe82ba4943eda09c6767c8fc4e352c08a17f29117ad5850"
+    ],
+    "niuma/account-security.md": [
+      "310561b4386a3b8edb2bcb421bddcbc338000752fdebd0cdfccffdf82a3a2a5a",
+      "ce664b9a2d0bb5ffc16dcd3f34355b26c71c5af0acfac0cca9d4d476c2046485"
+    ],
+    "niuma/architecture.md": [
+      "2347378b4836845e7a0e9e9a6fa191a060a59b878dadaf497d71b474f133e579",
+      "cc9b5eb409e778b851edc7cda52fe4cfc745663eb1f58b3bd782e0f52a03a9a8"
+    ],
+    "niuma/authorization.md": [
+      "61c00220b8a0fda62949543e532c5890367a0fbcf2dbf34adb2568835eca31dc",
+      "b2e029a8c48966d6253983e005ebeff03c95b7092163294747bc3d61a668e632"
+    ],
+    "niuma/companion-games.md": [
+      "cc4d7f7f9b0cebb11601f0858fc884033e6d9ff7f07b02c07e5dab1cee4221d8",
+      "e5f4f40bb59d16acaf59b6afea7d9c1ac679c53bb0077afd29a7e57d4fb026d0"
+    ],
+    "niuma/database-release.md": [
+      "5131f4c12671d816fa5ad802883ce99462d618c0100256edc453ce459c13eff5",
+      "7a78b770b51845b7a70b3a8b065cc5ee1f4a1a2aa63416059719d85a53e1826c"
+    ],
+    "niuma/error-codes.md": [
+      "5739c977f9999cb74e4447ccd2b9db8e4f522a4cafa0e93c5db7494c6aca3305",
+      "ad01a543056858deb63d7d6528f87a83f5ad0c2111278a7ccccf7cf13b4069b7"
+    ],
+    "niuma/media-messaging.md": [
+      "d5746d944947b26525d75c32428ba4fcf7c6c283845e1c1762f35c598fb10a61",
+      "e818ed0b95422f1bb0f1d59fc2a388c6bd060eb3bdfafbdb2f5df1c8b3f027b2"
+    ],
+    "niuma/orders-points.md": [
+      "d3e3e13968c6abed4b2698f93e10bc075196dee18256ee76e3b7642e2e83e8dc",
+      "dbbc8452d372303ba54a938be94b96f4a60c778249deb5ef241db72bf707a04d"
+    ],
+    "niuma/profile-tags.md": [
+      "44f9a611fd8bb34e2ba1b10698c6a6e8dee037ca013fcef9fa845672ffd183a7",
+      "7d9dae1efe508433e403ecfce5a199f9cbcadf56331407b7c2b853c3ef29effc"
+    ],
+    "repository-rules.md": [
+      "266d873fb22747ea1426dac84796b04ed3ce2e4a84022b4d680bd60164f9014b"
+    ],
+    "security.md": [
+      "ad9790e0c2d18cf59020252b90d841435c57fb2a6ecc13606230c6e6e467e8cd"
+    ]
+  },
+  "scopes": {
+    "coding.md": null,
+    "database.md": null,
+    "historical-findings.md": null,
+    "niuma/account-security.md": "lboverfys/niuma",
+    "niuma/architecture.md": "lboverfys/niuma",
+    "niuma/authorization.md": "lboverfys/niuma",
+    "niuma/companion-games.md": "lboverfys/niuma",
+    "niuma/database-release.md": "lboverfys/niuma",
+    "niuma/error-codes.md": "lboverfys/niuma",
+    "niuma/media-messaging.md": "lboverfys/niuma",
+    "niuma/orders-points.md": "lboverfys/niuma",
+    "niuma/profile-tags.md": "lboverfys/niuma",
+    "repository-rules.md": null,
+    "security.md": null
+  }
+}

@@ -26,18 +26,33 @@ afterEach(()=>{cleanup();clearReadCache();vi.unstubAllGlobals();window.location.
 
 it("从任务详情预选运行并以稳定请求标识创建评测集",async()=>{
   render(<EvaluationPage user={user} reviewRunId="run-1" onSignedOut={vi.fn()}/>);
-  fireEvent.change(screen.getByLabelText("评测集名称"),{target:{value:"权限评测"}});
+  fireEvent.change(screen.getByLabelText("评测名称"),{target:{value:"权限评测"}});
   fireEvent.click(screen.getByRole("button",{name:"保存并收录"}));
   await waitFor(()=>expect(window.location.hash).toBe("#evaluations/set-1"));
   const saved=requests.find(item=>item.method==="POST")!;
-  expect(saved.body).toMatchObject({name:"权限评测",review_run_ids:["run-1"],variant:"baseline",split:"tuning"});
+  expect(saved.body).toMatchObject({name:"权限评测",review_run_ids:["run-1"],variant:"baseline",split:"validation"});
   expect(saved.headers.get("Idempotency-Key")).toBeTruthy();
 });
 
 it("只读成员可以查看评测集但没有收录入口",async()=>{
   render(<EvaluationPage user={{...user,role:"viewer",permissions:["reviews:view"]}} onSignedOut={vi.fn()}/>);
-  await screen.findByText("尚无评测集");
-  expect(screen.queryByRole("button",{name:"创建评测集"})).not.toBeInTheDocument();
+  await screen.findByText("尚无评测记录");
+  expect(screen.queryByRole("button",{name:"开始新评测"})).not.toBeInTheDocument();
+});
+
+it("已收起记录单独查询，恢复后打开原评测且不重新发起模型",async()=>{
+  vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=String(input); requests.push({path,method:init?.method??"GET",body:init?.body?JSON.parse(String(init.body)):null,headers:new Headers(init?.headers)});
+    if(init?.method==="POST") return Response.json(dataset);
+    return Response.json({items:path.includes("archived_only=true")?[{...dataset,archived_at:now}]:[]});
+  }));
+  render(<EvaluationPage user={user} onSignedOut={vi.fn()}/>);
+  await screen.findByText("尚无评测记录");
+  fireEvent.click(screen.getByRole("button",{name:"已收起记录"}));
+  fireEvent.click(await screen.findByRole("button",{name:"恢复评测"}));
+  await waitFor(()=>expect(window.location.hash).toBe("#evaluations/set-1"));
+  expect(requests.filter(item=>item.method==="POST")).toHaveLength(1);
+  expect(requests.find(item=>item.method==="POST")?.body).toEqual({expected_revision:2,archived:false});
 });
 
 it("未复核指标和未知费用不显示为零分或满分",async()=>{

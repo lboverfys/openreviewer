@@ -235,9 +235,12 @@ class EvaluationWorkbench:
     def datasets(
         self, scope: ResourceScope, *, limit: int = 10, cursor: str | None = None,
         include_archived: bool = False,
+        archived_only: bool = False,
     ) -> CursorPage[EvaluationDatasetView]:
         statement = select(*(getattr(EvaluationDatasetRecord, key) for key in _DATASET_COLUMNS)).where(dataset_scope(scope))
-        if not include_archived:
+        if archived_only:
+            statement = statement.where(EvaluationDatasetRecord.archived_at.is_not(None))
+        elif not include_archived:
             statement = statement.where(EvaluationDatasetRecord.archived_at.is_(None))
         statement = apply_cursor(statement, EvaluationDatasetRecord.created_at,
                                  EvaluationDatasetRecord.id, cursor).limit(limit + 1)

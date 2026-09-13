@@ -10,7 +10,7 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
 }) {
   const [name, setName] = useState("");
   const [variant, setVariant] = useState<EvaluationVariant>(sample?.baseline ? "candidate" : "baseline");
-  const [split, setSplit] = useState<EvaluationSplit>(sample?.split ?? "tuning");
+  const [split, setSplit] = useState<EvaluationSplit>(sample?.split ?? "validation");
   const [kind, setKind] = useState<EvaluationImport["kind"]>(sample?.kind ?? "normal");
   const [selected, setSelected] = useState<string[]>(initialRunId ? [initialRunId] : []);
   const [busy, setBusy] = useState(false);
@@ -32,18 +32,20 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
   }
   const opposite = sample?.[variant === "baseline" ? "candidate" : "baseline"]?.source_run_id;
   return <section className="evaluation-card evaluation-editor" aria-label="收录评测样本">
-    <div className="ws-editor-heading"><div><h2>{dataset ? "收录到 " + dataset.name : "创建评测集并收录样本"}</h2><p>先设置评测分组，再选择要收录的审查运行。</p></div><div className="ws-actions"><WorkspaceBadge tone="accent">已选 {selected.length} 条</WorkspaceBadge><button type="button" disabled={busy} onClick={onCancel}>取消收录</button></div></div>
+    <div className="ws-editor-heading"><div><h2>{dataset ? "添加到 " + dataset.name : "开始一次效果评测"}</h2><p>选择已完成的审查结果，之后再核对哪些问题有效。</p></div><div className="ws-actions"><WorkspaceBadge tone="accent">已选 {selected.length} 条</WorkspaceBadge><button type="button" disabled={busy} onClick={onCancel}>取消添加</button></div></div>
     <form onSubmit={submit}>
       <fieldset disabled={busy}>
-        <WorkspaceSection title="评测设置" description="基线与候选用于对照，调参与验收样本分别保留。"><div className="evaluation-form-grid">
-          {!dataset && <label>评测集名称<input required maxLength={120} value={name} placeholder="例如：权限与数据库审查评测" onChange={event => setName(event.target.value)} /></label>}
-          <label>分组<select value={variant} onChange={event => setVariant(event.target.value as EvaluationVariant)}>
-            <option value="baseline">基线</option><option value="candidate">候选</option></select></label>
-          <label>样本划分<select disabled={Boolean(sample)} value={split} onChange={event => setSplit(event.target.value as EvaluationSplit)}>
-            <option value="tuning">调参集</option><option value="validation">验收集</option></select><small>同一 PR 的划分固定，防止调参数据混入验收。</small></label>
-          <label>样本类型<select disabled={Boolean(sample)} value={kind} onChange={event => setKind(event.target.value as EvaluationImport["kind"])}>
-            <option value="normal">正常变更</option><option value="known_defect">已知缺陷</option><option value="cross_file">跨文件问题</option></select></label>
+        <WorkspaceSection title="选择比较位置" description="第一次添加放入“原结果”；换模型后的同提交审查放入“新结果”。"><div className="evaluation-form-grid">
+          {!dataset && <label>评测名称<input required maxLength={120} value={name} placeholder="例如：NiuMa 审查质量核对" onChange={event => setName(event.target.value)} /></label>}
+          <label>这组结果用于<select value={variant} onChange={event => setVariant(event.target.value as EvaluationVariant)}>
+            <option value="baseline">原结果（比较起点）</option><option value="candidate">新结果（要评估的方案）</option></select></label>
         </div></WorkspaceSection>
+        <details className="ws-disclosure"><summary>样本分类（可选）</summary><div className="ws-disclosure-body evaluation-form-grid">
+          <label>样本用途<select disabled={Boolean(sample)} value={split} onChange={event => setSplit(event.target.value as EvaluationSplit)}>
+            <option value="validation">正式验收</option><option value="tuning">调试配置</option></select><small>默认用于验收。调试过配置的样本应单独保留，避免评测结果失真。</small></label>
+          <label>变更类型<select disabled={Boolean(sample)} value={kind} onChange={event => setKind(event.target.value as EvaluationImport["kind"])}>
+            <option value="normal">普通变更</option><option value="known_defect">包含已知缺陷</option><option value="cross_file">涉及跨文件问题</option></select></label>
+        </div></details>
         {initialRunId && <p className="evaluation-hint">已预选来自任务详情的运行，可在下方调整。</p>}
         <div className="evaluation-source-step"><EvaluationSourcePicker datasetId={dataset?.id} caseId={sample?.id} selected={selected} onSelected={setSelected}
           onError={onError} disabled={busy} excludeRunId={opposite} single={Boolean(sample)} /></div>

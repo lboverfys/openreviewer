@@ -25,6 +25,7 @@ from persistence.models import (
 
 _TOKEN = re.compile(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}")
 _CJK_RUN = re.compile(r"^[\u4e00-\u9fff]+$")
+_IDENTIFIER_PARTS = re.compile(r"[A-Z]+(?=[A-Z][a-z]|[0-9_]|$)|[A-Z]?[a-z]+|[0-9]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,18 @@ class RagCitation:
     score: float
     excerpt: str
     version: str
+
+
+def merge_review_citations(
+    topics: tuple[RagCitation, ...], responsibilities: tuple[RagCitation, ...],
+) -> tuple[RagCitation, ...]:
+    """先保留变更主题，再补职责规则；不同查询的相同内容只传一次。"""
+    combined: dict[tuple[str, str, str, str], RagCitation] = {}
+    for item in (*topics, *responsibilities):
+        combined.setdefault((item.source, item.heading, item.excerpt, item.version), item)
+        if len(combined) == 8:
+            break
+    return tuple(combined.values())
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +462,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         self,
         *,
         include_archived: bool = False,
+        archived_only: bool = False,
         limit: int = 10,
         offset: int = 0,
         query: str = "",
@@ -461,8 +475,10 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                 state = session.get(KnowledgeLibraryRecord, 1)
                 if state is None:
                     raise KnowledgePersistenceError("知识库版本暂时无法读取")
-                filters: tuple[ColumnElement[bool], ...] = () if include_archived else (
-                    KnowledgeDocumentRecord.archived_at.is_(None),
+                filters: tuple[ColumnElement[bool], ...] = (
+                    (KnowledgeDocumentRecord.archived_at.is_not(None),) if archived_only
+                    else () if include_archived
+                    else (KnowledgeDocumentRecord.archived_at.is_(None),)
                 )
                 if query:
                     pattern = "%" + query.replace("%", "\\%").replace("_", "\\_") + "%"
@@ -483,7 +499,8 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                     )
                     .where(*filters)
                     .order_by(
-                        KnowledgeDocumentRecord.archived_at.asc(),
+                        KnowledgeDocumentRecord.archived_at.desc() if archived_only
+                        else KnowledgeDocumentRecord.archived_at.asc(),
                         KnowledgeDocumentRecord.repository_scope.asc().nullslast(),
                         KnowledgeDocumentRecord.source.asc(),
                         KnowledgeDocumentRecord.id.asc(),
@@ -709,22 +726,27 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         expected_revision: int,
         expected_document_version: int,
         actor: str,
+        restore_enabled: bool = False,
     ) -> KnowledgeMutationView:
         now = self._clock()
         try:
             with self._sessions() as session:
                 state = self._lock_state(session, expected_revision, actor, now)
-                document, _ = self._locked_document(session, document_id)
+                document, current = self._locked_document(session, document_id)
                 if document.current_version != expected_document_version:
                     raise KnowledgeConflictError("文档已被其他管理员更新，请重新读取")
+                if not archived and restore_enabled and (
+                    self._enabled_bytes_excluding(session, document_id) + current.byte_size > self.max_total_bytes
+                ):
+                    raise KnowledgeValidationError("启用文档总大小不能超过 5 MiB")
                 document.archived_at = now if archived else None
-                document.enabled = False
+                document.enabled = not archived and restore_enabled
                 document.updated_by = actor
                 document.updated_at = now
                 self._advance_state(state, actor, now)
                 next_revision = state.revision
                 session.commit()
-        except (KnowledgeConflictError, KnowledgeNotFoundError):
+        except (KnowledgeConflictError, KnowledgeNotFoundError, KnowledgeValidationError):
             raise
         except SQLAlchemyError as exc:
             raise KnowledgePersistenceError("知识文档状态暂时无法更新") from exc
@@ -1147,6 +1169,9 @@ def _split_markdown(source: str, text: str, version: str) -> Iterable[KnowledgeC
     section_lines: list[str] = []
     in_fence = False
     for line in text.splitlines():
+        # 仓库范围已作为 chunk 元数据保存，不把单独的范围标记召回给模型。
+        if not in_fence and re.fullmatch(r"适用仓库：[ \t]*[^\r\n]+", line):
+            continue
         is_heading = bool(re.match(r"^#{1,6}(?:\s|$)", line)) and not in_fence
         if is_heading:
             yield from _section_chunks(source, heading, section_lines, version)
@@ -1263,6 +1288,10 @@ def _tokens(value: str) -> tuple[str, ...]:
                 item[index : index + 2]
                 for index in range(len(item) - 1)
             )
+        else:
+            # 保留完整标识符，同时让 Java 类名和 SQL 字段命中业务术语。
+            tokens.extend(part.casefold() for part in _IDENTIFIER_PARTS.findall(item)
+                          if len(part) > 1 and part.casefold() != normalized)
     return tuple(tokens)
 
 

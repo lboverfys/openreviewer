@@ -63,6 +63,7 @@ class ReviewAction(StrEnum):
     EXPEDITE = "expedite"
     RETRY = "retry"
     CANCEL = "cancel"
+    REVIEW_SNAPSHOT = "review_snapshot"
     RERUN = "rerun"
     # 新版交互动作；保留 RETRY/RERUN 供旧客户端继续工作。
     RETRY_FAILED_NODE = "retry_failed_node"
@@ -325,6 +326,7 @@ class StoredReviewDetails:
     batch_progress: Mapping[str, BatchProgress] = field(default_factory=dict)
     repository_policy: RepositoryPolicySnapshot | None = None
     model_request_count: int | None = None
+    snapshot_review: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,9 +717,9 @@ class ReviewManagementService:
     ) -> tuple[str, str]:
         status = item.workflow_status
         if status is ExecutionStatus.SUPERSEDED:
-            return "intake", "superseded"
+            return "result", "superseded"
         if status is ExecutionStatus.CANCELLED:
-            return "intake", "cancelled"
+            return "result", "cancelled"
         if status is ExecutionStatus.TIMED_OUT:
             return "ci", "ci_timed_out"
         if status is ExecutionStatus.PAUSED:
@@ -762,6 +764,14 @@ class ReviewManagementService:
             return "approval", "approved"
         if status is ExecutionStatus.REJECTED:
             return "approval", "rejected"
+        if item.execution_status is ExecutionStatus.FAILED and status in {
+            ExecutionStatus.CI, ExecutionStatus.PLANNING, ExecutionStatus.AGENT_BATCHES, ExecutionStatus.AGGREGATING,
+        }:
+            return ("ci", "ci_failed") if status is ExecutionStatus.CI else (
+                "planning", "planning_failed"
+            ) if status is ExecutionStatus.PLANNING else (
+                "aggregating" if status is ExecutionStatus.AGGREGATING else "agent_batches", "model_failed"
+            )
         direct_stage = {
             ExecutionStatus.CI: ("ci", "ci_running"),
             ExecutionStatus.PLANNING: ("planning", "planning_running"),
@@ -769,6 +779,11 @@ class ReviewManagementService:
             ExecutionStatus.AGGREGATING: ("aggregating", "aggregating_running"),
         }.get(status)
         if direct_stage is not None:
+            if item.execution_status is not ExecutionStatus.RUNNING:
+                queued_phase = "waiting_ci" if status is ExecutionStatus.CI else (
+                    "planning_queued" if status is ExecutionStatus.PLANNING else "model_queued"
+                )
+                return direct_stage[0], queued_phase
             return direct_stage
         if item.review_plan_id is not None:
             return (
@@ -812,10 +827,15 @@ class ReviewManagementService:
         unreviewed_findings: int,
     ) -> tuple[ReviewAction, ...]:
         status = item.workflow_status
+        snapshot_actions = (ReviewAction.REVIEW_SNAPSHOT,) if (
+            item.context_fetched_at is not None and item.files_complete is True and item.diff_complete is True
+        ) else ()
+        if status is ExecutionStatus.CANCELLED:
+            return (*snapshot_actions, ReviewAction.NEW_REVIEW)
         if status is ExecutionStatus.SUPERSEDED:
             # 旧 SHA 的结果不可再重试；用户只能从当前详情入口创建一条
             # 新审查记录，避免把已被新提交替代的任务重新排回队列。
-            return (ReviewAction.NEW_REVIEW,)
+            return (*snapshot_actions, ReviewAction.NEW_REVIEW)
         summary_retry_available = item.summary_status == "failed"
         if item.coverage_status == "partial" and (
             item.failed_agents or item.failed_batches
@@ -826,7 +846,7 @@ class ReviewManagementService:
                 ReviewAction.NEW_REVIEW,
             )
         if status is ExecutionStatus.FAILED:
-            return (ReviewAction.RETRY, ReviewAction.RETRY_STAGE, ReviewAction.RERUN)
+            return (ReviewAction.RETRY, ReviewAction.RETRY_STAGE, *snapshot_actions, ReviewAction.RERUN)
         if status is ExecutionStatus.TIMED_OUT:
             return (ReviewAction.RETRY, ReviewAction.RERUN)
         if status is ExecutionStatus.AWAITING_APPROVAL:
@@ -847,20 +867,13 @@ class ReviewManagementService:
         if status is ExecutionStatus.AWAITING_PUBLISH:
             return (ReviewAction.PUBLISH, ReviewAction.REJECT)
         if status is ExecutionStatus.REJECTED:
-            return (ReviewAction.RETRY_STAGE, ReviewAction.RERUN)
+            return (ReviewAction.RETRY_STAGE, *snapshot_actions, ReviewAction.RERUN)
         if status is ExecutionStatus.PAUSED:
-            actions: tuple[ReviewAction, ...] = (ReviewAction.RESUME,)
-            if item.execution_status in {
-                ExecutionStatus.QUEUED,
-                ExecutionStatus.WAITING_FOR_CI,
-                ExecutionStatus.READY_FOR_REVIEW,
-            }:
-                actions += (ReviewAction.CANCEL,)
-            return actions
+            return (ReviewAction.RESUME, ReviewAction.CANCEL)
         if item.model_review_completed_at is not None and status is ExecutionStatus.COMPLETED:
             if summary_retry_available:
                 return (ReviewAction.RETRY_FAILED_NODE, ReviewAction.RERUN)
-            return (ReviewAction.RERUN,)
+            return (*snapshot_actions, ReviewAction.RERUN)
         if status is ExecutionStatus.QUEUED:
             return (
                 ReviewAction.START,
@@ -879,7 +892,9 @@ class ReviewManagementService:
             ExecutionStatus.AGENT_BATCHES,
             ExecutionStatus.AGGREGATING,
         }:
-            return (ReviewAction.PAUSE,)
+            return (ReviewAction.PAUSE, ReviewAction.CANCEL)
+        if status is ExecutionStatus.RUNNING:
+            return (ReviewAction.CANCEL,)
         return ()
 
     @staticmethod
@@ -902,6 +917,7 @@ class ReviewManagementService:
             "result",
         )
         current_index = order.index(current_stage)
+        terminal = phase in {"cancelled", "superseded", "rejected"}
         failed_phase = phase.endswith("failed") or phase == "ci_timed_out"
         event_times = {event.event_type: event.occurred_at for event in item.events}
         completed_times = {
@@ -932,14 +948,28 @@ class ReviewManagementService:
             ),
             "result": item.model_review_completed_at,
         }
+        reliable_completion = {
+            "intake": item.created_at, "context": item.context_fetched_at,
+            "ci": completed_times["ci"], "planning": item.plan_created_at,
+            "model": item.model_review_completed_at, "agent_batches": item.model_review_completed_at,
+            "aggregating": item.model_review_completed_at,
+            "approval": event_times.get("review.workflow.approve"),
+            "publish": event_times.get("review.manual.publish_completed"),
+        }
         result: list[ReviewStage] = []
         for index, key in enumerate(order):
-            if index < current_index:
+            if item.snapshot_review and key in {"ci", "approval", "publish"}:
+                stage_status = "skipped"
+            elif terminal:
+                # 终态没有仍在运行的节点，也不凭“到了最后一列”虚构已完成步骤。
+                stage_status = phase if key == current_stage else "completed" if reliable_completion.get(key) else "skipped"
+            elif index < current_index:
                 stage_status = "completed"
             elif index == current_index:
                 stage_status = (
                     "failed"
                     if failed_phase
+                    else "paused" if phase == "paused"
                     else "completed" if phase == "completed" else "current"
                 )
             else:
@@ -949,7 +979,9 @@ class ReviewManagementService:
                     key=key,
                     status=stage_status,
                     started_at=(item.created_at if key == "intake" else None),
-                    completed_at=completed_times[key],
+                    completed_at=(None if stage_status == "skipped" else
+                        item.updated_at if terminal and key == current_stage else
+                        reliable_completion.get(key) if terminal else completed_times[key]),
                     detail_code=(phase if index == current_index else None),
                 )
             )

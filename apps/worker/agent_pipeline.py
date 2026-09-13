@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from threading import Event
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ from domain.security import SafeApplicationError
 from services.ai_settings import ActiveAiRuntime
 from services.model_budget import model_budget_scope
 from services.model_review import ModelReviewer
+from services.rag import merge_review_citations
 from services.task_queue import TaskQueueError
 
 if TYPE_CHECKING:
@@ -144,11 +146,12 @@ def _run_fixed_agent_workflow(
             knowledge_chunks = tuple(
                 chunk for chunk in knowledge_chunks if chunk.source in allowed_sources
             )
-        common_query = " ".join(
-            (
-                model_input.repository,
-                *(unit.file for unit in model_input.units[:32]),
-            )
+        # 仓库范围已过滤；完整包路径会让 niuma/java/service 等词挤掉业务主题。
+        topic_query = " ".join(dict.fromkeys(
+            PurePosixPath(unit.file).stem for unit in model_input.units[:32]
+        ))
+        topic_citations = self._knowledge_base.search(
+            topic_query, limit=4, chunks=knowledge_chunks,
         )
         responsibilities = {
             ReviewAgent.SECURITY: (
@@ -161,15 +164,16 @@ def _run_fixed_agent_workflow(
                 "logic reliability business database correctness 逻辑 可靠性 数据库"
             ),
             ReviewAgent.SUMMARY: (
-                "historical findings security coding database 汇总 历史 问题"
+                "evidence findings deduplication 证据 缺陷 误报 合并"
             ),
         }
         for agent, responsibility in responsibilities.items():
-            citations = self._knowledge_base.search(
-                f"{common_query} {responsibility}",
+            responsibility_citations = self._knowledge_base.search(
+                responsibility,
                 limit=8,
                 chunks=knowledge_chunks,
             )
+            citations = merge_review_citations(topic_citations, responsibility_citations)
             reference_versions[agent] = {
                 item.source: item.version for item in citations
             }

@@ -242,6 +242,7 @@ class SqlAlchemyDashboardRepository:
                 PullRequestVersionRecord.base_ref,
                 ReviewRunRecord.execution_status,
                 ReviewRunRecord.workflow_status,
+                ReviewRunRecord.snapshot_review,
                 ReviewTaskRecord.attempt_count,
                 ReviewTaskRecord.max_attempts,
                 ReviewTaskRecord.last_error,
@@ -385,6 +386,7 @@ class SqlAlchemyDashboardRepository:
                     workflow_status=ExecutionStatus(
                         row.workflow_status or row.execution_status
                     ),
+                    snapshot_review=row.snapshot_review,
                     attempt_count=row.attempt_count,
                     max_attempts=row.max_attempts,
                     last_error=(
@@ -426,7 +428,11 @@ class SqlAlchemyDashboardRepository:
             repository_key_column=ReviewRunRecord.repository_key,
         )]
         if execution_status is not None:
-            filters.append(ReviewRunRecord.execution_status == execution_status.value)
+            state_column = ReviewRunRecord.workflow_status if execution_status in {
+                ExecutionStatus.PAUSED, ExecutionStatus.AWAITING_APPROVAL, ExecutionStatus.AWAITING_PUBLISH,
+                ExecutionStatus.PUBLISHING, ExecutionStatus.APPROVED, ExecutionStatus.REJECTED,
+            } else ReviewRunRecord.execution_status
+            filters.append(state_column == execution_status.value)
         if query and len(query) < 3 and not query.isdecimal():
             raise ValueError("搜索请输入至少3个字符，PR编号可直接输入数字")
         if query:

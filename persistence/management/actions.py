@@ -26,6 +26,7 @@ from persistence.management.retry import (
 )
 from persistence.models import (
     OutboxEventRecord,
+    PullRequestVersionRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
     ReviewRunRecord,
@@ -207,6 +208,8 @@ def apply_action(
             workflow_current = ExecutionStatus(
                 run.workflow_status or run.execution_status
             )
+            if run.snapshot_review and target_stage == ExecutionStatus.CI.value:
+                raise ReviewActionConflictError("历史版本复查不包含 CI，请从规划或 AI 步骤重试")
 
             if failed_node_action:
                 _prepare_failed_node_retry(
@@ -450,9 +453,20 @@ def apply_action(
                 session.commit()
                 return run.id, task.id, execution_status
 
-            if action is ReviewAction.RERUN or new_review_action:
+            if action in {ReviewAction.RERUN, ReviewAction.REVIEW_SNAPSHOT} or new_review_action:
                 if current is ExecutionStatus.RUNNING:
                     raise ReviewActionConflictError("任务正在处理中，暂时不能重新审查")
+                snapshot_review = action is ReviewAction.REVIEW_SNAPSHOT or (run.snapshot_review and not new_review_action)
+                if snapshot_review:
+                    saved = session.execute(select(
+                        PullRequestVersionRecord.files_complete,
+                        PullRequestVersionRecord.diff_complete,
+                        PullRequestVersionRecord.context_fetched_at,
+                    ).where(PullRequestVersionRecord.review_version_key == run.review_version_key).limit(1)).one_or_none()
+                    if saved is None or not saved.files_complete or not saved.diff_complete or saved.context_fetched_at is None:
+                        raise ReviewActionConflictError("尚未保存完整代码，无法复查历史版本")
+                initial_status = ExecutionStatus.READY_FOR_REVIEW if snapshot_review else ExecutionStatus.QUEUED
+                initial_workflow = ExecutionStatus.PLANNING if snapshot_review else ExecutionStatus.QUEUED
                 new_run_id = str(self._uuid_factory())
                 new_task_id = str(self._uuid_factory())
                 new_review_version_key = build_review_version_key(
@@ -464,10 +478,10 @@ def apply_action(
                 # 只在尾部不同的两个键发生碰撞。新记录使用固定长度摘要，
                 # 同时回读旧版明文键，保证发布新版后重试仍然幂等。
                 rerun_key = (
-                    f"manual-rerun:{review_run_id}:"
+                    f"{'manual-snapshot' if snapshot_review else 'manual-rerun'}:{review_run_id}:"
                     f"{sha256(normalized_request_id.encode('utf-8')).hexdigest()}"
                 )
-                legacy_rerun_key = (f"manual-rerun:{review_run_id}:{request_id}")[:200]
+                legacy_rerun_key = rerun_key if snapshot_review else (f"manual-rerun:{review_run_id}:{request_id}")[:200]
                 existing_rerun = session.scalar(
                     select(ReviewRunRecord.id).where(
                         ReviewRunRecord.idempotency_key.in_(
@@ -483,7 +497,11 @@ def apply_action(
                     )
                     if existing_task is None:
                         raise ReviewManagementPersistenceError("重新审查任务记录不完整")
-                    return existing_rerun, existing_task, ExecutionStatus.QUEUED
+                    return existing_rerun, existing_task, initial_status
+                effective_policy = repository_policy_snapshot(session, run.repository)
+                if snapshot_review and effective_policy is not None:
+                    # 显式复查要产生新的模型结果，保留权限/预算，关闭本次的结果复用。
+                    effective_policy = {**effective_policy, "incremental_review": False}
                 session.add_all(
                     [
                         ReviewRunRecord(
@@ -492,14 +510,12 @@ def apply_action(
                             installation_id=run.installation_id,
                             repository_id=run.repository_id,
                             repository=run.repository,
-                            repository_policy=repository_policy_snapshot(
-                                session,
-                                run.repository,
-                            ),
+                            repository_policy=effective_policy,
                             pull_request_number=run.pull_request_number,
                             head_sha=normalized_head_sha,
-                            execution_status=ExecutionStatus.QUEUED.value,
-                            workflow_status=ExecutionStatus.QUEUED.value,
+                            snapshot_review=snapshot_review,
+                            execution_status=initial_status.value,
+                            workflow_status=initial_workflow.value,
                             review_conclusion=None,
                             coverage_status="unknown",
                             idempotency_key=rerun_key,
@@ -512,8 +528,8 @@ def apply_action(
                         ReviewTaskRecord(
                             id=new_task_id,
                             review_run_id=new_run_id,
-                            execution_status=ExecutionStatus.QUEUED.value,
-                            workflow_status=ExecutionStatus.QUEUED.value,
+                            execution_status=initial_status.value,
+                            workflow_status=initial_workflow.value,
                             priority=task.priority,
                             attempt_count=0,
                             model_attempt_count=0,
@@ -534,7 +550,7 @@ def apply_action(
                                 "review_version_key": new_review_version_key,
                                 "head_sha": normalized_head_sha,
                                 "source_review_run_id": review_run_id,
-                                "trigger": "manual_rerun",
+                                "trigger": "snapshot_review" if snapshot_review else "manual_rerun",
                             },
                             occurred_at=now,
                             publish_attempts=0,
@@ -557,6 +573,7 @@ def apply_action(
                             "actor": actor,
                             "new_review_run_id": new_run_id,
                             "new_review_task_id": new_task_id,
+                            "snapshot_review": snapshot_review,
                             "head_sha": normalized_head_sha,
                             "retry_scope": (
                                 "new_review" if new_review_action else retry_scope
@@ -569,7 +586,7 @@ def apply_action(
                     )
                 )
                 session.commit()
-                return new_run_id, new_task_id, ExecutionStatus.QUEUED
+                return new_run_id, new_task_id, initial_status
 
             if action is ReviewAction.EXPEDITE:
                 if current not in {
@@ -586,12 +603,16 @@ def apply_action(
                     ExecutionStatus.QUEUED,
                     ExecutionStatus.WAITING_FOR_CI,
                     ExecutionStatus.READY_FOR_REVIEW,
-                }:
+                    ExecutionStatus.RUNNING,
+                } and not (current is ExecutionStatus.COMPLETED and workflow_current is ExecutionStatus.PAUSED):
                     raise ReviewActionConflictError("当前状态不能取消")
                 task.execution_status = ExecutionStatus.CANCELLED.value
                 task.lease_owner = None
                 task.lease_expires_at = None
                 task.claimed_from_status = None
+                task.workflow_paused_from = None
+                run.workflow_paused_from = None
+                run.publish_attempt_token = None
                 task.updated_at = now
                 run.execution_status = ExecutionStatus.CANCELLED.value
                 task.workflow_status = ExecutionStatus.CANCELLED.value
@@ -622,7 +643,7 @@ def apply_action(
                     )
                 new_status = (
                     ExecutionStatus.READY_FOR_REVIEW
-                    if plan is not None
+                    if plan is not None or run.snapshot_review
                     else ExecutionStatus.QUEUED
                 )
                 task.execution_status = new_status.value
@@ -642,6 +663,7 @@ def apply_action(
                 workflow_retry_status = (
                     ExecutionStatus.AGENT_BATCHES
                     if plan is not None
+                    else ExecutionStatus.PLANNING if run.snapshot_review
                     else ExecutionStatus.QUEUED
                 )
                 task.workflow_status = workflow_retry_status.value
@@ -735,7 +757,7 @@ def _existing_action_result(
         if existing_event.get(key) != expected:
             raise ReviewActionConflictError("同一幂等键不能用于不同的重试目标")
     if (
-        action in {ReviewAction.RERUN, ReviewAction.NEW_REVIEW}
+        action in {ReviewAction.RERUN, ReviewAction.NEW_REVIEW, ReviewAction.REVIEW_SNAPSHOT}
         and isinstance(existing_event, dict)
         and isinstance(existing_event.get("new_review_run_id"), str)
         and isinstance(existing_event.get("new_review_task_id"), str)
@@ -750,7 +772,7 @@ def _existing_action_result(
         return (
             new_review_run_id,
             new_review_task_id,
-            ExecutionStatus.QUEUED,
+            ExecutionStatus.READY_FOR_REVIEW if existing_event.get("snapshot_review") else ExecutionStatus.QUEUED,
         )
     existing = session.execute(
         select(

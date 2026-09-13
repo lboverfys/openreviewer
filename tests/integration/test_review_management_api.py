@@ -930,8 +930,8 @@ def test_rejected_review_restarts_from_the_selected_real_stage(
     assert lease.review_plan_id == (plan_id if plan_retained else None)
 
 
-def test_paused_approval_keeps_its_stage_and_only_resumes(database: Database) -> None:
-    """人工门暂停后仍显示批准阶段，且不暴露无法执行的取消动作。"""
+def test_paused_approval_keeps_its_stage_and_can_resume_or_cancel(database: Database) -> None:
+    """人工门暂停后保留阶段，同时可恢复或明确取消。"""
 
     application = application_for(database)
 
@@ -982,7 +982,7 @@ def test_paused_approval_keeps_its_stage_and_only_resumes(database: Database) ->
             assert detail.status_code == 200
             assert detail.json()["current_stage"] == "approval"
             assert detail.json()["phase"] == "paused"
-            assert detail.json()["available_actions"] == ["resume"]
+            assert detail.json()["available_actions"] == ["resume", "cancel"]
 
             resumed = await client.post(
                 f"/api/v1/reviews/{run_id}/actions",
@@ -991,6 +991,10 @@ def test_paused_approval_keeps_its_stage_and_only_resumes(database: Database) ->
             )
             assert resumed.status_code == 200
             assert resumed.json()["workflow_status"] == "awaiting_approval"
+
+            await client.post(f"/api/v1/reviews/{run_id}/actions", headers={"Idempotency-Key": "pause-approval-again"}, json={"action": "pause"})
+            cancelled = await client.post(f"/api/v1/reviews/{run_id}/actions", headers={"Idempotency-Key": "cancel-paused-approval"}, json={"action": "cancel"})
+            assert cancelled.status_code == 200 and cancelled.json()["workflow_status"] == "cancelled"
 
     asyncio.run(exercise())
 

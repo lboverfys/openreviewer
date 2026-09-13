@@ -56,6 +56,7 @@ def _task_run_mutation_load_options(
             ReviewRunRecord.workflow_status,
             ReviewRunRecord.workflow_paused_from,
             ReviewRunRecord.coverage_status,
+            ReviewRunRecord.snapshot_review,
             ReviewRunRecord.created_at,
             *(
                 (ReviewRunRecord.repository_policy,)

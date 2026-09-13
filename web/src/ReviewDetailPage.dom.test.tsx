@@ -36,7 +36,7 @@ it("概览显示全量问题数，未打开的日志、问题和批次不会提�
   expect(document.querySelector(".review-batch-panel")).toBeNull();
   expect(api.eventPage).not.toHaveBeenCalled();
   expect(api.findingPage).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", {name: /审查问题\s*25/}));
+  fireEvent.click(screen.getByRole("button", {name: /问题与结论\s*25/}));
   await waitFor(() => expect(api.findingPage).toHaveBeenCalledTimes(1));
 });
 

@@ -39,7 +39,7 @@ it("编辑仓库时提交原版本与分支策略，保存后刷新列表", asyn
   fireEvent.click(await screen.findByRole("button", {name: "编辑仓库 example/project"}));
   fireEvent.change(screen.getByLabelText(/目标分支（/), {target: {value: "main\nrelease/*"}});
   fireEvent.change(screen.getByLabelText(/单次审查最多模型请求数/), {target: {value: "8"}});
-  fireEvent.click(screen.getByRole("button", {name: "保存仓库策略"}));
+  fireEvent.click(screen.getByRole("button", {name: "保存项目设置"}));
   await waitFor(() => expect(saved).toHaveLength(1));
   expect(saved[0].path).toBe("/api/v1/team/repositories/repo-1");
   expect(saved[0].body).toMatchObject({expected_revision: 2,
@@ -49,7 +49,7 @@ it("编辑仓库时提交原版本与分支策略，保存后刷新列表", asyn
 
 it("停用成员携带当前版本，保留密码时不发送密码字段", async () => {
   render(<TeamPage onSignedOut={vi.fn()} />);
-  fireEvent.click(screen.getByRole("button", {name: "团队成员"}));
+  fireEvent.click(screen.getByRole("button", {name: "成员权限"}));
   fireEvent.click(await screen.findByRole("button", {name: "编辑成员 reviewer"}));
   fireEvent.click(screen.getByLabelText("启用账号"));
   fireEvent.click(screen.getByRole("button", {name: "保存成员"}));
@@ -63,7 +63,7 @@ it("版本冲突时保留编辑内容并展示失败原因", async () => {
   render(<TeamPage onSignedOut={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", {name: "编辑仓库 example/project"}));
   fireEvent.change(screen.getByLabelText(/目标分支（/), {target: {value: "release/*"}});
-  fireEvent.click(screen.getByRole("button", {name: "保存仓库策略"}));
+  fireEvent.click(screen.getByRole("button", {name: "保存项目设置"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("版本已变化");
   expect(screen.getByLabelText(/目标分支（/)).toHaveValue("release/*");
 });

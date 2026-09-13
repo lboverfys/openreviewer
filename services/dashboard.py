@@ -149,6 +149,7 @@ class ReviewListItem:
     created_at: datetime
     updated_at: datetime
     workflow_status: ExecutionStatus = ExecutionStatus.QUEUED
+    snapshot_review: bool = False
     pr_title: str | None = None
     pr_author_login: str | None = None
     pr_html_url: str | None = None

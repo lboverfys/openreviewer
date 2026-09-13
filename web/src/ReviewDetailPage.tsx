@@ -66,12 +66,13 @@ const actionLabels: Record<ReviewAction, string> = {
   approve: "批准审查",
   reject: "驳回",
   publish: "发布到 GitHub",
-  expedite: "立即唤醒",
+  expedite: "立即执行",
   retry: "重试当前失败节点",
   cancel: "取消任务",
-  rerun: "新建审查（最新提交）",
+  rerun: "检查最新提交",
   retry_failed_node: "重试当前失败节点",
-  new_review: "新建审查（最新提交）",
+  new_review: "检查最新提交",
+  review_snapshot: "复查此版本",
 };
 
 type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
@@ -122,6 +123,7 @@ const actionIcons: Record<ReviewAction, string> = {
   rerun: "⟳",
   retry_failed_node: "↻",
   new_review: "＋",
+  review_snapshot: "↻",
 };
 
 const findingCategoryLabels: Record<string, string> = {
@@ -204,6 +206,7 @@ function ReviewDetailPage({
 
   const [retrievalTraces, setRetrievalTraces] = useState<RetrievalTrace[]>([]);
   const [retrievalLoadError, setRetrievalLoadError] = useState("");
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const retrievalEvidence = useMemo<Record<string, ContextEvidence>>(
     () => Object.fromEntries(retrievalTraces.flatMap(trace => trace.candidates).map(item => [item.reference_id, item])),
     [retrievalTraces],
@@ -254,13 +257,13 @@ function ReviewDetailPage({
     return () => controller.abort();
   }, [details?.change_token, activeTab, findingPage.refresh, eventPage.refresh]);
   useEffect(() => {
-    if (!details || (activeTab !== "overview" && activeTab !== "findings")) return;
+    if (!details || (activeTab !== "findings" && (activeTab !== "overview" || !evidenceOpen))) return;
     const controller = new AbortController();
     api.reviewRetrieval(reviewRunId, controller.signal).then(items => {
       if (!controller.signal.aborted) {setRetrievalTraces(items); setRetrievalLoadError("");}
     }).catch(failure => {if (!controller.signal.aborted) setRetrievalLoadError(errorMessage(failure));});
     return () => controller.abort();
-  }, [reviewRunId, details?.change_token, activeTab]);
+  }, [reviewRunId, details?.change_token, activeTab, evidenceOpen]);
 
   const loadDetails = useCallback(async (signal?: AbortSignal, force = true) => {
     const sequence = ++detailsRequestSequence.current;
@@ -358,7 +361,8 @@ function ReviewDetailPage({
 
   async function runAction(action: ReviewAction) {
     if (!details || !allowedReviewActions(user, [action]).length) return;
-    if (action === "cancel" && !window.confirm("确定取消这个任务吗？")) return;
+    if (action === "cancel" && !window.confirm("取消后停止后续执行并保留已有记录。已发出的模型请求无法撤回，可能仍会计费。确定取消吗？")) return;
+    if (action === "review_snapshot" && !window.confirm("将使用已保存的代码和当前审查配置真实调用模型，另存一条复查记录。不会重新运行 CI 或发布到 GitHub，继续吗？")) return;
     if (action === "approve" && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
     if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
@@ -393,7 +397,7 @@ function ReviewDetailPage({
           headSha: details.head_sha,
         },
       );
-      if ((action === "rerun" || action === "new_review") && result.review_run_id !== details.review_run_id) {
+      if ((action === "rerun" || action === "new_review" || action === "review_snapshot") && result.review_run_id !== details.review_run_id) {
         onOpenReview(result.review_run_id);
       } else {
         await loadDetails();
@@ -487,7 +491,10 @@ function ReviewDetailPage({
     );
   }
 
-  const availableActions = allowedReviewActions(user, details.available_actions);
+  const availableActions = allowedReviewActions(user, details.available_actions).filter(action =>
+    !(action === "start" && details.available_actions.includes("expedite"))
+    && !((action === "new_review" || action === "rerun") && (details.pr_state === "closed" || details.snapshot_review))
+  );
   const hasActions = availableActions.length > 0;
   const latestBatchPlan = latestBatchPlanEvent(details.events);
   const currentEvents = currentReviewEvents(details.events);
@@ -572,6 +579,7 @@ function ReviewDetailPage({
   const completedStageCount = details.stages.filter(
     (stage) => stage.status === "completed",
   ).length;
+  const applicableStageCount = details.stages.filter(stage => stage.status !== "skipped").length;
   const headBranchLabel = branchLabel(
     details.head_repository ?? details.repository,
     details.head_ref,
@@ -590,8 +598,8 @@ function ReviewDetailPage({
   const filteredEvents = eventPage.data?.items ?? [];
   const tabs: ReadonlyArray<[ReviewDetailTab, string, string]> = [
     ["overview", "任务概览", details.current_stage],
-    ["agents", "Agent 进度", `${completedAgentCount}/${requiredAgentCount}`],
-    ["findings", "审查问题", String(details.finding_total_count)],
+    ["agents", "AI 检查过程", `${completedAgentCount}/${requiredAgentCount}`],
+    ["findings", "问题与结论", String(details.finding_total_count)],
     ["logs", "运行日志", "按页查看"],
   ];
   return (
@@ -600,7 +608,7 @@ function ReviewDetailPage({
         <div className="review-detail-toolbar">
           <button type="button" className="review-back-link" onClick={onBack}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
-            返回控制台
+            返回审查任务
           </button>
           <div className="review-detail-toolbar-actions">
             {hasPermission(user, "findings:adjudicate") && details.model_status === "succeeded" && details.coverage_status === "complete" && (
@@ -676,37 +684,23 @@ function ReviewDetailPage({
             </div>
           </div>
           <div className="review-hero-status">
-            <span className="review-current-stage-label">当前节点</span>
-            <strong>{stageLabels[details.current_stage] ?? details.current_stage}</strong>
-            <span className="review-current-phase">{workflowReadout(details, retryPending)}</span>
+            <span className="review-current-stage-label">任务状态</span>
+            <strong>{workflowReadout(details, retryPending)}</strong>
+            <span className="review-current-phase">{stageLabels[details.current_stage] ?? details.current_stage}</span>
             <div className="review-hero-stage-progress" aria-hidden="true">
-              <span style={{ width: `${details.stages.length > 0 ? (completedStageCount / details.stages.length) * 100 : 0}%` }} />
+              <span style={{ width: `${applicableStageCount > 0 ? (completedStageCount / applicableStageCount) * 100 : 0}%` }} />
             </div>
-            <small>{completedStageCount}/{details.stages.length} 阶段已完成</small>
+            <small>{["cancelled", "superseded", "rejected"].includes(details.phase) ? "后续步骤已停止" : `${completedStageCount}/${applicableStageCount} 步骤已完成`}</small>
           </div>
         </section>
 
         <section className="review-control-strip">
           <div className="review-control-summary">
             <span className="review-control-title">任务控制</span>
-            <span className={`review-control-hint ${retryPending ? "is-retry" : ""}`}>{retryPending ? retryStatus : `尝试 ${details.attempt_count}/${details.max_attempts} · AI 阶段 ${details.model_attempt_count}/${details.max_attempts}`}</span>
+            <span className={`review-control-hint ${retryPending ? "is-retry" : ""}`}>{retryPending ? retryStatus : details.phase === "cancelled" ? "本次已结束，可另建复查记录" : "按当前状态提供可执行操作"}</span>
           </div>
           <div className="review-control-actions">
-            {availableActions.includes("retry_stage") && (
-              <label className="review-retry-target">
-                <span>重审起点</span>
-                <select
-                  id="review-retry-stage"
-                  name="review-retry-stage"
-                  value={retryTargetStage}
-                  disabled={actionBusy !== null}
-                  onChange={(event) => setRetryTargetStage(event.target.value as RetryTargetStage)}
-                >
-                  {retryTargetOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                </select>
-              </label>
-            )}
-            {hasActions ? availableActions.map((action) => (
+            {hasActions ? availableActions.filter(action => action !== "retry_stage").map((action) => (
               <div className="review-action-with-hint" key={action}>
                 <button
                   type="button"
@@ -714,15 +708,27 @@ function ReviewDetailPage({
                   disabled={actionBusy !== null}
                   onClick={() => void runAction(action)}
                 >
-                  <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : action === "retry_stage" && details.workflow_status === "rejected" ? "从所选阶段重审" : actionLabels[action]}
+                  <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : actionLabels[action]}
                 </button>
                 {(action === "retry_failed_node" || action === "retry") && <small>不会重复调用已成功的模型请求</small>}
-                {action === "retry_stage" && <small>{retryStageNotice(retryTargetStage)}</small>}
                 {(action === "new_review" || action === "rerun") && <small>创建新记录，不覆盖当前任务</small>}
+                {action === "review_snapshot" && <small>使用已保存代码，另存检查结果</small>}
               </div>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
           </div>
         </section>
+
+        {availableActions.includes("retry_stage") && <details className="review-advanced-actions">
+          <summary>高级重试：从指定步骤重新执行</summary>
+          <label className="review-retry-target">重审起点<select value={retryTargetStage} disabled={actionBusy !== null}
+            onChange={event => setRetryTargetStage(event.target.value as RetryTargetStage)}>
+            {retryTargetOptions.filter(([value]) => !details.snapshot_review || value !== "ci").map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select></label>
+          <p>{retryStageNotice(retryTargetStage)}</p><button type="button" disabled={actionBusy !== null} onClick={() => void runAction("retry_stage")}>从所选步骤重试</button>
+        </details>}
+        {details.snapshot_review && <section className="review-snapshot-banner"><strong>历史版本复查</strong>
+          本次分析已保存的提交 {shortSha(details.head_sha)}，使用当前审查配置。不会重新运行 CI 或发布到 GitHub，原任务与结果保留。
+        </section>}
 
         {details.coverage_status === "partial" && (
           <section className="review-coverage-warning" role="status">
@@ -733,7 +739,7 @@ function ReviewDetailPage({
 
         <section className="review-summary-strip" aria-label="任务关键指标">
           <div><span className="review-metric-icon is-state" aria-hidden="true">◈</span><div><span>当前状态</span><strong>{workflowReadout(details, retryPending)}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div></div>
-          <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.ci_checks.length} 项检查</small></div></div>
+          <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{details.snapshot_review ? "本次未重跑" : ciStateLabels[details.ci_state ?? ""] ?? "等待"}</strong><small>{details.snapshot_review ? "采用保存的代码快照" : `${details.ci_checks.length} 项检查`}</small></div></div>
           <div><span className="review-metric-icon is-cover" aria-hidden="true">▦</span><div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div></div>
           <div><span className="review-metric-icon is-agent" aria-hidden="true">🤖</span><div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/{requiredAgentCount}</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div></div>
           <div><span className="review-metric-icon is-finding" aria-hidden="true">⚑</span><div><span>候选问题</span><strong>{details.finding_total_count}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div></div>
@@ -752,6 +758,15 @@ function ReviewDetailPage({
             {activeTab === "overview" && <>
             <StageTimeline details={details} />
 
+            <section className="review-panel review-overview-result"><h2>本次结果</h2>
+              <p>{details.model_review_completed_at
+                ? details.finding_total_count > 0 ? `报告了 ${details.finding_total_count} 条候选问题，请结合代码证据核对。` : "本次未报告候选问题，可继续查看实际检查范围；这不代表代码绝对没有缺陷。"
+                : details.phase === "cancelled" ? "任务已经停止，本次没有生成最终 AI 结论。需要重新测试时可复查已保存的版本。" : "尚未产生最终审查结果，请查看当前步骤。"}</p>
+              {details.model_name && <p>模型记录：<strong>{details.model_name}</strong>，各路检查的请求和用量可在“AI 检查过程”中查看。</p>}
+              {details.model_review_completed_at && <button type="button" onClick={() => setActiveTab("findings")}>查看问题与结论</button>}
+            </section>
+
+            <details className="review-panel review-evidence-group" onToggle={event => setEvidenceOpen(event.currentTarget.open)}><summary>代码依据与辅助检查<span>需要核对上下文时展开</span></summary>
             <section className="review-panel review-retrieval-panel">
               <div className="review-panel-heading"><h2>检索上下文</h2>
                 {hasPermission(user, "knowledge:manage") && <button type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</button>}
@@ -759,11 +774,12 @@ function ReviewDetailPage({
               {retrievalLoadError ? <p className="retrieval-warning">{retrievalLoadError}</p> : <RetrievalTracePanel traces={retrievalTraces} compact />}
             </section>
             <StaticAnalysisPanel key={reviewRunId} runId={reviewRunId} headSha={details.head_sha} editable={hasPermission(user, "findings:adjudicate")} onError={handlePageError} />
+            </details>
             </>}
             {activeTab === "agents" && <>
             <ModelBatchPanel
               details={details}
-              onRetry={canManageReviews ? retryNode : undefined}
+              onRetry={canManageReviews && !["cancelled", "superseded", "paused", "rejected"].includes(details.phase) ? retryNode : undefined}
               retryBusy={actionBusy !== null}
             />
             {!agentSummaries.some((item) => item.progress.events.length > 0) && !details.model_review_completed_at && (
@@ -896,7 +912,7 @@ function ReviewDetailPage({
             </>}
           </div>
 
-          {activeTab === "overview" && <ReviewSidebar
+          {activeTab === "overview" && <details className="review-panel review-runtime-details"><summary>运行信息（高级）</summary><ReviewSidebar
             details={details}
             retryPending={retryPending}
             retryStatus={retryStatus}
@@ -911,7 +927,7 @@ function ReviewDetailPage({
             hasBranchRoute={hasBranchRoute}
             headBranchLabel={headBranchLabel}
             baseBranchLabel={baseBranchLabel}
-          />}
+          /></details>}
         </div>
       </main>
     </div>

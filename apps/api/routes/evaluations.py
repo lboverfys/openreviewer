@@ -73,9 +73,10 @@ def register_evaluation_routes(
         limit: Annotated[int, Query(ge=1, le=100)] = 10,
         cursor: Annotated[str | None, Query(max_length=512)] = None,
         include_archived: bool = False,
+        archived_only: bool = False,
     ):
         return _guard(lambda: get_service().datasets(principal.resource_scope, limit=limit,
-            cursor=cursor, include_archived=include_archived))
+            cursor=cursor, include_archived=include_archived, archived_only=archived_only))
 
     @application.post("/api/v1/evaluations/datasets", response_model=EvaluationDatasetView, status_code=201)
     def create_dataset(
