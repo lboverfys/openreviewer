@@ -44,3 +44,13 @@ it("取消任务不会把旧缓存中的当前步骤继续画成进行中", () =
   expect(screen.queryByText("进行中")).not.toBeInTheDocument();
   expect(screen.getByText("任务已取消")).toBeInTheDocument();
 });
+
+it("待核对步骤说明下一步操作，不显示英文状态或正在运行", () => {
+  render(<StageTimeline details={{phase:"awaiting_finding_adjudication",current_stage:"approval",stages:[
+    {key:"model",status:"completed",started_at:null,completed_at:null},
+    {key:"approval",status:"current",started_at:null,completed_at:null,detail_code:"awaiting_finding_adjudication"},
+  ]} as ReviewDetails} />);
+  expect(screen.queryByText("进行中")).not.toBeInTheDocument();
+  expect(screen.queryByText("awaiting_finding_adjudication")).not.toBeInTheDocument();
+  expect(screen.getAllByText("AI 检查已完成，请先核对候选问题").length).toBeGreaterThan(0);
+});

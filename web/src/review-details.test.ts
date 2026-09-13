@@ -10,12 +10,29 @@ import {
   latestBatchPlanEvent,
   latestEvent,
   retryDetail,
+  workflowReadout,
 } from "./review-details";
 import type { ReviewDetails, ReviewEvent, ReviewFinding } from "./types";
 
 function finding(id: string, title = id): ReviewFinding {
   return { id, title } as ReviewFinding;
 }
+
+describe("任务状态说明", () => {
+  it.each([
+    ["awaiting_finding_adjudication", "待核对问题"],
+    ["awaiting_approval", "等待人工操作"],
+    ["model_queued", "排队中"],
+    ["planning_queued", "排队中"],
+    ["waiting_ci", "等待 CI"],
+    ["ci_failed", "需要处理"],
+  ])("%s 不误显示为运行中", (phase, label) => {
+    expect(workflowReadout({phase} as ReviewDetails, false)).toBe(label);
+  });
+  it("取消后忽略上一轮自动重试提示", () => {
+    expect(workflowReadout({phase: "cancelled"} as ReviewDetails, true)).toBe("已取消");
+  });
+});
 
 function details(
   ids: string[],

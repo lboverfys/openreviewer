@@ -294,19 +294,23 @@ export function workflowReadout(
   details: ReviewDetails,
   retryPending: boolean,
 ): string {
-  if (retryPending) return "等待自动重试";
   if (details.phase === "rejected") return "已驳回";
   if (details.phase === "paused") return "已暂停";
+  if (details.phase === "cancelled") return "已取消";
+  if (details.phase === "superseded") return "已被新提交替代";
+  if (details.phase === "completed") return "已完成";
+  if (details.phase === "awaiting_finding_adjudication") return "待核对问题";
   if (details.phase === "awaiting_approval" || details.phase === "awaiting_publish") {
     return "等待人工操作";
   }
+  if (details.phase === "approved") return "已批准，等待发布";
+  if (retryPending || details.phase === "model_retry_waiting") return "等待自动重试";
+  if (["queued", "planning_queued", "model_queued"].includes(details.phase)) return "排队中";
+  if (details.phase === "waiting_ci") return "等待 CI";
   if (details.phase === "publishing") return "发布中";
-  if (details.phase === "completed") return "已完成";
   if (details.phase.endsWith("failed") || details.phase === "ci_timed_out") {
     return "需要处理";
   }
-  if (details.phase === "cancelled") return "已取消";
-  if (details.phase === "superseded") return "已被新提交替代";
   return "运行中";
 }
 
