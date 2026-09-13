@@ -10,6 +10,7 @@ from hashlib import sha256
 from typing import Protocol, overload
 
 from domain.enums import ExecutionStatus, WorkerStatus
+from domain.workers import DASHBOARD_WORKER_PREVIEW_LIMIT, WORKER_ONLINE_WINDOW
 from services.rbac import ResourceScope
 
 
@@ -173,6 +174,8 @@ class DashboardData:
     recent_reviews: tuple[ReviewListItem, ...]
     workers: tuple[StoredWorkerHeartbeat, ...]
     has_more: bool = False
+    worker_online_count: int | None = None
+    worker_busy_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +183,8 @@ class DashboardChangeState:
     latest_event_id: str | None
     latest_event_at: datetime | None
     workers: tuple[StoredWorkerHeartbeat, ...]
+    worker_online_count: int | None = None
+    worker_busy_count: int | None = None
 
 
 class DashboardRepository(Protocol):
@@ -192,6 +197,7 @@ class DashboardRepository(Protocol):
         execution_status: ExecutionStatus | None = None,
         query: str = "",
         include_overview: bool = True,
+        worker_cutoff: datetime | None = None,
     ) -> DashboardData:
         """从持久化层一次性读取 Dashboard 所需的原始数据。
 
@@ -213,6 +219,7 @@ class DashboardRepository(Protocol):
         self,
         *,
         scope: ResourceScope | None = None,
+        worker_cutoff: datetime | None = None,
     ) -> DashboardChangeState:
         """读取可表示 Dashboard 可见变更的轻量索引状态。"""
 
@@ -239,6 +246,8 @@ class DashboardSnapshot:
     workers: tuple[WorkerSnapshot, ...]
     recent_reviews: tuple[ReviewListItem, ...]
     next_cursor: str | None
+    worker_online_count: int | None = None
+    worker_busy_count: int | None = None
 
 
 class DashboardService:
@@ -247,7 +256,7 @@ class DashboardService:
         repository: DashboardRepository,
         *,
         clock: Callable[[], datetime] | None = None,
-        worker_online_window: timedelta = timedelta(seconds=15),
+        worker_online_window: timedelta = WORKER_ONLINE_WINDOW,
     ) -> None:
         """初始化 Dashboard 用例及 Worker 在线判定窗口。
 
@@ -305,23 +314,17 @@ class DashboardService:
         now = self._clock().astimezone(UTC)
         decoded_cursor = decode_review_cursor(cursor) if cursor is not None else None
         effective_scope = _effective_scope(scope)
-        if not include_overview or execution_status is not None or query:
-            data = self._repository.load(
-                limit, decoded_cursor, effective_scope,
-                execution_status=execution_status, query=query,
-                include_overview=include_overview,
-            )
-        else:
-            data = (
-                self._repository.load(limit, decoded_cursor)
-                if effective_scope is None
-                else self._repository.load(limit, decoded_cursor, effective_scope)
-            )
+        data = self._repository.load(
+            limit, decoded_cursor, effective_scope,
+            execution_status=execution_status, query=query,
+            include_overview=include_overview,
+            worker_cutoff=now - self._worker_online_window,
+        )
         workers = tuple(
             WorkerSnapshot(
                 configured=True,
-                online=now - as_utc(heartbeat.last_seen_at)
-                <= self._worker_online_window,
+                online=(heartbeat.status is not WorkerStatus.STOPPING and
+                        now - as_utc(heartbeat.last_seen_at) <= self._worker_online_window),
                 worker_id=heartbeat.worker_id,
                 status=heartbeat.status,
                 current_task_id=heartbeat.current_task_id,
@@ -352,7 +355,11 @@ class DashboardService:
             total_reviews=data.total_reviews,
             status_counts=complete_counts,
             worker=worker,
-            workers=workers,
+            workers=tuple(item for item in workers if item.online)[:DASHBOARD_WORKER_PREVIEW_LIMIT],
+            worker_online_count=(data.worker_online_count if data.worker_online_count is not None
+                                 else sum(item.online for item in workers)),
+            worker_busy_count=(data.worker_busy_count if data.worker_busy_count is not None
+                               else sum(item.online and item.status is WorkerStatus.BUSY for item in workers)),
             recent_reviews=data.recent_reviews,
             next_cursor=(
                 encode_review_cursor(
@@ -368,20 +375,16 @@ class DashboardService:
         """返回轻量变化令牌，并按在线窗口刷新 Worker 离线判定。"""
 
         effective_scope = _effective_scope(scope)
-        state = (
-            self._repository.change_state()
-            if effective_scope is None
-            else self._repository.change_state(scope=effective_scope)
-        )
         now = self._clock().astimezone(UTC)
+        state = self._repository.change_state(scope=effective_scope, worker_cutoff=now - self._worker_online_window)
         worker_state = [
             {
                 "worker_id": worker.worker_id,
                 "status": worker.status.value,
                 "current_task_id": worker.current_task_id,
                 "started_at": as_utc(worker.started_at).isoformat(),
-                "online": now - as_utc(worker.last_seen_at)
-                <= self._worker_online_window,
+                "online": (worker.status is not WorkerStatus.STOPPING and
+                           now - as_utc(worker.last_seen_at) <= self._worker_online_window),
             }
             for worker in sorted(state.workers, key=lambda item: item.worker_id)
         ]
@@ -394,6 +397,8 @@ class DashboardService:
                     else None
                 ),
                 "workers": worker_state,
+                "worker_online_count": state.worker_online_count,
+                "worker_busy_count": state.worker_busy_count,
             },
             ensure_ascii=True,
             separators=(",", ":"),

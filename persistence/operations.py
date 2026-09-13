@@ -502,7 +502,10 @@ class SqlAlchemyOperationsRepository:
             .limit(batch_size)
         )
         result = session.execute(
-            delete(WorkerHeartbeatRecord).where(WorkerHeartbeatRecord.worker_id.in_(ids))
+            delete(WorkerHeartbeatRecord).where(
+                WorkerHeartbeatRecord.worker_id.in_(ids),
+                WorkerHeartbeatRecord.last_seen_at < cutoff,
+            )
         )
         return _affected_rows(result)
 

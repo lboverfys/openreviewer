@@ -13,6 +13,7 @@ import {
 } from "./dashboard";
 import type { DashboardRefreshOptions, DashboardStreamState } from "./dashboard";
 import { hasPermission } from "./rbac";
+import { WorkspaceHeader } from "./Workspace";
 import type {
   AuthUser,
   DashboardSnapshot,
@@ -183,6 +184,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
   const [loading, setLoading] = useState(cachedSnapshot === undefined);
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const [searchKeyword, setSearchKeyword] = useState<string>("");
+  const [creatingReview, setCreatingReview] = useState(false);
   const refreshSequence = useRef(0);
   const streamLiveRef = useRef(false);
   const refresh = useCallback(async ({
@@ -376,10 +378,23 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
     : snapshot?.worker.configured
       ? [snapshot.worker]
       : [];
-  const onlineWorkers = workers.filter((item) => item.online);
+  const onlineWorkers = workers.filter((item) => item.online && item.status !== "stopping");
+  const workerPreview = onlineWorkers.slice(0, 3);
+  const onlineCount = snapshot?.worker_online_count ?? onlineWorkers.length;
+  const busyCount = snapshot?.worker_busy_count ?? onlineWorkers.filter(item => item.status === "busy").length;
   const worker = onlineWorkers[0] ?? workers[0] ?? snapshot?.worker;
-  const workerHealthy = onlineWorkers.length > 0;
+  const workerHealthy = onlineCount > 0;
   const canManageReviews = hasPermission(user, "reviews:manage");
+  const canInspectWorkers = hasPermission(user, "settings:manage");
+
+  if (creatingReview && canManageReviews) return <main className="workspace-page">
+    <WorkspaceHeader title="手动发起审查" icon="review" description="补充手动审查请求，日常 PR 继续通过 GitHub 事件触发。" />
+    <div className="dash-create-view"><CreateReviewForm
+      onCancel={() => setCreatingReview(false)}
+      onCreated={message => { setCreatingReview(false); setPageMessage(message); reviewPage.reset(); void reviewPage.refresh(); }}
+      onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
+    /></div>
+  </main>;
 
   return (
     <div className="dash-shell">
@@ -399,9 +414,10 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
         <section className="dash-hero">
           <div className="dash-hero-copy">
             <h1>{greetingByHour()}，{user.username}</h1>
-            <p>共 {snapshot?.total_reviews ?? 0} 个任务 · {onlineWorkers.length} 个 Worker 节点在线</p>
+            <p>共 {snapshot?.total_reviews ?? 0} 个任务 · {onlineCount} 个 Worker 节点在线</p>
           </div>
           <div className="dash-hero-actions">
+            {canManageReviews && <button type="button" className="btn-aurora dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>发起审查</button>}
             <div className={`dash-stream-pill state-${streamState}`}>
               <span className="beacon-circle" />
               <span className="beacon-label">
@@ -585,64 +601,46 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                     <span className="worker-status-badge">
                       <span className="status-ping-dot" />
                       {workerHealthy
-                        ? `${onlineWorkers.length}/${workers.length} ONLINE`
+                        ? `${onlineCount} ONLINE`
                         : "OFFLINE"}
                     </span>
                   </div>
                   <span className="worker-node-id">
-                    {workers.length > 1
-                      ? `${workers.length} 个执行节点`
-                      : worker?.worker_id ?? "未接入节点实例"}
+                    {canInspectWorkers ? "当前活跃状态 · 历史记录在运行诊断中查看" : "当前活跃节点状态"}
                   </span>
                 </div>
               </div>
 
-              <div className="worker-specs-grid">
+              <div className="worker-specs-grid worker-overview-counts">
                 <div className="spec-cell">
-                  <span className="spec-label">当前运行状态</span>
-                  <strong className="spec-val highlight-orange">
-                    {worker?.status ? workerLabels[worker.status] : "未就绪"}
-                  </strong>
-                </div>
-                <div className="spec-cell">
-                  <span className="spec-label">当前执行任务</span>
-                  <strong className="spec-val code-font">
-                    {worker?.current_task_id
-                      ? `TASK #${worker.current_task_id.slice(0, 8)}`
-                      : "IDLE (空闲)"}
-                  </strong>
-                </div>
-                <div className="spec-cell">
-                  <span className="spec-label">最近心跳时间</span>
+                  <span className="spec-label">在线节点</span>
                   <strong className="spec-val">
-                    {formatDate(worker?.last_seen_at ?? null)}
+                    {onlineCount}
+                  </strong>
+                </div>
+                <div className="spec-cell">
+                  <span className="spec-label">忙碌节点</span>
+                  <strong className="spec-val">
+                    {busyCount}
                   </strong>
                 </div>
               </div>
-              {workers.length > 1 && (
+              {workerPreview.length > 0 && (
                 <div className="worker-node-list" aria-label="Worker 节点列表">
-                  {workers.map((item) => (
+                  {workerPreview.map((item) => (
                     <div className="worker-node-row" key={item.worker_id ?? "unknown"}>
                       <span className={item.online ? "is-online" : "is-offline"} />
                       <code>{item.worker_id}</code>
                       <strong>{item.status ? workerLabels[item.status] : "未知"}</strong>
-                      <small>{formatDate(item.last_seen_at)}</small>
+                      <small title={formatDate(item.last_seen_at)}>{item.last_seen_at ? new Date(item.last_seen_at).toLocaleTimeString("zh-CN", { hour12: false }) : "—"}</small>
                     </div>
                   ))}
                 </div>
               )}
+              {!workerHealthy && <p className="worker-preview-note">暂无在线节点。{worker?.last_seen_at && <>最后心跳：{formatDate(worker.last_seen_at)}。</>}</p>}
+              {onlineCount > workerPreview.length && <p className="worker-preview-note">首页仅展示前 {workerPreview.length} 个在线节点。</p>}
+              {canInspectWorkers && <a className="worker-history-link" href="#platform?tab=diagnostics">查看节点与历史 →</a>}
             </section>
-
-            {canManageReviews && (
-              <CreateReviewForm
-                onCreated={(message) => {
-                  setPageMessage(message);
-                  reviewPage.reset();
-                  void reviewPage.refresh();
-                }}
-                onUnauthorized={() => onSignedOut("登录状态已失效，请重新登录")}
-              />
-            )}
           </aside>
         </div>
       </main>

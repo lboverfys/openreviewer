@@ -2052,6 +2052,28 @@
           "worker": {
             "$ref": "#/components/schemas/WorkerResponse"
           },
+          "worker_busy_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Busy Count"
+          },
+          "worker_online_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Online Count"
+          },
           "workers": {
             "items": {
               "$ref": "#/components/schemas/WorkerResponse"
@@ -9210,6 +9232,109 @@
         "title": "WorkItemView",
         "type": "object"
       },
+      "WorkerNode": {
+        "additionalProperties": false,
+        "properties": {
+          "current_review_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Review Run Id"
+          },
+          "current_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Task Id"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "online": {
+            "title": "Online",
+            "type": "boolean"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkerStatus"
+          },
+          "worker_id": {
+            "title": "Worker Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "status",
+          "online",
+          "current_task_id",
+          "current_review_run_id",
+          "started_at",
+          "last_seen_at"
+        ],
+        "title": "WorkerNode",
+        "type": "object"
+      },
+      "WorkerNodePage": {
+        "properties": {
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkerNode"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "online_window_seconds": {
+            "default": 15,
+            "title": "Online Window Seconds",
+            "type": "integer"
+          },
+          "retention_days": {
+            "minimum": 1.0,
+            "title": "Retention Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "generated_at",
+          "retention_days"
+        ],
+        "title": "WorkerNodePage",
+        "type": "object"
+      },
       "WorkerResponse": {
         "properties": {
           "configured": {
@@ -12034,6 +12159,80 @@
           }
         },
         "summary": "Propose Knowledge"
+      }
+    },
+    "/api/v1/platform/workers": {
+      "get": {
+        "operationId": "worker_nodes_api_v1_platform_workers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "online",
+              "enum": [
+                "online",
+                "offline",
+                "all"
+              ],
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1536,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerNodePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Worker Nodes"
       }
     },
     "/api/v1/retrieval/evaluations": {

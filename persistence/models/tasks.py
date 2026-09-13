@@ -308,6 +308,7 @@ class WorkerHeartbeatRecord(Base):
             name="status_value",
         ),
         Index("ix_worker_heartbeats_last_seen", "last_seen_at"),
+        Index("ix_worker_heartbeats_started_page", "started_at", "worker_id"),
     )
 
     worker_id: Mapped[str] = mapped_column(String(200), primary_key=True)

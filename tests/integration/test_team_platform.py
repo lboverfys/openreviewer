@@ -378,6 +378,10 @@ def test_platform_api_auth_scope_and_origin(database):
                 await client.get("/api/v1/platform/work-items?limit=101")
             ).status_code == 422
             assert (await client.get("/api/v1/platform/diagnostics")).status_code == 200
+            nodes = await client.get("/api/v1/platform/workers?state=all")
+            assert nodes.status_code == 200 and nodes.json()["items"] == []
+            assert nodes.json()["retention_days"] == 7
+            assert (await client.get("/api/v1/platform/workers?limit=101")).status_code == 422
             evidence = await client.get("/api/v1/platform/evidence")
             assert evidence.status_code == 200
             assert evidence.json()["evaluation_status"] == "awaiting_human_review"
@@ -393,6 +397,7 @@ def test_platform_api_auth_scope_and_origin(database):
                 )
             ).status_code == 200
             assert (await client.get("/api/v1/platform/usage")).status_code == 403
+            assert (await client.get("/api/v1/platform/workers")).status_code == 403
             assert (await client.get("/api/v1/platform/profiles")).status_code == 403
             assert (await client.get("/api/v1/platform/profiles/missing/quality")).status_code == 403
             assert (await client.post("/api/v1/platform/reviews/missing/static-report",

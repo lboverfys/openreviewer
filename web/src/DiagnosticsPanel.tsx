@@ -6,6 +6,7 @@ import type { DiagnosticReport } from "./types";
 import { useCursorPage } from "./useCursorPage";
 import { formatDate } from "./utils";
 import { WorkspaceBadge, WorkspaceEmpty } from "./Workspace";
+import WorkerNodesPanel from "./WorkerNodesPanel";
 
 const duration = (value: number | null | undefined) => value == null ? "未记录" : `${(value / 1000).toFixed(1)} 秒`;
 const auditLabels: Record<string, string> = { "platform.profile.created": "保存审查方案", "platform.profile.activated": "启用审查方案", "platform.static.imported": "导入静态报告", "platform.egress.denied": "外发策略阻止请求", "platform.work.created": "创建待办", "platform.work.updated": "更新待办" };
@@ -21,6 +22,7 @@ export default function DiagnosticsPanel({ onError }: PlatformPanelProps) {
   const total = (key: "queued" | "running" | "paused" | "failed") => report?.repositories.reduce((value, item) => value + item[key], 0);
   return <>
     <section className="team-card"><div className="team-toolbar"><div><h2>运行诊断</h2><p>查看任务积压、处理耗时与模型通道状态。</p></div><div className="ws-actions"><label>统计范围<select value={days} onChange={event => setDays(Number(event.target.value))}><option value={7}>最近 7 天</option><option value={30}>最近 30 天</option></select></label><button onClick={() => { setVersion(value => value + 1); if (auditOpen) void audits.refresh(); }}>刷新</button></div></div></section>
+    <WorkerNodesPanel onError={onError} refreshVersion={version} />
     {!report ? <section className="team-card"><WorkspaceEmpty loading title="正在读取运行统计…" /></section> : <>
       <div className="ws-metrics">{([['queued', '当前排队'], ['running', '当前运行'], ['paused', '当前暂停'], ['failed', '区间失败']] as const).map(([key, label]) => <div className={`ws-metric${key === "running" ? " is-accent" : ""}`} key={key}><span>{label}</span><strong>{total(key)}</strong><small>{report.truncated ? "当前展示的仓库" : "可见仓库合计"}</small></div>)}</div>
       <section className="team-card"><div className="team-toolbar"><h2>仓库运行情况</h2><span className="ws-hint">{report.repositories.length} 个仓库{report.truncated ? " · 已达到展示上限" : ""}</span></div>

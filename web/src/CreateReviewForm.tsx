@@ -1,198 +1,71 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "./api";
 import { errorMessage } from "./utils";
+import { WorkspaceSection } from "./Workspace";
 
 interface CreateReviewFormProps {
   onCreated: (message: string) => void;
   onUnauthorized: () => void;
+  onCancel?: () => void;
 }
 
-export default function CreateReviewForm({ onCreated, onUnauthorized }: CreateReviewFormProps) {
+export default function CreateReviewForm({ onCreated, onUnauthorized, onCancel }: CreateReviewFormProps) {
   const [installationId, setInstallationId] = useState("");
   const [repositoryId, setRepositoryId] = useState("");
   const [repository, setRepository] = useState("lboverfys/NiuMa");
   const [pullRequest, setPullRequest] = useState("");
   const [headSha, setHeadSha] = useState("");
   const [message, setMessage] = useState("");
+  const [failed, setFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-
-  function applyPreset(type: "niuma" | "demo") {
-    if (type === "niuma") {
-      setInstallationId("10001");
-      setRepositoryId("20001");
-      setRepository("lboverfys/NiuMa");
-      setPullRequest("42");
-      setHeadSha("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678");
-    } else {
-      setInstallationId("10002");
-      setRepositoryId("20002");
-      setRepository("test-org/code-review-demo");
-      setPullRequest("108");
-      setHeadSha("fe98dc76ba543210fe98dc76ba543210fe98dc76");
-    }
-  }
+  const inFlight = useRef(false);
+  const requestIdentity = useRef<{ body: string; key: string } | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmitting(true);
-    setMessage("");
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSubmitting(true); setMessage(""); setFailed(false);
+    const body = {
+      installation_id: Number(installationId), repository_id: Number(repositoryId),
+      repository: repository.trim(), pull_request_number: Number(pullRequest),
+      head_sha: headSha.trim().toLowerCase(),
+    };
+    const fingerprint = JSON.stringify(body);
+    if (requestIdentity.current?.body !== fingerprint) {
+      requestIdentity.current = { body: fingerprint, key: `manual:${crypto.randomUUID()}` };
+    }
     try {
-      const result = await api.createReview(
-        {
-          installation_id: Number(installationId),
-          repository_id: Number(repositoryId),
-          repository,
-          pull_request_number: Number(pullRequest),
-          head_sha: headSha,
-        },
-        `manual:${crypto.randomUUID()}`,
-      );
-      setPullRequest("");
-      setHeadSha("");
-      const successMessage = `任务 ${result.review_task_id.slice(0, 8)} 已成功调度入队`;
-      setMessage(successMessage);
-      onCreated(successMessage);
+      const result = await api.createReview(body, requestIdentity.current.key);
+      requestIdentity.current = null;
+      setPullRequest(""); setHeadSha("");
+      const success = `任务 ${result.review_task_id.slice(0, 8)} 已成功调度入队`;
+      setMessage(success); onCreated(success);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        onUnauthorized();
-        return;
-      }
-      const friendly =
-        error instanceof ApiError && error.status === 422
-          ? "输入内容不符合契约规范，请检查 ID 数值、仓库命名与 40 位 SHA"
-          : errorMessage(error);
-      setMessage(friendly);
+      if (error instanceof ApiError && error.status === 401) { onUnauthorized(); return; }
+      setFailed(true);
+      setMessage(error instanceof ApiError && error.status === 422
+        ? "请检查 App 安装编号、仓库编号、PR 编号和完整提交 SHA。"
+        : errorMessage(error));
     } finally {
-      setSubmitting(false);
+      inFlight.current = false; setSubmitting(false);
     }
   }
 
-  return (
-    <form className="bento-launchpad-card" onSubmit={submit}>
-      <div className="launchpad-head">
-        <div className="icon-badge-warm">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </div>
-        <div>
-          <h3>手动发起审查</h3>
-          <p>提交 PR 请求至 Worker 调度队列</p>
-        </div>
-      </div>
-
-      {/* Quick Fill Presets */}
-      <div className="preset-quick-row">
-        <span className="preset-lead-tag">预设:</span>
-        <button
-          type="button"
-          className="preset-btn"
-          onClick={() => applyPreset("niuma")}
-        >
-          ⚡ NiuMa 主库
-        </button>
-        <button
-          type="button"
-          className="preset-btn"
-          onClick={() => applyPreset("demo")}
-        >
-          🧪 Demo 样例
-        </button>
-      </div>
-
-      <div className="launchpad-form-grid">
-        <div className="two-cols-inputs">
-          <label className="compact-input-control">
-            <span>Installation ID</span>
-            <input
-              name="installation_id"
-              type="number"
-              min="1"
-              step="1"
-              placeholder="例: 10001"
-              value={installationId}
-              onChange={(event) => setInstallationId(event.target.value)}
-              required
-            />
-          </label>
-          <label className="compact-input-control">
-            <span>Repository ID</span>
-            <input
-              name="repository_id"
-              type="number"
-              min="1"
-              step="1"
-              placeholder="例: 20001"
-              value={repositoryId}
-              onChange={(event) => setRepositoryId(event.target.value)}
-              required
-            />
-          </label>
-        </div>
-
-        <label className="compact-input-control">
-          <span>目标仓库 (Owner/Repository)</span>
-          <input
-            name="repository"
-            value={repository}
-            onChange={(event) => setRepository(event.target.value)}
-            placeholder="例如: lboverfys/NiuMa"
-            pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"}
-            required
-          />
-        </label>
-
-        <label className="compact-input-control">
-          <span>Pull Request 编号</span>
-          <input
-            name="pull_request_number"
-            type="number"
-            min="1"
-            step="1"
-            placeholder="例如: 42"
-            value={pullRequest}
-            onChange={(event) => setPullRequest(event.target.value)}
-            required
-          />
-        </label>
-
-        <label className="compact-input-control">
-          <span>Head Commit SHA (40位哈希)</span>
-          <input
-            name="head_sha"
-            className="code-font"
-            value={headSha}
-            onChange={(event) => setHeadSha(event.target.value)}
-            minLength={40}
-            maxLength={64}
-            pattern="[0-9a-fA-F]{40,64}"
-            placeholder="40 位完整 Git 哈希"
-            required
-          />
-        </label>
-      </div>
-
-      <button type="submit" className="warm-submit-btn" disabled={submitting}>
-        {submitting ? (
-          <>
-            <span className="warm-btn-spinner" />
-            正在排队提交…
-          </>
-        ) : (
-          <>
-            <span>提交审查任务</span>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M5 12h14M12 5l7 7-7 7" />
-            </svg>
-          </>
-        )}
-      </button>
-
-      {message && (
-        <div className="warm-feedback-badge" role="status" aria-live="polite">
-          {message}
-        </div>
-      )}
-    </form>
-  );
+  return <section className="workspace-surface ws-editor" aria-label="手动审查表单">
+    <div className="ws-editor-heading"><div><h2>填写 PR 信息</h2><p>用于补发或手动审查，提交后进入现有审查队列。</p></div></div>
+    {message && <p className={failed ? "team-error" : "team-success"} role={failed ? "alert" : "status"}>{message}</p>}
+    <form onSubmit={submit}><fieldset disabled={submitting}>
+      <WorkspaceSection title="审查目标" description="填写真实仓库、PR 编号和需要审查的精确提交。">
+        <label>目标仓库 (Owner/Repository)<input name="repository" value={repository} onChange={event => setRepository(event.target.value)} placeholder="owner/repository" pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} maxLength={255} required /></label>
+        <label>Pull Request 编号<input name="pull_request_number" type="number" min={1} step={1} value={pullRequest} onChange={event => setPullRequest(event.target.value)} required /></label>
+        <label>Head Commit SHA<input name="head_sha" className="code-font" value={headSha} onChange={event => setHeadSha(event.target.value)} minLength={40} maxLength={64} pattern="(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})" placeholder="PR 当前提交的完整 SHA" required /></label>
+      </WorkspaceSection>
+      <WorkspaceSection title="GitHub App 身份" description="使用已授权 App 的真实安装编号与仓库数字编号。">
+        <div className="ws-form-grid"><label>Installation ID<input name="installation_id" type="number" min={1} step={1} value={installationId} onChange={event => setInstallationId(event.target.value)} required /></label>
+          <label>Repository ID<input name="repository_id" type="number" min={1} step={1} value={repositoryId} onChange={event => setRepositoryId(event.target.value)} required /></label></div>
+      </WorkspaceSection>
+      <div className="ws-form-actions"><button type="submit" className="ws-primary">{submitting ? "正在提交…" : "提交审查任务"}</button>{onCancel && <button type="button" onClick={onCancel}>取消</button>}<span className="ws-hint">相同内容重试会复用请求标识</span></div>
+    </fieldset></form>
+  </section>;
 }

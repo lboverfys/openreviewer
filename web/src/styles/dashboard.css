@@ -920,3 +920,12 @@
     width: 100%;
   }
 }
+/* 首页节点只呈现有界在线预览；手动审查使用独立操作视图。 */
+.worker-overview-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.worker-overview-counts .spec-val { color: var(--accent); font-size: 20px; }
+.worker-preview-note { margin-top: 10px; color: var(--text-muted); font-size: 11px; line-height: 1.7; }
+.worker-history-link { display: block; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-soft); color: var(--accent); font-size: 12px; font-weight: 650; }
+.worker-node-row small { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dash-create-view { width: 100%; max-width: 1000px; margin: 0 auto; }
+.dash-create-view .ws-editor > :is(.team-error, .team-success) { margin-top: 14px; }
+.dash-hero-actions .dash-create-button { padding: 7px 13px; min-height: 34px; font-size: 12px; border-radius: 10px; }

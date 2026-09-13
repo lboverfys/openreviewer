@@ -36,10 +36,13 @@ from domain.static_analysis import (
     StaticReportUpload,
     StaticReportView,
 )
+from domain.workers import WorkerListState, WorkerNodePage
 from persistence.evaluation_reports import comparison_report
 from persistence.static_analysis import StaticAnalysisRepository
+from persistence.workers import WorkerRepository
 from services.ai_settings import AiSettingsError
 from services.auth import SessionPrincipal
+from services.operations import OperationsSettings
 from services.rag import KnowledgePersistenceError
 from services.rbac import Permission, has_permission
 from services.review_learning import ReviewLearningService
@@ -78,6 +81,18 @@ def register_platform_routes(
 ) -> None:
     def static_service():
         return StaticAnalysisRepository(get_service().profiles.sessions)
+
+    @application.get("/api/v1/platform/workers", response_model=WorkerNodePage)
+    def worker_nodes(
+        principal: Annotated[SessionPrincipal, Depends(require_manager)],
+        state: WorkerListState = "online",
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        cursor: Annotated[str | None, Query(max_length=1536)] = None,
+    ):
+        return _guard(lambda: WorkerRepository(get_service().profiles.sessions).page(
+            principal.resource_scope, state=state, limit=limit, cursor=cursor,
+            retention_days=OperationsSettings.from_environment().worker_heartbeat_retention.days,
+        ))
 
     @application.get("/api/v1/platform/evidence", response_model=ProjectEvidence)
     def evidence_report(

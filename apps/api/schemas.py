@@ -498,6 +498,8 @@ class DashboardResponse(BaseModel):
     workers: tuple[WorkerResponse, ...]
     recent_reviews: tuple[ReviewItemResponse, ...]
     next_cursor: str | None
+    worker_online_count: int | None = None
+    worker_busy_count: int | None = None
 
     @classmethod
     def from_snapshot(cls, snapshot: DashboardSnapshot) -> "DashboardResponse":
@@ -517,6 +519,8 @@ class DashboardResponse(BaseModel):
         return cls(
             generated_at=snapshot.generated_at,
             total_reviews=snapshot.total_reviews,
+            worker_online_count=snapshot.worker_online_count,
+            worker_busy_count=snapshot.worker_busy_count,
             status_counts=dict(snapshot.status_counts),
             worker=WorkerResponse(
                 **{

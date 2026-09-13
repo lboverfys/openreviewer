@@ -2,7 +2,7 @@
 
 import time
 from collections import OrderedDict
-from datetime import datetime
+from datetime import UTC, datetime
 from threading import RLock
 
 from sqlalchemy import and_, case, func, or_, select, union
@@ -10,8 +10,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
 
-from domain.enums import ExecutionStatus, WorkerStatus
+from domain.enums import ExecutionStatus
 from domain.security import redact_sensitive
+from domain.workers import WORKER_ONLINE_WINDOW
 from persistence.models import (
     OutboxEventRecord,
     PullRequestVersionRecord,
@@ -19,22 +20,19 @@ from persistence.models import (
     ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
-    WorkerHeartbeatRecord,
 )
 from persistence.resource_scope import resource_predicate
+from persistence.workers import WorkerOverview, load_worker_overview
 from services.dashboard import (
     DashboardChangeState,
     DashboardData,
     DashboardPersistenceError,
     ReviewCursor,
     ReviewListItem,
-    StoredWorkerHeartbeat,
     as_utc,
     required_utc,
 )
 from services.rbac import ResourceScope
-
-_MAX_DASHBOARD_WORKERS = 100
 
 
 class SqlAlchemyDashboardRepository:
@@ -60,6 +58,7 @@ class SqlAlchemyDashboardRepository:
         execution_status: ExecutionStatus | None = None,
         query: str = "",
         include_overview: bool = True,
+        worker_cutoff: datetime | None = None,
     ) -> DashboardData:
         """从数据库读取 Dashboard 所需的聚合数据。
 
@@ -74,7 +73,7 @@ class SqlAlchemyDashboardRepository:
 
         返回：
             按创建时间倒序排列的最近任务、所有状态计数、总运行数和最后心跳。
-            Worker 心跳按最近更新时间倒序返回，并硬限制为 100 条，避免异常实例 ID
+            Worker 返回准确在线统计与最多三条活跃预览，避免历史实例 ID
             持续增长时形成无界查询。
 
         异常：
@@ -133,68 +132,17 @@ class SqlAlchemyDashboardRepository:
                     session, limit, cursor, scope, execution_status, query
                 )
 
-                workers: tuple[StoredWorkerHeartbeat, ...] = ()
-                if include_overview:
-                    heartbeat_rows = session.execute(
-                        select(
-                            WorkerHeartbeatRecord.worker_id,
-                            WorkerHeartbeatRecord.status,
-                            WorkerHeartbeatRecord.current_task_id,
-                            WorkerHeartbeatRecord.started_at,
-                            WorkerHeartbeatRecord.last_seen_at,
-                            ReviewRunRecord.installation_id.label("task_installation_id"),
-                            ReviewRunRecord.repository.label("task_repository"),
-                        )
-                        .outerjoin(
-                            ReviewTaskRecord,
-                            WorkerHeartbeatRecord.current_task_id == ReviewTaskRecord.id,
-                        )
-                        .outerjoin(
-                            ReviewRunRecord,
-                            ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
-                        )
-                        .order_by(
-                            WorkerHeartbeatRecord.last_seen_at.desc(),
-                            WorkerHeartbeatRecord.worker_id.asc(),
-                        )
-                        .limit(_MAX_DASHBOARD_WORKERS)
-                    ).all()
-                    workers = tuple(
-                        StoredWorkerHeartbeat(
-                            worker_id=heartbeat.worker_id,
-                            status=WorkerStatus(heartbeat.status),
-                            current_task_id=(
-                                heartbeat.current_task_id
-                                if (
-                                    scope is None
-                                    or scope.unrestricted
-                                    or (
-                                        heartbeat.task_installation_id is not None
-                                        and heartbeat.task_repository is not None
-                                        and scope.allows(
-                                            heartbeat.task_installation_id,
-                                            heartbeat.task_repository,
-                                        )
-                                    )
-                                )
-                                else None
-                            ),
-                            started_at=required_utc(
-                                heartbeat.started_at,
-                                "worker.started_at",
-                            ),
-                            last_seen_at=required_utc(
-                                heartbeat.last_seen_at,
-                                "worker.last_seen_at",
-                            ),
-                        )
-                        for heartbeat in heartbeat_rows
-                    )
+                overview = (
+                    load_worker_overview(session, worker_cutoff or datetime.now(UTC) - WORKER_ONLINE_WINDOW, scope)
+                    if include_overview else WorkerOverview((), 0, 0)
+                )
                 return DashboardData(
                     total_reviews=total_reviews,
                     status_counts=status_counts,
                     recent_reviews=reviews,
-                    workers=workers,
+                    workers=overview.workers,
+                    worker_online_count=overview.online_count,
+                    worker_busy_count=overview.busy_count,
                     has_more=has_more,
                 )
             except (SQLAlchemyError, ValueError) as exc:
@@ -226,8 +174,9 @@ class SqlAlchemyDashboardRepository:
         self,
         *,
         scope: ResourceScope | None = None,
+        worker_cutoff: datetime | None = None,
     ) -> DashboardChangeState:
-        """用两个索引首行查询读取 SSE 变化状态。"""
+        """读取事件与在线节点变化；历史心跳不进入高频变化列表。"""
 
         with self._sessions() as session:
             try:
@@ -257,66 +206,15 @@ class SqlAlchemyDashboardRepository:
                         )
                     )
                 latest_event = session.execute(latest_event_query).one_or_none()
-                worker_rows = session.execute(
-                    select(
-                        WorkerHeartbeatRecord.worker_id,
-                        WorkerHeartbeatRecord.status,
-                        WorkerHeartbeatRecord.current_task_id,
-                        WorkerHeartbeatRecord.started_at,
-                        WorkerHeartbeatRecord.last_seen_at,
-                        ReviewRunRecord.installation_id.label("task_installation_id"),
-                        ReviewRunRecord.repository.label("task_repository"),
-                    )
-                    .outerjoin(
-                        ReviewTaskRecord,
-                        WorkerHeartbeatRecord.current_task_id == ReviewTaskRecord.id,
-                    )
-                    .outerjoin(
-                        ReviewRunRecord,
-                        ReviewTaskRecord.review_run_id == ReviewRunRecord.id,
-                    )
-                    .order_by(
-                        WorkerHeartbeatRecord.last_seen_at.desc(),
-                        WorkerHeartbeatRecord.worker_id.desc(),
-                    )
-                    .limit(_MAX_DASHBOARD_WORKERS)
-                ).all()
+                overview = load_worker_overview(
+                    session, worker_cutoff or datetime.now(UTC) - WORKER_ONLINE_WINDOW, scope,
+                )
                 return DashboardChangeState(
                     latest_event_id=latest_event.id if latest_event else None,
-                    latest_event_at=(
-                        as_utc(latest_event.occurred_at) if latest_event else None
-                    ),
-                    workers=tuple(
-                        StoredWorkerHeartbeat(
-                            worker_id=worker.worker_id,
-                            status=WorkerStatus(worker.status),
-                            current_task_id=(
-                                worker.current_task_id
-                                if (
-                                    scope is None
-                                    or scope.unrestricted
-                                    or (
-                                        worker.task_installation_id is not None
-                                        and worker.task_repository is not None
-                                        and scope.allows(
-                                            worker.task_installation_id,
-                                            worker.task_repository,
-                                        )
-                                    )
-                                )
-                                else None
-                            ),
-                            started_at=required_utc(
-                                worker.started_at,
-                                "worker.started_at",
-                            ),
-                            last_seen_at=required_utc(
-                                worker.last_seen_at,
-                                "worker.last_seen_at",
-                            ),
-                        )
-                        for worker in worker_rows
-                    ),
+                    latest_event_at=as_utc(latest_event.occurred_at) if latest_event else None,
+                    workers=overview.workers,
+                    worker_online_count=overview.online_count,
+                    worker_busy_count=overview.busy_count,
                 )
             except SQLAlchemyError as exc:
                 raise DashboardPersistenceError(

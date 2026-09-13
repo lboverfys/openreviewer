@@ -3,12 +3,13 @@ import type { CursorPage } from "./useCursorPage";
 import type { ApprovalTodo, DiagnosticReport, PlatformAudit, ProfileCreate, ReviewProfile, UsageBreakdown, UsageMonth, UsageRequest, WorkItem, WorkItemCreate, WorkItemUpdate } from "./types";
 
 const base = "/api/v1/platform";
-function page<T>(path: string, key: string, query: Record<string, string>, cursor?: string, signal?: AbortSignal, force = false) {
+function page<T, P extends CursorPage<T> = CursorPage<T>>(path: string, key: string, query: Record<string, string>, cursor?: string, signal?: AbortSignal, force = false) {
   const params = new URLSearchParams({ limit: "10", ...query, ...(cursor ? { cursor } : {}) });
-  return cachedGet<CursorPage<T>>(`${key}:${cursor ?? "first"}`, cacheSignal => request(`${base}${path}?${params}`, { signal: cacheSignal }), signal, DASHBOARD_CACHE_TTL_MS, force);
+  return cachedGet<P>(`${key}:${cursor ?? "first"}`, cacheSignal => request(`${base}${path}?${params}`, { signal: cacheSignal }), signal, DASHBOARD_CACHE_TTL_MS, force);
 }
 
 export const platformApi = {
+  workers: (state: "online" | "offline" | "all", cursor?: string, signal?: AbortSignal, force = false) => page<import("./types").WorkerNode, import("./types").WorkerNodePage>("/workers", `workers:${state}`, { state }, cursor, signal, force),
   projectEvidence: (datasetId?: string) => request<import("./types").ProjectEvidence>(`${base}/evidence${datasetId ? `?dataset_id=${encodeURIComponent(datasetId)}` : ""}`),
   staticReport: (id: string, signal?: AbortSignal) => request<import("./types").StaticReport | null>(`${base}/reviews/${encodeURIComponent(id)}/static-report`, { signal }),
   importStaticReport: (id: string, body: import("./types").StaticReportUpload) => mutation(() => request<import("./types").StaticReport>(`${base}/reviews/${encodeURIComponent(id)}/static-report`, { method: "POST", body: JSON.stringify(body) })),

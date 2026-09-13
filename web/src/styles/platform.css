@@ -46,3 +46,5 @@
 .profile-version > p { padding: 8px 0 0; font-size: 11px; }
 .diagnostic-table { max-height: 460px; }
 .diagnostic-table th { position: sticky; top: 0; z-index: 1; }
+.worker-history-id { display: block; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.worker-history-table td { vertical-align: middle; }

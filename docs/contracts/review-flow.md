@@ -18,6 +18,10 @@
 
 ## 接收与版本
 
+手动审查通过控制台顶部“发起审查”进入独立表单，侧栏不常驻表单。入口仅向具备审查管理权限
+的成员展示；填写真实 App 安装、仓库、PR 与提交信息，不提供会填入假 ID/SHA 的预设。
+同一份输入发生请求失败时复用 Idempotency-Key；修改输入或成功提交后，再生成新的请求身份。
+
 - 接受 GitHub `pull_request` 的 opened、synchronize、reopened、ready_for_review 事件。
   HMAC-SHA256 验签、安装及仓库白名单、256 KiB 正文上限在接收边界完成。
 - Webhook 以 delivery ID 去重；手工创建要求 `Idempotency-Key`。相同键与内容返回原任务，

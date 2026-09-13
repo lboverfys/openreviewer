@@ -16,13 +16,13 @@ class CursorPage[T](BaseModel):
 def encode_cursor(created_at: datetime, identifier: str) -> str:
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=UTC)
-    payload = json.dumps([created_at.isoformat(), identifier]).encode()
+    payload = json.dumps([created_at.isoformat(), identifier], ensure_ascii=False).encode()
     return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 
-def decode_cursor(value: str) -> tuple[datetime, str]:
+def decode_cursor(value: str, *, max_identifier_length: int = 128, max_cursor_length: int = 512) -> tuple[datetime, str]:
     try:
-        if not value or len(value) > 512:
+        if not value or len(value) > max_cursor_length:
             raise ValueError
         payload = json.loads(base64.b64decode(
             value + "=" * (-len(value) % 4), altchars=b"-_", validate=True,
@@ -30,7 +30,7 @@ def decode_cursor(value: str) -> tuple[datetime, str]:
         if not isinstance(payload, list) or len(payload) != 2:
             raise ValueError
         date, identifier = payload
-        if not isinstance(identifier, str) or not 1 <= len(identifier) <= 128:
+        if not isinstance(identifier, str) or not 1 <= len(identifier) <= max_identifier_length:
             raise ValueError
         created_at = datetime.fromisoformat(date)
         if created_at.tzinfo is None:

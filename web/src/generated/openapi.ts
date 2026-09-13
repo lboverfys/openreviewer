@@ -808,6 +808,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/platform/workers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Worker Nodes */
+        get: operations["worker_nodes_api_v1_platform_workers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/retrieval/evaluations": {
         parameters: {
             query?: never;
@@ -2141,6 +2158,10 @@ export interface components {
             /** Total Reviews */
             total_reviews: number;
             worker: components["schemas"]["WorkerResponse"];
+            /** Worker Busy Count */
+            worker_busy_count?: number | null;
+            /** Worker Online Count */
+            worker_online_count?: number | null;
             /** Workers */
             workers: components["schemas"]["WorkerResponse"][];
         };
@@ -4767,6 +4788,47 @@ export interface components {
              */
             updated_at: string;
         };
+        /** WorkerNode */
+        WorkerNode: {
+            /** Current Review Run Id */
+            current_review_run_id: string | null;
+            /** Current Task Id */
+            current_task_id: string | null;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+            /** Online */
+            online: boolean;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            status: components["schemas"]["WorkerStatus"];
+            /** Worker Id */
+            worker_id: string;
+        };
+        /** WorkerNodePage */
+        WorkerNodePage: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Items */
+            items: components["schemas"]["WorkerNode"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Online Window Seconds
+             * @default 15
+             */
+            online_window_seconds: number;
+            /** Retention Days */
+            retention_days: number;
+        };
         /** WorkerResponse */
         WorkerResponse: {
             /** Configured */
@@ -6398,6 +6460,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KnowledgeProposalView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    worker_nodes_api_v1_platform_workers_get: {
+        parameters: {
+            query?: {
+                state?: "online" | "offline" | "all";
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerNodePage"];
                 };
             };
             /** @description Validation Error */
