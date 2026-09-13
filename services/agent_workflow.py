@@ -579,9 +579,12 @@ def _filter_summary_candidates(
     """
 
     units_by_key = {unit.unit_key: unit for unit in review_input.units}
-    known_rules = {rule.path for rule in review_input.rules}
+    known_rules = {rule.path for rule in review_input.rules} | set(review_input.knowledge_versions)
+    known_context = {item.reference_id for item in review_input.context_evidence}
     filtered: list[ModelFindingCandidate] = []
     for candidate in candidates:
+        if not set(candidate.context_references) <= known_context:
+            continue
         unit = units_by_key.get(candidate.unit_key)
         if unit is None:
             continue

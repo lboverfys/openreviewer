@@ -67,7 +67,7 @@ const actionLabels: Record<ReviewAction, string> = {
   reject: "驳回",
   publish: "发布到 GitHub",
   expedite: "立即执行",
-  retry: "重试当前失败节点",
+  retry: "重新执行 AI 审查",
   cancel: "取消任务",
   rerun: "检查最新提交",
   retry_failed_node: "重试当前失败节点",
@@ -722,7 +722,8 @@ function ReviewDetailPage({
                 >
                   <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : actionLabels[action]}
                 </button>
-                {(action === "retry_failed_node" || action === "retry") && <small>不会重复调用已成功的模型请求</small>}
+                {action === "retry_failed_node" && <small>不会重复调用已成功的模型请求</small>}
+                {action === "retry" && <small>{details.coverage_status === "partial" ? "保留已经成功的批次" : "重新执行 AI 阶段，可能再次产生费用"}</small>}
                 {(action === "new_review" || action === "rerun") && <small>创建新记录，不覆盖当前任务</small>}
                 {action === "review_snapshot" && <small>使用已保存代码，另存检查结果</small>}
               </div>

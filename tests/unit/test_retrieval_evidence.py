@@ -1,9 +1,14 @@
+import json
 from hashlib import sha256
 
 import pytest
 
 from domain.enums import ModelProvider, ReviewAgent
-from domain.model_review import ModelReviewInput, materialize_findings
+from domain.model_review import (
+    ModelReviewInput,
+    materialize_findings,
+    normalize_model_references,
+)
 from domain.retrieval import ContextEvidence, stable_key
 from services.agent_workflow import scope_model_review_input
 from services.model_review import (
@@ -30,7 +35,7 @@ def test_model_context_has_stable_identity_and_is_scoped_to_agent():
     assert scope_model_review_input(review_input, ReviewAgent.LOGIC).context_evidence == (context,)
     assert scope_model_review_input(review_input, ReviewAgent.SECURITY).context_evidence == ()
     prompt = StructuredReviewPromptBuilder().build(review_input, ModelProvider.OPENAI, "test")
-    assert context.reference_id in prompt.user
+    assert json.loads(prompt.user)["context_evidence"][0]["reference_id"] == "ctx_1"
     assert "fusion_score" not in prompt.user
     assert "rerank_score" not in prompt.user
 
@@ -54,3 +59,18 @@ def test_unknown_evidence_reference_is_rejected():
     known = candidate.model_copy(update={"context_references": (evidence().reference_id,)})
     result = materialize_findings(review_input, output.model_copy(update={"findings": (known,)}))
     assert result[0].finding.context_references == (evidence().reference_id,)
+
+
+def test_short_context_and_knowledge_paths_keep_their_trusted_identity():
+    context = evidence()
+    review_input = make_model_input().model_copy(update={"context_evidence": (context,), "knowledge_versions": {"security.md": "version-1"}})
+    output = make_output()
+    candidate = output.findings[0].model_copy(update={"context_references": ("ctx_1",), "rule_reference": "security.md"})
+    normalized = normalize_model_references(review_input, output.model_copy(update={"findings": (candidate,)}))
+    findings = materialize_findings(review_input, normalized)
+    assert findings[0].finding.context_references == (context.reference_id,)
+    assert findings[0].finding.rule_reference == "security.md"
+    prompt = StructuredReviewPromptBuilder().build(review_input, ModelProvider.OPENAI, "test")
+    assert "security.md" in json.loads(prompt.user)["allowed_rule_references"]
+    with pytest.raises(ValueError, match="unknown retrieval evidence"):
+        normalize_model_references(review_input, output.model_copy(update={"findings": (candidate.model_copy(update={"context_references": ("ctx_9",)}),)}))

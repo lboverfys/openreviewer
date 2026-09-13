@@ -26,6 +26,7 @@ from domain.model_review import (
     ModelTokenUsage,
     ReviewExecutionProvenance,
     model_review_output_schema,
+    normalize_model_references,
 )
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_budget import (
@@ -392,6 +393,15 @@ class _StructuredModelReviewer(ModelReviewer):
                 retryable=False,
                 details=self._audit_details(audit),
             ) from exc
+        if prompt_input.review_agent is not ReviewAgent.SUMMARY:
+            try:
+                output = normalize_model_references(prompt_input, output)
+            except ValueError as exc:
+                raise self._error(
+                    ErrorCode.MODEL_INVALID_RESPONSE,
+                    "模型引用了本批次未提供的代码或规则，请重试该批次",
+                    retryable=True, details={**self._audit_details(audit), "invalid_references": True},
+                ) from exc
         estimated_cost = (
             self._settings.pricing.estimate_microusd(usage)
             if self._settings.pricing is not None

@@ -437,6 +437,28 @@ def model_review_output_schema() -> dict[str, object]:
     }
 
 
+def normalize_model_references(review_input: ModelReviewInput, output: ModelReviewOutput) -> ModelReviewOutput:
+    """把本次请求中的短引用还原为真实身份，拒绝模型编造的引用。"""
+    aliases = {f"ctx_{number}": item.reference_id for number, item in enumerate(review_input.context_evidence, 1)}
+    known_context = set(aliases.values())
+    known_rules = {rule.path for rule in review_input.rules} | set(review_input.knowledge_versions)
+    units = {unit.unit_key: unit for unit in review_input.units}
+    findings = []
+    for candidate in output.findings:
+        references = tuple(dict.fromkeys(aliases.get(key, key) for key in candidate.context_references))
+        if not set(references) <= known_context:
+            raise ValueError("model finding references unknown retrieval evidence")
+        if candidate.rule_reference not in known_rules | {None}:
+            raise ValueError("model finding references an unknown repository rule")
+        unit = units.get(candidate.unit_key)
+        if unit is None:
+            raise ValueError("model finding references an unknown review unit")
+        if candidate.location is not None and candidate.location.file != unit.file:
+            raise ValueError("model finding location does not match its review unit")
+        findings.append(candidate.model_copy(update={"context_references": references}))
+    return output.model_copy(update={"findings": tuple(findings)})
+
+
 def materialize_findings(
     review_input: ModelReviewInput,
     output: ModelReviewOutput,
@@ -447,7 +469,7 @@ def materialize_findings(
     diff_locations_by_key = {
         unit.unit_key: _index_diff_locations(unit.patch) for unit in review_input.units
     }
-    known_rule_paths = {rule.path for rule in review_input.rules}
+    known_rule_paths = {rule.path for rule in review_input.rules} | set(review_input.knowledge_versions)
     known_context = {item.reference_id for item in review_input.context_evidence}
     verification_rank = {
         VerificationStatus.REJECTED: 0,

@@ -2443,6 +2443,34 @@ def test_sse_keepalives_cannot_extend_response_past_read_timeout(monkeypatch) ->
     reviewer.close()
 
 
+@pytest.mark.parametrize("reference", ["ctx_1", "invented-reference"])
+def test_model_reference_validation_happens_before_batch_success(reference):
+    from tests.unit.test_retrieval_evidence import evidence
+    context = evidence()
+    source = make_model_input().model_copy(update={"context_evidence": (context,), "knowledge_versions": {"security.md": "v1"}})
+    output = make_output()
+    output = output.model_copy(update={"findings": (output.findings[0].model_copy(
+        update={"context_references": (reference,), "rule_reference": "security.md"}),)})
+    def respond(request):
+        return httpx.Response(200, json={"id":"reference-response", "status":"completed",
+            "output":[{"type":"message", "content":[{"type":"output_text", "text":output.model_dump_json()}]}],
+            "usage":{"input_tokens":10,"output_tokens":5}})
+    client = httpx.Client(base_url="https://api.openai.test", transport=httpx.MockTransport(respond))
+    reviewer = create_model_reviewer(_settings(ModelProvider.OPENAI), client=client)
+    try:
+        if reference == "ctx_1":
+            result = reviewer.review(source)
+            assert result.output.findings[0].context_references == (context.reference_id,)
+        else:
+            with pytest.raises(SafeApplicationError) as captured:
+                reviewer.review(source)
+            assert captured.value.error.code is ErrorCode.MODEL_INVALID_RESPONSE
+            assert captured.value.error.retryable is True
+            assert captured.value.error.details["invalid_references"] is True
+    finally:
+        client.close()
+
+
 def test_http_classification_iterator_exception_does_not_settle_twice() -> None:
     """HTTP 错误分类异常时，已结算的 reservation 不能再次结算。"""
 

@@ -181,6 +181,9 @@ def _run_fixed_agent_workflow(
                 (f"{item.source}#{item.heading}@{item.version}: {item.excerpt}")[:2_000]
                 for item in citations
             )
+    model_input = model_input.model_copy(update={"knowledge_versions": {
+        source: version for versions in reference_versions.values() for source, version in versions.items()
+    }})
     execution = workflow.run(
         model_input,
         references=reference_map,
