@@ -54,3 +54,20 @@ it("待核对步骤说明下一步操作，不显示英文状态或正在运行"
   expect(screen.queryByText("awaiting_finding_adjudication")).not.toBeInTheDocument();
   expect(screen.getAllByText("AI 检查已完成，请先核对候选问题").length).toBeGreaterThan(0);
 });
+
+it("取消时只完成规划不代表 AI 已完成，暂停后的必要步骤仍待执行", () => {
+  const stages = [
+    {key:"planning",status:"completed"}, {key:"model",status:"skipped"},
+    {key:"agent_batches",status:"skipped"}, {key:"aggregating",status:"skipped"},
+    {key:"approval",status:"skipped"}, {key:"publish",status:"skipped"},
+    {key:"result",status:"cancelled"},
+  ];
+  const rendered = render(<StageTimeline details={{phase:"cancelled",snapshot_review:true,stages} as ReviewDetails} />);
+  const ai = screen.getByText("AI 检查").closest(".review-stage-row")!;
+  expect(within(ai as HTMLElement).queryByText("已完成")).not.toBeInTheDocument();
+  expect(within(ai as HTMLElement).getByText("已取消")).toBeInTheDocument();
+  rendered.rerender(<StageTimeline details={{phase:"paused",snapshot_review:true,stages:stages.map(stage =>
+    ({...stage,status:stage.key === "agent_batches" ? "paused" : stage.key === "result" ? "pending" : stage.status}))} as ReviewDetails} />);
+  const result = screen.getByText("完成处理").closest(".review-stage-row")!;
+  expect(within(result as HTMLElement).getByText("待执行")).toBeInTheDocument();
+});

@@ -20,7 +20,8 @@ function stageCaption(status: string, detail?: string | null): string {
 }
 
 export function StageTimeline({ details }: { details: ReviewDetails }) {
-  const stopped = ["cancelled", "superseded", "rejected", "paused"].includes(details.phase);
+  const terminated = ["cancelled", "superseded", "rejected"].includes(details.phase);
+  const stopped = terminated || details.phase === "paused";
   const stages = details.stages.map(stage => ({ ...stage, status: stopped && stage.status === "current" ? details.phase : stage.status }));
   const groups = [
     { title: "获取代码", keys: ["intake", "context", "ci"] },
@@ -34,14 +35,15 @@ export function StageTimeline({ details }: { details: ReviewDetails }) {
     </span></div>
     <div className="review-stage-timeline">{groups.map((group, index) => {
       const relevant = stages.filter(stage => group.keys.includes(stage.key));
-      const required = relevant.filter(stage => stage.status !== "skipped");
+      const required = relevant.filter(stage => !details.snapshot_review || !["ci", "approval", "publish"].includes(stage.key));
       const active = required.find(stage => ["cancelled", "superseded", "rejected", "failed", "paused", "current"].includes(stage.status));
       const status = active?.status ?? (required.length === 0 ? "skipped"
-        : required.every(stage => stage.status === "completed") ? "completed" : stopped ? "skipped" : "pending");
+        : required.every(stage => stage.status === "completed") ? "completed"
+        : terminated ? required.some(stage => stage.status === "completed") ? details.phase : "skipped" : "pending");
       return <div className={"review-stage-row stage-" + status} key={group.title}>
         <div className="review-stage-marker">{status === "completed" ? "✓" : index + 1}</div>
         <div className="review-stage-copy"><div className="review-stage-title-line"><strong>{group.title}</strong>
-          <span>{status === "skipped" && details.snapshot_review ? "无需此步" : stageCaption(status, active?.detail_code)}</span>
+          <span>{required.length === 0 ? "无需此步" : stageCaption(status, active?.detail_code)}</span>
         </div></div>
       </div>;
     })}</div>
