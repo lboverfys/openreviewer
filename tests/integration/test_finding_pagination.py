@@ -289,7 +289,7 @@ def test_detail_query_count_is_constant_for_large_finding_page(database: Databas
 
     def count_selects(_conn, _cursor, statement, _parameters, _context, _many):
         nonlocal select_count
-        if statement.lstrip().upper().startswith("SELECT"):
+        if statement.lstrip().upper().startswith(("SELECT", "WITH")):
             select_count += 1
 
     event.listen(database.engine, "before_cursor_execute", count_selects)

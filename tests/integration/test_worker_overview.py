@@ -119,3 +119,22 @@ def test_heartbeat_cleanup_keeps_a_restarted_worker_and_respects_batch_limit(dat
         assert session.scalar(select(WorkerHeartbeatRecord.worker_id).where(WorkerHeartbeatRecord.worker_id == "restarted")) == "restarted"
     with database.sessions() as session, session.begin():
         assert SqlAlchemyOperationsRepository._delete_worker_heartbeats(session, NOW - timedelta(days=7), 2) == 1
+
+
+@pytest.mark.parametrize("has_history", [False, True])
+def test_empty_and_offline_overviews_still_use_one_statement(database, has_history):
+    if has_history:
+        with database.sessions() as session, session.begin():
+            session.add(WorkerHeartbeatRecord(worker_id="stopped", status="stopping", started_at=NOW, last_seen_at=NOW))
+    statements = []
+    def capture(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+    event.listen(database.engine, "before_cursor_execute", capture)
+    try:
+        with database.sessions() as session:
+            overview = load_worker_overview(session, NOW - timedelta(seconds=15), ALL)
+    finally:
+        event.remove(database.engine, "before_cursor_execute", capture)
+    assert len(statements) == 1
+    assert overview.online_count == overview.busy_count == 0
+    assert len(overview.workers) == int(has_history)

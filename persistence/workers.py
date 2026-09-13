@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, case, func, not_, select
+from sqlalchemy import and_, case, func, literal, not_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.enums import WorkerStatus
@@ -48,18 +48,20 @@ class WorkerOverview:
 
 def load_worker_overview(session: Session, cutoff: datetime, scope: ResourceScope | None) -> WorkerOverview:
     # 窗口统计在 LIMIT 前计算，在线数量不受预览条数影响；同一 SQL 快照内一致。
-    rows = session.execute(worker_query(scope).add_columns(
+    active = worker_query(scope).add_columns(
         func.count().over().label("online_count"),
         func.sum(case((WorkerHeartbeatRecord.status == WorkerStatus.BUSY.value, 1), else_=0)).over().label("busy_count"),
-    ).where(online_condition(cutoff)).order_by(WorkerHeartbeatRecord.worker_id.asc())
-      .limit(DASHBOARD_WORKER_PREVIEW_LIMIT)).all()
+    ).where(online_condition(cutoff)).order_by(WorkerHeartbeatRecord.worker_id.asc()
+    ).limit(DASHBOARD_WORKER_PREVIEW_LIMIT).cte("active_workers")
+    # 无在线节点时只保留最新一条；两个分支共享同一 SQL 快照和在线 CTE。
+    latest = worker_query(scope).add_columns(
+        literal(0).label("online_count"), literal(0).label("busy_count"),
+    ).where(~select(active.c.worker_id).exists()).order_by(
+        WorkerHeartbeatRecord.last_seen_at.desc(), WorkerHeartbeatRecord.worker_id.desc(),
+    ).limit(1).subquery("latest_worker")
+    rows = session.execute(select(*active.c).union_all(select(*latest.c)).order_by("worker_id")).all()
     online_count = int(rows[0].online_count) if rows else 0
     busy_count = int(rows[0].busy_count) if rows else 0
-    if not rows:
-        # 保留单条最近心跳用于区分“离线”与“从未接入”，不展开历史记录。
-        rows = session.execute(worker_query(scope).order_by(
-            WorkerHeartbeatRecord.last_seen_at.desc(), WorkerHeartbeatRecord.worker_id.desc(),
-        ).limit(1)).all()
     workers = tuple(StoredWorkerHeartbeat(worker_id=row.worker_id, status=WorkerStatus(row.status),
         current_task_id=row.current_task_id, started_at=required_utc(row.started_at, "worker.started_at"),
         last_seen_at=required_utc(row.last_seen_at, "worker.last_seen_at")) for row in rows)
