@@ -136,6 +136,15 @@ def test_planner_assigns_every_file_once_and_orders_applicable_rules() -> None:
     )
 
 
+@pytest.mark.parametrize("suffix", ["csv", "tsv"])
+def test_contract_tables_are_included_in_review(suffix):
+    source = _file(f"tests/contracts/endpoints.{suffix}", patch="@@ -1 +1 @@\n-GET /old\n+GET /new\n")
+    plan = DeterministicReviewPlanner().plan(_target(), (source,), _snapshot())
+    assert plan.files[0].decision is ReviewFileDecision.PLANNED
+    assert plan.units[0].language == suffix
+    assert plan.units[0].patch == source.patch
+
+
 def test_planner_keeps_all_reviewable_files_and_defers_batching_to_model_stage() -> None:
     files = (
         _file("b.py", patch="b" * 3000),

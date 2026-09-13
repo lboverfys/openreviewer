@@ -746,7 +746,9 @@ function ReviewDetailPage({
         {details.coverage_status === "partial" && (
           <section className="review-coverage-warning" role="status">
             <DetailIcon>!</DetailIcon>
-            <div><strong>部分覆盖</strong><p>已有结果可以查看，但仍有 Agent 或批次待重试；完成前不能批准或发布。</p></div>
+            <div><strong>{details.model_review_completed_at ? "部分文件未进入审查" : "部分覆盖"}</strong><p>{details.model_review_completed_at
+              ? "AI 已完成当前范围。有文件因格式不支持或上下文不完整被排除，请在运行信息的文件覆盖中查看原因。"
+              : "已有结果可以查看，但仍有 Agent 或批次待重试；完成前不能批准或发布。"}</p></div>
           </section>
         )}
 
@@ -806,10 +808,10 @@ function ReviewDetailPage({
                 <div><span className="review-eyebrow">AI OUTPUT</span><h2>审查结果</h2></div>
                 <div className="review-result-counts"><span className="result-count result-count-total">{details.finding_total_count} 条候选</span>{details.new_finding_count > 0 && <span className="result-count result-count-new">{details.new_finding_count} 条新增</span>}{details.fixed_finding_count > 0 && <span className="result-count result-count-fixed">{details.fixed_finding_count} 条已修复</span>}{details.unreviewed_finding_count > 0 && <span className="result-count result-count-pending">{details.unreviewed_finding_count} 待裁决</span>}</div>
               </div>
-              {details.summary_status === "skipped" && details.coverage_status === "partial" && (
+              {details.summary_status === "skipped" && details.coverage_status === "partial" && !details.model_review_completed_at && (
                 <div className="review-summary-status is-warning"><strong>上游 Agent 未完成，汇总未执行</strong><span>已保留可用的部分结果</span></div>
               )}
-              {details.aggregation_status === "local" && details.coverage_status !== "partial" && (
+              {details.aggregation_status === "local" && details.model_review_completed_at && (
                 <div className="review-summary-status is-local"><strong>本地汇总已完成</strong><span>结果已按身份去重并排序</span></div>
               )}
               {details.summary_status === "failed" && (

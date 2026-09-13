@@ -82,7 +82,7 @@ export function ModelBatchPanel({
       <div className="review-agent-grid">
         {activeAgents.map(({ key, label, description, progress }) => {
           const programSummary = key === "summary" && details.aggregation_status === "local"
-            && details.summary_status === "skipped" && details.coverage_status === "complete";
+            && details.summary_status === "skipped" && Boolean(details.model_review_completed_at);
           const completeCount = progress.completedCount;
           const failedCount = progress.failedCount;
           const progressPercent = progress.batchCount > 0
@@ -159,8 +159,8 @@ export function ModelBatchPanel({
               )}
               {progress.status === "not_executed" && key === "summary" && (
                 <div className="review-agent-empty">
-                  <span>{details.coverage_status === "partial" ? "等待上游" : "程序汇总"}</span>
-                  {details.coverage_status === "partial"
+                  <span>{programSummary ? "程序汇总" : "等待上游"}</span>
+                  {!programSummary
                     ? "上游 Agent 未完成，汇总未执行"
                     : `三路结果已合并，共 ${details.finding_total_count} 条候选问题。程序完成去重和排序，本轮无需额外调用汇总模型。`}
                 </div>

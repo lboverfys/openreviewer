@@ -98,3 +98,15 @@ it("操作失败提示不会被随后成功的后台刷新清除", async () => {
   expect(screen.queryByText("操作尚未成功，请重试")).not.toBeInTheDocument();
   action.mockRestore();
 });
+
+it("文件范围不足不会被显示成 Agent 未完成或汇总未执行", async () => {
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details, phase:"completed",coverage_status:"partial",
+    model_review_completed_at:"2026-09-14T00:00:00Z",aggregation_status:"local",summary_status:"skipped",
+    events:[{id:"summary",event_type:"review.model.summary_skipped",occurred_at:"2026-09-14T00:00:00Z",payload:{agent:"summary"}}],
+  });
+  render(<ReviewDetailPage user={user} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  await screen.findByText("部分文件未进入审查");
+  fireEvent.click(screen.getByRole("button", {name:/AI 检查过程/}));
+  expect(await screen.findByText("已完成程序汇总")).toBeInTheDocument();
+  expect(screen.queryByText("上游 Agent 未完成，汇总未执行")).not.toBeInTheDocument();
+});
