@@ -58,3 +58,12 @@ def test_xml_comments_do_not_create_sql_evidence():
     result = parse_sources([source("M.xml", text)])
     assert [chunk.symbol for chunk in result.chunks] == ["sample.M.real"]
     assert result.chunks[0].start_line == 2
+
+
+def test_java_method_preserves_its_javadoc_and_real_line_numbers():
+    text = "package sample;\ninterface AccountMapper {\n/** 锁定积分账户，防止并发覆盖余额。 */\nAccount lock(long id);\n}"
+    parsed = parse_sources([source("AccountMapper.java", text)])
+    chunk = next(item for item in parsed.chunks if item.kind == "method")
+    assert chunk.start_line == 3 and chunk.end_line == 4
+    assert "锁定积分账户" in chunk.embedding_text
+    assert chunk.content == "\n".join(text.splitlines()[2:4])

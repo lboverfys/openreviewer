@@ -95,8 +95,10 @@ def register_evaluation_routes(
         return _guard(lambda: get_service().dataset(dataset_id, principal.resource_scope))
 
     @application.get("/api/v1/evaluations/datasets/{dataset_id}/overview", response_model=EvaluationOverview)
-    def overview(dataset_id: str, principal: Annotated[SessionPrincipal, Depends(require_viewer)]):
-        return _guard(lambda: get_service().overview(dataset_id, principal.resource_scope))
+    def overview(dataset_id: str, principal: Annotated[SessionPrincipal, Depends(require_viewer)],
+                 case_id: Annotated[str | None, Query(max_length=36)] = None,
+                 variant: EvaluationVariant | None = None):
+        return _guard(lambda: get_service().overview(dataset_id, principal.resource_scope, case_id, variant))
 
     @application.post("/api/v1/evaluations/datasets/{dataset_id}/archive", response_model=EvaluationDatasetView)
     def archive(

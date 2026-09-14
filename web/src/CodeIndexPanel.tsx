@@ -1,3 +1,4 @@
+import { DetailDialog } from "./Feedback";
 import type { ReactNode } from "react";
 import type { CodeIndexView, IndexTarget } from "./types";
 import { formatDate } from "./utils";
@@ -29,7 +30,7 @@ export default function CodeIndexPanel({indexPagination, targetPagination,  inde
     <div className="retrieval-library-divider" />
     <label>选择索引<select value={selectedId} onChange={event => onSelect(event.target.value)}>
       <option value="">请选择索引</option>
-      {indexes.map(item => <option value={item.id} key={item.id}>{item.repository} · {item.head_sha.slice(0, 7)}</option>)}
+      {indexes.map(item => <option value={item.id} key={item.id}>{item.repository} · {item.head_sha.slice(0, 7)} · {item.parser_version === "java-mybatis-v2" ? "含方法注释" : "原始索引"}</option>)}
     </select></label>
     {indexPagination}
     {selected ? <>
@@ -41,10 +42,11 @@ export default function CodeIndexPanel({indexPagination, targetPagination,  inde
       </ol>
       <div className="retrieval-source-counts"><div><strong>{selected.file_count.toLocaleString()}</strong><span>文件</span></div><div><strong>{selected.chunk_count.toLocaleString()}</strong><span>代码块</span></div><div><strong>{selected.relation_count.toLocaleString()}</strong><span>关系</span></div></div>
       <p className="retrieval-form-hint">解析 {selected.parsed_files ?? 0} · 复用 {selected.reused_files ?? 0} · {formatDate(selected.created_at)}</p>
+      {selected.parser_version !== "java-mybatis-v2" && <p className="ws-note">这是旧解析的索引。选择上方相同提交并建立基础索引，可使用包含方法注释的新解析；原报告和参考代码保留。</p>}
       {!pending && (selected.error || selected.vector_error) && <div className="retrieval-warning">{selected.error || selected.vector_error}</div>}
       {!selected.lexical_ready && !pending && <button className="retrieval-full-button" disabled={busy} onClick={() => onRetry(selected.id)}>恢复基础索引</button>}
       {selected.lexical_ready && selected.vector_status !== "ready" && <button className="retrieval-full-button" disabled={busy || paused || pending} onClick={() => onEnrich(selected.id)}>补全缺失向量</button>}
-      {(selected.parse_error_files?.length ?? 0) > 0 && <details><summary>查看解析提示</summary>{selected.parse_error_files?.map(file => <p className="retrieval-form-hint" key={file}>{file}</p>)}</details>}
+      {(selected.parse_error_files?.length ?? 0) > 0 && <DetailDialog><summary>查看解析提示</summary>{selected.parse_error_files?.map(file => <p className="retrieval-form-hint" key={file}>{file}</p>)}</DetailDialog>}
     </> : <div className="retrieval-empty"><span className="retrieval-empty-icon" aria-hidden="true">⌘</span><p>建立索引后即可检索对应提交的代码。</p></div>}
   </aside>;
 }

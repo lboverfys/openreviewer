@@ -6,7 +6,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, insert, select, update
+from sqlalchemy import and_, insert, select, true, update
 from sqlalchemy.orm import Load, Session, aliased, sessionmaker
 
 from domain.evaluation_workbench import (
@@ -190,16 +190,17 @@ class EvaluationWorkbench:
             if len(rows) > limit else None
         ))
 
-    def overview(self, identifier: str, scope: ResourceScope) -> EvaluationOverview:
+    def overview(self, identifier: str, scope: ResourceScope, case_id: str | None = None, variant: EvaluationVariant | None = None) -> EvaluationOverview:
         """单评测集最多 200 PR；一条聚合读取复核进度，不拉取快照正文。"""
         from sqlalchemy import func
         c, o = EvaluationCaseRecord, EvaluationObservationRecord
         with self.sessions() as session:
-            dataset = self._dataset(session, identifier, scope)
+            self._dataset(session, identifier, scope)
             complete = o.assessment_status == "complete"
             fields = {"reviewed_findings": "adjudicated_count", "valid_findings": "valid_count",
                       "false_positive_findings": "false_positive_count"}
             row = session.execute(select(
+                func.count(func.distinct(c.id)).label("case_count"),
                 func.count(o.id).label("observation_count"),
                 func.count(o.id).filter(complete).label("reviewed_observations"),
                 *(func.coalesce(func.sum(o.metrics[key].as_integer()), 0).label(name)
@@ -211,8 +212,10 @@ class EvaluationWorkbench:
                 func.coalesce(func.sum(o.turnaround_ms), 0).label("turnaround_ms"),
                 func.sum(o.estimated_cost_microusd).label("estimated_cost_microusd"),
                 func.count(o.id).filter(o.estimated_cost_microusd.is_(None)).label("unpriced_observations"),
-            ).select_from(c).outerjoin(o, o.case_id == c.id).where(c.dataset_id == identifier).limit(1)).mappings().one()
-            return EvaluationOverview(case_count=dataset.case_count, **row)
+            ).select_from(c).outerjoin(o, and_(o.case_id == c.id, o.variant == variant) if variant else o.case_id == c.id).where(
+                c.dataset_id == identifier, c.id == case_id if case_id else true(),
+            ).limit(1)).mappings().one()
+            return EvaluationOverview(**row)
 
     def report(self, identifier: str, scope: ResourceScope, split: EvaluationSplit = "validation"):
         with self.sessions() as session:

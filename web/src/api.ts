@@ -28,7 +28,7 @@ import { cachedGet, request, mutation, SETTINGS_CACHE_TTL_MS, DASHBOARD_CACHE_TT
 export { ApiError, ApiTimeoutError, DASHBOARD_CACHE_TTL_MS, reviewListKey, peekReadCache, subscribeReadCache, primeReadCache, clearReadCache, clearSettingsCache } from "./http";
 
 export const api = {
-  evaluationOverview: (id: string, signal?: AbortSignal) => request<import("./types").EvaluationOverview>(`/api/v1/evaluations/datasets/${encodeURIComponent(id)}/overview`, {signal}),
+  evaluationOverview: (id: string, signal?: AbortSignal, caseId?: string, variant?: import("./types").EvaluationVariant) => request<import("./types").EvaluationOverview>(`/api/v1/evaluations/datasets/${encodeURIComponent(id)}/overview?` + new URLSearchParams({...caseId ? {case_id:caseId} : {}, ...variant ? {variant} : {}}), {signal}),
   evaluationDatasets: (includeArchived = false, cursor?: string, signal?: AbortSignal, force = false, archivedOnly = false) =>
     cachedGet("evaluation-datasets:" + (archivedOnly ? "removed" : includeArchived) + ":" + (cursor ?? "first"), (cacheSignal) =>
       request<CursorPage<import("./types").EvaluationDataset>>("/api/v1/evaluations/datasets?" + new URLSearchParams({limit: "10", include_archived: String(includeArchived), ...(archivedOnly ? {archived_only: "true"} : {}), ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
@@ -84,6 +84,7 @@ export const api = {
   saveTeamRepository: (body: import("./types").TeamRepositoryWrite, id?: string) =>
     mutation(() => request<import("./types").TeamRepository>("/api/v1/team/repositories" + (id ? "/" + encodeURIComponent(id) : ""), {method: id ? "PUT" : "POST", body: JSON.stringify(body)})),
   checkRepositoryConnection: (id: string) => mutation(() => request<import("./types").TeamRepository>(`/api/v1/team/repositories/${encodeURIComponent(id)}/check`, {method: "POST"})),
+  teamRepositoryByName: (repository: string, signal?: AbortSignal) => request<CursorPage<import("./types").TeamRepository>>("/api/v1/team/repositories?" + new URLSearchParams({repository, limit: "1"}), {signal}),
   teamAudits: (cursor?: string, signal?: AbortSignal, force = false) =>
     cachedGet("team-audits:" + (cursor ?? "first"), (cacheSignal) =>
       request<CursorPage<import("./types").TeamAudit>>("/api/v1/team/audits?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
@@ -110,8 +111,8 @@ export const api = {
     request<CursorPage<import("./types").SearchHistoryItem>>(`/api/v1/retrieval/indexes/${encodeURIComponent(id)}/history?${new URLSearchParams({query, strategy, ...(cursor ? {cursor} : {})})}`, {signal}),
   retrievalHistoryDetail: (id: string) => request<RetrievalTrace>(`/api/v1/retrieval/history/${encodeURIComponent(id)}`),
   compareRetrieval: (id: string, body: import("./types").RetrievalComparisonRequest) => mutation(() => request<RetrievalEvaluationReport>(`/api/v1/retrieval/indexes/${encodeURIComponent(id)}/compare`, {method: "POST", body: JSON.stringify(body)}, 180_000)),
-  retrievalEvaluations: (signal?: AbortSignal, cursor?: string, force = false) =>
-    cachedGet(`retrieval-evaluations:${cursor ?? "first"}`, (cacheSignal) => request<CursorPage<RetrievalEvaluationReport>>(`/api/v1/retrieval/evaluations?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})})}`, {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
+  retrievalEvaluations: (signal?: AbortSignal, cursor?: string, force = false, indexId?: string) =>
+    cachedGet(`retrieval-evaluations:${indexId ?? "all"}:${cursor ?? "first"}`, (cacheSignal) => request<CursorPage<RetrievalEvaluationReport>>(`/api/v1/retrieval/evaluations?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {}), ...(indexId ? {index_id:indexId} : {})})}`, {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
 
   /**
    * 读取当前管理员会话。

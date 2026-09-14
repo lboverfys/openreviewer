@@ -163,7 +163,10 @@ def _java(source: SourceFile) -> list[CodeChunk]:
                     arity = len(args.named_children) if args is not None else 0
                     receiver_type = owner if receiver in {"", "this"} else locals_map.get(receiver.removeprefix("this."), imports.get(receiver))
                     refs.add(f"{receiver_type}.{called_name}#{arity}" if receiver_type else f"unresolved:{receiver[:200]}.{called_name}")
-            result.extend(_chunks(source, _text(node), node.start_point.row + 1, language="java", kind="method", symbol=symbol, aliases=(alias, f"{alias}#{len(parameter_types)}"), references=tuple(sorted(refs)), parse_error=root.has_error))
+            previous = node.prev_named_sibling
+            start = previous if previous is not None and previous.type == "block_comment" and _text(previous).startswith("/**") and not raw_source[previous.end_byte:node.start_byte].strip() else node
+            content = raw_source[start.start_byte:node.end_byte].decode()
+            result.extend(_chunks(source, content, start.start_point.row + 1, language="java", kind="method", symbol=symbol, aliases=(alias, f"{alias}#{len(parameter_types)}"), references=tuple(sorted(refs)), parse_error=root.has_error))
         pending.extend((child, owner, fields) for child in reversed(node.named_children))
     if not result:
         result.extend(_chunks(source, source.content, 1, language="java", kind="file", symbol=source.file, parse_error=root.has_error))
@@ -225,7 +228,7 @@ def _xml(source: SourceFile) -> list[CodeChunk]:
 
 
 def parse_cache_key(source: SourceFile) -> str:
-    return stable_key(PARSER_VERSION, source.file, source.blob_sha, "xml-events-v1") if source.file.lower().endswith(".xml") else stable_key(PARSER_VERSION, source.file, source.blob_sha)
+    return stable_key(PARSER_VERSION, source.file, source.blob_sha, "xml-events-v1") if source.file.lower().endswith(".xml") else stable_key(PARSER_VERSION, source.file, source.blob_sha, "javadoc-v2")
 
 
 def parse_sources(sources: Sequence[SourceFile], cached: Mapping[str, tuple[CodeChunk, ...]] | None = None) -> ParsedSources:

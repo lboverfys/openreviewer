@@ -1,3 +1,4 @@
+import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
@@ -642,8 +643,8 @@ function ReviewDetailPage({
             })} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
           </div>
         </div>
-        {error && <div className="review-inline-error" role="alert">{error}</div>}
-        {actionError && <div className="review-inline-error" role="alert"><span>{actionError}</span><button type="button" onClick={() => setActionError("")}>关闭提示</button></div>}
+        {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
+        {actionError && <Notice onDismiss={() => setActionError("")}>{actionError}</Notice>}
         <section className={`review-hero review-hero-${details.phase}`}>
           <div className="review-hero-copy">
             <div className="review-hero-kicker"><span className="review-hero-pulse" />{details.repository} · PR #{details.pull_request_number}</div>
@@ -682,7 +683,7 @@ function ReviewDetailPage({
                   </button>
                 </div>
               )}
-              {identitySyncError && <small className="review-identity-sync-error" role="alert">{identitySyncError}</small>}
+              {identitySyncError && <Notice kind="error" onDismiss={() => setIdentitySyncError("")}>{identitySyncError}</Notice>}
             </div>
             <div className="review-hero-meta">
               <span><code>{shortSha(details.head_sha)}</code></span>
@@ -731,14 +732,14 @@ function ReviewDetailPage({
           </div>
         </section>
 
-        {availableActions.includes("retry_stage") && <details className="review-advanced-actions">
+        {availableActions.includes("retry_stage") && <DetailDialog className="review-advanced-actions">
           <summary>高级重试：从指定步骤重新执行</summary>
           <label className="review-retry-target">重审起点<select value={retryTargetStage} disabled={actionBusy !== null}
             onChange={event => setRetryTargetStage(event.target.value as RetryTargetStage)}>
             {retryTargetOptions.filter(([value]) => !details.snapshot_review || value !== "ci").map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select></label>
           <p>{retryStageNotice(retryTargetStage)}</p><button type="button" disabled={actionBusy !== null} onClick={() => void runAction("retry_stage")}>从所选步骤重试</button>
-        </details>}
+        </DetailDialog>}
         {details.snapshot_review && <section className="review-snapshot-banner"><strong>历史版本复查</strong>
           本次分析已保存的提交 {shortSha(details.head_sha)}，使用当前审查配置。不会重新运行 CI 或发布到 GitHub，原任务与结果保留。
         </section>}
@@ -781,7 +782,7 @@ function ReviewDetailPage({
               {details.model_review_completed_at && <button type="button" onClick={() => setActiveTab("findings")}>查看问题与结论</button>}
             </section>
 
-            <details className="review-panel review-evidence-group" onToggle={event => setEvidenceOpen(event.currentTarget.open)}><summary>代码依据与辅助检查<span>需要核对上下文时展开</span></summary>
+            <DetailDialog className="review-panel review-evidence-group" onToggle={event => setEvidenceOpen(event.currentTarget.open)}><summary>代码依据与辅助检查<span>需要核对上下文时展开</span></summary>
             <section className="review-panel review-retrieval-panel">
               <div className="review-panel-heading"><h2>检索上下文</h2>
                 {hasPermission(user, "knowledge:manage") && <button type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</button>}
@@ -789,7 +790,7 @@ function ReviewDetailPage({
               {retrievalLoadError ? <p className="retrieval-warning">{retrievalLoadError}</p> : <RetrievalTracePanel traces={retrievalTraces} compact />}
             </section>
             <StaticAnalysisPanel key={reviewRunId} runId={reviewRunId} headSha={details.head_sha} editable={hasPermission(user, "findings:adjudicate")} onError={handlePageError} />
-            </details>
+            </DetailDialog>
             </>}
             {activeTab === "agents" && <>
             <ModelBatchPanel
@@ -928,7 +929,7 @@ function ReviewDetailPage({
             </>}
           </div>
 
-          {activeTab === "overview" && <details className="review-panel review-runtime-details"><summary>运行信息（高级）</summary><ReviewSidebar
+          {activeTab === "overview" && <DetailDialog className="review-panel review-runtime-details"><summary>运行信息（高级）</summary><ReviewSidebar
             details={details}
             retryPending={retryPending}
             retryStatus={retryStatus}
@@ -943,7 +944,7 @@ function ReviewDetailPage({
             hasBranchRoute={hasBranchRoute}
             headBranchLabel={headBranchLabel}
             baseBranchLabel={baseBranchLabel}
-          /></details>}
+          /></DetailDialog>}
         </div>
       </main>
     </div>

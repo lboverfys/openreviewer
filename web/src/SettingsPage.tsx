@@ -1,3 +1,4 @@
+import { DetailDialog, Notice } from "./Feedback";
 import Pagination from "./Pagination";
 import {
   FormEvent,
@@ -681,9 +682,9 @@ export default function SettingsPage({
               </div>
             </div>
             {refreshNotice && (
-              <span className={`settings-refresh-notice is-${refreshNotice}`} role="status">
+              <Notice kind={refreshNotice === "success" ? "success" : "info"}>
                 {refreshNotice === "loading" ? "正在刷新设置…" : "已刷新到最新配置"}
-              </span>
+              </Notice>
             )}
             <button type="button" className={`console-icon-btn settings-refresh-btn${refreshing ? " is-spinning" : ""}`} onClick={() => void refreshAllSettings()} disabled={loading || refreshing || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置" aria-busy={refreshing}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
@@ -691,7 +692,7 @@ export default function SettingsPage({
           </div>
         </section>
 
-        {message && (!formReady || activeTab !== "provider") && <div className={`settings-message is-${messageKind}`} role="alert">{message}</div>}
+        {message && (!formReady || activeTab !== "provider") && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}</Notice>}
 
         <div className="settings-layout">
           <nav className="settings-tab-nav" aria-label="设置分区">
@@ -708,7 +709,7 @@ export default function SettingsPage({
               <span className="settings-tab-copy"><strong>处理上限</strong><small>高级设置，通常保留默认值</small></span>
             </button>
             <button type="button" className={activeTab === "retrieval" ? "is-active" : ""} aria-pressed={activeTab === "retrieval"} onClick={() => {setActiveTab("retrieval"); window.location.hash="settings?section=retrieval";}}><span className="settings-tab-copy"><strong>关联代码</strong><small>补充上下文与检索开关</small></span></button>
-            <details className="settings-advanced-links"><summary>配置版本（高级）</summary><p>保存固定的一套模型和规则，便于复查或比较。</p><a href="#platform?tab=profiles">管理配置版本 →</a></details>
+            <DetailDialog className="settings-advanced-links"><summary>配置版本（高级）</summary><p>保存固定的一套模型和规则，便于复查或比较。</p><a href="#platform?tab=profiles">管理配置版本 →</a></DetailDialog>
           </nav>
 
           <div className="settings-tab-content">
@@ -813,14 +814,14 @@ export default function SettingsPage({
                     </div>
 
                     {selectedSettings.api_key_configured && (
-                      <details className="settings-key-management">
+                      <DetailDialog className="settings-key-management">
                         <summary>密钥管理</summary>
                         <label className="settings-checkbox-row"><input id={`settings-${selectedProvider}-clear-api-key`} name={`settings-${selectedProvider}-clear-api-key`} type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft("clearApiKey", event.target.checked)} /><span>保存时删除现有 API Key</span></label>
-                      </details>
+                      </DetailDialog>
                     )}
                   </fieldset>
 
-                  <details className="settings-disclosure">
+                  <DetailDialog className="settings-disclosure">
                     <summary>
                       <span><strong>模型行为</strong><small>代码分批、上下文和输出长度由系统自动管理</small></span>
                       <span className="settings-summary-value">自动</span>
@@ -843,7 +844,7 @@ export default function SettingsPage({
                       <div className="settings-form-grid settings-form-grid-compact">
                         <NumberField name="read-timeout-seconds" label="最多等待回答" value={draft.readTimeoutSeconds} min="10" max="3600" step="1" suffix="秒" onChange={(value) => updateDraft("readTimeoutSeconds", value)} />
                       </div>
-                      <details className="settings-nested-disclosure">
+                      <DetailDialog className="settings-nested-disclosure">
                         <summary>传输与网络高级设置</summary>
                         <div className="settings-form-grid settings-form-grid-compact">
                           <NumberField name="max-request-mib" label="请求保护上限" value={bytesToInput(draft.maxRequestBytes, MIB)} min="0.0625" max="10" step="0.0625" suffix="MiB" onChange={(value) => updateDraft("maxRequestBytes", inputToBytes(value, MIB))} />
@@ -852,9 +853,9 @@ export default function SettingsPage({
                           <NumberField name="write-timeout-seconds" label="发送请求" value={draft.writeTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("writeTimeoutSeconds", value)} />
                           <NumberField name="pool-timeout-seconds" label="等待空闲连接" value={draft.poolTimeoutSeconds} min="0.1" max="3600" step="0.1" suffix="秒" onChange={(value) => updateDraft("poolTimeoutSeconds", value)} />
                         </div>
-                      </details>
+                      </DetailDialog>
                     </fieldset>
-                  </details>
+                  </DetailDialog>
 
                   <section className="settings-price-section" aria-label="审查模型费用">
                     <h3>费用估算</h3><p>只修改价格不会停用模型。留空表示未知费用，填写 0 表示免费。</p>
@@ -881,13 +882,13 @@ export default function SettingsPage({
                     <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || (!providerDirty && selectedSettings.configured)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>{busyAction === `save-${selectedProvider}` ? "保存中..." : "保存配置"}</button>
                     <button className="settings-secondary-btn" type="button" onClick={() => void testProvider()} disabled={!selectedSettings.configured || !selectedSettings.api_key_configured || providerDirty || Boolean(busyAction)} title={providerDirty ? "请先保存当前修改" : "测试当前已保存配置"}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>{busyAction === `test-${selectedProvider}` ? "测试中..." : "测试连接"}</button>
                     <button className="settings-secondary-btn is-activate" type="button" onClick={() => void activateProvider()} disabled={selectedSettings.test_status !== "succeeded" || selectedSettings.active || providerDirty || Boolean(busyAction)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m5 12 4 4L19 6"/></svg>{selectedSettings.active ? "已启用" : "启用这套配置"}</button>
-                    {message && <div className={`settings-inline-feedback is-${messageKind}`} role="status">{message}</div>}
+                    {message && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}</Notice>}
                   </div>
                 </form>
               </div>
             </section>
 
-            <details
+            <DetailDialog
               className="settings-audit-section"
               onToggle={(event) => {
                 const open = event.currentTarget.open;
@@ -903,7 +904,7 @@ export default function SettingsPage({
                 <span>{auditsLoading ? "正在加载" : "展开查看"}</span>
               </summary>
               <div className="settings-audit-table-wrap">
-                {auditError && <div className="settings-message is-error" role="alert">{auditError}</div>}
+                {auditError && <Notice kind="error" onDismiss={() => setAuditError("")}>{auditError}</Notice>}
                 <table className="settings-audit-table">
                   <thead><tr><th>版本</th><th>操作</th><th>变更内容</th><th>管理员</th><th>时间</th></tr></thead>
                   <tbody>{audits.map((audit) => <tr key={audit.revision}><td className="code-font">r{audit.revision}</td><td>{auditActionLabels[audit.action] ?? audit.action}</td><td>{audit.changed_fields.map((field) => fieldLabels[field] ?? field).join("、")}</td><td>{audit.actor}</td><td>{formatDate(audit.created_at)}</td></tr>)}</tbody>
@@ -912,7 +913,7 @@ export default function SettingsPage({
                 {!auditsLoading && auditsLoaded && audits.length === 0 && <div className="settings-empty-audit">暂无配置变更</div>}
                 <Pagination page={auditCursors.length} count={audits.length} hasNext={Boolean(auditNextCursor)} busy={auditsLoading} onPrevious={() => setAuditCursors(items => items.slice(0, -1))} onNext={() => {if (auditNextCursor) setAuditCursors(items => [...items, auditNextCursor]);}} label="配置变更分页" />
               </div>
-            </details>
+            </DetailDialog>
               </div>
 
               <div className="settings-tab-panel" hidden={activeTab !== "policy"}>
@@ -945,7 +946,7 @@ export default function SettingsPage({
                       <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || !policyDirty}>
                         {busyAction === "save-policy" ? "保存中..." : "保存审查策略"}
                       </button>
-                      {policyMessage && <div className={`settings-inline-feedback is-${policyMessageKind}`} role="status">{policyMessage}</div>}
+                      {policyMessage && <Notice kind={policyMessageKind} onDismiss={() => setPolicyMessage("")}>{policyMessage}</Notice>}
                     </div>
                   </form>
                   </section>

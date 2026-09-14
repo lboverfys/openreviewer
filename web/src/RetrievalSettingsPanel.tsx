@@ -1,3 +1,4 @@
+import { DetailDialog, Notice } from "./Feedback";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { RetrievalSettings, RetrievalSettingsView, RetrievalStrategy } from "./types";
@@ -33,7 +34,7 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
   async function test() {
     setBusy("test"); setMessage("");
     try {const value = await api.testRetrievalSettings(); setView(value); setMessage("向量与精排连接均已通过真实请求验证。");}
-    catch (error) {setMessage(errorMessage(error));} finally {setBusy("");}
+    catch (error) {onError(new Error(errorMessage(error)));} finally {setBusy("");}
   }
   return <section className="workspace-surface settings-retrieval" aria-label="代码上下文配置">
     <div className="ws-editor-heading"><div><h2>代码上下文</h2><p>审查前自动查找同一提交的关联代码，帮助 AI 理解跨文件调用和 SQL。</p></div><a href="#retrieval">查看索引与检索结果 →</a></div>
@@ -49,7 +50,7 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
         <label>精排模型<input value={draft.rerank_model} onChange={e => update("rerank_model", e.target.value)} /></label>
         <label>检索方式<select value={draft.strategy} onChange={e => update("strategy", e.target.value as RetrievalStrategy)}>{Object.entries(retrievalStrategyLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></label>
       </div>
-      <details className="ws-disclosure"><summary>请求限额、索引与费用</summary><div className="ws-disclosure-body">
+      <DetailDialog className="ws-disclosure"><summary>请求限额、索引与费用</summary><div className="ws-disclosure-body">
         <p>关键词和代码关系无需额外模型调用；向量负责找语义相近代码，精排负责从候选里挑更相关的内容。已有向量缓存会复用。</p>
         <p>百炼公开参考价（2026-09-13，北京地域）：qwen3.7-text-embedding / qwen3.7-text-rerank 均为 ¥0.50 / 百万输入 Token。按 2026-09-11 参考汇率 1 美元 = 6.7082 元折算为 $0.074536；这是估算，不是服务商账单。<a href="https://help.aliyun.com/zh/model-studio/model-pricing" target="_blank" rel="noreferrer">原始报价</a> · <a href="https://api.frankfurter.dev/v1/2026-09-11?base=USD&symbols=CNY" target="_blank" rel="noreferrer">汇率来源</a></p>
         <button type="button" disabled={draft.embedding_model !== "qwen3.7-text-embedding" || draft.rerank_model !== "qwen3.7-text-rerank"} onClick={() => setDraft({...draft, embedding_usd_per_million: "0.074536", rerank_usd_per_million: "0.074536"})}>填入百炼参考折算价</button>
@@ -62,9 +63,9 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
           <label>送入审查的片段上限<input type="number" min="1" max="20" value={draft.context_k} onChange={e => update("context_k", Number(e.target.value))} /></label>
           <label>接口超时（秒）<input type="number" min="5" max="180" value={draft.timeout_seconds} onChange={e => update("timeout_seconds", Number(e.target.value))} /></label>
         </div>
-      </div></details>
+      </div></DetailDialog>
       <div className="ws-form-actions"><button className="settings-primary-btn" type="submit" disabled={!dirty}>{busy === "save" ? "保存中…" : "保存检索配置"}</button><button type="button" disabled={dirty || !view.key_configured || view.external_calls_paused} onClick={() => void test()}>{busy === "test" ? "测试中…" : "测试已保存的连接"}</button><span>{view.external_calls_paused ? "向量与精排：已关闭" : "向量与精排：允许调用"} · {view.tested ? "连接已验证" : "连接待验证"}</span></div>
-      {message && <p role="status">{message}</p>}
+      {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     </fieldset></form>
   </section>;
 }

@@ -223,8 +223,9 @@ def register_retrieval_routes(
         principal: Annotated[SessionPrincipal, Depends(require_manager)],
         limit: Annotated[int, Query(ge=1, le=50)] = 10,
         cursor: Annotated[str | None, Query(max_length=512)] = None,
+        index_id: Annotated[str | None, Query(max_length=64)] = None,
     ) -> CursorPage[RetrievalEvaluationReport]:
         try:
-            return get_service().repository.evaluation_page(principal.resource_scope, limit, cursor)
+            return get_service().repository.evaluation_page(principal.resource_scope, limit, cursor, index_id)
         except errors as exc:
             raise _translate(exc) from exc

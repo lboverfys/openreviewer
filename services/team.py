@@ -222,12 +222,15 @@ class TeamService:
             return view
 
     def repositories(
-        self, limit: int = 10, cursor: str | None = None
+        self, limit: int = 10, cursor: str | None = None, repository: str | None = None
     ) -> CursorPage[RepositoryView]:
         statement = _page_after(
             select(*_REPOSITORY_COLUMNS), RepositoryPolicyRecord.created_at,
             RepositoryPolicyRecord.id, cursor,
         ).limit(limit + 1)
+        if repository:
+            # repository_key 有唯一索引，预算深链接只读取一个仓库。
+            statement = statement.where(RepositoryPolicyRecord.repository_key == repository.casefold())
         with self.sessions() as session:
             rows = session.execute(statement).mappings().all()
         items = tuple(RepositoryView.model_validate(row) for row in rows[:limit])

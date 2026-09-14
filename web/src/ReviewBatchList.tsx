@@ -1,3 +1,4 @@
+import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useState } from "react";
 import { api } from "./api";
 import Pagination from "./Pagination";
@@ -18,15 +19,15 @@ export default function ReviewBatchList({ runId, agent, total, changeToken, onRe
   const onError = useCallback((reason: unknown) => setError(errorMessage(reason)), []);
   const page = useCursorPage<BatchSnapshot>({cacheKey: `batches:${runId}:${agent}`, load, onError, enabled: open});
   const labels: Record<string, string> = {succeeded: "已完成", failed: "失败", pending: "等待发送", running: "进行中"};
-  return <details className="review-agent-batches" onToggle={event => setOpen(event.currentTarget.open)}>
+  return <DetailDialog className="review-agent-batches" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>查看批次（{total}）</summary>
     {open && <>
-      {error && <p role="alert">{error}</p>}
+      {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
       {page.loading && !page.data && <p role="status">正在读取批次…</p>}
       {page.data?.items.map(batch => <div className="review-agent-batch-row" key={batch.batch_number}>
         <span>第 {batch.batch_number}/{total} 批</span><b>{stopped && batch.status !== "succeeded" ? paused ? "已暂停" : "已停止" : labels[batch.status] ?? batch.status}</b>
         <small>{batch.error_message ?? (batch.duration_ms === null ? "" : `${batch.duration_ms} ms`)}</small>
-        {Boolean(batch.candidates?.length) && <details><summary>查看已保存的候选问题（{batch.candidates.length}）</summary><p>这是 AI 批次的过程结果，尚需汇总和核对；最终列表为空不代表没有发现问题。</p>{batch.candidates.map((item, index) => <article key={index}><h4>{item.title}</h4><p>{item.evidence}</p><p>{item.impact}</p><p>{item.suggestion}</p></article>)}</details>}
+        {Boolean(batch.candidates?.length) && <DetailDialog><summary>查看已保存的候选问题（{batch.candidates.length}）</summary><p>这是 AI 批次的过程结果，尚需汇总和核对；最终列表为空不代表没有发现问题。</p>{batch.candidates.map((item, index) => <article key={index}><h4>{item.title}</h4><p>{item.evidence}</p><p>{item.impact}</p><p>{item.suggestion}</p></article>)}</DetailDialog>}
         {batch.status === "failed" && onRetry && !stopped && <button type="button" disabled={busy}
           onClick={() => onRetry(agent, batch.batch_number)}>重试第 {batch.batch_number} 批</button>}
       </div>)}
@@ -34,5 +35,5 @@ export default function ReviewBatchList({ runId, agent, total, changeToken, onRe
         hasNext={Boolean(page.data?.next_cursor)} busy={page.loading}
         onPrevious={page.previous} onNext={page.next} label="批次分页" />
     </>}
-  </details>;
+  </DetailDialog>;
 }

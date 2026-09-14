@@ -33,8 +33,7 @@ it("静态报告按需读取，只读成员看不到导入按钮", async () => {
   vi.stubGlobal("fetch", fetcher);
   render(<StaticAnalysisPanel runId="run1" headSha={"a".repeat(40)} editable={false} onError={vi.fn()} />);
   expect(fetcher).not.toHaveBeenCalled();
-  const details = screen.getByText("扫描工具报告（可选）").closest("details")!;
-  details.open = true; fireEvent(details, new Event("toggle"));
+  fireEvent.click(screen.getByRole("button", {name:/扫描工具报告（可选）/}));
   await screen.findByText("尚未导入静态报告。");
   expect(screen.queryByRole("button", { name: "导入静态报告" })).not.toBeInTheDocument();
 });
@@ -45,8 +44,7 @@ it("没有基线的静态线索保持待判断，同位置 AI 只展示为线索
       : { id: "report", tool: "Semgrep", tool_version: "1.0", new_count: 0, existing_count: 0, unknown_count: 1, imported_by: "reviewer", report_hash: "a".repeat(64) }
   ))));
   render(<StaticAnalysisPanel runId="run2" headSha={"a".repeat(40)} editable onError={vi.fn()} />);
-  const details = screen.getByText("扫描工具报告（可选）").closest("details")!;
-  details.open = true; fireEvent(details, new Event("toggle"));
+  fireEvent.click(screen.getByRole("button", {name:/扫描工具报告（可选）/}));
   await screen.findByText(/新增状态待判断/);
   expect(screen.getByText(/同位置 AI 问题 1 条/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "导入静态报告" })).not.toBeInTheDocument();

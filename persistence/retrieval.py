@@ -26,7 +26,6 @@ from domain.retrieval import (
     RetrievalSettings,
     RetrievalTrace,
     SearchHistoryItem,
-    stable_key,
 )
 from persistence.models import (
     CodeChunkRecord,
@@ -53,6 +52,7 @@ def _iso(value: datetime | None) -> str | None:
 def _view(row: CodeIndexRecord) -> IndexView:
     return IndexView(
         id=row.id, repository=row.repository, repository_id=row.repository_id,
+        parser_version=str(row.source_target.get("parser_version", "java-mybatis-v1")),
         installation_id=row.installation_id, head_sha=row.head_sha, status=row.status,
         lexical_ready=row.lexical_ready, vector_status=row.vector_status,
         vector_count=row.vector_count, vector_error=row.vector_error,
@@ -92,14 +92,14 @@ class RetrievalRepository:
         return row
 
     def enqueue(self, target: dict[str, Any], settings: RetrievalSettings) -> str:
-        index_id = stable_key(target["installation_id"], target["repository_id"], target["head_sha"], settings.embedding_fingerprint)
+        index_id = settings.index_key(target["installation_id"], target["repository_id"], target["head_sha"])
         with self.sessions() as session, session.begin():
             self._insert(session, CodeIndexRecord, [{
                 "id": index_id, "installation_id": target["installation_id"],
                 "repository_id": target["repository_id"], "repository": target["repository"].casefold(),
                 "head_sha": target["head_sha"], "configuration_key": settings.embedding_fingerprint,
                 "embedding_model": settings.embedding_model, "dimensions": settings.dimensions,
-                "source_target": {**target, "vector_operation_id": str(uuid4())}, "status": "queued",
+                "source_target": {**target, "parser_version": PARSER_VERSION, "vector_operation_id": str(uuid4())}, "status": "queued",
             }])
         return index_id
 
@@ -395,6 +395,7 @@ class RetrievalRepository:
         first, second = aliased(CodeRelationRecord), aliased(CodeRelationRecord)
         with self.sessions() as session:
             rows = session.execute(select(
+                first.source_id.label("seed"),
                 first.target_id.label("direct"), first.kind.label("direct_kind"),
                 second.target_id.label("indirect"), second.kind.label("indirect_kind"),
             ).outerjoin(second, (second.index_id == first.index_id) & (second.source_id == first.target_id)).where(
@@ -402,11 +403,13 @@ class RetrievalRepository:
             ).order_by(first.target_id, second.target_id).limit(500)).all()
         scores: dict[str, float] = {}
         seeds = set(seed_ids)
+        weights = {key: 1 / (1 + rank / 4) for rank, key in enumerate(seed_ids)}
         for row in rows:
+            weight = weights[row.seed]
             if row.direct not in seeds:
-                scores[row.direct] = max(scores.get(row.direct, 0), 2.0 if row.direct_kind == "mapper_sql" else 1.0)
+                scores[row.direct] = max(scores.get(row.direct, 0), weight * (2.0 if row.direct_kind == "mapper_sql" else 1.0))
             if row.indirect is not None and row.indirect not in seeds:
-                scores[row.indirect] = max(scores.get(row.indirect, 0), 1.5 if row.indirect_kind == "mapper_sql" else 0.5)
+                scores[row.indirect] = max(scores.get(row.indirect, 0), weight * (1.5 if row.indirect_kind == "mapper_sql" else 0.5))
         return sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]
 
     def save_trace(self, trace: RetrievalTrace, review_run_id: str | None = None, agent: str | None = None) -> RetrievalTrace:
@@ -470,23 +473,28 @@ class RetrievalRepository:
         with self.sessions() as session:
             payload = session.scalar(select(RetrievalTraceRecord.payload).join(
                 CodeIndexRecord, CodeIndexRecord.id == RetrievalTraceRecord.index_id).where(
-                RetrievalTraceRecord.id == identifier, RetrievalTraceRecord.agent == "manual", _scope(scope)))
+                RetrievalTraceRecord.id == identifier, RetrievalTraceRecord.agent.in_(("manual", "evaluation")), _scope(scope)))
         if payload is None:
             raise LookupError("检索记录不存在")
         return RetrievalTrace.model_validate(payload)
 
-    def save_evaluation(self, report: RetrievalEvaluationReport) -> None:
+    def save_evaluation(self, report: RetrievalEvaluationReport, traces: Sequence[RetrievalTrace] = ()) -> None:
         with self.sessions() as session, session.begin():
+            # 评测详情单独保存，列表不加载代码正文；有界样本一次批量写入。
+            self._insert(session, RetrievalTraceRecord, [{"id": trace.id, "index_id": trace.index_id,
+                "agent": "evaluation", "payload": trace.model_dump(mode="json")} for trace in traces])
             session.add(RetrievalEvaluationRecord(id=report.id, index_id=report.index_id, report=report.model_dump(mode="json")))
 
     def evaluations(self, scope: ResourceScope | None, limit: int = 20) -> tuple[RetrievalEvaluationReport, ...]:
         return self.evaluation_page(scope, limit).items
 
     def evaluation_page(self, scope: ResourceScope | None, limit: int = 10,
-                        cursor: str | None = None) -> CursorPage[RetrievalEvaluationReport]:
+                        cursor: str | None = None, index_id: str | None = None) -> CursorPage[RetrievalEvaluationReport]:
         query = select(RetrievalEvaluationRecord.id, RetrievalEvaluationRecord.created_at, RetrievalEvaluationRecord.report).join(
             CodeIndexRecord, CodeIndexRecord.id == RetrievalEvaluationRecord.index_id,
         ).where(_scope(scope))
+        if index_id:
+            query = query.where(RetrievalEvaluationRecord.index_id == index_id)
         if cursor:
             query = query.where(tuple_(RetrievalEvaluationRecord.created_at, RetrievalEvaluationRecord.id) < decode_cursor(cursor))
         with self.sessions() as session:

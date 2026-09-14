@@ -74,9 +74,10 @@ def register_team_routes(
         _: Annotated[SessionPrincipal, Depends(require_manager)],
         limit: Annotated[int, Query(ge=1, le=100)] = 10,
         cursor: Annotated[str | None, Query(max_length=512)] = None,
+        repository: Annotated[str | None, Query(max_length=255)] = None,
     ) -> CursorPage[RepositoryView]:
         try:
-            return get_service().repositories(limit, cursor)
+            return get_service().repositories(limit, cursor, repository)
         except TEAM_ERRORS as exc:
             raise HTTPException(*translate_team_error(exc)) from exc
 

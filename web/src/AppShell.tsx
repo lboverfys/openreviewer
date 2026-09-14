@@ -47,6 +47,7 @@ export default function AppShell({ user, view, onSignedOut, children }: {
   const [menuOpen, setMenuOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const closeManual = useCallback(() => setManualOpen(false), []);
+  useEffect(() => {setMenuOpen(false); setManualOpen(false);}, [view]);
   useEffect(() => {
     const closeMenu = (event: KeyboardEvent) => { if (event.key === "Escape") setMenuOpen(false); };
     window.addEventListener("keydown", closeMenu);

@@ -1,3 +1,4 @@
+import { DetailDialog, Notice } from "./Feedback";
 import ModelPriceReference from "./ModelPriceReference";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -507,7 +508,7 @@ export default function AgentSettingsPanel({
     return (
       <section ref={sectionRef} className="agent-settings-section">
         <div className="settings-section-heading"><div><span className="settings-eyebrow">固定审查 DAG</span><h2>独立 Agent 配置</h2></div></div>
-        {message && <div className={"settings-message is-" + messageKind}>{message}</div>}
+        {message && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}</Notice>}
         {!message && <div className="settings-loading">正在读取 Agent 配置...</div>}
       </section>
     );
@@ -519,7 +520,7 @@ export default function AgentSettingsPanel({
         <div><span className="settings-eyebrow">固定审查 DAG</span><h2>Agent 配置</h2><p>三路审查并行执行，可分别配置，也可共用 AI 设置页当前启用的公共连接。</p></div>
         <span className="settings-summary-value">配置版本 r{settings.revision}</span>
       </div>
-      {message && messageAgent === null && <div className={"settings-message is-" + messageKind}>{message}</div>}
+      {message && messageAgent === null && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}</Notice>}
       <div className="agent-settings-grid">
         {agentOrder.map((agent) => {
           const item = settings.agents.find((candidate) => candidate.agent === agent);
@@ -574,7 +575,7 @@ export default function AgentSettingsPanel({
                 <label><span>中转协议</span><select value={draft.apiProtocol} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "apiProtocol", event.target.value)}>{protocolOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                 <label className="agent-settings-key"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(event) => updateDraft(agent, "apiKey", event.target.value)} placeholder={item.api_key_configured ? item.api_key_mask ?? "已保存密钥" : "粘贴 API Key"} autoComplete="new-password" disabled={sharedConnection || draft.clearApiKey} /><small>{sharedConnection ? "由公共连接统一提供；不会在此重复保存。" : "留空保留原密钥；只显示掩码。"}</small></label>
                 {!sharedConnection && <label className="agent-settings-check"><input type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft(agent, "clearApiKey", event.target.checked)} disabled={!item.api_key_configured} /><span>保存时删除密钥</span></label>}
-                <details className="agent-settings-advanced">
+                <DetailDialog className="agent-settings-advanced">
                   <summary>连接与重试</summary>
                   <div>
                     <label><span>推理档位</span><select value={draft.reasoningEffort} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "reasoningEffort", event.target.value)}><option value="none">自动</option><option value="low">轻量</option><option value="medium">标准</option><option value="high">深入</option><option value="max">极致</option></select></label>
@@ -584,9 +585,9 @@ export default function AgentSettingsPanel({
                     <label><span>连接排队超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.poolTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "poolTimeoutSeconds", event.target.value)} /></label>
                     <label><span>最多重试次数</span><input type="number" min={0} max={10} step={1} value={draft.maxRetries} onChange={(event) => updateDraft(agent, "maxRetries", event.target.value)} /></label>
                   </div>
-                </details>
+                </DetailDialog>
               </div>
-              <details className="agent-price-settings">
+              <DetailDialog className="agent-price-settings">
                   <summary>费用估算价格</summary><ModelPriceReference model={draft.modelOverride || draft.model} disabled={Boolean(busy)} onApply={prices => {updateDraft(agent, "inputPrice", prices.inputPrice); updateDraft(agent, "outputPrice", prices.outputPrice); updateDraft(agent, "cacheReadPrice", prices.cacheReadPrice); updateDraft(agent, "cacheWritePrice", prices.cacheWritePrice);}} />
                   <p className="settings-field-note">单独覆盖时同时填写输入和输出价格。留空仅在模型名称一致时继承公共价格；仅改价格保留原连接验证。</p>
                   <div className="agent-settings-fields">
@@ -595,12 +596,12 @@ export default function AgentSettingsPanel({
                     <label><span>缓存读取（可选）</span><input aria-label={`${agentLabels[agent].title}缓存读取单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheReadPrice} onChange={event => updateDraft(agent, "cacheReadPrice", event.target.value)} /></label>
                     <label><span>缓存写入（可选）</span><input aria-label={`${agentLabels[agent].title}缓存写入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheWritePrice} onChange={event => updateDraft(agent, "cacheWritePrice", event.target.value)} /></label>
                   </div>
-              </details>
+              </DetailDialog>
               <div className="agent-settings-actions">
                 <button className="settings-primary-btn" type="button" onClick={() => void save(agent)} disabled={Boolean(busy) || !dirty}>{busy === "save-" + agent ? "保存中..." : "保存配置"}</button>
                 <button className="settings-secondary-btn" type="button" onClick={() => void test(agent)} disabled={Boolean(busy) || dirty || !item.configured || !item.api_key_configured} title={dirty ? "请先保存当前修改" : "测试已保存配置"}>{busy === "test-" + agent ? "测试中..." : "测试连接"}</button>
                 <button className={"settings-secondary-btn " + (item.enabled ? "" : "is-activate")} type="button" onClick={() => void setEnabled(agent, !item.enabled)} disabled={Boolean(busy) || (!item.enabled && (dirty || !item.configured || item.test_status !== "succeeded"))} title={!item.enabled && dirty ? "请先保存并重新测试当前修改" : undefined}>{busy === "enabled-" + agent ? "处理中..." : item.enabled ? "停用 Agent" : "启用 Agent"}</button>
-                {message && messageAgent === agent && <div className={`settings-inline-feedback is-${messageKind}`} role="status">{message}</div>}
+                {message && messageAgent === agent && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}</Notice>}
               </div>
             </article>
           );

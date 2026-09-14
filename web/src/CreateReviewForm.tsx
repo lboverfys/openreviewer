@@ -1,3 +1,4 @@
+import { Notice } from "./Feedback";
 import { useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "./api";
 import { errorMessage } from "./utils";
@@ -54,7 +55,7 @@ export default function CreateReviewForm({ onCreated, onUnauthorized, onCancel }
 
   return <section className="workspace-surface ws-editor" aria-label="手动审查表单">
     <div className="ws-editor-heading"><div><h2>填写 PR 信息</h2><p>用于补发或手动审查，提交后进入现有审查队列。</p></div></div>
-    {message && <p className={failed ? "team-error" : "team-success"} role={failed ? "alert" : "status"}>{message}</p>}
+    {message && <Notice kind={(failed ? "error" : "success")} onDismiss={() => setMessage("")}>{message}</Notice>}
     <form onSubmit={submit}><fieldset disabled={submitting}>
       <WorkspaceSection title="审查目标" description="填写真实仓库、PR 编号和需要审查的精确提交。">
         <label>目标仓库 (Owner/Repository)<input name="repository" value={repository} onChange={event => setRepository(event.target.value)} placeholder="owner/repository" pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} maxLength={255} required /></label>

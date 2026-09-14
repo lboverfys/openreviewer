@@ -1,3 +1,4 @@
+import { Notice } from "./Feedback";
 import { FormEvent, useEffect, useState } from "react";
 
 import { api, ApiError } from "./api";
@@ -102,7 +103,7 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
         <label className="simple-login-remember"><input type="checkbox" checked={rememberCredentials}
           onChange={event => setRememberCredentials(event.target.checked)} />在这台设备保存登录信息</label>
         <small>公共电脑请勿保存登录信息。</small>
-        {message && <p className="auth-alert" role="alert">{message}</p>}
+        {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
         <button type="submit" className="auth-submit-btn" disabled={submitting}>{submitting ? "正在登录…" : "登录平台"}</button>
       </form>
       <p className="simple-login-note">账号由管理员创建。登录后可在右上角打开使用手册。</p>

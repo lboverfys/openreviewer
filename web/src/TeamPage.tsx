@@ -1,4 +1,5 @@
-import { useCallback, useState, type FormEvent } from "react";
+import { DetailDialog, Notice } from "./Feedback";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { api, ApiError } from "./api";
 import RepositoryConnectPanel from "./RepositoryConnectPanel";
@@ -13,7 +14,7 @@ import "./styles/team.css";
 type Tab = "repositories" | "members" | "audits";
 const lines = (value: string) => [...new Set(value.split(/[\n,，]+/).map((item) => item.trim()).filter(Boolean))];
 
-export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: string) => void }) {
+export default function TeamPage({ onSignedOut, initialRepository, initialSection }: { onSignedOut: (message?: string) => void; initialRepository?: string; initialSection?: string }) {
   const [connecting, setConnecting] = useState<TeamRepository | "new" | null>(null);
   const [tab, setTab] = useState<Tab>("repositories");
   const [error, setError] = useState("");
@@ -29,6 +30,16 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
     }
     setError(failure instanceof Error ? failure.message : "操作失败，请稍后重试");
   }, [onSignedOut]);
+  useEffect(() => {
+    if (!initialRepository) return;
+    const controller = new AbortController();
+    api.teamRepositoryByName(initialRepository, controller.signal).then(page => {
+      if (controller.signal.aborted) return;
+      if (page.items[0]) setRepository(page.items[0]);
+      else setError("该仓库尚未保存项目设置，请先接入仓库，再设置预算。");
+    }).catch(error => {if (!controller.signal.aborted) onError(error);});
+    return () => controller.abort();
+  }, [initialRepository, onError]);
   const loadMembers = useCallback(async (cursor?: string, signal?: AbortSignal, force?: boolean) => {
     const result = await api.teamMembers(cursor, signal, force);
     if (!signal?.aborted) setAdministrator(result.configured_administrator);
@@ -65,8 +76,8 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
         <button key={key} type="button" aria-pressed={tab === key} disabled={busy} onClick={() => changeTab(key)}>{label}</button>,
       )}
     </nav>}
-    {error && <p className="team-error" role="alert">{error}</p>}
-    {message && <p className="team-success" role="status">{message}</p>}
+    {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
+    {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     {connecting && <RepositoryConnectPanel existing={connecting === "new" ? undefined : connecting} onError={onError} onCancel={() => setConnecting(null)} onSaved={() => {setConnecting(null); setMessage("仓库已接通并启用，新 PR 会自动触发审查。"); void repositories.refresh();}}/>}
     {!member && !repository && !connecting && <section className="team-card">
       <div className="team-toolbar">
@@ -106,7 +117,7 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
             <td>{formatDate(item.occurred_at)}</td><td>{String(item.payload.actor ?? "")}</td>
             <td>{item.event_type === "team.member.updated" ? "更新成员" : item.event_type === "team.repository.connection_checked" ? "检查仓库接入" : "更新仓库策略"}</td>
             <td>{String(item.payload.target ?? "")}</td>
-            <td><details><summary>查看详情</summary><pre>{JSON.stringify(item.payload, null, 2)}</pre></details></td>
+            <td><DetailDialog><summary>查看详情</summary><pre>{JSON.stringify(item.payload, null, 2)}</pre></DetailDialog></td>
           </tr>)}</tbody>
         </table>}
       </div>
@@ -114,7 +125,7 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
       <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={busy || page.loading} onPrevious={page.previous} onNext={page.next} />
     </section>}
     {member && <MemberEditor key={member === "new" ? "new-member" : member.username + ":" + member.revision} member={member} initialAdmin={member !== "new" && member.username.toLowerCase() === administrator.toLowerCase()} busy={busy} onCancel={() => setMember(null)} onSave={(username, body) => void save(() => api.saveTeamMember(username, body))} />}
-    {repository && <RepositoryEditor key={repository === "new" ? "new-repository" : repository.id + ":" + repository.revision} repository={repository} busy={busy} onCancel={() => setRepository(null)} onSave={(body, id) => void save(() => api.saveTeamRepository(body, id))} />}
+    {repository && <RepositoryEditor key={repository === "new" ? "new-repository" : repository.id + ":" + repository.revision} repository={repository} initialBudget={initialSection === "budget"} busy={busy} onCancel={() => setRepository(null)} onSave={(body, id) => void save(() => api.saveTeamRepository(body, id))} />}
   </main>;
 }
 
@@ -156,11 +167,11 @@ function MemberEditor({ member, initialAdmin, busy, onCancel, onSave }: {
         {role === "administrator" && <label className="team-check"><input type="checkbox" disabled={initialAdmin} checked={unrestricted} onChange={(event) => setUnrestricted(event.target.checked)} />可查看全部仓库（管理员具有成员和配置管理权限）</label>}
         {!unrestricted && <>
           <label>可见仓库（每行一个）<textarea value={repositories} rows={3} placeholder="owner/repository" onChange={(event) => setRepositories(event.target.value)} /></label>
-          <details className="team-scope-options"><summary>组织与 App 安装范围（可选）</summary>
+          <DetailDialog className="team-scope-options"><summary>组织与 App 安装范围（可选）</summary>
             <label>组织名称（该组织的全部仓库可见）<textarea value={organizations} rows={2} onChange={(event) => setOrganizations(event.target.value)} /></label>
             <label>限制 App 安装编号（逗号分隔）<input value={installations} pattern="[0-9, ]*" onChange={(event) => setInstallations(event.target.value)} /></label>
             <p className="team-hint">安装范围与仓库范围同时生效；全部留空时无法查看任何任务。</p>
-          </details>
+          </DetailDialog>
         </>}
         </WorkspaceSection>
         <div className="ws-form-actions is-sticky"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存成员"}</button><button type="button" onClick={onCancel}>取消编辑</button></div>
@@ -169,11 +180,12 @@ function MemberEditor({ member, initialAdmin, busy, onCancel, onSave }: {
   </section>;
 }
 
-function RepositoryEditor({ repository, busy, onCancel, onSave }: {
-  repository: TeamRepository | "new"; busy: boolean; onCancel: () => void;
+function RepositoryEditor({ repository, initialBudget = false, busy, onCancel, onSave }: {
+  repository: TeamRepository | "new"; initialBudget?: boolean; busy: boolean; onCancel: () => void;
   onSave: (body: TeamRepositoryWrite, id?: string) => void;
 }) {
   const current = repository === "new" ? null : repository;
+  const [budgetOpen, setBudgetOpen] = useState(initialBudget);
   const [name, setName] = useState(current?.repository ?? "");
   const [enabled, setEnabled] = useState(current?.policy.enabled ?? true);
   const [branches, setBranches] = useState(current?.policy.target_branches?.join("\n") ?? "");
@@ -224,7 +236,7 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
         {current?.policy.review_profile_id && <label className="team-check"><input type="checkbox" checked={useProfile} onChange={event => setUseProfile(event.target.checked)} />继续固定已启用的审查方案</label>}
         <p className="team-hint">设置应用于新任务。需要固定模型和规则时，可使用<a href="#platform?tab=profiles">配置版本</a>。</p>
       </WorkspaceSection>
-      <details className="ws-disclosure"><summary>预算与执行上限<small>需要限制费用时展开</small></summary><div className="ws-disclosure-body">
+      <DetailDialog className="ws-disclosure" open={budgetOpen} onToggle={event => setBudgetOpen(event.currentTarget.open)}><summary>预算与执行上限<small>{name}</small></summary><div className="ws-disclosure-body">
       <WorkspaceSection title="费用与执行" description="留空表示沿用平台限制；请求数包含实际审查和重试。">
         <div className="team-form-grid">
           <label>月度预算（美元，可留空）<input type="number" min={0.000001} max={1000000} step={0.000001} value={monthlyBudget} placeholder="不限制" onChange={event => setMonthlyBudget(event.target.value)} /><small>按 UTC 月份估算，启用前需配置模型价格。</small></label>
@@ -233,15 +245,16 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
           <label>仓库同时执行的任务上限<input type="number" min={1} max={100} value={concurrency} placeholder="不限制" onChange={event => setConcurrency(event.target.value)} /></label>
         </div>
       </WorkspaceSection>
-      </div></details>
-      <details className="ws-disclosure"><summary>数据外发与增量复用<small>高级设置</small></summary><div className="ws-disclosure-body">
+      <button className="ws-primary" type="submit" disabled={busy}>保存预算与项目设置</button>
+      </div></DetailDialog>
+      <DetailDialog className="ws-disclosure"><summary>数据外发与增量复用<small>高级设置</small></summary><div className="ws-disclosure-body">
         <p className="team-hint">外发限制覆盖审查、向量与精排；命中限制时拒绝请求并保留原代码。</p>
         <div className="team-form-grid"><label>禁止外发的文件（每行一项，支持 * 通配符）<textarea rows={5} value={blockedPaths} onChange={event => setBlockedPaths(event.target.value)} /></label>
           <label>允许的模型供应商域名（每行一个，留空使用已配置连接）<textarea rows={5} value={allowedHosts} onChange={event => setAllowedHosts(event.target.value)} placeholder="api.openai.com" /></label></div>
         <label className="team-check"><input type="checkbox" checked={blockSecrets} onChange={event => setBlockSecrets(event.target.checked)} />检测到凭据形状时阻止整次外发</label>
         <label className="team-check"><input type="checkbox" checked={incremental} onChange={event => setIncremental(event.target.checked)} />启用跨提交的精确输入复用（需绑定审查方案）</label>
         <p className="team-hint">仅复用相同方案和输入，关联代码变化后重新审查。</p>
-      </div></details>
+      </div></DetailDialog>
       <div className="ws-form-actions is-sticky"><button type="submit" className="team-primary">{busy ? "正在保存…" : "保存项目设置"}</button><button type="button" onClick={onCancel}>取消编辑</button><span className="ws-hint">保存前会检查是否有其他人的修改</span></div>
     </fieldset></form>
   </section>;

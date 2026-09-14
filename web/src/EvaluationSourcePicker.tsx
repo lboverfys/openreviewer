@@ -34,7 +34,7 @@ export default function EvaluationSourcePicker({ datasetId, caseId, selected, on
   return <section className="evaluation-picker" aria-label="选择审查运行">
     <div className="evaluation-toolbar"><strong>选择已完成的审查运行</strong><WorkspaceBadge tone="accent">已选择 {selected.length} 条</WorkspaceBadge>
       <button type="button" disabled={disabled || !selected.length} onClick={() => onSelected([])}>清空选择</button></div>
-    <p className="evaluation-hint">仅显示覆盖完整的审查。同一 PR 在一个分组中选择一条运行；候选必须与基线使用同一提交。</p>
+    <p className="evaluation-hint">仅显示已完整完成的审查。比较第二份时，只列出同一 PR、同一提交的独立审查。</p>
     <div className="evaluation-table-wrap"><table>
       <thead><tr><th>选择</th><th>仓库 / PR</th><th>提交</th><th>模型 / 问题数</th><th>时间</th></tr></thead>
       <tbody>{page.data?.items.map(item => <tr key={item.review_run_id} className={selected.includes(item.review_run_id) ? "is-selected" : undefined}>
@@ -46,7 +46,7 @@ export default function EvaluationSourcePicker({ datasetId, caseId, selected, on
         <td>{formatDate(item.completed_at)}</td>
       </tr>)}</tbody>
     </table></div>
-    {!page.loading && page.data?.items.length === 0 && <WorkspaceEmpty title="暂无符合条件的运行" description="完成审查后收录；候选结果需要使用与基线相同的提交。" />}
+    {!page.loading && page.data?.items.length === 0 && <WorkspaceEmpty title="暂无符合条件的运行" description="请先完成一次审查。比较另一份时，需要同一 PR、同一提交的第二次完整审查。" />}
     <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)}
       busy={disabled || page.loading} onPrevious={page.previous} onNext={page.next} label="审查运行分页" />
   </section>;

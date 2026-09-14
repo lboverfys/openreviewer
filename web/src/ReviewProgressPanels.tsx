@@ -1,3 +1,4 @@
+import { DetailDialog } from "./Feedback";
 import { useMemo } from "react";
 import ReviewBatchList from "./ReviewBatchList";
 import {
@@ -47,12 +48,12 @@ export function StageTimeline({ details }: { details: ReviewDetails }) {
         </div></div>
       </div>;
     })}</div>
-    <details className="review-stage-details"><summary>查看详细步骤</summary>
+    <DetailDialog className="review-stage-details"><summary>查看详细步骤</summary>
       {stages.map(stage => <div className="review-stage-history-row" key={stage.key}>
         <strong>{stageLabels[stage.key] ?? stage.key}</strong><span>{stageCaption(stage.status, stage.detail_code)}</span>
         {stage.completed_at && <time>{formatDate(stage.completed_at)}</time>}
       </div>)}
-    </details>
+    </DetailDialog>
   </section>;
 }
 
@@ -191,10 +192,14 @@ export function ModelBatchPanel({
                   </button>
                 )}
               {progress.references.length > 0 && (
-                <details className="review-agent-references">
-                  <summary>RAG 引用（{progress.references.length}）</summary>
-                  <ul>{progress.references.map((reference, index) => <li key={`${reference}-${index}`}>{reference}</li>)}</ul>
-                </details>
+                <DetailDialog className="review-agent-references">
+                  <summary>使用的规则文档（{progress.references.length}）</summary>
+                  {progress.references.map((reference, index) => {
+                    const separator = reference.indexOf(": ");
+                    const identity = separator >= 0 ? reference.slice(0, separator) : reference;
+                    return <article key={index}><h4>{identity.split("#")[1]?.split("@")[0] ?? identity}</h4><small>{identity.split("#")[0]}</small>{separator >= 0 && <p>{reference.slice(separator + 2)}</p>}</article>;
+                  })}
+                </DetailDialog>
               )}
               {progress.batchCount > 0 && <ReviewBatchList runId={details.review_run_id} agent={key}
                 total={progress.batchCount} changeToken={details.change_token} onRetry={onRetry} busy={retryBusy} stopped={stopped} paused={details.phase === "paused"} />}

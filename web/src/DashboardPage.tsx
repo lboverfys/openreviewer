@@ -1,3 +1,4 @@
+import { Notice } from "./Feedback";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, DASHBOARD_CACHE_TTL_MS, peekReadCache, primeReadCache, subscribeReadCache, reviewListKey } from "./api";
@@ -346,14 +347,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
     <div className="dash-shell">
       <main className="dash-main">
         {pageMessage && (
-          <div className="toast-banner" role="alert">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            <span>{pageMessage}</span>
-          </div>
+          <Notice onDismiss={() => setPageMessage("")}>{pageMessage}</Notice>
         )}
 
         {/* 概览条：问候 + 任务概况 + 同步状态与刷新，单行紧凑 */}

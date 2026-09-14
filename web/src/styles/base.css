@@ -307,7 +307,7 @@ code, pre {
   display: flex;
   flex-direction: column;
 }
-.app-shell > *:not(.app-shell-topbar) {
+.app-shell > .enterprise-body {
   flex: 1;
   min-height: 0;
 }

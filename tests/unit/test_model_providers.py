@@ -2471,6 +2471,43 @@ def test_model_reference_validation_happens_before_batch_success(reference):
         client.close()
 
 
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_location_file_mismatch_gets_one_bounded_repair_with_full_usage(repair_succeeds):
+    source, good = make_model_input(), make_output()
+    finding = good.findings[0]
+    bad = good.model_copy(update={"findings": (finding.model_copy(update={
+        "location": finding.location.model_copy(update={"file": "not-provided.py"}),
+    }),)})
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        result = good if repair_succeeds and len(requests) == 2 else bad
+        return httpx.Response(200, json={"id":"repair-" + str(len(requests)), "status":"completed",
+            "output":[{"type":"message", "content":[{"type":"output_text", "text":result.model_dump_json()}]}],
+            "usage":{"input_tokens":10,"output_tokens":5}})
+
+    accountant = RecordingBudgetAccountant()
+    client = httpx.Client(base_url="https://api.openai.test", transport=httpx.MockTransport(respond))
+    reviewer = create_model_reviewer(_settings(ModelProvider.OPENAI), client=client)
+    try:
+        with model_budget_scope(accountant):
+            if repair_succeeds:
+                result = reviewer.review(source)
+                assert result.output.findings[0].location.file == source.units[0].file
+                assert result.usage.total_input_tokens == 20 and result.usage.output_tokens == 10
+            else:
+                with pytest.raises(SafeApplicationError) as captured:
+                    reviewer.review(source)
+                assert captured.value.error.details["format_repair_attempted"] is True
+                assert captured.value.error.details["invalid_reference_kind"] == "location.file"
+        assert len(requests) == len(accountant.requests) == len(accountant.settlements) == 2
+        assert "location.file" in json.dumps(requests[1])
+        assert not any(item["uncertain"] for item in accountant.settlements)
+    finally:
+        reviewer.close()
+
+
 def test_http_classification_iterator_exception_does_not_settle_twice() -> None:
     """HTTP 错误分类异常时，已结算的 reservation 不能再次结算。"""
 

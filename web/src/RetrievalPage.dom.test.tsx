@@ -28,6 +28,7 @@ afterEach(() => {cleanup(); vi.clearAllMocks();});
 describe("代码检索页面", () => {
   it("慢配置和未打开的评测不阻塞索引区域，评测只在点击标签时读取", async () => {
     vi.mocked(api.retrievalSettings).mockReturnValue(new Promise(() => undefined));
+    vi.mocked(api.retrievalIndexes).mockResolvedValue({items:[{id:"index-1",status:"ready",lexical_ready:true,file_count:1,chunk_count:1,relation_count:0,repository:"owner/repo",head_sha:"a".repeat(40)} as import("./types").CodeIndexView]});
     render(<RetrievalPage onSignedOut={vi.fn()} />);
     expect(screen.getByRole("button", {name: "执行检索"})).toBeInTheDocument();
     expect(api.retrievalEvaluations).not.toHaveBeenCalled();

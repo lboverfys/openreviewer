@@ -1,3 +1,4 @@
+import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "./api";
 import Pagination from "./Pagination";
@@ -44,7 +45,7 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
     </fieldset></form>
   </section></>;
   return <>
-    {message && <p role="status" className="team-success">{message}</p>}
+    {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     <section className="team-card"><div className="team-toolbar"><div><h2>审查方案</h2><p>为仓库保存、启用或恢复一套审查配置。</p></div><div className="ws-actions"><button disabled={busy || repositories.loading || profiles.loading} onClick={() => { void repositories.refresh(); if (selected) void profiles.refresh(); }}>刷新</button><button className="ws-primary" disabled={!selected} onClick={() => { setCreating(true); setMessage(""); }}>新建审查方案</button></div></div>
       <div className="profile-repository-picker ws-filterbar"><label>选择仓库<select value={repositoryId} onChange={event => { setRepositoryId(event.target.value); setMessage(""); }}><option value="">请选择仓库</option>{repositories.data?.items.map(item => <option key={item.id} value={item.id}>{item.repository}</option>)}</select></label>{selected && <WorkspaceBadge tone={selected.policy.review_profile_id ? "accent" : "neutral"}>{selected.policy.review_profile_id ? "已绑定审查方案" : "使用当前配置"}</WorkspaceBadge>}
         <Pagination label="仓库选择分页" page={repositories.page} count={repositories.data?.items.length ?? 0} hasNext={Boolean(repositories.data?.next_cursor)} busy={repositories.loading} onPrevious={repositories.previous} onNext={repositories.next} />
@@ -54,7 +55,7 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
       <div className="profile-history">{selected && profiles.data?.items.map(item => <article className="platform-profile" key={item.id}><div><div className="profile-heading"><h3>{item.name}</h3>{selected.policy.review_profile_id === item.id && <WorkspaceBadge tone="accent">当前启用</WorkspaceBadge>}</div>{item.note && <p>{item.note}</p>}
         <div className="profile-models">{Object.entries(item.models).map(([key, value]) => <span key={key}><b>{agentLabels[key] ?? key}</b>{value}</span>)}</div>
         <div className="profile-metadata"><span>{formatDate(item.created_at)}</span><span>{item.created_by}</span><span>知识 {Object.keys(item.knowledge_versions).length} 份</span></div>
-        <details className="profile-version"><summary>版本信息</summary><p>Prompt {item.prompt_version} · 版本 {item.fingerprint.slice(0, 12)}</p></details>
+        <DetailDialog className="profile-version"><summary>版本信息</summary><p>Prompt {item.prompt_version} · 版本 {item.fingerprint.slice(0, 12)}</p></DetailDialog>
       </div><button className="ws-link-button" disabled={busy || selected.policy.review_profile_id === item.id} onClick={() => { setPendingProfile(item.id); setMessage(""); }}>启用 / 恢复此方案</button></article>)}</div>
       {!repositories.loading && !selected && <WorkspaceEmpty title="先选择一个仓库" description="尚未添加仓库时，可先前往团队管理配置。" />}
       {selected && !profiles.loading && !profiles.data?.items.length && <WorkspaceEmpty title="尚未保存审查方案" description="保存当前配置，建立可追溯、可恢复的方案版本。" />}

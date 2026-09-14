@@ -34,12 +34,24 @@ beforeEach(() => {
 });
 afterEach(() => {cleanup(); clearReadCache(); vi.unstubAllGlobals();});
 
+it("预算深链接直接打开指定仓库的表单，关闭后恢复页面滚动", async () => {
+  render(<TeamPage onSignedOut={vi.fn()} initialRepository="example/project" initialSection="budget" />);
+  const dialog = await screen.findByRole("dialog", {name:/预算与执行上限/});
+  expect(dialog).toHaveTextContent("example/project");
+  expect(screen.getByLabelText(/月度预算/)).toBeInTheDocument();
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("repository=example%2Fproject"))).toBe(true);
+  fireEvent.click(screen.getByRole("button", {name:"关闭详情"}));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(document.body.style.overflow).not.toBe("hidden");
+});
+
 it("编辑仓库时提交原版本与分支策略，保存后刷新列表", async () => {
   render(<TeamPage onSignedOut={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", {name: "编辑仓库 example/project"}));
   fireEvent.change(screen.getByLabelText(/目标分支（/), {target: {value: "main\nrelease/*"}});
+  fireEvent.click(screen.getByRole("button", {name:/预算与执行上限/}));
   fireEvent.change(screen.getByLabelText(/单次审查最多模型请求数/), {target: {value: "8"}});
-  fireEvent.click(screen.getByRole("button", {name: "保存项目设置"}));
+  fireEvent.click(screen.getByRole("button", {name: "保存预算与项目设置"}));
   await waitFor(() => expect(saved).toHaveLength(1));
   expect(saved[0].path).toBe("/api/v1/team/repositories/repo-1");
   expect(saved[0].body).toMatchObject({expected_revision: 2,

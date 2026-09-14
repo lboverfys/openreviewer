@@ -1,3 +1,4 @@
+import { DetailDialog } from "./Feedback";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { platformApi } from "./platform-api";
 import type { StaticReport } from "./types";
@@ -32,14 +33,14 @@ export default function StaticAnalysisPanel({ runId, headSha, editable, onError 
     try { setReport(await platformApi.importStaticReport(runId, { head_sha: headSha, base_sha: base ? baseSha : null, head_sarif: head, base_sarif: base || null })); setHead(""); setBase(""); await findings.refresh(); }
     catch (error) { onError(error); } finally { setBusy(false); }
   };
-  return <details className="workspace-surface static-analysis" onToggle={event => setOpen(event.currentTarget.open)}><summary><strong>扫描工具报告（可选）</strong><span className="ws-hint">有 Semgrep 报告时再导入</span></summary>
+  return <DetailDialog className="workspace-surface static-analysis" onToggle={event => setOpen(event.currentTarget.open)}><summary><strong>扫描工具报告（可选）</strong><span className="ws-hint">有 Semgrep 报告时再导入</span></summary>
     {open && <div className="static-analysis-content"><p className="ws-hint">核对静态线索与 AI 判断，同一位置不代表同一个缺陷。</p>
       {!loaded && <WorkspaceEmpty loading title="正在读取报告…" />}
       {report && <><div className="ws-toolbar"><div className="profile-heading"><strong>{report.tool} {report.tool_version}</strong><WorkspaceBadge tone="accent">基线未出现 {report.new_count}</WorkspaceBadge><WorkspaceBadge>已有 {report.existing_count}</WorkspaceBadge><WorkspaceBadge tone="warning">待判断 {report.unknown_count}</WorkspaceBadge></div></div>
         {findings.data?.items.map(item => <article className="static-finding" key={item.id}><div className="ws-toolbar"><h4>{item.rule_id}</h4><WorkspaceBadge tone={item.baseline_state === "new" ? "accent" : "neutral"}>{({ new: "基线未出现", existing: "基线已出现", unknown: "新增状态待判断" })[item.baseline_state]}</WorkspaceBadge></div><p>{item.message}</p><div className="profile-metadata"><code>{item.file}:{item.start_line}–{item.end_line}</code><span>同位置 AI 问题 {item.overlapping_ai_count} 条</span></div></article>)}
         {loaded && !findings.loading && findings.data?.items.length === 0 && <WorkspaceEmpty title="此报告没有静态线索" />}
         <Pagination page={findings.page} count={findings.data?.items.length ?? 0} hasNext={Boolean(findings.data?.next_cursor)} busy={findings.loading} onPrevious={findings.previous} onNext={findings.next} />
-        <details className="profile-version"><summary>来源与版本</summary><p>导入人 {report.imported_by} · 报告指纹 <code>{report.report_hash.slice(0, 12)}</code></p><p>报告提交 <code>{report.head_sha}</code></p></details>
+        <DetailDialog className="profile-version"><summary>来源与版本</summary><p>导入人 {report.imported_by} · 报告指纹 <code>{report.report_hash.slice(0, 12)}</code></p><p>报告提交 <code>{report.head_sha}</code></p></DetailDialog>
       </>}
       {loaded && !report && editable && <form onSubmit={event => void submit(event)}><fieldset disabled={busy}>
         <div className="static-upload-grid"><label className="static-file-field">当前提交报告<small>Semgrep SARIF · 最大 1 MB</small><input aria-label="当前提交报告（Semgrep SARIF，最大 1 MB）" type="file" accept=".sarif,.json" required onChange={event => void readFile(event.target.files?.[0], setHead)} /></label>
@@ -50,5 +51,5 @@ export default function StaticAnalysisPanel({ runId, headSha, editable, onError 
       </fieldset></form>}
       {loaded && !report && !editable && <WorkspaceEmpty title="尚未导入静态报告。" />}
     </div>}
-  </details>;
+  </DetailDialog>;
 }

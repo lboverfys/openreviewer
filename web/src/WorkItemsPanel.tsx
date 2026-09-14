@@ -1,3 +1,4 @@
+import { Notice } from "./Feedback";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "./api";
 import Pagination from "./Pagination";
@@ -40,13 +41,13 @@ export default function WorkItemsPanel({ user, findingId, onError }: PlatformPan
   if (learning) return <LearningEditor key={`${learning.id}:${learning.revision}`} item={learning} onError={onError} onClose={() => setLearning(null)} />;
   if (editing) return <>
     <WorkspaceBack onClick={() => { if (!busy) setEditing(null); }}>返回待办列表</WorkspaceBack>
-    {message && <p className="team-success" role="status">{message}</p>}
+    {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     <WorkEditor key={`${editing.id}:${editing.revision}`} item={editing} busy={busy} onCancel={() => setEditing(null)} onSave={body => void save(editing, body)}
       onLearn={hasPermission(user, "knowledge:manage") && (editing.status === "resolved" || editing.status === "wont_fix") ? () => { setLearning(editing); setEditing(null); } : undefined} />
   </>;
   const active = mode === "issues" ? page : approvals;
   return <>
-    {message && <p className="team-success" role="status">{message}</p>}
+    {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     {editable && source && mode === "issues" && <form className="platform-inline-form" onSubmit={event => void create(event)}><div><strong>来自审查结果的问题</strong><p>加入待办后，可安排负责人和截止时间。</p></div><button className="ws-primary" disabled={busy} type="submit">加入我的待办</button></form>}
     <section className="team-card">
       <div className="team-toolbar"><div><h2>团队待办</h2><p>跟进问题处理与待审批审查。</p></div><button disabled={busy || active.loading} onClick={() => void active.refresh()}>刷新</button></div>

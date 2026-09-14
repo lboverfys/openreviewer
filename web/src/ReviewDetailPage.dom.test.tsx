@@ -94,7 +94,7 @@ it("操作失败提示不会被随后成功的后台刷新清除", async () => {
   fireEvent.click(screen.getByRole("button", {name:"↻ 刷新"}));
   await waitFor(() => expect(api.reviewDetails).toHaveBeenCalledTimes(2));
   expect(screen.getByText("操作尚未成功，请重试")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", {name:"关闭提示"}));
+  fireEvent.click(screen.getByRole("button", {name:"关闭通知"}));
   expect(screen.queryByText("操作尚未成功，请重试")).not.toBeInTheDocument();
   action.mockRestore();
 });

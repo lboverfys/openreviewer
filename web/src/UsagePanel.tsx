@@ -1,3 +1,4 @@
+import { DetailDialog } from "./Feedback";
 import { useCallback, useEffect, useState } from "react";
 import Pagination from "./Pagination";
 import { platformApi } from "./platform-api";
@@ -18,10 +19,10 @@ export default function UsagePanel({ onError }: PlatformPanelProps) {
   const page = useCursorPage({ cacheKey: `usage:${month}`, load, onError });
   if (selected) return <><WorkspaceBack onClick={() => setSelected(null)}>返回月度用量</WorkspaceBack><UsageDetails key={selected.id} month={page.data?.items.find(item => item.id === selected.id) ?? selected} onError={onError} onRefreshSummary={() => void page.refresh()} /></>;
   return <section className="team-card">
-    <div className="team-toolbar"><div><h2>仓库月度用量</h2><p>查看审查费用、预占金额与预算状态。</p></div><div className="ws-actions"><a className="ws-button-link" href="#team">预算设置</a><a className="ws-button-link" href="#settings">模型价格</a></div></div>
+    <div className="team-toolbar"><div><h2>仓库月度用量</h2><p>查看审查费用、预占金额与预算状态。</p></div><div className="ws-actions"><a className="ws-button-link" href="#settings?section=agents">模型与费用配置</a></div></div>
     <div className="ws-filterbar"><label>月份（UTC）<input aria-label="用量月份" type="month" value={month} onChange={event => setMonth(event.target.value)} /></label><div className="ws-actions"><button disabled={page.loading} onClick={() => void page.refresh()}>刷新</button></div></div>
     <div className="team-table-wrap"><table><thead><tr><th>仓库</th><th>请求</th><th>已估算费用</th><th>待确认预占</th><th>月度预算</th><th>用量状态</th><th>操作</th></tr></thead>
-      <tbody>{page.data?.items.map(item => <tr key={item.id}><td><strong>{item.repository}</strong><small>安装 {item.installation_id}</small></td><td className="ws-numeric">{item.request_count}</td><td className="ws-numeric">{formatMoney(item.estimated_cost_microusd)}</td><td className="ws-numeric">{formatMoney(item.reserved_cost_microusd)}</td><td className="ws-numeric">{item.budget_microusd == null ? "未限制" : formatMoney(item.budget_microusd)}</td><td><WorkspaceBadge tone={item.warning ? "warning" : "success"}>{item.warning ? "已达到预算提醒线" : "正常"}</WorkspaceBadge><small>费用未知 {item.unknown_count} · 请求不确定 {item.uncertain_count}</small></td><td><button className="ws-link-button" onClick={() => setSelected(item)}>查看请求</button></td></tr>)}</tbody>
+      <tbody>{page.data?.items.map(item => <tr key={item.id}><td><strong>{item.repository}</strong><small>安装 {item.installation_id}</small></td><td className="ws-numeric">{item.request_count}</td><td className="ws-numeric">{formatMoney(item.estimated_cost_microusd)}</td><td className="ws-numeric">{formatMoney(item.reserved_cost_microusd)}</td><td className="ws-numeric">{item.budget_microusd == null ? "未限制" : formatMoney(item.budget_microusd)}</td><td><WorkspaceBadge tone={item.warning ? "warning" : "success"}>{item.warning ? "已达到预算提醒线" : "正常"}</WorkspaceBadge><small>费用未知 {item.unknown_count} · 请求不确定 {item.uncertain_count}</small></td><td><div className="ws-actions"><button className="ws-link-button" onClick={() => setSelected(item)}>查看请求</button><a className="ws-button-link" href={"#team?section=budget&repository=" + encodeURIComponent(item.repository)}>预算设置</a></div></td></tr>)}</tbody>
     </table></div>
     {!page.loading && !page.data?.items.length && <WorkspaceEmpty title="该月份暂无用量记录" description="新审查流程的模型请求会记入账本，历史费用不会补记为零。" />}
     <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next} />
@@ -49,7 +50,7 @@ function UsageDetails({ month, onError, onRefreshSummary }: PlatformPanelProps &
       </tr>)}</tbody></table></div>
       {!page.loading && !page.data?.items.length && <WorkspaceEmpty title="暂无请求明细" />}
       <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next} />
-      <details className="usage-groups"><summary>按模型与用途汇总<span className="ws-chip">{groups.length} 组</span></summary><div className="platform-metrics">{groups.map(item => <div key={`${item.purpose}:${item.model}`}><strong>{item.model}</strong><span>{purposeLabels[item.purpose] ?? item.purpose} · {item.request_count} 次</span><span>{formatMoney(item.estimated_cost_microusd)} · {item.unknown_count} 次费用未知</span></div>)}</div></details>
+      <DetailDialog className="usage-groups"><summary>按模型与用途汇总<span className="ws-chip">{groups.length} 组</span></summary><div className="platform-metrics">{groups.map(item => <div key={`${item.purpose}:${item.model}`}><strong>{item.model}</strong><span>{purposeLabels[item.purpose] ?? item.purpose} · {item.request_count} 次</span><span>{formatMoney(item.estimated_cost_microusd)} · {item.unknown_count} 次费用未知</span></div>)}</div></DetailDialog>
     </section>
   </>;
 }

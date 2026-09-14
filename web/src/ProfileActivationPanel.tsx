@@ -1,3 +1,4 @@
+import { DetailDialog } from "./Feedback";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "./api";
 import { platformApi } from "./platform-api";
@@ -38,13 +39,13 @@ export default function ProfileActivationPanel({ id, repository, revision, onDon
       <Pagination label="评测集选择分页" page={datasets.page} count={datasets.data?.items.length ?? 0} hasNext={Boolean(datasets.data?.next_cursor)} busy={datasets.loading} onPrevious={datasets.previous} onNext={datasets.next} />
     </WorkspaceSection>
     {quality ? <>
-      <div className="profile-quality"><WorkspaceBadge tone={quality.status === "reviewed" ? "success" : quality.status === "regression" ? "danger" : "warning"}>{({ unverified: "未验证", regression: "较基线退步", reviewed: "已复核" })[quality.status]}</WorkspaceBadge><div><strong role="status">质量状态：{({ unverified: "未验证", regression: "较基线退步", reviewed: "已完成样本复核" })[quality.status]}</strong>{quality.reasons.slice(0, 1).map(message => <p key={message}>{message}</p>)}{quality.reasons.length > 1 && <details className="profile-version"><summary>查看全部质量提示</summary>{quality.reasons.slice(1).map(message => <p key={message}>{message}</p>)}</details>}</div></div>
+      <div className="profile-quality"><WorkspaceBadge tone={quality.status === "reviewed" ? "success" : quality.status === "regression" ? "danger" : "warning"}>{({ unverified: "未验证", regression: "较基线退步", reviewed: "已复核" })[quality.status]}</WorkspaceBadge><div><strong role="status">质量状态：{({ unverified: "未验证", regression: "较基线退步", reviewed: "已完成样本复核" })[quality.status]}</strong>{quality.reasons.slice(0, 1).map(message => <p key={message}>{message}</p>)}{quality.reasons.length > 1 && <DetailDialog className="profile-version"><summary>查看全部质量提示</summary>{quality.reasons.slice(1).map(message => <p key={message}>{message}</p>)}</DetailDialog>}</div></div>
       {quality.report && <div className="team-table-wrap"><table><thead><tr><th>指标</th><th>当前方案</th><th>候选方案</th></tr></thead><tbody>
         <tr><td>有效问题比例</td><td>{percent(quality.report.baseline.precision)}</td><td>{percent(quality.report.candidate.precision)}</td></tr>
         <tr><td>已知缺陷找回率</td><td>{percent(quality.report.baseline.recall)}</td><td>{percent(quality.report.candidate.recall)}</td></tr>
         <tr><td>平均估算费用</td><td>{cost(quality.report.baseline.mean_estimated_cost_usd)}</td><td>{cost(quality.report.candidate.mean_estimated_cost_usd)}</td></tr>
       </tbody></table></div>}
-      {quality.report && <p className="ws-hint">完整参考配对 {quality.report.reference_pairs} / {quality.report.case_count} · <a href="#evaluations">查看完整评测及置信区间 →</a></p>}
+      {quality.report && <p className="ws-hint">完整参考配对 {quality.report.reference_pairs} / {quality.report.case_count} · <a href={"#evaluations/" + quality.report.dataset_id}>查看完整评测及置信区间 →</a></p>}
     </> : <div className="profile-quality" role="status">正在读取质量依据…</div>}
     <form onSubmit={event => void submit(event)}><fieldset disabled={busy || !quality}>
       <WorkspaceSection title="人工确认" description="未验证或出现退步时，请说明本次启用的依据。"><label>人工启用理由<textarea required={quality?.status !== "reviewed"} value={reason} maxLength={1000} rows={4} onChange={event => setReason(event.target.value)} placeholder="例如：先在指定仓库试用，完成人工复核后再扩大范围" /></label></WorkspaceSection>

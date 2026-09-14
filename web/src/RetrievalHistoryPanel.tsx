@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { api } from "./api";
+import { DetailDialog } from "./Feedback";
 import Pagination from "./Pagination";
 import RetrievalTracePanel, { retrievalStrategyLabels } from "./RetrievalTracePanel";
 import { useCursorPage } from "./useCursorPage";
@@ -22,6 +23,6 @@ export default function RetrievalHistoryPanel({indexId, onError}: {indexId: stri
     </tbody></table></div>
     {!page.loading && !page.data?.items.length && <p>这个提交还没有符合条件的搜索记录。执行一次搜索后即可回看。</p>}
     <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next}/>
-    {trace && <RetrievalTracePanel traces={[trace]}/>}
+    {trace && <DetailDialog open hideTrigger onToggle={event => {if (!event.currentTarget.open) setTrace(null);}}><summary>搜索记录 · {trace.query}</summary><RetrievalTracePanel traces={[trace]}/></DetailDialog>}
   </section>;
 }

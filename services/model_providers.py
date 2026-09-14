@@ -218,6 +218,35 @@ class _StructuredModelReviewer(ModelReviewer):
         request_body = self._request_body(prompt)
         settled_reservations: set[str] = set()
 
+        def parse_batch_response(payload):
+            output, usage, response_id = self._parse_success(payload)
+            try:
+                if prompt_input.review_agent is not ReviewAgent.SUMMARY:
+                    output = normalize_model_references(prompt_input, output)
+            except ValueError as exc:
+                kind = {
+                    "model finding references unknown retrieval evidence": "context_references",
+                    "model finding references an unknown repository rule": "rule_reference",
+                    "model finding references an unknown review unit": "unit_key",
+                    "model finding location does not match its review unit": "location.file",
+                }.get(str(exc), "reference")
+                message = {
+                    "context_references": "关联代码引用不属于本批已提供的证据",
+                    "rule_reference": "规则引用不属于本批已提供的文档",
+                    "unit_key": "问题引用的代码编号不属于本批审查范围",
+                    "location.file": "问题位置与所引用的代码文件不一致",
+                }.get(kind, "模型引用未通过校验")
+                raise self._error(
+                    ErrorCode.MODEL_INVALID_RESPONSE,
+                    message,
+                    retryable=True,
+                    details={"contract_validation": True, "invalid_references": True,
+                        "invalid_reference_kind": kind,
+                        "validation_issues": [{"path": "findings[]." + kind, "code": "unknown_reference", "message": "请使用本批提供的引用"}],
+                        **_failed_usage_details(usage)},
+                ) from exc
+            return output, usage, response_id
+
         def settle_budget_once(
             audit: ModelHttpAudit | None,
             usage: ModelTokenUsage | None,
@@ -273,7 +302,7 @@ class _StructuredModelReviewer(ModelReviewer):
                 request_body = fallback
         try:
             try:
-                output, usage, response_id = self._parse_success(payload)
+                output, usage, response_id = parse_batch_response(payload)
             except SafeApplicationError as exc:
                 # 解析失败发生在 HTTP 返回之后；把响应审计信息合并到安全错误，
                 # 这样批次事件能区分“模型截断”与“代理超时”，而不会保存响应正文。
@@ -323,7 +352,7 @@ class _StructuredModelReviewer(ModelReviewer):
                             body=repair_body,
                         )
                         try:
-                            output, repair_usage, response_id = self._parse_success(
+                            output, repair_usage, response_id = parse_batch_response(
                                 repair_payload
                             )
                         except SafeApplicationError as repair_parse_exc:
@@ -451,6 +480,8 @@ class _StructuredModelReviewer(ModelReviewer):
         instruction = _FORMAT_REPAIR_INSTRUCTION
         if issue_paths:
             instruction += f"\n本次未通过的字段：{', '.join(issue_paths)}。"
+        if error.details.get("invalid_references"):
+            instruction += "\n引用未通过校验。逐条重新核对：unit_key 必须来自本批 review_units 且对应 location.file；context_references 只能使用 context_evidence 的 ctx_ 编号；知识文档路径放入 rule_reference，不能放入 context_references。没有相关规则时使用 null，没有关联代码时使用 []。不要编造或猜测编号，保留有真实依据的问题。"
         if self.api_protocol is ModelApiProtocol.RESPONSES:
             messages = candidate.get("input")
             if isinstance(messages, list):

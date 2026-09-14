@@ -1,3 +1,5 @@
+import RetrievalReportDetails from "./RetrievalReportDetails";
+import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
 import RetrievalTracePanel, { retrievalStrategyLabels, vectorSearchLabel } from "./RetrievalTracePanel";
@@ -38,10 +40,10 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
 
   const loadIndexes = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalIndexes(signal, cursor, force), []);
   const loadTargets = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalTargets(signal, cursor, force), []);
-  const loadReports = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalEvaluations(signal, cursor, force), []);
+  const loadReports = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalEvaluations(signal, cursor, force, selectedId), [selectedId]);
   const indexPage = useCursorPage<CodeIndexView>({cacheKey: "retrieval-indexes", load: loadIndexes, onError: handleError, enabled: true});
   const targetPage = useCursorPage<IndexTarget>({cacheKey: "retrieval-targets", load: loadTargets, onError: handleError, enabled: tab === "search"});
-  const reportPage = useCursorPage<RetrievalEvaluationReport>({cacheKey: "retrieval-evaluations", load: loadReports, onError: handleError, enabled: tab === "evaluations"});
+  const reportPage = useCursorPage<RetrievalEvaluationReport>({cacheKey: "retrieval-evaluations:" + selectedId, load: loadReports, onError: handleError, enabled: tab === "evaluations" && Boolean(selectedId)});
   const indexes = indexPage.data?.items ?? [];
   const targets = targetPage.data?.items ?? [];
   const reports = (reportPage.data?.items ?? []).map(report => report.strategies.some(item => item.strategy !== "bm25" && item.strategy !== "lexical_relations") ? report : {...report, query_cache_mode: "not_used", vector_search_mode: "not_used"});
@@ -109,7 +111,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
     <section className="retrieval-hero">
       <div className="retrieval-hero-copy">
         <h1>代码检索</h1>
-        <p>审查会自动准备当前提交的基础索引，并在开启外部调用时补齐预算内的缺失向量，然后查找关联代码。你也可以搜索并回看记录，核对 AI 的依据。</p><nav className="workspace-links"><a href="#knowledge">← 知识文档</a><a href="#settings?section=retrieval">检索模型与开关 →</a></nav>
+        <p>审查会自动准备当前提交的基础索引，并在开启外部调用时补齐预算内的缺失向量，然后查找关联代码。你也可以搜索并回看记录，核对 AI 的依据。</p><nav className="related-actions"><a href="#knowledge">知识文档</a><a href="#settings?section=retrieval">检索模型与开关</a></nav>
       </div>
       <button type="button" className="btn-ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -139,9 +141,9 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
     </nav>
     {tab !== "search" && <section className="retrieval-card"><label>仓库与提交<select aria-label="仓库与提交" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{indexes.map(item => <option key={item.id} value={item.id}>{item.repository} · {item.head_sha.slice(0, 8)}</option>)}</select></label><Pagination page={indexPage.page} count={indexes.length} hasNext={Boolean(indexPage.data?.next_cursor)} busy={indexPage.loading} onPrevious={indexPage.previous} onNext={indexPage.next}/></section>}
     {tab === "history" && <RetrievalHistoryPanel key={selectedId} indexId={selectedId} onError={handleError}/>}
-    {error && <div role="alert" className="toast-banner is-error">{error}</div>}
+    {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
     {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>向量与精排调用已关闭</strong><p>关键词和代码关系检索仍可用于审查，GPT 审查不受影响。<a href="#settings?section=retrieval">到模型配置开启 →</a></p></div></div>}
-    {message && <div role="status" className="toast-banner is-success">{message}</div>}
+    {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     {<>
       {tab === "search" && <div className="retrieval-workspace">
         <CodeIndexPanel
@@ -188,7 +190,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
             <div className="retrieval-table-scroll"><table><thead><tr><th>策略</th><th>样本数</th><th>Recall@K</th><th>MRR</th><th>中位耗时</th><th>P95 耗时</th><th>召回率较基线</th></tr></thead><tbody>
               {report.strategies.map(item => <tr key={item.strategy}><td>{retrievalStrategyLabels[item.strategy]}</td><td>{item.sample_count}</td><td>{(item.recall_at_k * 100).toFixed(1)}% <small>K={item.k}</small></td><td>{item.mrr.toFixed(3)}</td><td>{formatDuration(Math.round(item.median_duration_ms))}</td><td>{formatDuration(Math.round(item.p95_duration_ms))}</td><td>{baseline ? `${item.recall_at_k >= baseline.recall_at_k ? "+" : ""}${((item.recall_at_k - baseline.recall_at_k) * 100).toFixed(1)} 个百分点` : "—"}</td></tr>)}
             </tbody></table></div>
-            <details><summary>标注依据与返回代码</summary>{report.strategies.map(item => <div key={item.strategy}><h4>{retrievalStrategyLabels[item.strategy]}</h4>{item.cases.map((entry, number) => <p key={number}>查询：{String(entry.query ?? entry.case_id)} · 提交：{String(entry.head_sha ?? "历史未记录").slice(0, 8)}<br/>应该找到：{Array.isArray(entry.expected_symbols) ? entry.expected_symbols.join("、") : "历史未记录"}<br/>实际返回：{Array.isArray(entry.symbols) ? entry.symbols.join("、") || "无" : "未记录"}</p>)}</div>)}</details>
+            <DetailDialog><summary>标注依据与返回代码</summary><RetrievalReportDetails report={report}/></DetailDialog>
             <p className="retrieval-muted">真实审查准确率：{report.real_review_accuracy == null ? "未评测" : `${(report.real_review_accuracy * 100).toFixed(1)}%`}。标注来源和样本规模是解释结果的必要条件。</p>
           </article>;
         })}

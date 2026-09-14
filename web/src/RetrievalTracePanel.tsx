@@ -1,3 +1,4 @@
+import { DetailDialog } from "./Feedback";
 import { useState } from "react";
 import Pagination, { PAGE_SIZE } from "./Pagination";
 import type { ContextEvidence, RetrievalTrace } from "./types";
@@ -20,7 +21,7 @@ export function vectorSearchLabel(mode: string | undefined): string {
 }
 
 export function EvidenceSnippet({ evidence }: { evidence: ContextEvidence }) {
-  return <details className="retrieval-evidence">
+  return <DetailDialog className="retrieval-evidence">
     <summary>
       <span className="retrieval-rank">#{evidence.rank}</span>
       <span className="retrieval-evidence-title"><strong>{evidence.symbol}</strong><small>{evidence.file} · L{evidence.start_line}–{evidence.end_line}</small></span>
@@ -36,7 +37,7 @@ export function EvidenceSnippet({ evidence }: { evidence: ContextEvidence }) {
     </div>
     <pre className="retrieval-code"><code>{evidence.content}</code></pre>
     <small className="retrieval-reference-id">证据 ID：{evidence.reference_id}</small>
-  </details>;
+  </DetailDialog>;
 }
 
 function EvidenceList({items}: {items: ContextEvidence[]}) {
@@ -56,7 +57,7 @@ export default function RetrievalTracePanel({ traces, compact = false }: { trace
         <strong>{formatDuration(trace.duration_ms)}</strong>
       </header>
       <p className="retrieval-query">{trace.query}</p>
-      {(trace.queries?.length ?? 0) > 0 && <details className="retrieval-query-details"><summary>查看 {trace.queries?.length} 组检索查询 · {trace.covered_units ?? 0}/{trace.total_units ?? 0} 个单元获得分组上下文</summary>{trace.queries?.map((query, index) => <p className="retrieval-query" key={index}>{query}</p>)}</details>}
+      {(trace.queries?.length ?? 0) > 0 && <DetailDialog className="retrieval-query-details"><summary>查看 {trace.queries?.length} 组检索查询 · {trace.covered_units ?? 0}/{trace.total_units ?? 0} 个单元获得分组上下文</summary>{trace.queries?.map((query, index) => <p className="retrieval-query" key={index}>{query}</p>)}</DetailDialog>}
       {trace.requested_strategy && trace.requested_strategy !== trace.strategy && <p className="retrieval-fallback">已保留可用结果 · 原策略：{retrievalStrategyLabels[trace.requested_strategy]}</p>}
       <div className="retrieval-route-metrics">
         {trace.routes.map(metric => <div key={metric.route}><span>{routeLabels[metric.route]}</span><strong>{metric.candidate_count} 条</strong><small>{formatDuration(metric.duration_ms)}</small></div>)}

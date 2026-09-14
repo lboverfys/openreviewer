@@ -221,8 +221,9 @@ class HybridRetrievalService:
     def _search(self, index: IndexView, query: SearchQuery, settings: RetrievalSettings, client) -> RetrievalTrace:
         if not index.lexical_ready:
             raise RetrievalError("索引尚未就绪", retryable=True)
-        expected_id = stable_key(index.installation_id, index.repository_id, index.head_sha, settings.embedding_fingerprint)
-        if query.strategy not in {"bm25", "lexical_relations"} and index.id != expected_id:
+        expected_ids = {settings.index_key(index.installation_id, index.repository_id, index.head_sha),
+            stable_key(index.installation_id, index.repository_id, index.head_sha, settings.embedding_fingerprint)}
+        if query.strategy not in {"bm25", "lexical_relations"} and index.id not in expected_ids:
             raise RetrievalError("索引使用的向量模型配置与当前配置不同，请重建索引")
         started = time.monotonic()
         lexical = self._lexical(index.id)
@@ -259,8 +260,13 @@ class HybridRetrievalService:
         if query.strategy in {"lexical_relations", "hybrid_relations", "reranked"}:
             begin = time.monotonic()
             seeds = lexical.seeds(query)
+            if not seeds:
+                # 手动搜索没有变更文件：用本次召回结果作起点，绝不使用评测答案。
+                seeds = [key for key, _, _ in reciprocal_rank_fusion(routes, limit=settings.candidate_k)]
             routes["relation"] = self.repository.relation_search(index.id, seeds, settings.candidate_k)
             metrics.append(RouteMetric(route="relation", candidate_count=len(routes["relation"]), duration_ms=round((time.monotonic() - begin) * 1000)))
+            if not routes["relation"]:
+                warnings.append("代码关系未找到可扩展的调用或 SQL；本次未使用关系候选")
         fused = reciprocal_rank_fusion(routes)
         chunks = self.repository.chunks(index.id, [key for key, _, _ in fused])
         fused = [item for item in fused if item[0] in chunks]
@@ -305,7 +311,7 @@ class HybridRetrievalService:
             ))
         if index.parse_error_files:
             warnings.append("部分文件存在语法解析错误，请结合原始代码核对")
-        actual: RetrievalStrategy = "reranked" if scores else "hybrid_relations" if "vector" in routes and "relation" in routes else "hybrid" if "vector" in routes else "lexical_relations" if "relation" in routes else "bm25"
+        actual: RetrievalStrategy = "reranked" if scores else "hybrid_relations" if routes.get("vector") and routes.get("relation") else "hybrid" if routes.get("vector") else "lexical_relations" if routes.get("relation") else "bm25"
         return RetrievalTrace(
             id=str(uuid4()), index_id=index.id, query=query.query, strategy=actual, requested_strategy=query.strategy,
             rerank_cache_hit=rerank_cache_hit,
@@ -350,11 +356,14 @@ class HybridRetrievalService:
             if cached:
                 raise RetrievalError("已有部分检索上下文，请恢复检索配置后重试")
             return model_input
-        expected_index = stable_key(target["installation_id"], target["repository_id"], model_input.head_sha, view.settings.embedding_fingerprint)
-        if any(trace.index_id != expected_index or any(item.head_sha != model_input.head_sha for item in trace.selected) for trace in cached.values()):
+        expected_index = view.settings.index_key(target["installation_id"], target["repository_id"], model_input.head_sha)
+        legacy_index = stable_key(target["installation_id"], target["repository_id"], model_input.head_sha, view.settings.embedding_fingerprint)
+        saved_indexes = {trace.index_id for trace in cached.values()}
+        if len(saved_indexes) > 1 or any(trace.index_id not in {expected_index, legacy_index} or any(item.head_sha != model_input.head_sha for item in trace.selected) for trace in cached.values()):
             raise RetrievalError("本任务已保存其他索引配置或提交的参考代码，请恢复原配置后重试；不会替换已有证据")
         prepare_vectors = not view.external_calls_paused and view.key_configured
-        index_id = self.repository.enqueue({**target, "include_vectors": prepare_vectors}, view.settings)
+        # 部分批次已有参考代码时，剩余批次继续使用同一旧快照；新任务自动使用新解析。
+        index_id = next(iter(saved_indexes)) if saved_indexes else self.repository.enqueue({**target, "include_vectors": prepare_vectors}, view.settings)
         index = self.repository.get(index_id)
         if prepare_vectors and index.status == "ready" and index.vector_status in {"pending", "paused"}:
             self.repository.retry(index_id, None, include_vectors=True, automatic=True)
@@ -474,6 +483,7 @@ class HybridRetrievalService:
             raise RetrievalError("外部调用已关闭，请选择关键词和代码关系，或开启调用后再比较")
         client = self._client(view, key) if any(value not in {"bm25", "lexical_relations"} for value in strategies) else None
         reports: list[StrategyEvaluation] = []
+        traces: list[RetrievalTrace] = []
         vector_modes: set[str] = set()
         try:
             # 每个策略使用相同的词法热缓存，避免后运行的策略白占缓存优势。
@@ -498,9 +508,11 @@ class HybridRetrievalService:
                 recalls, ranks, durations = [], [], []
                 for case in cases:
                     trace = self._search(index, SearchQuery(query=case.query, seed_files=case.seed_files, symbols=case.symbols, strategy=strategy, limit=k), view.settings, client)
-                    if trace.strategy != strategy:
-                        raise RetrievalError("评测中发生策略降级，未生成效果对比报告；已有缓存已保留，请核对调用上限和服务状态")
+                    # 空关系是一次真实检索结果，也应保留；服务失败仍禁止冒充完整策略。
+                    if any(warning for warning in trace.warnings if warning != "代码关系未找到可扩展的调用或 SQL；本次未使用关系候选"):
+                        raise RetrievalError("评测中发生策略降级，未生成效果对比报告；已有缓存已保留，请核对调用上限和服务状态：" + "；".join(trace.warnings))
                     vector_modes.add(trace.vector_search_mode)
+                    traces.append(trace)
                     relevant = set(case.relevant_symbols)
                     symbols = [item.symbol for item in trace.selected]
                     recall = len(relevant.intersection(symbols)) / len(relevant)
@@ -509,7 +521,11 @@ class HybridRetrievalService:
                     recalls.append(recall)
                     ranks.append(reciprocal)
                     durations.append(trace.duration_ms)
-                    items.append({"case_id": case.id, "query": case.query, "expected_symbols": list(case.relevant_symbols), "head_sha": index.head_sha, "repository": index.repository, "split": case.split, "query_cache_hit": trace.query_cache_hit, "recall_at_k": recall, "mrr": reciprocal, "symbols": symbols, "duration_ms": trace.duration_ms, "warnings": list(trace.warnings)})
+                    items.append({"case_id": case.id, "query": case.query, "expected_symbols": list(case.relevant_symbols), "head_sha": index.head_sha, "repository": index.repository, "split": case.split, "query_cache_hit": trace.query_cache_hit, "recall_at_k": recall, "mrr": reciprocal, "symbols": symbols, "duration_ms": trace.duration_ms, "warnings": list(trace.warnings),
+                        "actual_strategy": trace.strategy,
+                        "routes": [metric.model_dump(mode="json") for metric in trace.routes],
+                        "trace_id": trace.id,
+                        "embedding_ms": trace.embedding_ms, "rerank_ms": trace.rerank_ms})
                 ordered = sorted(durations)
                 reports.append(StrategyEvaluation(
                     strategy=strategy, sample_count=len(cases), recall_at_k=statistics.mean(recalls),
@@ -528,5 +544,5 @@ class HybridRetrievalService:
             lexical_cache_mode="shared_warm",
             vector_search_mode=",".join(sorted(vector_modes - {"unused"})) or "not_used",
         )
-        self.repository.save_evaluation(report)
+        self.repository.save_evaluation(report, traces)
         return report

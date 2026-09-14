@@ -1,3 +1,4 @@
+import { DetailDialog, Notice } from "./Feedback";
 import { ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
@@ -347,14 +348,9 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
             <h1>规则文档</h1>
             <p>保存 AI 审查时可以参考的规则。按仓库和相关性选取，不会每次把全部文档都发给 AI。</p>
           </div>
-          <a href="#retrieval">搜索代码 →</a>
+          <nav className="related-actions"><a href="#retrieval">搜索代码</a></nav>
         </header>
-        {message && <div className={"knowledge-feedback is-" + messageKind} role={messageKind === "error" ? "alert" : "status"}>
-          <span>{message}</span>
-          {lastRemoved && messageKind === "success" && <button type="button" disabled={Boolean(busy) || dirty}
-            onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销删除</button>}
-          <button type="button" aria-label="关闭提示" onClick={() => { setMessage(""); setLastRemoved(null); }}>×</button>
-        </div>}
+        {message && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}{lastRemoved && messageKind === "success" && <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销删除</button>}</Notice>}
         <div className="knowledge-workspace">
           <aside className="knowledge-document-pane" aria-label="知识文档列表">
             <div className="knowledge-pane-heading"><strong>规则文档</strong><span>{library?.enabled_count ?? 0} 份使用中</span></div>
@@ -437,7 +433,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
               </div>}
               <p className="knowledge-snapshot-note">这些操作影响当前知识库；已有审查保留原来的引用；删除后固定方案也不会在新任务中使用这份文档。</p>
               <div className="knowledge-extra-tools">
-                {document && <details open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
+                {document && <DetailDialog open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
                   <summary>历史版本</summary>
                   {historyOpen && <div className="knowledge-history">
                     <p>查看以前的正文，或采用某一版内容。恢复正文不会删除其他版本。</p>
@@ -452,8 +448,8 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                       hasNext={Boolean(history.data ? history.data.next_cursor : document.version_next_cursor)}
                       busy={history.loading} onPrevious={history.previous} onNext={history.next} label="文档版本分页" />
                   </div>}
-                </details>}
-                <details open={searchOpen} onToggle={event => setSearchOpen(event.currentTarget.open)}>
+                </DetailDialog>}
+                <DetailDialog open={searchOpen} onToggle={event => setSearchOpen(event.currentTarget.open)}>
                   <summary>试搜可用规则</summary>
                   {searchOpen && <section className="knowledge-search-test">
                     <p>只查询已经保存并启用的规则，不发起模型审查。</p>
@@ -465,7 +461,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                       <article key={item.source + ":" + item.heading + ":" + index}><strong>{item.heading}</strong><small>{item.source}</small><p>{item.excerpt}</p></article>
                     )}</div>
                   </section>}
-                </details>
+                </DetailDialog>
               </div>
             </> : <div className="knowledge-editor-empty"><h2>{archivedView ? "找回已移出的文档" : "选择一份规则文档"}</h2>
               <p>{archivedView ? "从左侧选择文档，点击“恢复并使用”。" : "从左侧选择文档阅读，也可以新建或导入自己的规则。"}</p>

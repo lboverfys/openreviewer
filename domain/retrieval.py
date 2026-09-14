@@ -13,7 +13,9 @@ from domain.enums import ReviewAgent
 from domain.identifiers import normalize_sha
 from domain.paths import normalize_repository_path
 
-PARSER_VERSION = "java-mybatis-v1"
+PARSER_VERSION = "java-mybatis-v2"
+# 文本格式未变；与旧向量缓存保持同一命名空间，仅内容改变的片段需重算。
+EMBEDDING_CACHE_VERSION = "java-mybatis-v1"
 VECTOR_DIMENSIONS = 1024
 MAX_INDEX_CHUNKS = 20_000
 MAX_INDEX_FILES = 1_000
@@ -99,7 +101,10 @@ class RetrievalSettings(RetrievalContract):
 
     @property
     def embedding_fingerprint(self) -> str:
-        return stable_key(self.api_host, self.embedding_model, self.dimensions, PARSER_VERSION)
+        return stable_key(self.api_host, self.embedding_model, self.dimensions, EMBEDDING_CACHE_VERSION)
+
+    def index_key(self, installation_id: int, repository_id: int, head_sha: str) -> str:
+        return stable_key(installation_id, repository_id, head_sha, self.embedding_fingerprint, PARSER_VERSION)
 
 
 class RetrievalSettingsView(RetrievalContract):
@@ -194,6 +199,7 @@ class RetrievalTrace(RetrievalContract):
 
 class IndexView(RetrievalContract):
     id: str
+    parser_version: str = "java-mybatis-v1"
     repository: str
     repository_id: int
     installation_id: int

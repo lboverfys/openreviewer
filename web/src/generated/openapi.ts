@@ -2969,6 +2969,11 @@ export interface components {
              * @default 0
              */
             parsed_files: number;
+            /**
+             * Parser Version
+             * @default java-mybatis-v1
+             */
+            parser_version: string;
             /** Preparation Started At */
             preparation_started_at?: string | null;
             /** Relation Count */
@@ -5858,7 +5863,10 @@ export interface operations {
     };
     overview_api_v1_evaluations_datasets__dataset_id__overview_get: {
         parameters: {
-            query?: never;
+            query?: {
+                case_id?: string | null;
+                variant?: ("baseline" | "candidate") | null;
+            };
             header?: never;
             path: {
                 dataset_id: string;
@@ -6906,6 +6914,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string | null;
+                index_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -8245,6 +8254,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string | null;
+                repository?: string | null;
             };
             header?: never;
             path?: never;

@@ -1,3 +1,4 @@
+import { Notice } from "./Feedback";
 import { useCallback, useState } from "react";
 
 import { ApiError } from "./api";
@@ -32,7 +33,7 @@ export default function PlatformPage({ user, findingId, initialTab, onSignedOut 
   return <main className="workspace-page platform-page">
     <WorkspaceHeader title={headings[tab][0]} icon="review" description={headings[tab][1]} />
     {tab === "profiles" && <p className="workspace-purpose"><a href="#settings">返回模型与审查设置 →</a></p>}
-    {error && <p role="alert" className="team-error">{error}<button onClick={() => setError("")}>收起提示</button></p>}
+    {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {tab === "work" && <WorkItemsPanel user={user} findingId={findingId} onError={onError} />}
     {tab === "usage" && manager && <UsagePanel onError={onError} />}
     {tab === "profiles" && manager && <ReviewProfilesPanel onError={onError} />}

@@ -26,7 +26,7 @@ type SessionState =
 export type AppView =
   | { kind: "dashboard" }
   | { kind: "settings"; section?: "provider" | "agents" | "policy" | "retrieval" }
-  | { kind: "team" }
+  | { kind: "team"; repository?: string; section?: string }
   | { kind: "platform"; findingId?: string; tab?: import("./PlatformPage").PlatformTab }
   | { kind: "evaluations"; datasetId?: string; caseId?: string; reviewRunId?: string }
   | { kind: "knowledge" }
@@ -48,7 +48,10 @@ export function readAppView(hash = window.location.hash): AppView {
         caseId:params.get("case") || undefined, reviewRunId:params.get("review") || undefined};
     } catch { return {kind:"dashboard"}; }
   }
-  if (hash === "#team") return { kind: "team" };
+  if (hash === "#team" || hash.startsWith("#team?")) {
+    const params = new URLSearchParams(hash.split("?", 2)[1]);
+    return { kind: "team", ...(params.get("repository") ? {repository: params.get("repository")!} : {}), ...(params.get("section") ? {section: params.get("section")!} : {}) };
+  }
   if (hash === "#settings" || hash.startsWith("#settings?")) {
     const section = new URLSearchParams(hash.split("?", 2)[1]).get("section");
     return {kind: "settings", ...(section === "agents" || section === "policy" || section === "retrieval" ? {section} : {})};
@@ -96,6 +99,7 @@ function AppContent() {
   useEffect(() => {
     function syncViewWithHash() {
       setView(readAppView());
+      if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
     }
     window.addEventListener("hashchange", syncViewWithHash);
     return () => window.removeEventListener("hashchange", syncViewWithHash);
@@ -149,7 +153,7 @@ function AppContent() {
   } else if (view.kind === "evaluations") {
     page = <EvaluationPage user={session.user} datasetId={view.datasetId} caseId={view.caseId} reviewRunId={view.reviewRunId} onSignedOut={onSignedOut} />;
   } else if (view.kind === "team" && hasPermission(session.user, "settings:manage")) {
-    page = <TeamPage onSignedOut={onSignedOut} />;
+    page = <TeamPage key={`${view.repository}:${view.section}`} onSignedOut={onSignedOut} initialRepository={view.repository} initialSection={view.section} />;
   } else if (view.kind === "settings" && hasPermission(session.user, "settings:manage")) {
     page = <SettingsPage onSignedOut={onSignedOut} initialSection={view.section} />;
   } else if (view.kind === "knowledge" && hasPermission(session.user, "knowledge:manage")) {

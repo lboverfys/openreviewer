@@ -26,8 +26,8 @@ afterEach(()=>{cleanup();clearReadCache();vi.unstubAllGlobals();window.location.
 
 it("从任务详情预选运行并以稳定请求标识创建评测集",async()=>{
   render(<EvaluationPage user={user} reviewRunId="run-1" onSignedOut={vi.fn()}/>);
-  fireEvent.change(screen.getByLabelText("评测名称"),{target:{value:"权限评测"}});
-  fireEvent.click(screen.getByRole("button",{name:"保存并收录"}));
+  fireEvent.change(screen.getByLabelText("评测名称（可不填）"),{target:{value:"权限评测"}});
+  fireEvent.click(screen.getByRole("button",{name:"开始核对问题"}));
   await waitFor(()=>expect(window.location.hash).toBe("#evaluations/set-1"));
   const saved=requests.find(item=>item.method==="POST")!;
   expect(saved.body).toMatchObject({name:"权限评测",review_run_ids:["run-1"],variant:"baseline",split:"validation"});
@@ -66,10 +66,11 @@ it("未复核指标和未知费用不显示为零分或满分",async()=>{
     return new Response(JSON.stringify({dataset_id:"set-1",dataset_name:"权限评测",repository:"example/repo",
       split:"validation",case_count:1,performance_pairs:1,quality_pairs:0,reference_pairs:0,priced_pairs:0,
       missing_baseline:0,missing_candidate:0,pending_pairs:1,disputed_pairs:0,normal_count:1,
-      known_defect_count:0,cross_file_count:0,notices:["尚无双人复核完成的配对样本"],baseline:score,candidate:score}));
+      known_defect_count:0,cross_file_count:0,notices:["两份审查尚未完成核对"],baseline:score,candidate:score}));
   }));
   render(<EvaluationReportPanel datasetId="set-1" onError={vi.fn()}/>);
-  await screen.findByText("尚无双人复核完成的配对样本");
+  fireEvent.click(await screen.findByRole("button", {name:/数据完整性与统计口径/}));
+  await screen.findByText("两份审查尚未完成核对");
   expect(screen.getAllByText("未知")).toHaveLength(2);
   expect(screen.queryByText("100.0%")).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("报告样本集"),{target:{value:"tuning"}});
@@ -95,9 +96,10 @@ it("问题复核发生版本冲突时保留输入",async()=>{
   }));
   const error=vi.fn();
   render(<EvaluationCasePanel dataset={dataset} caseId="case-1" user={user} canEdit onError={error} onChanged={vi.fn()}/>);
+  fireEvent.click(await screen.findByRole("button", {name:/补充说明、位置与已知缺陷/}));
   fireEvent.change(await screen.findByLabelText("我的结论"),{target:{value:"valid"}});
-  fireEvent.change(screen.getByLabelText("复核说明"),{target:{value:"输入需要保留"}});
-  fireEvent.click(screen.getByRole("button",{name:"保存我的结论"}));
+  fireEvent.change(screen.getByLabelText("核对说明"),{target:{value:"输入需要保留"}});
+  fireEvent.click(screen.getByRole("button",{name:"保存补充判断"}));
   await waitFor(()=>expect(error).toHaveBeenCalled());
-  expect(screen.getByLabelText("复核说明")).toHaveValue("输入需要保留");
+  expect(screen.getByLabelText("核对说明")).toHaveValue("输入需要保留");
 });

@@ -713,17 +713,17 @@
 
 /* 数字输入带后缀 */
 .settings-input-with-suffix {
-  position: relative;
   display: flex;
   align-items: center;
+  gap: 8px;
 }
 .settings-input-with-suffix input {
-  width: 100%;
-  padding-right: 46px;
+  flex: 1;
+  min-width: 0;
 }
 .settings-input-with-suffix i {
-  position: absolute;
-  right: 12px;
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: var(--text-faint);
   font-size: 11px;
   font-style: normal;
