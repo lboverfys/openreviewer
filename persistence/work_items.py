@@ -63,7 +63,16 @@ class WorkItemRepository:
             AccessRole(member.role), Permission.ADJUDICATE_FINDINGS
         ):
             raise ValueError("负责人不存在、已停用或没有问题处理权限")
-        scope = ResourceScope.from_mapping(member.resource_scope)
+        # 与数据库账号登录使用相同的范围语义；管理页会保存 unrestricted 标志。
+        scope = (
+            ResourceScope.unrestricted_scope()
+            if member.role == AccessRole.ADMINISTRATOR.value
+            and member.resource_scope.get("unrestricted") is True
+            else ResourceScope.from_mapping({
+                key: value for key, value in member.resource_scope.items()
+                if key != "unrestricted"
+            })
+        )
         if not scope.allows(installation_id, repository):
             raise ValueError("负责人没有该仓库的访问权限")
         return username

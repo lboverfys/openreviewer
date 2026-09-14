@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import event, func, select
 
 from apps.api.main import create_app
@@ -41,7 +42,7 @@ from services.model_budget import ModelBudgetRequest
 from services.rbac import AccessRole, ResourceScope
 from services.reviews import ReviewService
 from services.task_queue import TaskLeaseLostError
-from services.team import RepositoryWrite, TeamService
+from services.team import MemberScope, MemberWrite, RepositoryWrite, TeamService
 from tests.integration.test_finding_pagination import _seed_review
 from tests.integration.test_github_context_persistence import _submit
 from tests.integration.test_management_api import database as database
@@ -55,6 +56,28 @@ from tests.support import (
 
 NOW = datetime(2026, 9, 13, 1, tzinfo=UTC)
 ALL = ResourceScope.unrestricted_scope()
+
+
+@pytest.mark.parametrize("role,unrestricted,repository,allowed", [
+    (AccessRole.ADMINISTRATOR, True, None, True),
+    (AccessRole.ADMINISTRATOR, False, "lboverfys/NiuMa", True),
+    (AccessRole.ADJUDICATOR, False, "lboverfys/NiuMa", True),
+    (AccessRole.ADJUDICATOR, False, "another/repository", False),
+])
+def test_ui_created_members_can_receive_work_within_their_scope(database, role, unrestricted, repository, allowed):
+    _seed_review(database, finding_count=1)
+    TeamService(database.sessions, TEST_USERNAME, password_hasher=TEST_HASHER).save_member(
+        "work-reviewer", MemberWrite(expected_revision=0,role=role,
+            scope=MemberScope(unrestricted=unrestricted,repositories=(repository,) if repository else ()),
+            password=SecretStr(TEST_PASSWORD)), TEST_USERNAME,
+    )
+    work = WorkItemRepository(database.sessions, TEST_USERNAME)
+    draft = WorkItemCreate(finding_id="finding-000000",assignee="work-reviewer")
+    if allowed:
+        assert work.create(draft, TEST_USERNAME, ALL).assignee == "work-reviewer"
+    else:
+        with pytest.raises(ValueError, match="仓库的访问权限"):
+            work.create(draft, TEST_USERNAME, ALL)
 
 
 def setup_ledger(database, budget=None):
