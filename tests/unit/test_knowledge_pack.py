@@ -45,7 +45,7 @@ def test_preview_is_read_only_and_apply_preserves_history(pack):
     sql = []
     event.listen(db.engine, "before_cursor_execute", lambda c, cur, statement, p, ctx, many: sql.append(statement))
     preview = sync_pack(db.sessions, root)
-    assert len(sql) == 2 and all(statement.lstrip().upper().startswith("SELECT") for statement in sql)
+    assert len(sql) == 3 and all(statement.lstrip().upper().startswith("SELECT") for statement in sql)
     assert (preview["create"], preview["update"], preview["archive"]) == (["new.md"], ["rule.md"], ["retired.md"])
     applied = sync_pack(db.sessions, root, apply=True, expected_revision=before.revision)
     assert applied["applied"] and applied["revision"] == before.revision + 1
@@ -115,7 +115,7 @@ def test_pack_uses_bulk_queries_and_keeps_disabled_state(tmp_path, count):
         event.listen(db.engine, "before_cursor_execute", lambda c, cur, statement, p, ctx, many: sql.append(statement))
         result = sync_pack(db.sessions, root, apply=True, expected_revision=disabled.revision)
         assert result["applied"] and len(result["update"]) == count
-        assert len(sql) == 6
+        assert len(sql) == 7
         assert not library.get_document(first.id).enabled
     finally:
         db.dispose()
@@ -153,3 +153,13 @@ def test_review_topics_are_not_displaced_by_general_role_rules(filenames, expect
     assert any(expected_heading in item.heading for item in selected)
     assert len(selected) <= 8
     assert len({(item.source, item.heading, item.excerpt) for item in selected}) == len(selected)
+
+
+def test_deleted_builtin_is_not_reimported_by_maintenance(pack):
+    db, library, root, before = pack
+    document = next(item for item in before.items if item.source == "rule.md")
+    revision = library.delete_document(document.id, expected_revision=before.revision,
+        expected_document_version=1, actor="owner")
+    report = sync_pack(db.sessions, root, apply=True, expected_revision=revision)
+    assert "rule.md" not in report["create"]
+    assert all(item.source != "rule.md" for item in library.list_documents(include_archived=True).items)

@@ -19,6 +19,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 from persistence.models.base import Base, utc_now
 
 
+class KnowledgeDeletionRecord(Base):
+    """只保留删除事实，阻止内置资料再次导入；不保留正文。"""
+
+    __tablename__ = "knowledge_deletions"
+    source: Mapped[str] = mapped_column(String(200), primary_key=True)
+    deleted_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class KnowledgeLibraryRecord(Base):
     """知识库全局版本；每次可见内容变化都会递增。"""
 

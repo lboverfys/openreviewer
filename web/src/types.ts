@@ -107,3 +107,6 @@ export type ContextEvidence = Schemas["ContextEvidence"];
 export type RetrievalEvaluationReport = Schemas["RetrievalEvaluationReport"];
 export type RetrievalSearchQuery = Schemas["SearchQuery"];
 export type RetrievalStrategy = NonNullable<RetrievalSearchQuery["strategy"]>;
+
+export type SearchHistoryItem = Schemas["SearchHistoryItem"];
+export type RetrievalComparisonRequest = Schemas["RetrievalComparisonRequest"];

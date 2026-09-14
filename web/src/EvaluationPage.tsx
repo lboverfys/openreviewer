@@ -25,7 +25,7 @@ export default function EvaluationPage({ user, datasetId, caseId, reviewRunId, o
   useEffect(() => setError(""),[datasetId,caseId]);
   return <main className="workspace-page evaluation-page">
     <WorkspaceHeader title="效果评测" icon="chart" description="审查负责找问题；评测负责确认找得对不对、有没有漏掉。这里不会自动重新调用模型。" actions={datasetId && <a href="#evaluations" className="ws-button-link">返回评测集</a>} />
-    {!datasetId && <section className="evaluation-card evaluation-intro"><h2>什么时候用这里？</h2><p>完成一次审查后，把结果收录进来，逐条确认有效问题和误报，并填写代码中已知但可能漏掉的缺陷。</p><ol><li>收录已完成的审查：保存代码提交、实际模型和结果。</li><li>核对问题与参考缺陷：每条判断留下依据。</li><li>换模型或配置后：再收录同一提交的新结果，查看方案对比。</li></ol><p>日常看 PR 结论请回到审查控制台。只有一组结果，也能查看复核进度。</p><a href="#">返回审查控制台 →</a></section>}
+    {!datasetId && <section className="evaluation-card evaluation-intro"><h2>什么时候用这里？</h2><p>选择一份已完成的审查，判断每条问题是否有效，然后查看统计。</p><ol><li>选择审查结果。</li><li>逐条选择有效问题、误报或暂不确定。</li><li>完成核对，查看数量、耗时与费用；比较第二份结果是可选操作。</li></ol><p>日常看 PR 结论请回到审查控制台。一个人、一份审查结果即可完成核对并查看统计。</p><a href="#">返回审查控制台 →</a></section>}
     {error && <div role="alert" className="evaluation-error">{error}<button type="button" onClick={() => setError("")}>收起</button></div>}
     {datasetId ? <DatasetWorkspace key={datasetId} datasetId={datasetId} caseId={caseId} user={user} canEdit={canEdit} reviewRunId={reviewRunId} onError={onError} />
       : <DatasetList key={reviewRunId ?? "list"} canEdit={canEdit} reviewRunId={reviewRunId} onError={onError} />}
@@ -47,7 +47,7 @@ function DatasetList({ canEdit,reviewRunId,onError }: {canEdit:boolean;reviewRun
   if (creating && canEdit) return <EvaluationImportPanel initialRunId={reviewRunId} onSaved={open} onCancel={()=>setCreating(false)} onError={onError}/>;
   return <>
     <section className="evaluation-card">
-      <div className="evaluation-toolbar"><div><h2>评测记录</h2><p>选一批 PR 结果核对质量，再按需要比较两组结果。</p></div><div className="ws-actions">
+      <div className="evaluation-toolbar"><div><h2>评测记录</h2><p>从一份审查结果开始，按需要再添加结果进行比较。</p></div><div className="ws-actions">
         <button type="button" disabled={page.loading} onClick={()=>void page.refresh()}>刷新列表</button>
         {canEdit && <button type="button" className="evaluation-primary" onClick={()=>setCreating(true)}>开始新评测</button>}</div></div>
       <nav className="evaluation-tabs" aria-label="评测记录范围"><button type="button" aria-pressed={!archived} onClick={()=>setArchived(false)}>评测列表</button><button type="button" aria-pressed={archived} onClick={()=>setArchived(true)}>已收起记录</button></nav>
@@ -92,10 +92,10 @@ function DatasetWorkspace({ datasetId,caseId,user,canEdit,reviewRunId,onError }:
     <section className="evaluation-card"><div className="evaluation-toolbar"><div><h2>{dataset.name}</h2><p>{dataset.repository} · {dataset.case_count} 个 PR · {dataset.archived_at?"已收起，可恢复":"可继续核对"}</p></div>
       {canEdit && <button type="button" disabled={busy} onClick={()=>void archive()}>{dataset.archived_at?"恢复评测":"收起这条评测"}</button>}</div>
       <p className="evaluation-hint">收起只会移出常用列表，复核结果仍保留。返回评测列表可从“已收起记录”找回。</p>
-      <nav className="evaluation-tabs" aria-label="评测集内容">{([["samples","样本管理"],["report","对比报告"],["audits","变更记录"]] as const).map(([key,label])=><button type="button" key={key} aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}</nav>
+      <nav className="evaluation-tabs" aria-label="评测集内容">{([["samples","核对问题"],["report","评测结果"],["audits","变更记录"]] as const).map(([key,label])=><button type="button" key={key} aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}</nav>
     </section>
     {tab==="samples" && <EvaluationOverviewPanel datasetId={datasetId} version={refreshVersion} onError={onError}/>}
-    {tab==="report" && <EvaluationReportPanel datasetId={datasetId} onError={onError}/>}
+    {tab==="report" && <><EvaluationOverviewPanel datasetId={datasetId} version={refreshVersion} onError={onError}/><details className="evaluation-card"><summary>比较两份结果（可选，仅同一提交）</summary><EvaluationReportPanel datasetId={datasetId} onError={onError}/></details></>}
     {tab==="samples" && <>
       <section className="evaluation-card"><div className="evaluation-toolbar"><h3>PR 样本</h3>
         <label>筛选样本集<select value={split??"all"} onChange={event=>setSplit(event.target.value==="all"?undefined:event.target.value as EvaluationSplit)}><option value="all">全部</option><option value="tuning">调参集</option><option value="validation">验收集</option></select></label>
@@ -103,7 +103,7 @@ function DatasetWorkspace({ datasetId,caseId,user,canEdit,reviewRunId,onError }:
         {canEdit && !dataset.archived_at && <button type="button" className="evaluation-primary" onClick={()=>setImporting(value=>!value)}>添加审查结果</button>}</div>
         <div className="evaluation-table-wrap"><table><thead><tr><th>PR / 提交</th><th>样本用途</th><th>参考问题</th><th>原结果</th><th>新结果</th><th>操作</th></tr></thead>
           <tbody>{cases.data?.items.map(item=><tr key={item.id}><td><strong>PR #{item.pull_request_number} · {item.title}</strong><small>{shortSha(item.head_sha)}</small></td><td>{item.split==="validation"?"验收":"调参"}</td>
-            <td>{item.reference_count==null?"未标注":item.reference_count+" 条"}<small>{item.reference_status==="confirmed"?"两人已确认":item.reference_status==="disputed"?"存在分歧":"待确认"}</small></td>
+            <td>{item.reference_count==null?"未标注":item.reference_count+" 条"}<small>{item.reference_status==="confirmed"?"已确认":item.reference_status==="disputed"?"存在分歧":"待确认"}</small></td>
             <td>{item.baseline?assessmentLabels[item.baseline.assessment_status]:"未收录"}</td><td>{item.candidate?assessmentLabels[item.candidate.assessment_status]:"未收录"}</td>
             <td><button type="button" onClick={()=>{window.location.hash="evaluations/"+datasetId+"?case="+item.id;}}>查看与复核</button></td></tr>)}</tbody></table></div>
         {!cases.loading && cases.data?.items.length===0 && <WorkspaceEmpty title="当前筛选下没有样本" description="可调整样本划分，或收录已完成的审查运行。" />}

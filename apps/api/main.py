@@ -93,6 +93,7 @@ from services.github import GitHubApiClient
 from services.github_access import (
     GitHubAccessConfigurationError,
     GitHubAccessPolicy,
+    with_repository_grants,
 )
 from services.github_auth import (
     GITHUB_PUBLISH_TOKEN_SCOPE,
@@ -117,6 +118,7 @@ from services.rag import (
     MarkdownKnowledgeBase,
 )
 from services.rbac import Permission, ResourceScope, has_permission, permissions_for
+from services.repository_connection import RepositoryConnector
 from services.retrieval import HybridRetrievalService, RetrievalSettingsService
 from services.review_learning import ReviewLearningService
 from services.review_management import (
@@ -257,6 +259,8 @@ def create_app(
         github_api: GitHubApiClient | None = application.state.owned_github_api
         if github_api is not None:
             github_api.close()
+        if application.state.repository_connector is not None:
+            application.state.repository_connector.api.close()
         if database is not None:
             database.dispose()
 
@@ -289,6 +293,7 @@ def create_app(
     )
     application.state.owned_database = None
     application.state.owned_github_api = None
+    application.state.repository_connector = None
 
     @application.middleware("http")
     async def record_request_duration(request: Request, call_next):
@@ -439,11 +444,25 @@ def create_app(
                 application.state.auth_service = configured_service
             return configured_service
 
+    def get_repository_connector() -> RepositoryConnector:
+        if application.state.repository_connector is None:
+            with initialization_lock:
+                if application.state.repository_connector is None:
+                    api = GitHubApiClient()
+                    try:
+                        tokens = GitHubAppTokenProvider(api, GitHubAppSettings.from_environment(), GITHUB_READ_TOKEN_SCOPE)
+                        application.state.repository_connector = RepositoryConnector(api, tokens)
+                    except (ValueError, OSError):
+                        api.close()
+                        raise HTTPException(503, "现有 GitHub App 连接配置不可用，请联系管理员检查") from None
+        return application.state.repository_connector
+
     def get_team_service() -> TeamService:
         if team_service is not None:
             return team_service
         return TeamService(
             get_database().sessions, get_auth_service().settings.username,
+            connector=get_repository_connector,
         )
 
     def get_evaluation_service() -> EvaluationWorkbench:
@@ -551,7 +570,7 @@ def create_app(
             configured_policy = application.state.github_access_policy
             if configured_policy is None:
                 try:
-                    configured_policy = GitHubAccessPolicy.from_environment()
+                    configured_policy = with_repository_grants(GitHubAccessPolicy.from_environment(), get_database().sessions)
                 except GitHubAccessConfigurationError as exc:
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1402,6 +1421,7 @@ def create_app(
     register_team_routes(
         application,
         get_service=get_team_service,
+        get_connector=get_repository_connector,
         require_manager=require_settings_manager,
         require_same_origin=require_same_origin,
     )

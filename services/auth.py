@@ -755,13 +755,7 @@ class AuthService:
     def _configured_user(self, username: object) -> UserCredential | None:
         if not isinstance(username, str):
             return None
-        primary = self.settings.users[0]
-        if username == primary.username:
-            return primary
         if self._member_store is not None:
-            # 配置管理员始终由配置管理；普通成员每次请求读取当前权限版本。
-            if username.casefold() == primary.username.casefold():
-                return None
             return self._member_store.find_user(username)
         return next(
             (

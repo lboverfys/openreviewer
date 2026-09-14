@@ -13,7 +13,7 @@ from domain.enums import ExecutionStatus
 from domain.security import redact_sensitive
 
 # 就绪探针必须与 Alembic 当前 head 完全一致；否则新迁移后的实例会被错误摘流量。
-EXPECTED_DATABASE_REVISION = "20260914_0060"
+EXPECTED_DATABASE_REVISION = "20260914_0063"
 OUTBOX_LOGGER = logging.getLogger("openreviewer.outbox")
 LOGGER = logging.getLogger("openreviewer.operations")
 

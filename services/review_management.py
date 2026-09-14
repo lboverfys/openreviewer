@@ -636,6 +636,18 @@ class ReviewManagementService:
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         effective_scope = _effective_scope(scope)
+        if action in {ReviewAction.RERUN, ReviewAction.NEW_REVIEW}:
+            if retry_scope not in {None, "new_review"}:
+                raise ReviewActionConflictError("重试范围与当前操作不匹配")
+            if self._identity_loader is None:
+                raise ReviewActionConflictError("GitHub 连接未配置，无法确认最新提交；可复查已保存的版本")
+            identity = self._repository.get_identity_target(review_run_id, scope=effective_scope)
+            latest = self._identity_loader.load_pull_request(identity.target)
+            if latest.repository_id != identity.target.repository_id or latest.pull_request_number != identity.target.pull_request_number:
+                raise ReviewActionConflictError("GitHub 返回的仓库或 PR 与任务不一致")
+            head_sha = latest.head_sha
+            action = ReviewAction.NEW_REVIEW
+            retry_scope = "new_review"
         if action is ReviewAction.PUBLISH:
             if effective_scope is None:
                 return self._repository.publish(

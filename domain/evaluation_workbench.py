@@ -67,7 +67,7 @@ class EvaluationFinding(EvaluationContract):
 
 
 class EvaluationDecision(EvaluationContract):
-    verdict: FindingEvaluationVerdict
+    verdict: FindingEvaluationVerdict | Literal["uncertain"]
     location_correct: bool | None = None
     reference_key: str | None = Field(default=None, max_length=80)
     note: str = Field(default="", max_length=1000)
@@ -267,6 +267,12 @@ class EvaluationDatasetCreate(ObservationImport):
 
 
 class EvaluationOverview(EvaluationContract):
+    review_source: str = "单人核对，以最近保存的判断为准"
+    uncertain_findings: int = 0
+    model_duration_ms: int = 0
+    turnaround_ms: int = 0
+    estimated_cost_microusd: int | None = None
+    unpriced_observations: int = 0
     case_count: int
     observation_count: int
     reviewed_observations: int
@@ -377,7 +383,7 @@ def assessment_metrics(
     ballots: tuple[EvaluationBallot, ...],
     references: tuple[ReferenceDefect, ...] | None,
 ) -> tuple[AssessmentStatus, dict[str, int]]:
-    """只在两份复核都提交后计算一致结论；参考匹配使用人工确认的缺陷键。"""
+    """使用最近一位核对者保存的判断；不确定和未核对不计为有效。"""
     counts: dict[str, int] = {
         "finding_count": len(findings), "adjudicated_count": 0,
         "unadjudicated_count": len(findings), "disagreement_count": 0,
@@ -386,26 +392,19 @@ def assessment_metrics(
         "location_assessed_count": 0, "location_correct_count": 0,
         "reference_true_positive_count": 0, "reference_unexpected_valid_count": 0,
     }
-    completed = [ballot for ballot in ballots if ballot.submitted_at is not None]
-    if len(completed) < 2:
-        return ("partial" if ballots else "pending"), counts
-    first, second = completed
+    if not ballots:
+        return "pending", counts
+    latest = max(reversed(ballots), key=lambda ballot: ballot.updated_at)
     expected = {item.key for item in references or ()}
     matched: set[str] = set()
     verdicts: Counter[str] = Counter()
     for finding in findings:
-        left, right = first.decisions.get(finding.id), second.decisions.get(finding.id)
-        if left is None or right is None:
+        left = latest.decisions.get(finding.id)
+        if left is None or left.verdict == "uncertain":
             continue
-        if left.verdict != right.verdict or (
-            left.verdict is FindingEvaluationVerdict.VALID
-            and left.reference_key != right.reference_key
-        ):
-            counts["disagreement_count"] += 1
-            continue
-        verdicts[left.verdict.value] += 1
+        verdicts[str(left.model_dump(mode="json")["verdict"])] += 1
         counts["adjudicated_count"] += 1
-        if left.location_correct is not None and left.location_correct == right.location_correct:
+        if left.location_correct is not None:
             counts["location_assessed_count"] += 1
             counts["location_correct_count"] += int(left.location_correct)
         if left.verdict is FindingEvaluationVerdict.VALID:
@@ -419,15 +418,12 @@ def assessment_metrics(
         len(findings) - counts["adjudicated_count"] - counts["disagreement_count"]
     )
     counts["reference_true_positive_count"] = len(matched)
-    status: AssessmentStatus = "complete"
-    if counts["disagreement_count"]:
-        status = "disputed"
-    elif counts["unadjudicated_count"]:
-        status = "partial"
+    counts["uncertain_count"] = sum(item.verdict == "uncertain" for item in latest.decisions.values())
+    status: AssessmentStatus = "complete" if latest.submitted_at is not None else "partial"
     return status, counts
 
 
 def reference_status(reviews: tuple[ReferenceReview, ...]) -> str:
-    if len(reviews) < 2:
+    if not reviews:
         return "pending"
-    return "confirmed" if all(review.agrees for review in reviews) else "disputed"
+    return "confirmed" if max(reviews, key=lambda review: review.reviewed_at).agrees else "pending"

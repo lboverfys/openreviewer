@@ -35,10 +35,10 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
     <div className="ws-editor-heading"><div><h2>{dataset ? "添加到 " + dataset.name : "开始一次效果评测"}</h2><p>选择已完成的审查结果，之后再核对哪些问题有效。</p></div><div className="ws-actions"><WorkspaceBadge tone="accent">已选 {selected.length} 条</WorkspaceBadge><button type="button" disabled={busy} onClick={onCancel}>取消添加</button></div></div>
     <form onSubmit={submit}>
       <fieldset disabled={busy}>
-        <WorkspaceSection title="选择比较位置" description="第一次添加放入“原结果”；换模型后的同提交审查放入“新结果”。"><div className="evaluation-form-grid">
+        <WorkspaceSection title="选择审查结果" description="一份结果即可开始核对；第二份结果仅用于可选比较。"><div className="evaluation-form-grid">
           {!dataset && <label>评测名称<input required maxLength={120} value={name} placeholder="例如：NiuMa 审查质量核对" onChange={event => setName(event.target.value)} /></label>}
-          <label>这组结果用于<select value={variant} onChange={event => setVariant(event.target.value as EvaluationVariant)}>
-            <option value="baseline">原结果（比较起点）</option><option value="candidate">新结果（要评估的方案）</option></select></label>
+          {dataset && <label>这组结果用于<select value={variant} onChange={event => setVariant(event.target.value as EvaluationVariant)}>
+            <option value="baseline">原结果（比较起点）</option><option value="candidate">新结果（要评估的方案）</option></select></label>}
         </div></WorkspaceSection>
         <details className="ws-disclosure"><summary>样本分类（可选）</summary><div className="ws-disclosure-body evaluation-form-grid">
           <label>样本用途<select disabled={Boolean(sample)} value={split} onChange={event => setSplit(event.target.value as EvaluationSplit)}>

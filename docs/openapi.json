@@ -1176,6 +1176,14 @@
             "title": "Batch Number",
             "type": "integer"
           },
+          "candidates": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ModelFindingCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
           "duration_ms": {
             "anyOf": [
               {
@@ -1873,6 +1881,33 @@
           "items"
         ],
         "title": "CursorPage[ReviewFindingResponse]",
+        "type": "object"
+      },
+      "CursorPage_SearchHistoryItem_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SearchHistoryItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[SearchHistoryItem]",
         "type": "object"
       },
       "CursorPage_StaticFindingView_": {
@@ -2811,7 +2846,16 @@
             "title": "Reference Key"
           },
           "verdict": {
-            "$ref": "#/components/schemas/FindingEvaluationVerdict"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingEvaluationVerdict"
+              },
+              {
+                "const": "uncertain",
+                "type": "string"
+              }
+            ],
+            "title": "Verdict"
           }
         },
         "required": [
@@ -2981,6 +3025,17 @@
             "title": "Case Count",
             "type": "integer"
           },
+          "estimated_cost_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Microusd"
+          },
           "false_positive_findings": {
             "title": "False Positive Findings",
             "type": "integer"
@@ -2989,9 +3044,19 @@
             "title": "Missing Reference Cases",
             "type": "integer"
           },
+          "model_duration_ms": {
+            "default": 0,
+            "title": "Model Duration Ms",
+            "type": "integer"
+          },
           "observation_count": {
             "title": "Observation Count",
             "type": "integer"
+          },
+          "review_source": {
+            "default": "\u5355\u4eba\u6838\u5bf9\uff0c\u4ee5\u6700\u8fd1\u4fdd\u5b58\u7684\u5224\u65ad\u4e3a\u51c6",
+            "title": "Review Source",
+            "type": "string"
           },
           "reviewed_findings": {
             "title": "Reviewed Findings",
@@ -2999,6 +3064,21 @@
           },
           "reviewed_observations": {
             "title": "Reviewed Observations",
+            "type": "integer"
+          },
+          "turnaround_ms": {
+            "default": 0,
+            "title": "Turnaround Ms",
+            "type": "integer"
+          },
+          "uncertain_findings": {
+            "default": 0,
+            "title": "Uncertain Findings",
+            "type": "integer"
+          },
+          "unpriced_observations": {
+            "default": 0,
+            "title": "Unpriced Observations",
             "type": "integer"
           },
           "unreviewed_findings": {
@@ -3741,6 +3821,17 @@
             "title": "Parsed Files",
             "type": "integer"
           },
+          "preparation_started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preparation Started At"
+          },
           "relation_count": {
             "title": "Relation Count",
             "type": "integer"
@@ -4342,6 +4433,14 @@
         "title": "KnowledgeVersionResponse",
         "type": "object"
       },
+      "LocationSide": {
+        "enum": [
+          "left",
+          "right"
+        ],
+        "title": "LocationSide",
+        "type": "string"
+      },
       "LoginRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4533,6 +4632,171 @@
         ],
         "title": "ModelApiProtocol",
         "type": "string"
+      },
+      "ModelFindingCandidate": {
+        "additionalProperties": false,
+        "description": "\u6a21\u578b\u53ef\u751f\u6210\u7684 Finding \u5019\u9009\uff0c\u4e0d\u542b\u5e73\u53f0\u62e5\u6709\u7684\u8eab\u4efd\u548c\u590d\u6838\u5b57\u6bb5\u3002",
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/FindingCategory"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "context_references": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Context References",
+            "type": "array"
+          },
+          "evidence": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Evidence",
+            "type": "string"
+          },
+          "identity_hint": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Hint"
+          },
+          "impact": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Impact",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelFindingLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "required_test": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Test"
+          },
+          "rule_reference": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Reference"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "suggestion": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Suggestion",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "unit_key": {
+            "pattern": "^(?:[0-9a-f]{64}|u_[1-9][0-9]{0,3})$",
+            "title": "Unit Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit_key",
+          "severity",
+          "category",
+          "location",
+          "title",
+          "evidence",
+          "impact",
+          "suggestion",
+          "required_test",
+          "confidence",
+          "rule_reference"
+        ],
+        "title": "ModelFindingCandidate",
+        "type": "object"
+      },
+      "ModelFindingLocation": {
+        "additionalProperties": false,
+        "description": "\u6a21\u578b\u58f0\u660e\u7684\u4f4d\u7f6e\uff1bblob \u8eab\u4efd\u548c diff \u590d\u6838\u7531\u5e73\u53f0\u8865\u9f50\u3002",
+        "properties": {
+          "end_line": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 2147483647.0,
+            "title": "End Line",
+            "type": "integer"
+          },
+          "file": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "File",
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/LocationSide"
+          },
+          "start_line": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 2147483647.0,
+            "title": "Start Line",
+            "type": "integer"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          }
+        },
+        "required": [
+          "file",
+          "start_line",
+          "end_line",
+          "side",
+          "symbol"
+        ],
+        "title": "ModelFindingLocation",
+        "type": "object"
       },
       "ModelProvider": {
         "description": "\u6a21\u578b\u8c03\u7528\u9002\u914d\u5668\u652f\u6301\u7684\u4f9b\u5e94\u5546\u3002",
@@ -5705,6 +5969,51 @@
       },
       "RepositoryView": {
         "properties": {
+          "connected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "connection_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Error"
+          },
+          "connection_installation_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Installation Id"
+          },
+          "connection_repository_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Repository Id"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -5755,6 +6064,18 @@
             "title": "Expected Revision",
             "type": "integer"
           },
+          "installation_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Installation Id"
+          },
           "policy": {
             "$ref": "#/components/schemas/RepositoryPolicy"
           },
@@ -5773,6 +6094,57 @@
         "title": "RepositoryWrite",
         "type": "object"
       },
+      "RetrievalComparisonRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "default": 8,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "K",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "relevant_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Relevant Symbols",
+            "type": "array"
+          },
+          "strategies": {
+            "default": [
+              "bm25",
+              "lexical_relations"
+            ],
+            "items": {
+              "enum": [
+                "bm25",
+                "lexical_relations",
+                "hybrid",
+                "hybrid_relations",
+                "reranked"
+              ],
+              "type": "string"
+            },
+            "title": "Strategies",
+            "type": "array"
+          }
+        },
+        "required": [
+          "query",
+          "relevant_symbols"
+        ],
+        "title": "RetrievalComparisonRequest",
+        "type": "object"
+      },
       "RetrievalEvaluationReport": {
         "additionalProperties": false,
         "properties": {
@@ -5780,7 +6152,8 @@
             "enum": [
               "synthetic_contract",
               "agent_annotated",
-              "independent_human"
+              "independent_human",
+              "single_reviewer"
             ],
             "title": "Annotation Source",
             "type": "string"
@@ -8433,6 +8806,74 @@
         "title": "RouteMetric",
         "type": "object"
       },
+      "SearchHistoryItem": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "head_sha": {
+            "title": "Head Sha",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "index_id": {
+            "title": "Index Id",
+            "type": "string"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "requested_strategy": {
+            "enum": [
+              "bm25",
+              "lexical_relations",
+              "hybrid",
+              "hybrid_relations",
+              "reranked"
+            ],
+            "title": "Requested Strategy",
+            "type": "string"
+          },
+          "strategy": {
+            "enum": [
+              "bm25",
+              "lexical_relations",
+              "hybrid",
+              "hybrid_relations",
+              "reranked"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "index_id",
+          "repository",
+          "head_sha",
+          "query",
+          "strategy",
+          "requested_strategy",
+          "duration_ms",
+          "created_at"
+        ],
+        "title": "SearchHistoryItem",
+        "type": "object"
+      },
       "SearchQuery": {
         "additionalProperties": false,
         "properties": {
@@ -11001,6 +11442,57 @@
       }
     },
     "/api/v1/knowledge/documents/{document_id}": {
+      "delete": {
+        "operationId": "delete_knowledge_document_api_v1_knowledge_documents__document_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeDocumentStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Delete Knowledge Document Api V1 Knowledge Documents  Document Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Knowledge Document"
+      },
       "get": {
         "operationId": "get_knowledge_document_api_v1_knowledge_documents__document_id__get",
         "parameters": [
@@ -11270,44 +11762,6 @@
           }
         },
         "summary": "Restore Knowledge Document Version"
-      }
-    },
-    "/api/v1/knowledge/project-pack": {
-      "post": {
-        "operationId": "install_project_pack_api_v1_knowledge_project_pack_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AiRevisionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/KnowledgeDocumentListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Install Project Pack"
       }
     },
     "/api/v1/knowledge/search": {
@@ -12563,6 +13017,45 @@
         "summary": "Evaluations"
       }
     },
+    "/api/v1/retrieval/history/{identifier}": {
+      "get": {
+        "operationId": "history_detail_api_v1_retrieval_history__identifier__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "title": "Identifier",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalTrace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "History Detail"
+      }
+    },
     "/api/v1/retrieval/indexes": {
       "get": {
         "operationId": "indexes_api_v1_retrieval_indexes_get",
@@ -12697,6 +13190,55 @@
         "summary": "Index"
       }
     },
+    "/api/v1/retrieval/indexes/{index_id}/compare": {
+      "post": {
+        "operationId": "compare_api_v1_retrieval_indexes__index_id__compare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "index_id",
+            "required": true,
+            "schema": {
+              "title": "Index Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetrievalComparisonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalEvaluationReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compare"
+      }
+    },
     "/api/v1/retrieval/indexes/{index_id}/enrich": {
       "post": {
         "operationId": "enrich_api_v1_retrieval_indexes__index_id__enrich_post",
@@ -12738,6 +13280,96 @@
           }
         },
         "summary": "Enrich"
+      }
+    },
+    "/api/v1/retrieval/indexes/{index_id}/history": {
+      "get": {
+        "operationId": "history_api_v1_retrieval_indexes__index_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "index_id",
+            "required": true,
+            "schema": {
+              "title": "Index Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 4000,
+              "title": "Query",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "strategy",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Strategy",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_SearchHistoryItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "History"
       }
     },
     "/api/v1/retrieval/indexes/{index_id}/retry": {
@@ -14238,6 +14870,103 @@
         "summary": "List Audits"
       }
     },
+    "/api/v1/team/github/installations": {
+      "get": {
+        "operationId": "installations_api_v1_team_github_installations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Installations Api V1 Team Github Installations Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Installations"
+      }
+    },
+    "/api/v1/team/github/installations/{installation_id}/repositories": {
+      "get": {
+        "operationId": "authorized_repositories_api_v1_team_github_installations__installation_id__repositories_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "installation_id",
+            "required": true,
+            "schema": {
+              "title": "Installation Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Authorized Repositories Api V1 Team Github Installations  Installation Id  Repositories Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Authorized Repositories"
+      }
+    },
     "/api/v1/team/members": {
       "get": {
         "operationId": "list_members_api_v1_team_members_get",
@@ -14488,6 +15217,45 @@
           }
         },
         "summary": "Save Repository"
+      }
+    },
+    "/api/v1/team/repositories/{repository_id}/check": {
+      "post": {
+        "operationId": "check_connection_api_v1_team_repositories__repository_id__check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "repository_id",
+            "required": true,
+            "schema": {
+              "title": "Repository Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositoryView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Connection"
       }
     },
     "/webhooks/github": {

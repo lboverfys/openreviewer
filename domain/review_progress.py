@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel
 
+from domain.model_review import ModelFindingCandidate
+
 
 class BatchProgress(BaseModel):
     total: int
@@ -20,3 +22,4 @@ class BatchSnapshot(BaseModel):
     duration_ms: int | None
     error_code: str | None
     error_message: str | None
+    candidates: tuple[ModelFindingCandidate, ...] = ()

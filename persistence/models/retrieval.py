@@ -96,6 +96,7 @@ class CodeIndexRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+    preparation_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

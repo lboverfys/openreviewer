@@ -36,7 +36,17 @@ def test_retrieval_api_auth_configuration_and_scoped_index(retrieval, monkeypatc
             searched = await client.post(f"/api/v1/retrieval/indexes/{index_id}/search", json={"query": "find user SQL", "strategy": "reranked"})
             assert searched.status_code == 200, searched.text
             assert searched.json()["candidates"]
-            assert (await client.get("/api/v1/retrieval/evaluations")).json() == {"items": [], "next_cursor": None}
+            history = await client.get(f"/api/v1/retrieval/indexes/{index_id}/history")
+            assert history.status_code == 200 and history.json()["items"][0]["id"] == searched.json()["id"]
+            saved = await client.get("/api/v1/retrieval/history/" + searched.json()["id"])
+            assert saved.json()["candidates"] == searched.json()["candidates"]
+            bad = await client.post(f"/api/v1/retrieval/indexes/{index_id}/compare", json={"query": "user", "relevant_symbols": ["missing.symbol"]})
+            assert bad.status_code == 422
+            compared = await client.post(f"/api/v1/retrieval/indexes/{index_id}/compare", json={"query": "user", "relevant_symbols": ["sample.UserMapper.getById"], "strategies": ["bm25", "lexical_relations"]})
+            assert compared.status_code == 200, compared.text
+            assert compared.json()["annotation_source"] == "single_reviewer"
+            assert compared.json()["strategies"][0]["cases"][0]["expected_symbols"] == ["sample.UserMapper.getById"]
+            assert len((await client.get("/api/v1/retrieval/evaluations")).json()["items"]) == 1
             assert (await client.get(f"/api/v1/reviews/{review.review_run_id}/retrieval")).status_code == 200
             monkeypatch.setenv("OPENREVIEWER_RETRIEVAL_API_DISABLED", "true")
             assert (await client.get("/api/v1/retrieval/settings")).json()["external_calls_paused"] is True

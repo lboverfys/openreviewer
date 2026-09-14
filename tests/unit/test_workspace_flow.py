@@ -37,7 +37,7 @@ def test_saved_retrieval_switch_overrides_legacy_default(monkeypatch, legacy, en
     assert external_retrieval_paused(RetrievalSettings(external_calls_enabled=enabled)) is paused
 
 
-def test_project_pack_adds_scoped_documents_and_preserves_edits(database, tmp_path):
+def test_new_seed_files_are_not_automatically_imported_and_manual_create_works(database, tmp_path):
     seeds = tmp_path / "knowledge"
     seeds.mkdir()
     (seeds / "common.md").write_text("# 原有规则\n\n保留人工约定。", encoding="utf-8")
@@ -47,13 +47,13 @@ def test_project_pack_adds_scoped_documents_and_preserves_edits(database, tmp_pa
         "# 游戏资格\n\n适用仓库：lboverfys/NiuMa\n\n游戏资格由管理员考核后授予。", encoding="utf-8",
     )
     knowledge = ManagedMarkdownKnowledgeBase(database.sessions, seeds)
-    updated = knowledge.install_project_pack(library.revision, "tester")
-    assert updated.total == 2
-    game = next(item for item in updated.items if item.source == "game.md")
+    assert knowledge.list_documents().total == 1
+    assert not hasattr(knowledge, "install_project_pack")
+    updated = knowledge.create_document(source="game.md", content=(seeds / "game.md").read_text(encoding="utf-8"),
+        enabled=True, expected_revision=library.revision, actor="tester", repository_scope="lboverfys/NiuMa")
+    game = updated.document
     assert game.repository_scope == "lboverfys/niuma"
     assert knowledge.get_document(library.items[0].id).content == "# 原有规则\n\n保留人工约定。"
-    assert knowledge.install_project_pack(updated.revision, "tester").revision == updated.revision
-    assert any(chunk.repository_scope == "lboverfys/niuma" for chunk in knowledge.chunks())
     changed = knowledge.update_document(game.id, source=game.source,
         content=knowledge.get_document(game.id).content, enabled=True, expected_revision=updated.revision,
         expected_document_version=1, actor="tester", repository_scope="example/other", update_repository_scope=True)

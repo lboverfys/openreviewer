@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -75,7 +76,14 @@ def application_for(database: Database):
             SqlAlchemyDashboardRepository(database.sessions)
         ),
         review_management_service=ReviewManagementService(
-            SqlAlchemyReviewManagementRepository(database.sessions)
+            SqlAlchemyReviewManagementRepository(database.sessions),
+            identity_loader=Mock(load_pull_request=lambda target: PullRequestSnapshot(
+                repository_id=target.repository_id, repository=target.repository,
+                pull_request_number=target.pull_request_number,
+                html_url=f"https://github.com/{target.repository}/pull/{target.pull_request_number}",
+                head_ref="feature", base_repository=target.repository, base_ref="main",
+                base_sha="e" * 40, head_sha="c" * 40, state=PullRequestState.OPEN,
+                draft=False, title="离线测试最新提交", changed_files=1, updated_at=datetime.now(UTC))),
         ),
         github_access_policy=TEST_GITHUB_ACCESS_POLICY,
     )
@@ -459,6 +467,7 @@ def test_historical_identity_sync_reports_missing_configuration(
     database: Database,
 ) -> None:
     application = application_for(database)
+    application.state.review_management_service._identity_loader = None
 
     async def exercise() -> None:
         transport = httpx.ASGITransport(app=application)
@@ -1279,8 +1288,6 @@ def test_action_retry_scope_and_new_review_head_are_strictly_validated(
                     "retry_scope": "failed_node",
                     "batch_number": 1,
                 },
-                {"action": "new_review"},
-                {"action": "rerun", "retry_scope": "new_review"},
             )
             for index, payload in enumerate(invalid_requests, start=1):
                 response = await client.post(
@@ -1302,6 +1309,8 @@ def test_action_retry_scope_and_new_review_head_are_strictly_validated(
             assert valid.status_code == 200, valid.text
             assert valid.json()["review_run_id"] != run_id
             assert valid.json()["execution_status"] == "queued"
+            details = await client.get("/api/v1/reviews/" + valid.json()["review_run_id"])
+            assert details.json()["head_sha"] == "c" * 40  # 以服务端读取为准，不相信网页传来的 b。
 
     asyncio.run(exercise())
 

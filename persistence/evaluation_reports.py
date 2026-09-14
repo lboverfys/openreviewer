@@ -37,6 +37,8 @@ def comparison_report(
     quality = and_(
         paired, baseline.assessment_status == "complete",
         candidate.assessment_status == "complete",
+        baseline.metrics["adjudicated_count"].as_integer() == baseline.finding_count,
+        candidate.metrics["adjudicated_count"].as_integer() == candidate.finding_count,
     )
     referenced = and_(quality, EvaluationCaseRecord.reference_status == "confirmed")
     priced = and_(paired, baseline.estimated_cost_microusd.is_not(None),
@@ -125,7 +127,7 @@ def comparison_report(
     if split == "tuning":
         notices.append("当前为调参集报告；最终效果请使用独立验收集验证")
     if not number("quality_pairs"):
-        notices.append("尚无双方完成双人复核且结论一致的配对样本，效果指标暂不计算")
+        notices.append("两份结果尚未各自完成核对；单份结果的统计可在上方查看")
     if number("missing_baseline") or number("missing_candidate"):
         notices.append("未配对样本单列，不参与基线与候选对比")
     if number("provenance_missing_pairs"):

@@ -76,11 +76,14 @@ export const api = {
       request<import("./types").TeamMemberPage>("/api/v1/team/members?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
   saveTeamMember: (username: string, body: import("./types").TeamMemberWrite) =>
     mutation(() => request<import("./types").TeamMember>("/api/v1/team/members/" + encodeURIComponent(username), {method: "PUT", body: JSON.stringify(body)})),
+  githubInstallations: (page: number, signal?: AbortSignal) => request<import("./RepositoryConnectPanel").AppInstallations>(`/api/v1/team/github/installations?page=${page}`, {signal}),
+  githubAuthorizedRepositories: (installation: number, page: number, signal?: AbortSignal) => request<import("./RepositoryConnectPanel").AuthorizedRepositories>(`/api/v1/team/github/installations/${installation}/repositories?page=${page}`, {signal}),
   teamRepositories: (cursor?: string, signal?: AbortSignal, force = false) =>
     cachedGet("team-repositories:" + (cursor ?? "first"), (cacheSignal) =>
       request<CursorPage<import("./types").TeamRepository>>("/api/v1/team/repositories?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
   saveTeamRepository: (body: import("./types").TeamRepositoryWrite, id?: string) =>
     mutation(() => request<import("./types").TeamRepository>("/api/v1/team/repositories" + (id ? "/" + encodeURIComponent(id) : ""), {method: id ? "PUT" : "POST", body: JSON.stringify(body)})),
+  checkRepositoryConnection: (id: string) => mutation(() => request<import("./types").TeamRepository>(`/api/v1/team/repositories/${encodeURIComponent(id)}/check`, {method: "POST"})),
   teamAudits: (cursor?: string, signal?: AbortSignal, force = false) =>
     cachedGet("team-audits:" + (cursor ?? "first"), (cacheSignal) =>
       request<CursorPage<import("./types").TeamAudit>>("/api/v1/team/audits?" + new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})}), {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
@@ -103,6 +106,10 @@ export const api = {
     request<RetrievalTrace>(`/api/v1/retrieval/indexes/${encodeURIComponent(indexId)}/search`, {method: "POST", body: JSON.stringify(query), signal}, 150_000),
   reviewRetrieval: (reviewRunId: string, signal?: AbortSignal, force = false) =>
     cachedGet(`review-retrieval:${reviewRunId}`, (cacheSignal) => request<RetrievalTrace[]>(`/api/v1/reviews/${encodeURIComponent(reviewRunId)}/retrieval`, {signal: cacheSignal}), signal, DASHBOARD_CACHE_TTL_MS, force),
+  retrievalHistory: (id: string, query: string, strategy: string, cursor?: string, signal?: AbortSignal) =>
+    request<CursorPage<import("./types").SearchHistoryItem>>(`/api/v1/retrieval/indexes/${encodeURIComponent(id)}/history?${new URLSearchParams({query, strategy, ...(cursor ? {cursor} : {})})}`, {signal}),
+  retrievalHistoryDetail: (id: string) => request<RetrievalTrace>(`/api/v1/retrieval/history/${encodeURIComponent(id)}`),
+  compareRetrieval: (id: string, body: import("./types").RetrievalComparisonRequest) => mutation(() => request<RetrievalEvaluationReport>(`/api/v1/retrieval/indexes/${encodeURIComponent(id)}/compare`, {method: "POST", body: JSON.stringify(body)}, 180_000)),
   retrievalEvaluations: (signal?: AbortSignal, cursor?: string, force = false) =>
     cachedGet(`retrieval-evaluations:${cursor ?? "first"}`, (cacheSignal) => request<CursorPage<RetrievalEvaluationReport>>(`/api/v1/retrieval/evaluations?${new URLSearchParams({limit: "10", ...(cursor ? {cursor} : {})})}`, {signal: cacheSignal}), signal, SETTINGS_CACHE_TTL_MS, force),
 
@@ -427,8 +434,8 @@ export const api = {
       SETTINGS_CACHE_TTL_MS,
       force,
     ),
-  installKnowledgeProjectPack: (expectedRevision: number) => mutation(() => request<KnowledgeLibrary>("/api/v1/knowledge/project-pack", {
-    method: "POST", body: JSON.stringify({expected_revision: expectedRevision}),
+  deleteKnowledgeDocument: (id: string, revision: number, version: number) => mutation(() => request<{revision: number}>(`/api/v1/knowledge/documents/${encodeURIComponent(id)}`, {
+    method: "DELETE", body: JSON.stringify({expected_revision: revision, expected_document_version: version}),
   })),
   createKnowledgeDocument: (payload: {
     repository_scope?: string | null;

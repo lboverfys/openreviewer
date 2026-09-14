@@ -68,6 +68,7 @@ def test_initial_migration_creates_durable_review_task_schema(
             "knowledge_document_versions",
             "knowledge_documents",
             "knowledge_library",
+            "knowledge_deletions",
             "login_rate_limits",
             "model_calls",
             "model_http_calls",

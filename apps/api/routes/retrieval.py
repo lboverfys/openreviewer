@@ -11,11 +11,14 @@ from domain.pagination import CursorPage
 from domain.retrieval import (
     IndexTarget,
     IndexView,
+    RetrievalComparisonRequest,
+    RetrievalEvaluationCase,
     RetrievalEvaluationReport,
     RetrievalOperations,
     RetrievalSettings,
     RetrievalSettingsView,
     RetrievalTrace,
+    SearchHistoryItem,
     SearchQuery,
 )
 from persistence.retrieval_runtime import RetrievalRuntimeRepository
@@ -156,6 +159,42 @@ def register_retrieval_routes(
     ) -> RetrievalTrace:
         try:
             return get_service().search(index_id, body, principal.resource_scope)
+        except errors as exc:
+            raise _translate(exc) from exc
+
+    @application.get("/api/v1/retrieval/indexes/{index_id}/history", response_model=CursorPage[SearchHistoryItem])
+    def history(index_id: str, principal: Annotated[SessionPrincipal, Depends(require_manager)],
+                query: Annotated[str, Query(max_length=4000)] = "",
+                strategy: Annotated[str, Query(max_length=32)] = "",
+                limit: Annotated[int, Query(ge=1, le=50)] = 10,
+                cursor: Annotated[str | None, Query(max_length=512)] = None) -> CursorPage[SearchHistoryItem]:
+        try:
+            return get_service().repository.search_history(index_id, principal.resource_scope,
+                query=query, strategy=strategy, limit=limit, cursor=cursor)
+        except errors as exc:
+            raise _translate(exc) from exc
+
+    @application.get("/api/v1/retrieval/history/{identifier}", response_model=RetrievalTrace)
+    def history_detail(identifier: str, principal: Annotated[SessionPrincipal, Depends(require_manager)]) -> RetrievalTrace:
+        try:
+            return get_service().repository.search_record(identifier, principal.resource_scope)
+        except errors as exc:
+            raise _translate(exc) from exc
+
+    @application.post("/api/v1/retrieval/indexes/{index_id}/compare", response_model=RetrievalEvaluationReport)
+    def compare(index_id: str, body: RetrievalComparisonRequest,
+                principal: Annotated[SessionPrincipal, Depends(require_manager)],
+                _: Annotated[None, Depends(require_same_origin)]) -> RetrievalEvaluationReport:
+        try:
+            service = get_service()
+            service.repository.get(index_id, principal.resource_scope)
+            known = service.repository.match_symbols(index_id, body.relevant_symbols)
+            if not set(body.relevant_symbols) <= known:
+                raise ValueError("应该找到的代码名称不在这个提交的索引中，请核对完整符号名")
+            return service.evaluate(index_id, (RetrievalEvaluationCase(id="manual-reference",
+                query=body.query, relevant_symbols=body.relevant_symbols),),
+                dataset_version="网页核对：" + body.query[:80], annotation_source="single_reviewer",
+                strategies=body.strategies, k=body.k, scope=principal.resource_scope)
         except errors as exc:
             raise _translate(exc) from exc
 

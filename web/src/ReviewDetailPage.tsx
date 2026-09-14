@@ -369,7 +369,7 @@ function ReviewDetailPage({
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
     if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
     if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
-    if ((action === "rerun" || action === "new_review") && !window.confirm(`将使用提交 ${shortSha(details.head_sha)} 创建一条新的审查记录，当前任务和结果不会被覆盖。继续吗？`)) return;
+    if ((action === "rerun" || action === "new_review") && !window.confirm(`将先从 GitHub 读取这个 PR 的最新提交，再创建一条新的审查记录，当前任务和结果不会被覆盖。继续吗？`)) return;
     setActionBusy(action);
     setActionError("");
     try {
@@ -872,12 +872,12 @@ function ReviewDetailPage({
                   <strong>{filteredFindings.length}/{details.finding_total_count} 条结果</strong>
                 </div>
               )}
-              {waitingForIndex && <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>正在准备关联代码</strong><p>索引完成后自动继续，本次尚未获得 AI 结果。</p></div></div>}
+              {waitingForIndex && <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>正在准备关联代码</strong><p>基础索引和预算内的向量准备完成后自动继续。缺少向量不代表变更代码没有送给 GPT。</p></div></div>}
               {!details.model_review_completed_at && !waitingForIndex && !stopped && (currentModelFailure || retryPending) && (
                 <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small>{(availableActions.includes("retry_failed_node") || (availableActions.includes("retry") && details.coverage_status === "partial")) && <button type="button" className="review-inline-retry-btn" disabled={actionBusy !== null} onClick={() => void runAction(availableActions.includes("retry_failed_node") ? "retry_failed_node" : "retry")}>立即重试当前失败节点</button>}</div></div>
               )}
               {!details.model_review_completed_at && ((!currentModelFailure && !retryPending) || stopped) && (
-                <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>{stopped ? details.phase === "paused" ? "任务已暂停" : "任务已停止" : "AI 结果尚未生成"}</strong><p>{stopped ? "本次尚无最终结论。需要继续检查时，请使用任务控制中的可用操作。" : "模型完成后，候选问题会显示在这里。"}</p></div></div>
+                <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>{stopped ? details.phase === "paused" ? "任务已暂停" : "任务已停止" : "AI 结果尚未生成"}</strong><p>{stopped ? "最终结果尚未保存。请在 AI 过程页查看已有候选和证据；需要完整报告时可复查此版本。" : "模型完成后，候选问题会显示在这里。"}</p></div></div>
               )}
               {details.model_review_completed_at && details.finding_total_count === 0 && (
                 <div className={`review-result-empty ${finalAgentProgress.verdict === "no_actionable_issue" ? "result-empty-positive" : finalAgentProgress.verdict === "insufficient_context" ? "result-empty-limited" : ""}`}><DetailIcon>{finalAgentProgress.verdict === "insufficient_context" ? "!" : "✓"}</DetailIcon><div><strong>本次没有候选问题</strong><p>{finalAgentProgress.hasStructuredConclusion ? "具体判断、依据范围和限制见上方汇总 Agent 结论。" : "这条历史记录没有保存结论摘要，不能仅凭候选问题数量推断分析结果。"}</p></div></div>

@@ -213,8 +213,7 @@ class HybridRetrievalService:
             if on_progress:
                 on_progress()
             trace = trace.model_copy(update={"agent": ReviewAgent(agent) if agent else None, "plan_fingerprint": plan_fingerprint})
-            # 工作台的临时搜索直接返回；只有审查上下文需要持久化证据快照。
-            return self.repository.save_trace(trace, review_run_id, agent) if review_run_id is not None else trace
+            return self.repository.save_trace(trace, review_run_id, agent if review_run_id else "manual")
         finally:
             if client is not None:
                 client.close()
@@ -235,6 +234,8 @@ class HybridRetrievalService:
         cache_hit = False
         vector_search_mode = "unused"
         warnings: list[str] = []
+        if index.vector_error:
+            warnings.append(index.vector_error)
         if query.strategy not in {"bm25", "lexical_relations"} and client is not None and index.vector_count:
             begin = time.monotonic()
             digest = sha256(query.query.encode()).hexdigest()
@@ -349,17 +350,32 @@ class HybridRetrievalService:
             if cached:
                 raise RetrievalError("已有部分检索上下文，请恢复检索配置后重试")
             return model_input
-        index_id = self.repository.enqueue({**target, "include_vectors": False}, view.settings)
+        expected_index = stable_key(target["installation_id"], target["repository_id"], model_input.head_sha, view.settings.embedding_fingerprint)
+        if any(trace.index_id != expected_index or any(item.head_sha != model_input.head_sha for item in trace.selected) for trace in cached.values()):
+            raise RetrievalError("本任务已保存其他索引配置或提交的参考代码，请恢复原配置后重试；不会替换已有证据")
+        prepare_vectors = not view.external_calls_paused and view.key_configured
+        index_id = self.repository.enqueue({**target, "include_vectors": prepare_vectors}, view.settings)
         index = self.repository.get(index_id)
-        if index.status == "failed" and not index.lexical_ready:
-            raise RetrievalError("代码索引构建失败，请先重试索引")
-        if not index.lexical_ready:
+        if prepare_vectors and index.status == "ready" and index.vector_status in {"pending", "paused"}:
+            self.repository.retry(index_id, None, include_vectors=True, automatic=True)
+            index = self.repository.get(index_id)
+        age = (datetime.now(UTC) - datetime.fromisoformat(index.preparation_started_at or index.created_at)).total_seconds()
+        preparing = not index.lexical_ready or (prepare_vectors and index.status in {"queued", "building"})
+        if preparing and index.status != "failed" and age < 600:
             raise SafeApplicationError(SafeError(
-                    code=ErrorCode.RETRIEVAL_INDEX_PENDING,
-                    safe_message="等待同一提交的代码索引完成",
-                    retryable=True,
-                    details={"batch_retry_managed": True, "retry_at": (datetime.now(UTC) + timedelta(seconds=20)).isoformat()},
+                code=ErrorCode.RETRIEVAL_INDEX_PENDING,
+                safe_message=f"正在准备本次提交的关联代码（向量 {index.vector_count}/{index.chunk_count}），完成后自动继续",
+                retryable=True,
+                details={"batch_retry_managed": True, "retry_at": (datetime.now(UTC) + timedelta(seconds=20)).isoformat()},
             ))
+        if not index.lexical_ready:
+            raise RetrievalError(index.error or "基础代码索引准备超过 10 分钟，请重试本次审查")
+        preparation_warning = None
+        if index.vector_count < index.chunk_count:
+            reason = index.vector_error or index.error or ("外部调用已关闭" if view.external_calls_paused else
+                "未配置检索模型密钥" if not view.key_configured else
+                "准备超过 10 分钟" if preparing else "向量尚未全部就绪")
+            preparation_warning = f"{reason}；实际向量覆盖 {index.vector_count}/{index.chunk_count}。缺失部分仍可通过基础检索查找；本次变更代码仍会送交 GPT。"
         purposes = (ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC)
         contexts: list[ContextEvidence] = []
         governance = RetrievalRuntimeRepository(self.repository.sessions)
@@ -423,7 +439,7 @@ class HybridRetrievalService:
                         "rerank_cache_hit": all(item.rerank_cache_hit for item, _ in traces),
                         "covered_units": len({key for item in candidates if item.selected for key in item.unit_keys}),
                         "duration_ms": sum(item.duration_ms for item, _ in traces) + prefetch_ms,
-                        "warnings": tuple(dict.fromkeys(warning for item, _ in traces for warning in item.warnings)),
+                        "warnings": tuple(dict.fromkeys([warning for item, _ in traces for warning in item.warnings] + ([preparation_warning] if preparation_warning else []))),
                         "model_requests": calls_by_agent[agent],
                         "embedding_ms": sum(item.embedding_ms for item, _ in traces) + prefetch_ms,
                         "rerank_ms": sum(item.rerank_ms for item, _ in traces),
@@ -454,6 +470,8 @@ class HybridRetrievalService:
             raise ValueError("评测需要 1 到 100 个不重复样本")
         index = self.repository.get(index_id, scope)
         view, key = self.settings.runtime()
+        if view.external_calls_paused and any(value not in {"bm25", "lexical_relations"} for value in strategies):
+            raise RetrievalError("外部调用已关闭，请选择关键词和代码关系，或开启调用后再比较")
         client = self._client(view, key) if any(value not in {"bm25", "lexical_relations"} for value in strategies) else None
         reports: list[StrategyEvaluation] = []
         vector_modes: set[str] = set()
@@ -491,7 +509,7 @@ class HybridRetrievalService:
                     recalls.append(recall)
                     ranks.append(reciprocal)
                     durations.append(trace.duration_ms)
-                    items.append({"case_id": case.id, "split": case.split, "query_cache_hit": trace.query_cache_hit, "recall_at_k": recall, "mrr": reciprocal, "symbols": symbols, "duration_ms": trace.duration_ms, "warnings": list(trace.warnings)})
+                    items.append({"case_id": case.id, "query": case.query, "expected_symbols": list(case.relevant_symbols), "head_sha": index.head_sha, "repository": index.repository, "split": case.split, "query_cache_hit": trace.query_cache_hit, "recall_at_k": recall, "mrr": reciprocal, "symbols": symbols, "duration_ms": trace.duration_ms, "warnings": list(trace.warnings)})
                 ordered = sorted(durations)
                 reports.append(StrategyEvaluation(
                     strategy=strategy, sample_count=len(cases), recall_at_k=statistics.mean(recalls),

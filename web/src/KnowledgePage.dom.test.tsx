@@ -39,6 +39,7 @@ beforeEach(() => {
     if (!selected) return Response.json({ detail: "未找到文档" }, { status: 404 });
     if (method === "GET") return Response.json(selected);
     if (conflict || body.expected_revision !== revision) return Response.json({ detail: "文档已经被别人修改，请核对后再保存。" }, { status: 409 });
+    if (method === "DELETE") {documents = documents.filter(item => item.id !== selected.id); revision += 1; return Response.json({revision});}
     if (path.endsWith("/archive")) { selected.archived = true; selected.enabled = false; }
     else if (path.endsWith("/restore")) { selected.archived = false; selected.enabled = body.enabled ?? false; }
     else Object.assign(selected, body);
@@ -51,24 +52,24 @@ afterEach(() => { cleanup(); clearReadCache(); vi.restoreAllMocks(); vi.unstubAl
 async function page() {
   render(<KnowledgePage onSignedOut={vi.fn()} />);
   await screen.findByRole("button", { name: "暂停使用" });
-  await waitFor(() => expect(screen.getByRole("button", { name: "移出列表" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "删除到回收站" })).toBeEnabled());
 }
 
 it("移出后保留撤销入口，一次操作恢复原来的使用状态", async () => {
   await page();
-  fireEvent.click(screen.getByRole("button", { name: "移出列表" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "撤销移出" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "删除到回收站" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "撤销删除" })).toBeEnabled());
   expect(window.confirm).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "撤销移出" }));
+  fireEvent.click(screen.getByRole("button", { name: "撤销删除" }));
   await screen.findByText("文档已恢复并开启使用。");
   expect(documents[0].archived).toBe(false);
   expect(documents[0].enabled).toBe(true);
   expect(calls.find(call => call.path.endsWith("/restore"))?.body).toMatchObject({ enabled: true, expected_revision: 6 });
 });
 
-it("已移出文档独立展示，恢复并使用后自动回到文档列表", async () => {
+it("回收站独立展示，恢复并使用后自动回到文档列表", async () => {
   await page();
-  fireEvent.click(screen.getByRole("tab", { name: "已移出文档" }));
+  fireEvent.click(screen.getByRole("tab", { name: "回收站" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "恢复并使用" })).toBeEnabled());
   const list = within(screen.getByRole("complementary", { name: "知识文档列表" }));
   expect(list.queryByText("安全规则")).not.toBeInTheDocument();
@@ -115,4 +116,18 @@ it("历史和检索默认收起，切换文档不会静默丢掉草稿", async (
   fireEvent.click(screen.getByRole("button", { name: /数据库规则/ }));
   expect(screen.getByLabelText("规则正文")).toHaveValue("不要丢掉这份修改");
   expect(window.confirm).toHaveBeenCalledOnce();
+});
+
+
+it("彻底删除需要确认，删除后刷新不再显示，补充内置规则入口不存在", async () => {
+  await page();
+  expect(screen.queryByText("补充内置规则")).not.toBeInTheDocument();
+  vi.mocked(window.confirm).mockReturnValue(false);
+  fireEvent.click(screen.getByRole("button", {name: "彻底删除文档"}));
+  expect(calls.some(item => item.method === "DELETE")).toBe(false);
+  vi.mocked(window.confirm).mockReturnValue(true);
+  fireEvent.click(screen.getByRole("button", {name: "彻底删除文档"}));
+  await waitFor(() => expect(calls.some(item => item.method === "DELETE")).toBe(true));
+  await screen.findByText(/文档已彻底删除/);
+  expect(documents.some(item => item.id === "security")).toBe(false);
 });

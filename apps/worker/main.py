@@ -45,7 +45,7 @@ from services.ai_settings import (
 )
 from services.evidence_verification import GitHubEvidenceVerifier
 from services.github import GitHubApiClient
-from services.github_access import GitHubAccessPolicy
+from services.github_access import GitHubAccessPolicy, with_repository_grants
 from services.github_auth import (
     GITHUB_READ_TOKEN_SCOPE,
     GitHubAppSettings,
@@ -83,13 +83,13 @@ def main() -> None:
     github_api = GitHubApiClient()
     ai_runtime_provider: SqlAlchemyAiRuntimeProvider | None = None
     try:
+        database = Database.from_environment()
         github_tokens = GitHubAppTokenProvider(
             github_api,
             GitHubAppSettings.from_environment(),
             GITHUB_READ_TOKEN_SCOPE,
-            access_policy=GitHubAccessPolicy.from_environment(),
+            access_policy=with_repository_grants(GitHubAccessPolicy.from_environment(), database.sessions),
         )
-        database = Database.from_environment()
         cipher = AiSecretCipher.from_environment()
         legacy_ai_settings = AiSettingsService(
             database.sessions,

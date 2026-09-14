@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
 import EvaluationImportPanel from "./EvaluationImportPanel";
+import EvaluationOverviewPanel from "./EvaluationOverviewPanel";
 import EvaluationSourcePicker from "./EvaluationSourcePicker";
 import Pagination from "./Pagination";
 import type { AuthUser, EvaluationCaseDetail, EvaluationDataset, EvaluationDecision, EvaluationFinding, EvaluationObservationDetail, EvaluationReference, EvaluationVariant } from "./types";
@@ -8,9 +9,9 @@ import { useCursorPage } from "./useCursorPage";
 import { shortSha } from "./utils";
 import { WorkspaceBadge, WorkspaceEmpty } from "./Workspace";
 
-export const assessmentLabels: Record<string, string> = {pending:"待复核", partial:"复核中", disputed:"存在分歧", complete:"双人复核完成"};
+export const assessmentLabels: Record<string, string> = {pending:"待复核", partial:"复核中", disputed:"需重新核对", complete:"已完成核对"};
 const categories: Record<EvaluationReference["category"], string> = {authorization:"权限", security:"安全", database:"数据库", business_contract:"业务契约", architecture:"架构", test_gap:"测试缺口", reliability:"可靠性"};
-const verdicts: Record<EvaluationDecision["verdict"], string> = {valid:"有效问题", false_positive:"误报", duplicate:"重复问题", out_of_scope:"超出范围", known_issue:"已知问题"};
+const verdicts: Record<EvaluationDecision["verdict"], string> = {valid:"有效问题", false_positive:"误报", duplicate:"重复问题", out_of_scope:"超出范围", known_issue:"已知问题", uncertain:"暂不确定"};
 
 export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, onError, onChanged }: {
   dataset: EvaluationDataset; caseId: string; user: AuthUser; canEdit: boolean;
@@ -47,11 +48,11 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
       <div className="evaluation-toolbar"><div><h2>PR #{sample.pull_request_number} · {sample.title}</h2><p className="evaluation-hint">{sample.repository} · <code>{shortSha(sample.head_sha)}</code> · {sample.split === "validation" ? "验收集" : "调参集"}</p></div>
         <button type="button" disabled={busy} onClick={() => void load()}>刷新样本</button></div>
       <a href={"https://github.com/" + sample.repository + "/pull/" + sample.pull_request_number + "/files/" + sample.head_sha} target="_blank" rel="noreferrer">在 GitHub 核对该提交</a>
-      <div className="evaluation-reference">
-        <div className="evaluation-toolbar"><h3>参考缺陷</h3><WorkspaceBadge tone={sample.reference_status === "confirmed" ? "success" : sample.reference_status === "disputed" ? "danger" : "warning"}>{sample.reference_status === "confirmed" ? "两位成员已确认" : sample.reference_status === "disputed" ? "参考标签存在分歧" : "待双人确认"}</WorkspaceBadge>
+      <details className="evaluation-reference"><summary>核对已知漏报（可选）</summary>
+        <div className="evaluation-toolbar"><h3>参考缺陷</h3><WorkspaceBadge tone={sample.reference_status === "confirmed" ? "success" : sample.reference_status === "disputed" ? "danger" : "warning"}>{sample.reference_status === "confirmed" ? "已由核对人确认" : sample.reference_status === "disputed" ? "参考标签存在分歧" : "尚未确认"}</WorkspaceBadge>
           {editable && <button type="button" onClick={() => setEditingReference(value => !value)}>{editingReference ? "关闭参考编辑" : "编辑参考标签"}</button>}</div>
         {sample.reference_defects == null ? <WorkspaceEmpty title="尚未标注参考缺陷" description="补充人工参考标签后，才能计算已知缺陷找回率。" />
-          : sample.reference_defects.length === 0 ? <p>当前标签为“没有已知缺陷”，仍需双人确认。</p>
+          : sample.reference_defects.length === 0 ? <p>当前标签为“没有已知缺陷”，可由你确认。</p>
           : <ul>{sample.reference_defects.map(item => <li key={item.key}><strong>{item.title}</strong> · {categories[item.category]} {item.file && <code>{item.file}{item.start_line ? ":" + item.start_line : ""}</code>}</li>)}</ul>}
         <div className="evaluation-reviewers">{sample.reference_reviews.map(item => <p key={item.reviewer}>{item.reviewer}：{item.agrees ? "认可参考标签" : "不认可参考标签"}{item.note ? " · " + item.note : ""}</p>)}</div>
         {editable && sample.reference_defects != null && <div className="evaluation-actions">
@@ -59,8 +60,9 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
           <button type="button" disabled={busy} onClick={() => void reviewReference(true)}>认可参考标签</button>
           <button type="button" disabled={busy} onClick={() => void reviewReference(false)}>参考标签有问题</button>
         </div>}
-      </div>
+      </details>
     </div>
+    <EvaluationOverviewPanel datasetId={dataset.id} version={sample.revision} onError={onError}/>
     <nav className="evaluation-tabs" aria-label="观察分组">
       {(["baseline","candidate"] as const).map(group => <button type="button" key={group} aria-pressed={variant === group} onClick={() => {setVariant(group); setImporting(false);}}>
         {group === "baseline" ? "原结果" : "新结果"} · {sample[group] ? assessmentLabels[sample[group].assessment_status] : "未收录"}
@@ -176,12 +178,12 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged 
     {detail && !replacing && <>
       <div className="evaluation-observation-meta"><a href={"#review/" + detail.observation.source_run_id}>查看来源审查 →</a><span>{detail.observation.model_label}</span><WorkspaceBadge>{detail.observation.finding_count} 条问题</WorkspaceBadge></div>
       <p className="evaluation-hint">这里展示来源运行当时的模型与结果，修改当前模型配置不会改写这份快照；复核也不会自动再发起模型调用。</p>
-      <div className="evaluation-reviewers">{detail.ballots.length ? detail.ballots.map(item => <span key={item.reviewer}>{item.reviewer}：{item.decision_count}/{detail.observation.finding_count} 条 · {item.submitted_at ? "已提交" : "草稿"}</span>) : <span>尚无复核。需要两位不同成员分别提交。</span>}</div>
+      <div className="evaluation-reviewers">{detail.ballots.length ? detail.ballots.map(item => <span key={item.reviewer}>{item.reviewer}：{item.decision_count}/{detail.observation.finding_count} 条 · {item.submitted_at ? "已提交" : "草稿"}</span>) : <span>由当前账号核对即可完成，无需第二个账号。</span>}</div>
       <nav className="evaluation-tabs" aria-label="复核内容">{([["findings","问题复核"],["changes","变更代码"],["versions","模型与版本"]] as const).map(([key,label]) => <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</nav>
       {tab === "findings" && <>
         {findings.data?.items.map(item => <FindingEditor key={item.finding.id} item={item} user={user} references={sample.reference_defects ?? []} disabled={busy || !editable}
           onSave={decision => void action(() => api.saveEvaluationFindingReview(sample.id,variant,item.finding.id,detail.observation.revision,decision))} />)}
-        {findings.data?.items.length === 0 && !findings.loading && <WorkspaceEmpty title="本次审查没有输出问题" description="核对参考缺陷与变更代码后提交复核，遗漏问题仍会计入找回率。" />}
+        {findings.data?.items.length === 0 && !findings.loading && <WorkspaceEmpty title="本次审查没有输出问题" description="你可以直接完成核对；未提供可靠的已知缺陷清单时，不计算找回率。" />}
       </>}
       {tab === "changes" && <>
         <p className="evaluation-hint">这里保存收录时的 PR 审查变更。未改动的关联文件可到 GitHub 的同一提交核对。</p>
@@ -199,8 +201,8 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged 
           {detail.source.retrieval.map((item,index) => <p key={item.index_id + ":" + index}>{item.agent} · {item.strategy || "策略未记录"} · 索引 {item.index_id.slice(0,12)} · 提交 {shortSha(item.index_head_sha)} · {item.embedding_model}</p>)}
         </details><small>快照校验值：{detail.observation.snapshot_sha256}</small>
       </div>}
-      {editable && <div className="evaluation-actions"><button type="button" className="evaluation-primary" disabled={busy} onClick={() => void action(() => api.submitEvaluationReview(sample.id,variant,detail.observation.revision))}>{busy ? "正在保存…" : "提交本次复核"}</button>
-        <span className="evaluation-hint">保存每条结论后提交；再次编辑会将自己的复核改回草稿。</span></div>}
+      {editable && <div className="evaluation-actions"><button type="button" className="evaluation-primary" disabled={busy} onClick={() => void action(() => api.submitEvaluationReview(sample.id,variant,detail.observation.revision))}>{busy ? "正在保存…" : "完成核对并查看统计"}</button>
+        <span className="evaluation-hint">可以保留暂不确定或未核对的问题；它们不会算作有效问题。</span></div>}
     </>}
       {detail && replacing && editable && <div className="evaluation-replace"><p className="ws-note">更换运行会清空该组已有复核，参考标签保留。</p>
         <EvaluationSourcePicker datasetId={sample.dataset_id} caseId={sample.id} single selected={replacement} onSelected={setReplacement} onError={onError} disabled={busy}

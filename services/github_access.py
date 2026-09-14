@@ -2,8 +2,8 @@
 
 import os
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 
 _OWNER_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _REPOSITORY_RE = re.compile(
@@ -22,6 +22,7 @@ class GitHubAccessPolicy:
     installation_ids: frozenset[int]
     organizations: frozenset[str]
     repositories: frozenset[str]
+    repository_grant: Callable[[int, str | None], bool] | None = None
 
     def __post_init__(self) -> None:
         if not self.installation_ids or any(
@@ -82,7 +83,7 @@ class GitHubAccessPolicy:
         )
 
     def allows_installation(self, installation_id: int) -> bool:
-        return installation_id in self.installation_ids
+        return installation_id in self.installation_ids or bool(self.repository_grant and self.repository_grant(installation_id, None))
 
     def denial_reason(self, installation_id: int, repository: str) -> str | None:
         """返回稳定拒绝原因；返回 ``None`` 表示来源在授权范围内。"""
@@ -99,8 +100,27 @@ class GitHubAccessPolicy:
             or normalized_owner in self.organizations
         ):
             return None
+        if self.repository_grant and self.repository_grant(installation_id, normalized_repository):
+            return None
         return "repository_not_allowed"
 
 
 def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def with_repository_grants(policy: GitHubAccessPolicy, sessions) -> GitHubAccessPolicy:
+    from sqlalchemy import select
+
+    from persistence.models import RepositoryPolicyRecord
+
+    def allowed(installation_id: int, repository: str | None) -> bool:
+        statement = select(RepositoryPolicyRecord.id).where(
+            RepositoryPolicyRecord.connection_installation_id == installation_id,
+            RepositoryPolicyRecord.connected_at.is_not(None))
+        if repository is not None:
+            statement = statement.where(RepositoryPolicyRecord.repository_key == repository.casefold())
+        with sessions() as session:
+            return session.scalar(statement.limit(1)) is not None
+
+    return replace(policy, repository_grant=allowed)

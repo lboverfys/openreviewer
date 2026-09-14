@@ -25,6 +25,7 @@ from domain.retrieval import (
     RetrievalOperations,
     RetrievalSettings,
     RetrievalTrace,
+    SearchHistoryItem,
     stable_key,
 )
 from persistence.models import (
@@ -59,6 +60,7 @@ def _view(row: CodeIndexRecord) -> IndexView:
         file_count=row.file_count, parsed_files=row.parsed_files, reused_files=row.reused_files, chunk_count=row.chunk_count, relation_count=row.relation_count,
         embedded_count=row.embedded_count, reused_count=row.reused_count, duration_ms=row.duration_ms,
         parse_error_files=tuple(str(value) for value in row.parse_errors), error=row.error,
+        preparation_started_at=_iso(row.preparation_started_at),
         created_at=_iso(row.created_at) or "", completed_at=_iso(row.completed_at),
     )
 
@@ -190,14 +192,17 @@ class RetrievalRepository:
             row.error = None
             return row.id, owner, dict(row.source_target), row.configuration_key
 
-    def retry(self, index_id: str, scope: ResourceScope | None, *, include_vectors: bool = False) -> None:
+    def retry(self, index_id: str, scope: ResourceScope | None, *, include_vectors: bool = False, automatic: bool = False) -> None:
         self.get(index_id, scope)
         with self.sessions() as session, session.begin():
             row = session.scalar(select(CodeIndexRecord).where(CodeIndexRecord.id == index_id).with_for_update())
+            if automatic and row is not None and (row.status in {"queued", "building"} or row.vector_status not in {"pending", "paused"}):
+                return
             if row is None or row.status not in {"ready", "failed"}:
                 raise RetrievalError("索引正在构建或排队")
             row.source_target = {**row.source_target, "include_vectors": include_vectors, "vector_operation_id": str(uuid4())}
             row.status, row.error = "queued", None
+            row.preparation_started_at = datetime.now(UTC)
             if include_vectors:
                 row.vector_status, row.vector_error = "pending", None
 
@@ -430,6 +435,45 @@ class RetrievalRepository:
                 CodeIndexRecord, CodeIndexRecord.id == RetrievalTraceRecord.index_id,
             ).where(RetrievalTraceRecord.review_run_id == review_run_id, _scope(scope)).order_by(RetrievalTraceRecord.created_at.desc()).limit(min(limit, 20))).all()
             return tuple(RetrievalTrace.model_validate(row) for row in rows)
+
+    def match_symbols(self, index_id: str, symbols: Sequence[str]) -> set[str]:
+        with self.sessions() as session:
+            return set(session.scalars(select(CodeChunkRecord.symbol).join(CodeIndexChunkRecord,
+                CodeIndexChunkRecord.chunk_id == CodeChunkRecord.id).where(
+                CodeIndexChunkRecord.index_id == index_id, CodeChunkRecord.symbol.in_(symbols)
+                ).distinct().limit(50)))
+
+    def search_history(self, index_id: str, scope: ResourceScope | None, *,
+                       query: str = "", strategy: str = "", limit: int = 10,
+                       cursor: str | None = None) -> CursorPage[SearchHistoryItem]:
+        # index_id + created_at 索引限定到一个仓库版本；只取当前页元数据。
+        t = RetrievalTraceRecord
+        statement = select(t.id, t.index_id, t.created_at, CodeIndexRecord.repository,
+            CodeIndexRecord.head_sha, t.payload["query"].as_string().label("query"),
+            t.payload["strategy"].as_string().label("strategy"),
+            t.payload["requested_strategy"].as_string().label("requested_strategy"),
+            t.payload["duration_ms"].as_integer().label("duration_ms")).join(
+                CodeIndexRecord, CodeIndexRecord.id == t.index_id).where(
+                t.index_id == index_id, t.agent == "manual", _scope(scope))
+        if query:
+            statement = statement.where(t.payload["query"].as_string() == query)
+        if strategy:
+            statement = statement.where(t.payload["requested_strategy"].as_string() == strategy)
+        if cursor:
+            statement = statement.where(tuple_(t.created_at, t.id) < decode_cursor(cursor))
+        with self.sessions() as session:
+            rows = session.execute(statement.order_by(t.created_at.desc(), t.id.desc()).limit(limit + 1)).mappings().all()
+        items = tuple(SearchHistoryItem.model_validate({**row, "created_at": _iso(row["created_at"])}) for row in rows[:limit])
+        return CursorPage(items=items, next_cursor=encode_cursor(rows[limit-1]["created_at"], rows[limit-1]["id"]) if len(rows) > limit else None)
+
+    def search_record(self, identifier: str, scope: ResourceScope | None) -> RetrievalTrace:
+        with self.sessions() as session:
+            payload = session.scalar(select(RetrievalTraceRecord.payload).join(
+                CodeIndexRecord, CodeIndexRecord.id == RetrievalTraceRecord.index_id).where(
+                RetrievalTraceRecord.id == identifier, RetrievalTraceRecord.agent == "manual", _scope(scope)))
+        if payload is None:
+            raise LookupError("检索记录不存在")
+        return RetrievalTrace.model_validate(payload)
 
     def save_evaluation(self, report: RetrievalEvaluationReport) -> None:
         with self.sessions() as session, session.begin():

@@ -1,4 +1,4 @@
-"""评测集、独立审查快照与登录成员的双人复核用例。"""
+"""评测集、独立审查快照与登录成员的单人核对用例。"""
 
 import json
 from datetime import UTC, datetime
@@ -192,7 +192,7 @@ class EvaluationWorkbench:
 
     def overview(self, identifier: str, scope: ResourceScope) -> EvaluationOverview:
         """单评测集最多 200 PR；一条聚合读取复核进度，不拉取快照正文。"""
-        from sqlalchemy import case, func
+        from sqlalchemy import func
         c, o = EvaluationCaseRecord, EvaluationObservationRecord
         with self.sessions() as session:
             dataset = self._dataset(session, identifier, scope)
@@ -202,10 +202,15 @@ class EvaluationWorkbench:
             row = session.execute(select(
                 func.count(o.id).label("observation_count"),
                 func.count(o.id).filter(complete).label("reviewed_observations"),
-                *(func.coalesce(func.sum(case((complete, o.metrics[key].as_integer()), else_=0)), 0).label(name)
+                *(func.coalesce(func.sum(o.metrics[key].as_integer()), 0).label(name)
                   for name, key in fields.items()),
-                func.coalesce(func.sum(case((~complete, o.finding_count), else_=0)), 0).label("unreviewed_findings"),
+                func.coalesce(func.sum(o.finding_count - func.coalesce(o.metrics["adjudicated_count"].as_integer(), 0) - func.coalesce(o.metrics["uncertain_count"].as_integer(), 0)), 0).label("unreviewed_findings"),
                 func.count(func.distinct(c.id)).filter(c.reference_count.is_(None)).label("missing_reference_cases"),
+                func.coalesce(func.sum(o.metrics["uncertain_count"].as_integer()), 0).label("uncertain_findings"),
+                func.coalesce(func.sum(o.model_duration_ms), 0).label("model_duration_ms"),
+                func.coalesce(func.sum(o.turnaround_ms), 0).label("turnaround_ms"),
+                func.sum(o.estimated_cost_microusd).label("estimated_cost_microusd"),
+                func.count(o.id).filter(o.estimated_cost_microusd.is_(None)).label("unpriced_observations"),
             ).select_from(c).outerjoin(o, o.case_id == c.id).where(c.dataset_id == identifier).limit(1)).mappings().one()
             return EvaluationOverview(case_count=dataset.case_count, **row)
 
@@ -622,8 +627,6 @@ class EvaluationWorkbench:
                 raise ValueError("请先填写参考缺陷；确认无缺陷时保存空列表")
             reviews = [ReferenceReview.model_validate(item) for item in record.reference_reviews]
             index = next((number for number, item in enumerate(reviews) if item.reviewer.casefold() == actor.casefold()), None)
-            if index is None and len(reviews) >= 2:
-                raise EvaluationConflictError("参考标签已由两位成员认领，可由原复核人修改或重置")
             review = ReferenceReview(reviewer=actor, agrees=draft.agrees,
                                      note=redact_text(draft.note), reviewed_at=now)
             if index is None:
@@ -647,8 +650,6 @@ class EvaluationWorkbench:
         ballots = [EvaluationBallot.model_validate(item) for item in record.ballots]
         index = next((number for number, item in enumerate(ballots) if item.reviewer.casefold() == actor.casefold()), None)
         if index is None:
-            if len(ballots) >= 2:
-                raise EvaluationConflictError("观察结果已由两位成员认领，可由原复核人修改或重置")
             index = len(ballots)
             ballots.append(EvaluationBallot(reviewer=actor, updated_at=now))
         return ballots, index
@@ -686,7 +687,7 @@ class EvaluationWorkbench:
                 raise EvaluationNotFoundError("评测问题不存在")
             key = draft.decision.reference_key
             if key is not None and (
-                draft.decision.verdict.value != "valid"
+                draft.decision.model_dump(mode="json")["verdict"] != "valid"
                 or key not in {str(item["key"]) for item in case.reference_defects or []}
             ):
                 raise ValueError("只有有效问题可以关联本样本的参考缺陷")
@@ -698,7 +699,7 @@ class EvaluationWorkbench:
             self._save_ballots(case, record, source, ballots, now)
             _audit(session, case.dataset_id, actor, "finding_reviewed", {
                 "case_id": case_id, "variant": variant, "finding_id": finding_id,
-                "verdict": draft.decision.verdict.value, "reference_key": key,
+                "verdict": draft.decision.model_dump(mode="json")["verdict"], "reference_key": key,
             })
             session.commit()
             return self._observation_detail(record)
@@ -714,8 +715,6 @@ class EvaluationWorkbench:
             self._revision(record.revision, expected_revision)
             source = EvaluationSource.model_validate(record.source_snapshot)
             ballots, index = self._ballot(record, actor, now)
-            if {item.id for item in source.findings} != set(ballots[index].decisions):
-                raise ValueError("请先为每条问题保存复核结论，再提交本次复核")
             ballots[index] = ballots[index].model_copy(update={"submitted_at": now, "updated_at": now})
             self._save_ballots(case, record, source, ballots, now)
             _audit(session, case.dataset_id, actor, "review_submitted",

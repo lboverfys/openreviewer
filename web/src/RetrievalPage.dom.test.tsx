@@ -31,15 +31,15 @@ describe("代码检索页面", () => {
     render(<RetrievalPage onSignedOut={vi.fn()} />);
     expect(screen.getByRole("button", {name: "执行检索"})).toBeInTheDocument();
     expect(api.retrievalEvaluations).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", {name: "检索效果（高级）"}));
+    fireEvent.click(screen.getByRole("button", {name: "检索方式对比"}));
     await waitFor(() => expect(api.retrievalEvaluations).toHaveBeenCalledTimes(1));
   });
   it("无索引和无评测时明确展示未就绪状态", async () => {
     render(<RetrievalPage onSignedOut={vi.fn()} />);
     await screen.findByText("建立索引后即可检索对应提交的代码。");
     expect(screen.getByRole("button", {name: "执行检索"})).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", {name: "检索效果（高级）"}));
-    expect(screen.getByText(/尚未运行评测/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", {name: "检索方式对比"}));
+    expect(screen.getByText(/还没有对比报告/)).toBeInTheDocument();
     expect(screen.queryByText("100%")).not.toBeInTheDocument();
   });
   it("保存后清空输入密钥，保留后端配置状态", async () => {

@@ -524,11 +524,13 @@ def _supersede_previous_versions(
         ExecutionStatus.COMPLETED.value,
     )
     previous_run_ids = select(ReviewRunRecord.id).where(
+        ReviewRunRecord.installation_id == current_run.installation_id,
         ReviewRunRecord.repository_id == current_run.repository_id,
         ReviewRunRecord.pull_request_number == current_run.pull_request_number,
         ReviewRunRecord.id != current_run.id,
         ReviewRunRecord.head_sha != current_run.head_sha,
         ReviewRunRecord.snapshot_review.is_(False),
+        ReviewRunRecord.created_at <= current_run.created_at,
         ReviewRunRecord.execution_status.in_(replaceable_statuses),
     )
     session.execute(

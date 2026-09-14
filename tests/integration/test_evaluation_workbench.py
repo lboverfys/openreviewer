@@ -139,7 +139,7 @@ def test_import_rejects_cross_scope_changed_sha_and_split_leakage(database):
     assert service.cases(dataset.id,ALL).items[0].head_sha == "a"*40
 
 
-def test_pair_report_requires_two_submitted_reviews_and_confirmed_references(database):
+def test_pair_report_accepts_one_reviewer_for_each_result_and_reference(database):
     service,dataset,case_id,_runs = create_pair(database)
     set_reference(service,case_id)
     initial = service.report(dataset.id,ALL)
@@ -151,10 +151,6 @@ def test_pair_report_requires_two_submitted_reviews_and_confirmed_references(dat
     candidate = [(FindingEvaluationVerdict.VALID,"auth")]
     for variant,decisions in (("baseline",base),("candidate",candidate)):
         submit_ballot(service,case_id,variant,"alice",decisions)
-    assert service.report(dataset.id,ALL).quality_pairs == 0
-    submit_ballot(service,case_id,"baseline","bob",base)
-    assert service.report(dataset.id,ALL).quality_pairs == 0
-    submit_ballot(service,case_id,"candidate","bob",candidate)
     report = service.report(dataset.id,ALL)
     assert report.quality_pairs == report.reference_pairs == 1
     assert report.baseline.precision == 0.5 and report.candidate.precision == 1
@@ -171,7 +167,8 @@ def test_disagreements_unknown_price_and_missing_pairs_are_explicit(database):
     for actor in ("alice","bob"):
         submit_ballot(service,case_id,"candidate",actor,[("valid",None)])
     report = service.report(dataset.id,ALL)
-    assert report.disputed_pairs == 1 and report.quality_pairs == 0
+    assert report.disputed_pairs == 0 and report.quality_pairs == 1
+    assert report.baseline.false_positive_count == 1
     assert report.priced_pairs == 0 and report.baseline.mean_estimated_cost_usd is None
     assert report.candidate.mean_estimated_cost_usd is None
     assert report.baseline.recall is None
@@ -199,8 +196,7 @@ def test_empty_predictions_need_two_submissions_and_can_miss_known_defects(datab
 def test_source_replacement_and_reference_edits_reset_reviews_explicitly(database):
     service,dataset,case_id,runs = create_pair(database,baseline_findings=["问题"])
     before = service.observation(case_id,"baseline",ALL)
-    with pytest.raises(ValueError,match="每条问题"):
-        service.submit_review(case_id,"baseline",before.observation.revision,"alice",ALL)
+    service.submit_review(case_id,"baseline",before.observation.revision,"alice",ALL)
     completed = submit_ballot(service,case_id,"baseline","alice",[("valid",None)])
     with pytest.raises(EvaluationConflictError):
         service.submit_review(case_id,"baseline",before.observation.revision,"alice",ALL)
@@ -330,14 +326,13 @@ def test_evaluation_api_uses_login_identity_and_enforces_scope_and_csrf(database
     asyncio.run(exercise())
 
 
-def test_same_reviewer_does_not_count_twice_and_third_reviewer_is_rejected(database):
+def test_same_reviewer_is_not_duplicated_and_another_account_can_continue(database):
     service,dataset,case_id,_runs = create_pair(database,baseline_findings=["问题"])
     submit_ballot(service,case_id,"baseline","alice",[("valid",None)])
     repeated = submit_ballot(service,case_id,"baseline","ALICE",[("valid",None)])
     assert len(repeated.ballots) == 1
-    assert repeated.observation.assessment_status == "partial"
+    assert repeated.observation.assessment_status == "complete"
     submit_ballot(service,case_id,"baseline","bob",[("valid",None)])
     current = service.observation(case_id,"baseline",ALL)
-    with pytest.raises(EvaluationConflictError,match="两位"):
-        service.submit_review(case_id,"baseline",current.observation.revision,"charlie",ALL)
+    service.submit_review(case_id,"baseline",current.observation.revision,"charlie",ALL)
     assert service.report(dataset.id,ALL).quality_pairs == 0

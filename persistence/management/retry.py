@@ -117,7 +117,7 @@ def _prepare_failed_node_retry(
 
     if plan is None:
         raise ReviewActionConflictError("失败节点重试需要已有审查计划")
-    if run.coverage_status == "stale":
+    if run.coverage_status == "stale" and not run.snapshot_review:
         raise ReviewActionConflictError("该任务已被新提交替代")
     summary_retry = agent == ReviewAgent.SUMMARY.value and batch_number is None
     summary_failed = _latest_summary_failed(session, run.id)
@@ -155,7 +155,7 @@ def _prepare_failed_node_retry(
     # 事件表达。只有明确存在该失败事件时，才允许在没有可更新批次的
     # 情况下继续，并把计划重新打开给 Worker 执行强制汇总。
     summary_only_retry = (
-        summary_failed
+        (summary_failed or (bool(rows) and plan.model_review_completed_at is None))
         and batch_number is None
         and (agent is None or agent == ReviewAgent.SUMMARY.value)
         and not selected

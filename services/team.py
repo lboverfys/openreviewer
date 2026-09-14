@@ -1,5 +1,6 @@
 """单团队的成员、仓库策略和变更审计。"""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -21,6 +22,7 @@ from persistence.models import (
 )
 from persistence.pagination import apply_cursor as _page_after
 from services.rbac import AccessRole, Permission, ResourceScope, has_permission
+from services.repository_connection import RepositoryConnector
 
 
 class TeamConflictError(ValueError):
@@ -77,6 +79,7 @@ class MemberPage(CursorPage[MemberView]):
 
 class RepositoryWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    installation_id: int | None = Field(default=None, gt=0)
     expected_revision: int = Field(ge=0)
     repository: str = Field(
         min_length=3, max_length=255, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
@@ -85,6 +88,10 @@ class RepositoryWrite(BaseModel):
 
 
 class RepositoryView(BaseModel):
+    connection_installation_id: int | None = None
+    connection_repository_id: int | None = None
+    connected_at: datetime | None = None
+    connection_error: str | None = None
     id: str
     repository: str
     policy: RepositoryPolicy
@@ -111,6 +118,8 @@ _REPOSITORY_COLUMNS = (
     RepositoryPolicyRecord.policy, RepositoryPolicyRecord.revision,
     RepositoryPolicyRecord.created_at, RepositoryPolicyRecord.updated_at,
     RepositoryPolicyRecord.updated_by,
+    RepositoryPolicyRecord.connection_installation_id, RepositoryPolicyRecord.connection_repository_id,
+    RepositoryPolicyRecord.connected_at, RepositoryPolicyRecord.connection_error,
 )
 
 
@@ -118,8 +127,10 @@ class TeamService:
     def __init__(
         self, sessions: sessionmaker[Session], configured_administrator: str,
         *, password_hasher: PasswordHasher | None = None,
+        connector: Callable[[], RepositoryConnector] | None = None,
     ) -> None:
         self.sessions = sessions
+        self.connector = connector
         self.configured_administrator = configured_administrator
         self._hasher = password_hasher or PasswordHasher()
 
@@ -145,8 +156,10 @@ class TeamService:
             or any(not (character.isalnum() or character in "_.@-") for character in username)
         ):
             raise ValueError("用户名仅支持英文字母、数字和 _.@-")
-        if username.casefold() == self.configured_administrator.casefold():
-            raise ValueError("配置管理员由部署配置维护，不能在这里修改")
+        if username.casefold() == self.configured_administrator.casefold() and (
+            not draft.enabled or draft.role is not AccessRole.ADMINISTRATOR or not draft.scope.unrestricted
+        ):
+            raise ValueError("初始管理员必须保持启用和全部管理权限；可在这里修改密码")
         scope = draft.scope.resource_scope()
         if scope.unrestricted and draft.role is not AccessRole.ADMINISTRATOR:
             raise ValueError("只有管理员可以获得全部资源权限")
@@ -229,6 +242,14 @@ class TeamService:
     def save_repository(
         self, draft: RepositoryWrite, actor: str, identifier: str | None = None,
     ) -> RepositoryView:
+        connection = None
+        if draft.installation_id is not None:
+            if self.connector is None:
+                raise ValueError("GitHub App 连接未配置，请联系管理员检查现有 App")
+            repository_id = self.connector().check(draft.installation_id, draft.repository)
+            connection = {"connection_installation_id": draft.installation_id,
+                "connection_repository_id": repository_id, "connected_at": datetime.now(UTC),
+                "connection_error": None}
         now = datetime.now(UTC)
         with self.sessions() as session:
             self._validate_policy(session, draft)
@@ -237,6 +258,8 @@ class TeamService:
                 "revision": draft.expected_revision + 1,
                 "updated_at": now, "updated_by": actor,
             }
+            if connection is not None:
+                values.update(connection)
             if identifier is None:
                 if draft.expected_revision != 0:
                     raise TeamConflictError("新增仓库的版本应为 0")
@@ -264,6 +287,31 @@ class TeamService:
             view = RepositoryView.model_validate(row)
             session.commit()
             return view
+
+    def check_connection(self, identifier: str, actor: str) -> RepositoryView:
+        with self.sessions() as session:
+            row = session.execute(select(*_REPOSITORY_COLUMNS).where(
+                RepositoryPolicyRecord.id == identifier)).mappings().one_or_none()
+        if row is None:
+            raise ValueError("仓库设置不存在")
+        current = RepositoryView.model_validate(row)
+        if self.connector is None or current.connection_installation_id is None:
+            raise ValueError("请先选择现有 App 已授权的仓库")
+        now = datetime.now(UTC)
+        try:
+            repository_id = self.connector().check(current.connection_installation_id, current.repository)
+            values = {"connection_repository_id": repository_id, "connected_at": now, "connection_error": None}
+        except ValueError as exc:
+            values = {"connected_at": None, "connection_error": str(exc)[:500]}
+        with self.sessions() as session, session.begin():
+            changed = session.execute(update(RepositoryPolicyRecord).where(
+                RepositoryPolicyRecord.id == identifier, RepositoryPolicyRecord.revision == current.revision,
+            ).values(**values, revision=current.revision + 1, updated_at=now, updated_by=actor).returning(*_REPOSITORY_COLUMNS)).mappings().one_or_none()
+            if changed is None:
+                raise TeamConflictError("检查期间仓库设置已变化，请重新检查")
+            self._audit(session, "team.repository.connection_checked", current.repository, actor, now,
+                {"connected": values["connected_at"] is not None, "reason": values["connection_error"]})
+            return RepositoryView.model_validate(changed)
 
     def _validate_policy(self, session: Session, draft: RepositoryWrite) -> None:
         if draft.policy.review_profile_id:

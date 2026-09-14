@@ -72,6 +72,7 @@ def batch_page(
                     batch.duration_ms,
                     batch.error_code,
                     batch.error_message,
+                    batch.result["output"]["findings"].label("candidates"),
                 )
                 .join(ReviewPlanRecord, ReviewPlanRecord.id == batch.review_plan_id)
                 .where(
@@ -87,7 +88,7 @@ def batch_page(
         )
     return CursorPage(
         items=tuple(
-            BatchSnapshot.model_validate(redact_sensitive(dict(row)))
+            BatchSnapshot.model_validate(redact_sensitive({**row, "candidates": row["candidates"] or []}))
             for row in rows[:limit]
         ),
         next_cursor=str(rows[limit - 1]["batch_number"]) if len(rows) > limit else None,

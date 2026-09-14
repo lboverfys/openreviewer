@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from threading import RLock
 from uuid import uuid4
 
-from sqlalchemy import and_, func, insert, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, defer, sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
@@ -22,6 +22,7 @@ from persistence.models import (
     KnowledgeDocumentVersionRecord,
     KnowledgeLibraryRecord,
 )
+from persistence.models.knowledge import KnowledgeDeletionRecord
 
 _TOKEN = re.compile(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}")
 _CJK_RUN = re.compile(r"^[\u4e00-\u9fff]+$")
@@ -184,6 +185,9 @@ class MarkdownKnowledgeBase:
         self._search_index_lock = RLock()
         if max_files <= 0 or max_file_bytes <= 0 or max_total_bytes < max_file_bytes:
             raise ValueError("知识库边界无效")
+
+    def filter_active_chunks(self, chunks: tuple[KnowledgeChunk, ...]) -> tuple[KnowledgeChunk, ...]:
+        return chunks
 
     def chunks(self) -> tuple[KnowledgeChunk, ...]:
         if self._chunks_cache is not None:
@@ -401,6 +405,14 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
         self._cache_revision = -1
         self._seed_checked = False
         self._cache_lock = RLock()
+
+    def filter_active_chunks(self, chunks: tuple[KnowledgeChunk, ...]) -> tuple[KnowledgeChunk, ...]:
+        sources = {chunk.source for chunk in chunks}
+        with self._sessions() as session:
+            active = set(session.scalars(select(KnowledgeDocumentRecord.source).where(
+                KnowledgeDocumentRecord.source.in_(sources), KnowledgeDocumentRecord.enabled.is_(True),
+                KnowledgeDocumentRecord.archived_at.is_(None)).limit(self.max_files)))
+        return tuple(chunk for chunk in chunks if chunk.source in active)
 
     def chunks(self) -> tuple[KnowledgeChunk, ...]:
         with self._cache_lock:
@@ -823,34 +835,27 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
             document=self.get_document(document_id),
         )
 
-    def install_project_pack(self, expected_revision: int, actor: str) -> KnowledgeLibraryView:
-        """批量补充内置项目资料，不覆盖已有文档或人工编辑。"""
-        self._ensure_seeded()
-        seeds = tuple(seed for seed in self._seed_documents if seed.repository_scope)
+    def delete_document(self, document_id: str, *, expected_revision: int,
+                        expected_document_version: int, actor: str) -> int:
+        """删除正文和全部文档版本；旧报告保存的引用内容不受影响。"""
         now = self._clock()
-        with self._sessions() as session, session.begin():
-            state = self._lock_state(session, expected_revision, actor, now)
-            existing = set(session.scalars(select(KnowledgeDocumentRecord.source).where(
-                KnowledgeDocumentRecord.source.in_([seed.source for seed in seeds]),
-            ).limit(self.max_files)))
-            missing = [seed for seed in seeds if seed.source not in existing]
-            count = session.scalar(select(func.count(KnowledgeDocumentRecord.id))) or 0
-            _, enabled_bytes = self._enabled_totals(session)
-            if count + len(missing) > self.max_files or enabled_bytes + sum(s.byte_size for s in missing) > self.max_total_bytes:
-                raise KnowledgeValidationError("项目资料超过知识库文档或容量上限")
-            documents, versions = [], []
-            for seed in missing:
-                identifier = str(uuid4())
-                documents.append(dict(id=identifier, source=seed.source, repository_scope=seed.repository_scope,
-                    enabled=True, current_version=1, created_by=actor, updated_by=actor, created_at=now, updated_at=now))
-                versions.append(dict(id=str(uuid4()), document_id=identifier, version=1,
-                    content=seed.content, content_sha256=seed.content_sha256, byte_size=seed.byte_size,
-                    created_by=actor, created_at=now))
-            if documents:
-                session.execute(insert(KnowledgeDocumentRecord), documents)
-                session.execute(insert(KnowledgeDocumentVersionRecord), versions)
+        try:
+            with self._sessions() as session, session.begin():
+                state = self._lock_state(session, expected_revision, actor, now)
+                document, _ = self._locked_document(session, document_id)
+                if document.current_version != expected_document_version:
+                    raise KnowledgeConflictError("文档已变化，请刷新后重试")
+                if session.get(KnowledgeDeletionRecord, document.source) is None:
+                    session.add(KnowledgeDeletionRecord(source=document.source,
+                        deleted_by=actor, deleted_at=now))
+                session.execute(delete(KnowledgeDocumentVersionRecord).where(
+                    KnowledgeDocumentVersionRecord.document_id == document_id))
+                session.delete(document)
                 self._advance_state(state, actor, now)
-        return self.list_documents()
+                revision = state.revision
+            return revision
+        except SQLAlchemyError as exc:
+            raise KnowledgePersistenceError("文档暂时无法删除") from exc
 
     def _ensure_seeded(self) -> None:
         if self._seed_is_checked():
@@ -865,7 +870,7 @@ class ManagedMarkdownKnowledgeBase(MarkdownKnowledgeBase):
                     existing = session.scalar(
                         select(KnowledgeDocumentRecord.id).limit(1)
                     )
-                    if existing is None and self._seed_documents:
+                    if state.revision == 0 and existing is None and self._seed_documents:
                         for seed in self._seed_documents:
                             document_id = str(uuid4())
                             session.add(

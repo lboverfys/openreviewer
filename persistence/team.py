@@ -27,9 +27,7 @@ class SqlAlchemyMemberStore:
         self.sessions = sessions
 
     def bootstrap(self, settings: AuthSettings) -> None:
-        """最多 31 个旧成员一次导入；更新、停用后不会被配置文件覆盖。"""
-        if not settings.additional_users:
-            return
+        """初始管理员和旧成员一次导入；更新、停用后不会被配置文件覆盖。"""
         now = datetime.now(UTC)
         values = [
             {
@@ -44,7 +42,7 @@ class SqlAlchemyMemberStore:
                 "updated_at": now,
                 "updated_by": settings.username,
             }
-            for user in settings.additional_users
+            for user in settings.users
         ]
         with self.sessions() as session:
             try:

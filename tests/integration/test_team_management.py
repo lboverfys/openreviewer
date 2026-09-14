@@ -46,6 +46,7 @@ from tests.support import (
 
 def _services(database):
     member_store = SqlAlchemyMemberStore(database.sessions)
+    member_store.bootstrap(make_auth_service().settings)
     authentication = AuthService(
         make_auth_service().settings, password_hasher=TEST_HASHER,
         member_store=member_store,

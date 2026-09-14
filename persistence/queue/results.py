@@ -344,6 +344,7 @@ def store_model_review(
             newer_run_id = session.scalar(
                 select(ReviewRunRecord.id)
                 .where(
+                    ReviewRunRecord.installation_id == run.installation_id,
                     ReviewRunRecord.repository_id == run.repository_id,
                     ReviewRunRecord.pull_request_number == run.pull_request_number,
                     ReviewRunRecord.id != run.id,
@@ -355,35 +356,11 @@ def store_model_review(
                 .limit(1)
             )
             if newer_run_id is not None and not run.snapshot_review:
-                _set_owned_status(
-                    task,
-                    run,
-                    ExecutionStatus.SUPERSEDED,
-                    now,
-                )
-                _set_workflow_status(
-                    task,
-                    run,
-                    ExecutionStatus.SUPERSEDED,
-                    now,
-                )
+                # 模型已完成时保留报告，转为历史结果；不写当前 PR 的问题状态。
+                run.snapshot_review = True
                 run.publish_attempt_token = None
-                run.coverage_status = CoverageStatus.STALE.value
-                _add_event(
-                    self,
-                    session,
-                    task,
-                    "review.superseded",
-                    f"model-head-stale:{task.model_attempt_count}",
-                    now,
-                )
-                session.commit()
-                return StoredModelReview(
-                    model_call_id=None,
-                    created=False,
-                    finding_count=0,
-                    execution_status=ExecutionStatus.SUPERSEDED,
-                )
+                _add_event(self, session, task, "review.saved_as_history",
+                    f"model-head-changed:{task.model_attempt_count}", now)
 
             incomplete_file_count = session.scalar(
                 select(func.count())

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
 import RetrievalTracePanel, { retrievalStrategyLabels, vectorSearchLabel } from "./RetrievalTracePanel";
+import RetrievalHistoryPanel from "./RetrievalHistoryPanel";
+import RetrievalCompareForm from "./RetrievalCompareForm";
 import CodeIndexPanel from "./CodeIndexPanel";
 import Pagination from "./Pagination";
 import { useCursorPage } from "./useCursorPage";
@@ -8,8 +10,8 @@ import { formatDuration } from "./review-details";
 import type { CodeIndexView, IndexTarget, RetrievalOperations, RetrievalEvaluationReport, RetrievalSettingsView, RetrievalStrategy, RetrievalTrace } from "./types";
 import { errorMessage, formatDate } from "./utils";
 
-type Tab = "search" | "evaluations";
-const annotationLabels: Record<string, string> = { synthetic_contract: "合成契约样本", agent_annotated: "代理标注 · 非独立人工金标", independent_human: "独立人工标注" };
+type Tab = "search" | "history" | "evaluations";
+const annotationLabels: Record<string, string> = { single_reviewer: "单人标注", synthetic_contract: "合成契约样本", agent_annotated: "代理标注 · 非独立人工金标", independent_human: "独立人工标注" };
 
 export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
   onSignedOut: (message?: string) => void; initialReviewRunId?: string;
@@ -37,7 +39,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
   const loadIndexes = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalIndexes(signal, cursor, force), []);
   const loadTargets = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalTargets(signal, cursor, force), []);
   const loadReports = useCallback((cursor?: string, signal?: AbortSignal, force = false) => api.retrievalEvaluations(signal, cursor, force), []);
-  const indexPage = useCursorPage<CodeIndexView>({cacheKey: "retrieval-indexes", load: loadIndexes, onError: handleError, enabled: tab === "search"});
+  const indexPage = useCursorPage<CodeIndexView>({cacheKey: "retrieval-indexes", load: loadIndexes, onError: handleError, enabled: true});
   const targetPage = useCursorPage<IndexTarget>({cacheKey: "retrieval-targets", load: loadTargets, onError: handleError, enabled: tab === "search"});
   const reportPage = useCursorPage<RetrievalEvaluationReport>({cacheKey: "retrieval-evaluations", load: loadReports, onError: handleError, enabled: tab === "evaluations"});
   const indexes = indexPage.data?.items ?? [];
@@ -107,7 +109,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
     <section className="retrieval-hero">
       <div className="retrieval-hero-copy">
         <h1>代码检索</h1>
-        <p>审查会自动从这里取关联代码；你也可以手动搜索，核对 AI 使用的依据。这里不直接生成代码审查结论。</p><nav className="workspace-links"><a href="#knowledge">← 知识文档</a><a href="#settings?section=retrieval">检索模型与开关 →</a></nav>
+        <p>审查会自动准备当前提交的基础索引，并在开启外部调用时补齐预算内的缺失向量，然后查找关联代码。你也可以搜索并回看记录，核对 AI 的依据。</p><nav className="workspace-links"><a href="#knowledge">← 知识文档</a><a href="#settings?section=retrieval">检索模型与开关 →</a></nav>
       </div>
       <button type="button" className="btn-ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -133,8 +135,10 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
       </div>
     </div>
     <nav className="seg-tabs retrieval-tabs" aria-label="代码检索页面">
-      {([["search", "索引与检索"], ["evaluations", "检索效果（高级）"]] as const).map(([key, label]) => <button key={key} className={tab === key ? "is-active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
+      {([["search", "索引与检索"], ["history", "搜索记录"], ["evaluations", "检索方式对比"]] as const).map(([key, label]) => <button key={key} className={tab === key ? "is-active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
     </nav>
+    {tab !== "search" && <section className="retrieval-card"><label>仓库与提交<select aria-label="仓库与提交" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{indexes.map(item => <option key={item.id} value={item.id}>{item.repository} · {item.head_sha.slice(0, 8)}</option>)}</select></label><Pagination page={indexPage.page} count={indexes.length} hasNext={Boolean(indexPage.data?.next_cursor)} busy={indexPage.loading} onPrevious={indexPage.previous} onNext={indexPage.next}/></section>}
+    {tab === "history" && <RetrievalHistoryPanel key={selectedId} indexId={selectedId} onError={handleError}/>}
     {error && <div role="alert" className="toast-banner is-error">{error}</div>}
     {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>向量与精排调用已关闭</strong><p>关键词和代码关系检索仍可用于审查，GPT 审查不受影响。<a href="#settings?section=retrieval">到模型配置开启 →</a></p></div></div>}
     {message && <div role="status" className="toast-banner is-success">{message}</div>}
@@ -158,7 +162,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
               searchController.current?.abort();
               const controller = new AbortController(); searchController.current = controller;
               const next = await api.searchCodeIndex(selectedId, {query, strategy, symbols: [], seed_files: seedFiles.split(/\r?\n/).map(value => value.trim()).filter(Boolean), limit: view?.settings.context_k ?? 8}, controller.signal);
-              if (!controller.signal.aborted) setTrace(next);
+              if (!controller.signal.aborted) {setTrace(next); setMessage("搜索已保存，可在搜索记录中回看。");}
             });
           }}>
             <label>需要查找的代码或问题<textarea rows={3} value={query} maxLength={4000} onChange={event => setQuery(event.target.value)} placeholder="例如：查找循环查询用户信息所调用的 Mapper 和 SQL，检查是否可改为批量查询。" /></label>
@@ -173,8 +177,8 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
         </section>
       </div>}
       {tab === "evaluations" && <section className="retrieval-card">
-        <h2>固定样本策略对比</h2><p className="retrieval-muted">对照相同样本、模型与 K 值，查看每一路召回和精排带来的变化。检索指标不等同于代码审查准确率。</p>
-        {!reports.length && <div className="retrieval-empty">尚未运行评测。完成样本标注并执行评测工具后，结果会显示在这里。</div>}
+        <RetrievalCompareForm indexId={selectedId} onSaved={() => {void reportPage.refresh(); setMessage("对比已保存，标注依据和结果可在报告中查看。");}} onError={handleError}/><h2>已保存的对比</h2><p className="retrieval-muted">对照相同样本、模型与 K 值，查看每一路召回和精排带来的变化。检索指标不等同于代码审查准确率。</p>
+        {!reports.length && <div className="retrieval-empty">还没有对比报告。在上方填写应该找到的代码，即可完成一次网页对比。</div>}
         {reports.map(report => {
           const baseline = report.strategies.find(item => item.strategy === "bm25");
           return <article className="retrieval-report" key={report.id}>
@@ -184,6 +188,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
             <div className="retrieval-table-scroll"><table><thead><tr><th>策略</th><th>样本数</th><th>Recall@K</th><th>MRR</th><th>中位耗时</th><th>P95 耗时</th><th>召回率较基线</th></tr></thead><tbody>
               {report.strategies.map(item => <tr key={item.strategy}><td>{retrievalStrategyLabels[item.strategy]}</td><td>{item.sample_count}</td><td>{(item.recall_at_k * 100).toFixed(1)}% <small>K={item.k}</small></td><td>{item.mrr.toFixed(3)}</td><td>{formatDuration(Math.round(item.median_duration_ms))}</td><td>{formatDuration(Math.round(item.p95_duration_ms))}</td><td>{baseline ? `${item.recall_at_k >= baseline.recall_at_k ? "+" : ""}${((item.recall_at_k - baseline.recall_at_k) * 100).toFixed(1)} 个百分点` : "—"}</td></tr>)}
             </tbody></table></div>
+            <details><summary>标注依据与返回代码</summary>{report.strategies.map(item => <div key={item.strategy}><h4>{retrievalStrategyLabels[item.strategy]}</h4>{item.cases.map((entry, number) => <p key={number}>查询：{String(entry.query ?? entry.case_id)} · 提交：{String(entry.head_sha ?? "历史未记录").slice(0, 8)}<br/>应该找到：{Array.isArray(entry.expected_symbols) ? entry.expected_symbols.join("、") : "历史未记录"}<br/>实际返回：{Array.isArray(entry.symbols) ? entry.symbols.join("、") || "无" : "未记录"}</p>)}</div>)}</details>
             <p className="retrieval-muted">真实审查准确率：{report.real_review_accuracy == null ? "未评测" : `${(report.real_review_accuracy * 100).toFixed(1)}%`}。标注来源和样本规模是解释结果的必要条件。</p>
           </article>;
         })}

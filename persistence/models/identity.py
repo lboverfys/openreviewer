@@ -99,6 +99,10 @@ class RepositoryPolicyRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     repository: Mapped[str] = mapped_column(String(255), nullable=False)
     repository_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    connection_installation_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    connection_repository_id: Mapped[int | None] = mapped_column(BigInteger)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    connection_error: Mapped[str | None] = mapped_column(String(500))
     policy: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(

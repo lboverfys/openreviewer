@@ -63,7 +63,7 @@ def profile_quality(session, identifier, scope, dataset_id=None, *, lock=False):
         ):
             reasons.append("样本必须分别绑定当前启用方案与待启用方案，不能使用其他方案的成绩")
         if report.reference_pairs < 20:
-            reasons.append("尚不足 20 组完成双人复核和参考标签确认的验收样本")
+            reasons.append("尚不足 20 组完成核对和参考标签确认的验收样本")
         if report.reference_pairs != report.case_count or report.pending_pairs or report.disputed_pairs:
             reasons.append("验收集仍有缺失、待复核或分歧样本")
         if not all((report.normal_count, report.known_defect_count, report.cross_file_count)):

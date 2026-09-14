@@ -1351,7 +1351,7 @@ def test_model_aggregating_state_is_atomic_and_idempotent(database: Database) ->
         assert events[0].payload["agent_count"] == 3
 
 
-def test_new_sha_discards_model_result_before_call_and_finding_insert(
+def test_new_sha_keeps_completed_model_result_as_history(
     database: Database,
 ) -> None:
     clock = MutableClock(datetime(2026, 8, 25, 11, 30, tzinfo=UTC))
@@ -1383,19 +1383,19 @@ def test_new_sha_discards_model_result_before_call_and_finding_insert(
         findings,
     )
 
-    assert stored.execution_status is ExecutionStatus.SUPERSEDED
-    assert stored.model_call_id is None
+    assert stored.execution_status is ExecutionStatus.COMPLETED
+    assert stored.model_call_id is not None
     with database.sessions() as session:
         old_task = session.get(ReviewTaskRecord, old_task_id)
         old_run = session.get(ReviewRunRecord, old_run_id)
         assert old_task is not None
-        assert old_run is not None
-        assert old_task.execution_status == ExecutionStatus.SUPERSEDED.value
-        assert old_run.execution_status == ExecutionStatus.SUPERSEDED.value
-        assert session.scalar(select(func.count()).select_from(ModelCallRecord)) == 0
+        assert old_run is not None and old_run.snapshot_review
+        assert old_task.execution_status == ExecutionStatus.COMPLETED.value
+        assert old_run.execution_status == ExecutionStatus.COMPLETED.value
+        assert session.scalar(select(func.count()).select_from(ModelCallRecord)) == 1
         assert session.scalar(
             select(func.count()).select_from(ReviewFindingRecord)
-        ) == 0
+        ) == 1
 
 
 def test_model_stage_uses_an_independent_retry_counter(database: Database) -> None:

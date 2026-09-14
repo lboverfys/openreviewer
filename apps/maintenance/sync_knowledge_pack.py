@@ -23,6 +23,7 @@ from persistence.models import (
 from persistence.models import (
     KnowledgeLibraryRecord as Library,
 )
+from persistence.models.knowledge import KnowledgeDeletionRecord
 from services.rag import (
     KnowledgeConflictError,
     KnowledgeValidationError,
@@ -69,6 +70,8 @@ def sync_pack(
         ).join(Version, and_(Version.document_id == Document.id, Version.version == Document.current_version))
             .where(Document.source.in_(sorted(sources | previous.keys()))).limit(128)).mappings().all()
         existing = {row.source: row for row in rows}
+        deleted = set(session.scalars(select(KnowledgeDeletionRecord.source).where(
+            KnowledgeDeletionRecord.source.in_(sorted(sources | previous.keys()))).limit(128)))
         report: dict[str, Any] = dict(revision=state.revision, applied=False,
             create=[], update=[], archive=[], unchanged=[], conflicts=[])
         new_documents: list[dict[str, Any]] = []
@@ -76,6 +79,9 @@ def sync_pack(
         updates: list[dict[str, Any]] = []
         byte_delta = 0
         for source in sorted(sources | previous.keys()):
+            if source in deleted:
+                report["unchanged"].append(source)
+                continue
             row, seed = existing.get(source), seeds.get(source)
             if seed is None:
                 if row is None or row.archived_at is not None:

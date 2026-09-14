@@ -210,6 +210,27 @@ def apply_action(
             workflow_current = ExecutionStatus(
                 run.workflow_status or run.execution_status
             )
+            if action in {ReviewAction.RETRY, ReviewAction.RETRY_FAILED_NODE, ReviewAction.RETRY_STAGE, ReviewAction.RESUME} and not run.snapshot_review:
+                newer = session.scalar(select(ReviewRunRecord.id).where(
+                    ReviewRunRecord.installation_id == run.installation_id,
+                    ReviewRunRecord.repository_id == run.repository_id,
+                    ReviewRunRecord.pull_request_number == run.pull_request_number,
+                    ReviewRunRecord.head_sha != run.head_sha,
+                    ReviewRunRecord.snapshot_review.is_(False),
+                    ReviewRunRecord.created_at >= run.created_at,
+                ).limit(1))
+                if newer is not None or run.coverage_status == "stale":
+                    saved_retry = session.execute(select(PullRequestVersionRecord.files_complete,
+                        PullRequestVersionRecord.diff_complete).where(
+                        PullRequestVersionRecord.review_version_key == run.review_version_key)).one_or_none()
+                    if saved_retry is None or not saved_retry.files_complete or not saved_retry.diff_complete:
+                        raise ReviewActionConflictError("旧版本代码未完整保存，请使用检查最新提交")
+                    run.snapshot_review = True
+                    run.coverage_status = "partial"
+                    run.approval_requested_at = run.approval_due_at = None
+                    run.approval_assignee = None
+                    run.publish_attempt_token = None
+
             if run.snapshot_review and target_stage == ExecutionStatus.CI.value:
                 raise ReviewActionConflictError("历史版本复查不包含 CI，请从规划或 AI 步骤重试")
 

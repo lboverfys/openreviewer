@@ -128,6 +128,10 @@ class GitHubAppTokenProvider:
     def app_id(self) -> int:
         return self._settings.app_id
 
+    def app_request(self, path: str, params: dict[str, str | int] | None = None) -> object:
+        return self._api.request_json("GET", path,
+            bearer_token=self._build_app_jwt(self._now()), params=params).payload
+
     def get_token(self, installation_id: int) -> str:
         if installation_id <= 0:
             raise ValueError("GitHub installation ID must be positive")

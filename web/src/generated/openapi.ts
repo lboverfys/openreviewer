@@ -493,7 +493,8 @@ export interface paths {
         /** Update Knowledge Document */
         put: operations["update_knowledge_document_api_v1_knowledge_documents__document_id__put"];
         post?: never;
-        delete?: never;
+        /** Delete Knowledge Document */
+        delete: operations["delete_knowledge_document_api_v1_knowledge_documents__document_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -544,23 +545,6 @@ export interface paths {
         put?: never;
         /** Restore Knowledge Document Version */
         post: operations["restore_knowledge_document_version_api_v1_knowledge_documents__document_id__versions__version__restore_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/knowledge/project-pack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Install Project Pack */
-        post: operations["install_project_pack_api_v1_knowledge_project_pack_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -876,6 +860,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/retrieval/history/{identifier}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History Detail */
+        get: operations["history_detail_api_v1_retrieval_history__identifier__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/retrieval/indexes": {
         parameters: {
             query?: never;
@@ -911,6 +912,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/retrieval/indexes/{index_id}/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Compare */
+        post: operations["compare_api_v1_retrieval_indexes__index_id__compare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/retrieval/indexes/{index_id}/enrich": {
         parameters: {
             query?: never;
@@ -922,6 +940,23 @@ export interface paths {
         put?: never;
         /** Enrich */
         post: operations["enrich_api_v1_retrieval_indexes__index_id__enrich_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/retrieval/indexes/{index_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History */
+        get: operations["history_api_v1_retrieval_indexes__index_id__history_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1477,6 +1512,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/team/github/installations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Installations */
+        get: operations["installations_api_v1_team_github_installations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/team/github/installations/{installation_id}/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Authorized Repositories */
+        get: operations["authorized_repositories_api_v1_team_github_installations__installation_id__repositories_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/team/members": {
         parameters: {
             query?: never;
@@ -1540,6 +1609,23 @@ export interface paths {
         /** Save Repository */
         put: operations["save_repository_api_v1_team_repositories__repository_id__put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/team/repositories/{repository_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check Connection */
+        post: operations["check_connection_api_v1_team_repositories__repository_id__check_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1936,6 +2022,11 @@ export interface components {
         BatchSnapshot: {
             /** Batch Number */
             batch_number: number;
+            /**
+             * Candidates
+             * @default []
+             */
+            candidates: components["schemas"]["ModelFindingCandidate"][];
             /** Duration Ms */
             duration_ms: number | null;
             /** Error Code */
@@ -2136,6 +2227,13 @@ export interface components {
         CursorPage_ReviewFindingResponse_: {
             /** Items */
             items: components["schemas"]["ReviewFindingResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[SearchHistoryItem] */
+        CursorPage_SearchHistoryItem_: {
+            /** Items */
+            items: components["schemas"]["SearchHistoryItem"][];
             /** Next Cursor */
             next_cursor?: string | null;
         };
@@ -2501,7 +2599,8 @@ export interface components {
             note: string;
             /** Reference Key */
             reference_key?: string | null;
-            verdict: components["schemas"]["FindingEvaluationVerdict"];
+            /** Verdict */
+            verdict: components["schemas"]["FindingEvaluationVerdict"] | "uncertain";
         };
         /** EvaluationFinding */
         EvaluationFinding: {
@@ -2556,16 +2655,43 @@ export interface components {
         EvaluationOverview: {
             /** Case Count */
             case_count: number;
+            /** Estimated Cost Microusd */
+            estimated_cost_microusd?: number | null;
             /** False Positive Findings */
             false_positive_findings: number;
             /** Missing Reference Cases */
             missing_reference_cases: number;
+            /**
+             * Model Duration Ms
+             * @default 0
+             */
+            model_duration_ms: number;
             /** Observation Count */
             observation_count: number;
+            /**
+             * Review Source
+             * @default 单人核对，以最近保存的判断为准
+             */
+            review_source: string;
             /** Reviewed Findings */
             reviewed_findings: number;
             /** Reviewed Observations */
             reviewed_observations: number;
+            /**
+             * Turnaround Ms
+             * @default 0
+             */
+            turnaround_ms: number;
+            /**
+             * Uncertain Findings
+             * @default 0
+             */
+            uncertain_findings: number;
+            /**
+             * Unpriced Observations
+             * @default 0
+             */
+            unpriced_observations: number;
             /** Unreviewed Findings */
             unreviewed_findings: number;
             /** Valid Findings */
@@ -2843,6 +2969,8 @@ export interface components {
              * @default 0
              */
             parsed_files: number;
+            /** Preparation Started At */
+            preparation_started_at?: string | null;
             /** Relation Count */
             relation_count: number;
             /** Repository */
@@ -3083,6 +3211,11 @@ export interface components {
             /** Version */
             version: number;
         };
+        /**
+         * LocationSide
+         * @enum {string}
+         */
+        LocationSide: "left" | "right";
         /** LoginRequest */
         LoginRequest: {
             /** Password */
@@ -3165,6 +3298,53 @@ export interface components {
          * @enum {string}
          */
         ModelApiProtocol: "responses" | "chat_completions" | "messages";
+        /**
+         * ModelFindingCandidate
+         * @description 模型可生成的 Finding 候选，不含平台拥有的身份和复核字段。
+         */
+        ModelFindingCandidate: {
+            category: components["schemas"]["FindingCategory"];
+            /** Confidence */
+            confidence: number;
+            /**
+             * Context References
+             * @default []
+             */
+            context_references: string[];
+            /** Evidence */
+            evidence: string;
+            /** Identity Hint */
+            identity_hint?: string | null;
+            /** Impact */
+            impact: string;
+            location: components["schemas"]["ModelFindingLocation"] | null;
+            /** Required Test */
+            required_test: string | null;
+            /** Rule Reference */
+            rule_reference: string | null;
+            severity: components["schemas"]["Severity"];
+            /** Suggestion */
+            suggestion: string;
+            /** Title */
+            title: string;
+            /** Unit Key */
+            unit_key: string;
+        };
+        /**
+         * ModelFindingLocation
+         * @description 模型声明的位置；blob 身份和 diff 复核由平台补齐。
+         */
+        ModelFindingLocation: {
+            /** End Line */
+            end_line: number;
+            /** File */
+            file: string;
+            side: components["schemas"]["LocationSide"];
+            /** Start Line */
+            start_line: number;
+            /** Symbol */
+            symbol: string | null;
+        };
         /**
          * ModelProvider
          * @description 模型调用适配器支持的供应商。
@@ -3594,6 +3774,14 @@ export interface components {
         };
         /** RepositoryView */
         RepositoryView: {
+            /** Connected At */
+            connected_at?: string | null;
+            /** Connection Error */
+            connection_error?: string | null;
+            /** Connection Installation Id */
+            connection_installation_id?: number | null;
+            /** Connection Repository Id */
+            connection_repository_id?: number | null;
             /**
              * Created At
              * Format: date-time
@@ -3618,9 +3806,31 @@ export interface components {
         RepositoryWrite: {
             /** Expected Revision */
             expected_revision: number;
+            /** Installation Id */
+            installation_id?: number | null;
             policy?: components["schemas"]["RepositoryPolicy"];
             /** Repository */
             repository: string;
+        };
+        /** RetrievalComparisonRequest */
+        RetrievalComparisonRequest: {
+            /**
+             * K
+             * @default 8
+             */
+            k: number;
+            /** Query */
+            query: string;
+            /** Relevant Symbols */
+            relevant_symbols: string[];
+            /**
+             * Strategies
+             * @default [
+             *       "bm25",
+             *       "lexical_relations"
+             *     ]
+             */
+            strategies: ("bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked")[];
         };
         /** RetrievalEvaluationReport */
         RetrievalEvaluationReport: {
@@ -3628,7 +3838,7 @@ export interface components {
              * Annotation Source
              * @enum {string}
              */
-            annotation_source: "synthetic_contract" | "agent_annotated" | "independent_human";
+            annotation_source: "synthetic_contract" | "agent_annotated" | "independent_human" | "single_reviewer";
             /** Dataset Version */
             dataset_version: string;
             /** Embedding Model */
@@ -4531,6 +4741,33 @@ export interface components {
              * @enum {string}
              */
             route: "bm25" | "vector" | "relation";
+        };
+        /** SearchHistoryItem */
+        SearchHistoryItem: {
+            /** Created At */
+            created_at: string;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Id */
+            id: string;
+            /** Index Id */
+            index_id: string;
+            /** Query */
+            query: string;
+            /** Repository */
+            repository: string;
+            /**
+             * Requested Strategy
+             * @enum {string}
+             */
+            requested_strategy: "bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked";
+            /**
+             * Strategy
+             * @enum {string}
+             */
+            strategy: "bm25" | "lexical_relations" | "hybrid" | "hybrid_relations" | "reranked";
         };
         /** SearchQuery */
         SearchQuery: {
@@ -5854,6 +6091,43 @@ export interface operations {
             };
         };
     };
+    delete_knowledge_document_api_v1_knowledge_documents__document_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KnowledgeDocumentStateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     archive_knowledge_document_api_v1_knowledge_documents__document_id__archive_post: {
         parameters: {
             query?: never;
@@ -5947,39 +6221,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KnowledgeMutationResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    install_project_pack_api_v1_knowledge_project_pack_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AiRevisionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KnowledgeDocumentListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6692,6 +6933,37 @@ export interface operations {
             };
         };
     };
+    history_detail_api_v1_retrieval_history__identifier__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identifier: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalTrace"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     indexes_api_v1_retrieval_indexes_get: {
         parameters: {
             query?: {
@@ -6788,6 +7060,41 @@ export interface operations {
             };
         };
     };
+    compare_api_v1_retrieval_indexes__index_id__compare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                index_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetrievalComparisonRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalEvaluationReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     enrich_api_v1_retrieval_indexes__index_id__enrich_post: {
         parameters: {
             query?: never;
@@ -6808,6 +7115,42 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    history_api_v1_retrieval_indexes__index_id__history_get: {
+        parameters: {
+            query?: {
+                query?: string;
+                strategy?: string;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                index_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_SearchHistoryItem_"];
                 };
             };
             /** @description Validation Error */
@@ -7762,6 +8105,74 @@ export interface operations {
             };
         };
     };
+    installations_api_v1_team_github_installations_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    authorized_repositories_api_v1_team_github_installations__installation_id__repositories_get: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                installation_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_members_api_v1_team_members_get: {
         parameters: {
             query?: {
@@ -7908,6 +8319,37 @@ export interface operations {
                 "application/json": components["schemas"]["RepositoryWrite"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_connection_api_v1_team_repositories__repository_id__check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

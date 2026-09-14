@@ -278,6 +278,7 @@ def store_review_plan(
             newer_run_id = session.scalar(
                 select(ReviewRunRecord.id)
                 .where(
+                    ReviewRunRecord.installation_id == run.installation_id,
                     ReviewRunRecord.repository_id == run.repository_id,
                     ReviewRunRecord.pull_request_number == run.pull_request_number,
                     ReviewRunRecord.id != run.id,

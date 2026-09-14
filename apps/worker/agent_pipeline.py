@@ -134,6 +134,7 @@ def _run_fixed_agent_workflow(
             if ai_runtime.knowledge_chunks is not None
             else self._knowledge_base.chunks()
         )
+        knowledge_chunks = self._knowledge_base.filter_active_chunks(knowledge_chunks)
         knowledge_chunks = tuple(
             chunk
             for chunk in knowledge_chunks

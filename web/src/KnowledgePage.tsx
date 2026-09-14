@@ -248,7 +248,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
     try {
       const previous = document;
       const result = await api.setKnowledgeDocumentArchived(document.id, true, library.revision, document.current_version);
-      applyMutation(result, "《" + previous.title + "》已移出列表，可撤销或在“已移出文档”中找回。", previous);
+      applyMutation(result, "《" + previous.title + "》已删除到回收站，可撤销或在“回收站”中找回。", previous);
     } catch (reason) { handleError(reason); }
     finally { setBusy(""); }
   }
@@ -328,18 +328,15 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
     }
   }
 
-  async function installPack() {
-    if (!library) return;
-    setBusy("pack");
+  async function deleteDocument() {
+    if (!library || !document || !window.confirm("彻底删除这份文档及全部正文版本？无法恢复；旧审查报告已保存的引用会保留。")) return;
+    setBusy("delete");
     try {
-      const result = await api.installKnowledgeProjectPack(library.revision);
-      setLibrary(current => current ? { ...current, revision: result.revision } : current);
-      setMessageKind("success");
-      setMessage("已补充缺少的内置规则。已移出的文档请从“已移出文档”恢复。");
-      setLastRemoved(null);
-      void refreshLibrary(undefined, false);
-    } catch (reason) { handleError(reason); }
-    finally { setBusy(""); }
+      await api.deleteKnowledgeDocument(document.id, library.revision, document.current_version);
+      selectDocument(null); setLastRemoved(null); setEditing(false);
+      setMessageKind("success"); setMessage("文档已彻底删除，不再用于新审查；旧报告仍可查看。");
+      await refreshLibrary(undefined, false);
+    } catch (reason) { handleError(reason); } finally { setBusy(""); }
   }
 
   return (
@@ -355,7 +352,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
         {message && <div className={"knowledge-feedback is-" + messageKind} role={messageKind === "error" ? "alert" : "status"}>
           <span>{message}</span>
           {lastRemoved && messageKind === "success" && <button type="button" disabled={Boolean(busy) || dirty}
-            onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销移出</button>}
+            onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销删除</button>}
           <button type="button" aria-label="关闭提示" onClick={() => { setMessage(""); setLastRemoved(null); }}>×</button>
         </div>}
         <div className="knowledge-workspace">
@@ -366,10 +363,10 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                 <button type="button" role="tab" aria-selected={!archivedView} disabled={Boolean(busy)}
                   onClick={() => changeView(false)}>文档列表</button>
                 <button type="button" role="tab" aria-selected={archivedView} disabled={Boolean(busy)}
-                  onClick={() => changeView(true)}>已移出文档</button>
+                  onClick={() => changeView(true)}>回收站</button>
               </div>
               <input aria-label="搜索文档" value={listQuery} onChange={event => setListQuery(event.target.value)} placeholder="搜索名称或正文" />
-              {archivedView && <p>移出的文档保留在这里，选择后可以恢复。</p>}
+              {archivedView && <p>删除的文档保留在这里，可以恢复或彻底删除。</p>}
             </div>
             <div className="knowledge-document-list">
               {visibleItems.map(item => <button key={item.id} type="button"
@@ -392,11 +389,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
               <button type="button" disabled={Boolean(busy)} onClick={() => uploadRef.current?.click()}>导入 .md 文件</button>
               <input ref={uploadRef} type="file" accept=".md,text/markdown,text/plain" hidden onChange={event => void uploadMarkdown(event)} />
             </div>
-            <details className="knowledge-pack-tools">
-              <summary>补充内置规则</summary>
-              <p>只添加缺少的规则，保留已有修改和移出状态。</p>
-              <button type="button" disabled={!library || Boolean(busy) || dirty} onClick={() => void installPack()}>补充缺少的规则</button>
-            </details>
+
           </aside>
 
           <section className="knowledge-editor-pane" aria-label="文档内容">
@@ -407,7 +400,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                 {document && !document.archived && !editing && <button type="button" onClick={() => setEditing(true)} disabled={Boolean(busy)}>编辑文档</button>}
               </div>
               {document && <section className={"knowledge-use-status" + (document.archived ? " is-removed" : "")} aria-label="文档使用状态">
-                <div><strong>{document.archived ? "已移出列表" : document.enabled ? "AI 可以使用这份规则" : "已暂停使用"}</strong>
+                <div><strong>{document.archived ? "已删除到回收站" : document.enabled ? "AI 可以使用这份规则" : "已暂停使用"}</strong>
                   <p>{document.archived ? "正文和历史版本都在，恢复后即可重新使用。"
                     : document.enabled ? "暂停后仍留在列表，点击按钮直接保存，无需再点保存。"
                     : "文档仍保留。开启后，AI 才能从当前知识库检索这份规则。"}</p></div>
@@ -416,6 +409,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                   : <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void toggleEnabled()}>
                     {busy === "enable" ? "正在保存…" : document.enabled ? "暂停使用" : "开启使用"}</button>}
               </section>}
+              {document && <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void deleteDocument()}>彻底删除文档</button>}
               {editing ? <>
                 <div className="knowledge-document-fields">
                   <label>文件名<input value={draft.source} maxLength={200} disabled={Boolean(busy)}
@@ -438,10 +432,10 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                 <Suspense fallback={<p role="status">正在显示正文…</p>}><ReactMarkdown skipHtml>{draft.content}</ReactMarkdown></Suspense>
               </article>}
               {document && !document.archived && <div className="knowledge-remove-action">
-                <p>暂时不用可“暂停使用”；不再常用可移出列表，之后仍能恢复。</p>
-                <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void removeDocument()}>移出列表</button>
+                <p>暂时不用可“暂停使用”；不再常用可删除到回收站，之后仍能恢复。</p>
+                <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void removeDocument()}>删除到回收站</button>
               </div>}
-              <p className="knowledge-snapshot-note">这些操作影响当前知识库；已有审查和固定方案保留原来的规则快照。</p>
+              <p className="knowledge-snapshot-note">这些操作影响当前知识库；已有审查保留原来的引用；删除后固定方案也不会在新任务中使用这份文档。</p>
               <div className="knowledge-extra-tools">
                 {document && <details open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
                   <summary>历史版本</summary>

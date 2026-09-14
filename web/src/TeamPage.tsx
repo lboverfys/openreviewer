@@ -1,6 +1,7 @@
 import { useCallback, useState, type FormEvent } from "react";
 
 import { api, ApiError } from "./api";
+import RepositoryConnectPanel from "./RepositoryConnectPanel";
 import Pagination from "./Pagination";
 import { roleLabels } from "./rbac";
 import type { AccessRole, TeamMember, TeamMemberWrite, TeamRepository, TeamRepositoryWrite } from "./types";
@@ -13,6 +14,7 @@ type Tab = "repositories" | "members" | "audits";
 const lines = (value: string) => [...new Set(value.split(/[\n,，]+/).map((item) => item.trim()).filter(Boolean))];
 
 export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: string) => void }) {
+  const [connecting, setConnecting] = useState<TeamRepository | "new" | null>(null);
   const [tab, setTab] = useState<Tab>("repositories");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -38,7 +40,7 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
   const page = tab === "members" ? members : tab === "repositories" ? repositories : audits;
 
   const changeTab = (next: Tab) => {
-    setTab(next); setMember(null); setRepository(null); setError(""); setMessage("");
+    setConnecting(null); setTab(next); setMember(null); setRepository(null); setError(""); setMessage("");
   };
   const save = async (operation: () => Promise<unknown>) => {
     setBusy(true); setError(""); setMessage("");
@@ -65,30 +67,34 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
     </nav>}
     {error && <p className="team-error" role="alert">{error}</p>}
     {message && <p className="team-success" role="status">{message}</p>}
-    {!member && !repository && <section className="team-card">
+    {connecting && <RepositoryConnectPanel existing={connecting === "new" ? undefined : connecting} onError={onError} onCancel={() => setConnecting(null)} onSaved={() => {setConnecting(null); setMessage("仓库已接通并启用，新 PR 会自动触发审查。"); void repositories.refresh();}}/>}
+    {!member && !repository && !connecting && <section className="team-card">
       <div className="team-toolbar">
         <h2>{tab === "repositories" ? "已配置仓库" : tab === "members" ? "成员权限" : "最近变更"}</h2>
         {tab !== "audits" && <button type="button" className="team-primary" disabled={busy} onClick={() => {
           setError(""); setMessage("");
-          if (tab === "members") setMember("new"); else setRepository("new");
-        }}>{tab === "members" ? "添加成员" : "添加项目设置"}</button>}
+          if (tab === "members") setMember("new"); else setConnecting("new");
+        }}>{tab === "members" ? "添加成员" : "接入仓库"}</button>}
       </div>
-      {tab === "repositories" && <p className="team-hint">仓库需已授权给 GitHub App。尚未配置策略的仓库沿用原有审查流程；保存后对新任务生效。</p>}
-      {tab === "members" && <p className="team-hint">配置管理员 {administrator || "正在读取…"} 保留完整权限。修改成员角色、范围或密码后，该成员需要重新登录。</p>}
+      {tab === "repositories" && <p className="team-hint">接入仓库会检查现有 GitHub App 的访问权限；保存策略与成功接通会分别显示。</p>}
+      {tab === "members" && <p className="team-hint">初始管理员 {administrator || "正在读取…"} 已纳入下方成员列表，密码可在这里修改；该账号保留启用和管理权限，避免失去登录入口。修改成员角色、范围或密码后，该成员需要重新登录。</p>}
       <div className="team-table-wrap">
         {tab === "repositories" && <table>
-          <thead><tr><th>仓库</th><th>新任务</th><th>目标分支</th><th>审批负责人</th><th>请求上限</th><th>版本</th><th>操作</th></tr></thead>
+          <thead><tr><th>仓库</th><th>接入状态</th><th>新任务</th><th>目标分支</th><th>审批负责人</th><th>请求上限</th><th>版本</th><th>操作</th></tr></thead>
           <tbody>{repositories.data?.items.map((item) => <tr key={item.id}>
-            <td><strong>{item.repository}</strong></td><td><WorkspaceBadge tone={item.policy.enabled ? "success" : "neutral"}>{item.policy.enabled ? "接收" : "暂停"}</WorkspaceBadge></td>
+            <td><strong>{item.repository}</strong></td><td>{item.connected_at ? <><WorkspaceBadge tone="success">已接通</WorkspaceBadge><small>上次检查：{formatDate(item.connected_at)}</small><small>{item.policy.enabled ? "新 PR 自动触发审查" : "已暂停自动审查"}</small></> : <><WorkspaceBadge>尚未检查接入</WorkspaceBadge><small>{item.connection_error ?? "已保存策略，请检查授权和访问能力"}</small></>}</td><td><WorkspaceBadge tone={item.policy.enabled ? "success" : "neutral"}>{item.policy.enabled ? "接收" : "暂停"}</WorkspaceBadge></td>
             <td>{item.policy.target_branches?.join("、") || "全部"}</td><td>{item.policy.approver || "按角色审批"}</td>
             <td>{item.policy.max_model_requests == null ? "不限制" : item.policy.max_model_requests + " 次"}</td><td>v{item.revision}</td>
-            <td><button type="button" aria-label={"编辑仓库 " + item.repository} disabled={busy} onClick={() => {setRepository(item); setMessage("");}}>编辑</button></td>
+            <td><button type="button" aria-label={"编辑仓库 " + item.repository} disabled={busy} onClick={() => {setRepository(item); setMessage("");}}>编辑</button><button disabled={busy} onClick={() => {
+              if (!item.connection_installation_id) {setConnecting(item); setMessage(""); return;}
+              setBusy(true); void api.checkRepositoryConnection(item.id).then(next => {setMessage(next.connected_at ? "访问检查通过，新 PR 按项目策略自动审查。" : "访问检查未通过：" + next.connection_error); void repositories.refresh();}).catch(onError).finally(() => setBusy(false));
+            }}>检查接入</button>{item.connection_error && <button onClick={() => setConnecting(item)}>补充授权</button>}</td>
           </tr>)}</tbody>
         </table>}
         {tab === "members" && <table>
           <thead><tr><th>用户名</th><th>角色</th><th>可见资源</th><th>状态</th><th>版本</th><th>操作</th></tr></thead>
           <tbody>{members.data?.items.map((item) => <tr key={item.username}>
-            <td><div className="team-member-identity"><span className="team-member-avatar">{item.username.slice(0, 1).toUpperCase()}</span><strong>{item.username}</strong></div></td><td>{roleLabels[item.role]}</td>
+            <td><div className="team-member-identity"><span className="team-member-avatar">{item.username.slice(0, 1).toUpperCase()}</span><strong>{item.username}</strong>{item.username.toLowerCase() === administrator.toLowerCase() && <small>初始管理员</small>}</div></td><td>{roleLabels[item.role]}</td>
             <td>{item.scope.unrestricted ? "全部仓库" : [...(item.scope.repositories ?? []), ...(item.scope.organizations ?? []).map((name) => name + "/*")].join("、") || (item.scope.installation_ids?.length ? "指定 App 安装范围" : "未分配")}</td>
             <td><WorkspaceBadge tone={item.enabled ? "success" : "neutral"}>{item.enabled ? "启用" : "停用"}</WorkspaceBadge></td><td><span className="ws-chip">v{item.revision}</span></td>
             <td><button type="button" aria-label={"编辑成员 " + item.username} disabled={busy} onClick={() => {setMember(item); setMessage("");}}>编辑</button></td>
@@ -98,7 +104,7 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
           <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>对象</th><th>变更内容</th></tr></thead>
           <tbody>{audits.data?.items.map((item) => <tr key={item.id}>
             <td>{formatDate(item.occurred_at)}</td><td>{String(item.payload.actor ?? "")}</td>
-            <td>{item.event_type === "team.member.updated" ? "更新成员" : "更新仓库策略"}</td>
+            <td>{item.event_type === "team.member.updated" ? "更新成员" : item.event_type === "team.repository.connection_checked" ? "检查仓库接入" : "更新仓库策略"}</td>
             <td>{String(item.payload.target ?? "")}</td>
             <td><details><summary>查看详情</summary><pre>{JSON.stringify(item.payload, null, 2)}</pre></details></td>
           </tr>)}</tbody>
@@ -107,13 +113,13 @@ export default function TeamPage({ onSignedOut }: { onSignedOut: (message?: stri
       {!page.loading && page.data?.items.length === 0 && <WorkspaceEmpty title={tab === "repositories" ? "尚未配置仓库" : tab === "members" ? "尚未添加成员" : "暂无变更记录"} description={tab === "repositories" ? "为已授权的仓库添加策略，统一管理审查范围与审批。" : tab === "members" ? "新增成员后，为其分配角色与可见仓库。" : "成员与仓库策略的变更会显示在这里。"} />}
       <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={busy || page.loading} onPrevious={page.previous} onNext={page.next} />
     </section>}
-    {member && <MemberEditor key={member === "new" ? "new-member" : member.username + ":" + member.revision} member={member} busy={busy} onCancel={() => setMember(null)} onSave={(username, body) => void save(() => api.saveTeamMember(username, body))} />}
+    {member && <MemberEditor key={member === "new" ? "new-member" : member.username + ":" + member.revision} member={member} initialAdmin={member !== "new" && member.username.toLowerCase() === administrator.toLowerCase()} busy={busy} onCancel={() => setMember(null)} onSave={(username, body) => void save(() => api.saveTeamMember(username, body))} />}
     {repository && <RepositoryEditor key={repository === "new" ? "new-repository" : repository.id + ":" + repository.revision} repository={repository} busy={busy} onCancel={() => setRepository(null)} onSave={(body, id) => void save(() => api.saveTeamRepository(body, id))} />}
   </main>;
 }
 
-function MemberEditor({ member, busy, onCancel, onSave }: {
-  member: TeamMember | "new"; busy: boolean; onCancel: () => void;
+function MemberEditor({ member, initialAdmin, busy, onCancel, onSave }: {
+  member: TeamMember | "new"; initialAdmin: boolean; busy: boolean; onCancel: () => void;
   onSave: (username: string, body: TeamMemberWrite) => void;
 }) {
   const current = member === "new" ? null : member;
@@ -137,16 +143,17 @@ function MemberEditor({ member, busy, onCancel, onSave }: {
   };
   return <section className="team-card team-editor ws-editor" aria-label="成员编辑">
     <div className="ws-editor-heading"><div><h2>{current ? "编辑成员 · " + current.username : "新增成员"}</h2><p>设置账号身份与可见资源，修改后成员需要重新登录。</p></div>{current && <WorkspaceBadge>版本 {current.revision}</WorkspaceBadge>}</div>
+    {initialAdmin && <p>这是初始管理员。部署配置只用于首次导入，之后在这里修改密码；角色、启用状态与全部仓库权限固定保留。</p>}
     <form onSubmit={submit}>
       <fieldset disabled={busy}>
         <WorkspaceSection title="账号信息" description="分配角色，维护账号状态与登录密码。"><div className="team-form-grid">
           <label>用户名<input value={username} disabled={Boolean(current)} required maxLength={100} pattern={"[A-Za-z0-9_.@\\-]+"} autoComplete="off" onChange={(event) => setUsername(event.target.value)} /></label>
-          <label>角色<select value={role} onChange={(event) => {setRole(event.target.value as AccessRole); setUnrestricted(event.target.value === "administrator");}}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>角色<select disabled={initialAdmin} value={role} onChange={(event) => {setRole(event.target.value as AccessRole); setUnrestricted(event.target.value === "administrator");}}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>{current ? "新密码（留空保留）" : "初始密码"}<input type="password" value={password} required={!current} minLength={12} maxLength={128} autoComplete="new-password" onChange={(event) => setPassword(event.target.value)} /></label>
-          <label className="team-check"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />启用账号</label>
+          <label className="team-check"><input type="checkbox" disabled={initialAdmin} checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />启用账号</label>
         </div></WorkspaceSection>
         <WorkspaceSection title="资源范围" description="成员只能查看已分配范围内的仓库与任务。">
-        {role === "administrator" && <label className="team-check"><input type="checkbox" checked={unrestricted} onChange={(event) => setUnrestricted(event.target.checked)} />可查看全部仓库（管理员具有成员和配置管理权限）</label>}
+        {role === "administrator" && <label className="team-check"><input type="checkbox" disabled={initialAdmin} checked={unrestricted} onChange={(event) => setUnrestricted(event.target.checked)} />可查看全部仓库（管理员具有成员和配置管理权限）</label>}
         {!unrestricted && <>
           <label>可见仓库（每行一个）<textarea value={repositories} rows={3} placeholder="owner/repository" onChange={(event) => setRepositories(event.target.value)} /></label>
           <details className="team-scope-options"><summary>组织与 App 安装范围（可选）</summary>
@@ -201,7 +208,7 @@ function RepositoryEditor({ repository, busy, onCancel, onSave }: {
     }, current?.id);
   };
   return <section className="team-card team-editor ws-editor" aria-label="仓库策略编辑">
-    <div className="ws-editor-heading"><div><h2>{current ? "项目设置 · " + current.repository : "添加项目设置"}</h2><p>先确认仓库和目标分支，其他选项可沿用默认值。</p></div>{current && <WorkspaceBadge>第 {current.revision} 版设置</WorkspaceBadge>}</div>
+    <div className="ws-editor-heading"><div><h2>{current ? "项目设置 · " + current.repository : "接入仓库"}</h2><p>先确认仓库和目标分支，其他选项可沿用默认值。</p></div>{current && <WorkspaceBadge>第 {current.revision} 版设置</WorkspaceBadge>}</div>
     <form onSubmit={submit}><fieldset disabled={busy}>
       <WorkspaceSection title="审查范围" description="选择接入仓库、目标分支和团队知识。">
         <div className="team-form-grid"><label>仓库名称<input value={name} required disabled={Boolean(current)} maxLength={255} pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} placeholder="owner/repository" onChange={event => setName(event.target.value)} /></label>

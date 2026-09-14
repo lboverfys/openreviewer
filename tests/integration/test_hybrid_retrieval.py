@@ -207,7 +207,7 @@ def test_index_limit_is_checked_before_model_requests(retrieval):
     FakeModels.embeddings = 0
     index = service.index_sources(TARGET, sources())
     assert index.lexical_ready and index.vector_status == "limited"
-    assert "尚未发起向量请求" in index.vector_error
+    assert "上限 0" in index.vector_error
     assert FakeModels.embeddings == 0
 
 def test_review_retries_reuse_frozen_context_after_configuration_changes(retrieval):
@@ -407,7 +407,7 @@ def test_explicit_enrichment_reuses_the_published_base_snapshot(retrieval):
     assert enriched.vector_status == "ready" and enriched.vector_count == base.chunk_count
 
 
-def test_manual_search_does_not_persist_candidate_bodies(retrieval):
+def test_manual_search_persists_candidate_bodies(retrieval):
     from sqlalchemy import func
 
     from persistence.models import RetrievalTraceRecord
@@ -417,7 +417,7 @@ def test_manual_search_does_not_persist_candidate_bodies(retrieval):
     second = service.search(index.id, SearchQuery(query="user", strategy="bm25"))
     assert first.candidates and second.candidates
     with sessions() as session:
-        assert session.scalar(select(func.count()).select_from(RetrievalTraceRecord)) == 0
+        assert session.scalar(select(func.count()).select_from(RetrievalTraceRecord)) == 2
 
 
 def test_base_index_links_once_and_unchanged_links_are_not_rewritten(retrieval, monkeypatch):
@@ -451,7 +451,7 @@ def test_base_index_links_once_and_unchanged_links_are_not_rewritten(retrieval, 
     assert updates == [1, 0]
 
 
-def test_old_manual_traces_expire_without_removing_review_evidence(retrieval):
+def test_saved_manual_history_survives_temporary_cache_cleanup(retrieval):
     from sqlalchemy import update
 
     from persistence.models import RetrievalTraceRecord
@@ -464,7 +464,7 @@ def test_old_manual_traces_expire_without_removing_review_evidence(retrieval):
         session.execute(update(RetrievalTraceRecord).where(RetrievalTraceRecord.id == trace.id).values(created_at=datetime.now(UTC) - timedelta(days=15)))
     RetrievalRuntimeRepository(sessions).cleanup()
     with sessions() as session:
-        assert session.get(RetrievalTraceRecord, trace.id) is None
+        assert session.get(RetrievalTraceRecord, trace.id) is not None
     assert service.repository.get(index.id).lexical_ready
 
 

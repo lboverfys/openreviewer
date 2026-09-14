@@ -4,10 +4,8 @@ from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
-from sqlalchemy.exc import SQLAlchemyError
 
 from apps.api.schemas import (
-    AiRevisionRequest,
     KnowledgeCitationResponse,
     KnowledgeDocumentCreateRequest,
     KnowledgeDocumentListResponse,
@@ -40,19 +38,20 @@ def register_knowledge_routes(
 ) -> None:
     """注册知识检索和版本化文档管理端点。"""
 
-    @application.post("/api/v1/knowledge/project-pack", response_model=KnowledgeDocumentListResponse)
-    def install_project_pack(
-        body: AiRevisionRequest,
+    @application.delete("/api/v1/knowledge/documents/{document_id}")
+    def delete_knowledge_document(
+        document_id: str, body: KnowledgeDocumentStateRequest,
         principal: Annotated[SessionPrincipal, Depends(require_knowledge_manager)],
         _: Annotated[None, Depends(require_same_origin)],
-    ) -> KnowledgeDocumentListResponse:
+    ) -> dict[str, int]:
         try:
-            result = get_managed_knowledge_base().install_project_pack(body.expected_revision, principal.username)
-        except (KnowledgeConflictError, KnowledgePersistenceError, KnowledgeValidationError) as exc:
+            revision = get_managed_knowledge_base().delete_document(document_id,
+                expected_revision=body.expected_revision,
+                expected_document_version=body.expected_document_version,
+                actor=principal.username)
+            return {"revision": revision}
+        except (KnowledgeConflictError, KnowledgeNotFoundError, KnowledgePersistenceError) as exc:
             raise translate_knowledge_error(exc) from exc
-        except SQLAlchemyError as exc:
-            raise translate_knowledge_error(KnowledgePersistenceError("项目资料暂时无法写入")) from exc
-        return KnowledgeDocumentListResponse.from_view(result)
 
     @application.get(
         "/api/v1/knowledge/search",

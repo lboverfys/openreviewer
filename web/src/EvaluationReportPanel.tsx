@@ -63,7 +63,7 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
         <tbody>
           <tr><td>有效问题比例</td><td>{evaluationPercent(report.baseline.precision)}</td><td>{evaluationPercent(report.candidate.precision)}</td><td>{report.quality_pairs} 对，双方复核一致</td></tr>
           <tr><td>有效问题 / 已复核问题</td><td>{report.baseline.valid_count} / {report.baseline.finding_count}</td><td>{report.candidate.valid_count} / {report.candidate.finding_count}</td><td>按问题计数</td></tr>
-          <tr><td>已知缺陷找回率</td><td>{evaluationPercent(report.baseline.recall)}</td><td>{evaluationPercent(report.candidate.recall)}</td><td>{report.reference_pairs} 对，参考标签双人确认</td></tr>
+          <tr><td>已知缺陷找回率</td><td>{evaluationPercent(report.baseline.recall)}</td><td>{evaluationPercent(report.candidate.recall)}</td><td>{report.reference_pairs} 对，参考标签由核对人确认</td></tr>
           <tr><td>找回 / 已知缺陷</td><td>{report.baseline.reference_true_positive_count} / {report.baseline.reference_expected_count}</td><td>{report.candidate.reference_true_positive_count} / {report.candidate.reference_expected_count}</td><td>同一缺陷多次匹配只计一次</td></tr>
           <tr><td>定位准确率</td><td>{evaluationPercent(report.baseline.location_accuracy)}</td><td>{evaluationPercent(report.candidate.location_accuracy)}</td><td>两人均确认定位的已复核问题</td></tr>
           <tr><td>重复问题比例</td><td>{evaluationPercent(report.baseline.duplicate_rate)}</td><td>{evaluationPercent(report.candidate.duplicate_rate)}</td><td>双方复核一致的配对样本</td></tr>

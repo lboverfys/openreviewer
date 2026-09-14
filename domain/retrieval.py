@@ -21,7 +21,7 @@ MAX_SOURCE_BYTES = 256 * 1024
 MAX_CHUNK_CHARS = 6_000
 
 RetrievalStrategy = Literal["bm25", "lexical_relations", "hybrid", "hybrid_relations", "reranked"]
-AnnotationSource = Literal["synthetic_contract", "agent_annotated", "independent_human"]
+AnnotationSource = Literal["synthetic_contract", "agent_annotated", "independent_human", "single_reviewer"]
 RetrievalRoute = Literal["bm25", "vector", "relation"]
 
 
@@ -215,6 +215,7 @@ class IndexView(RetrievalContract):
     duration_ms: int | None
     parse_error_files: tuple[str, ...] = ()
     error: str | None = None
+    preparation_started_at: str | None = None
     created_at: str
     completed_at: str | None = None
 
@@ -268,3 +269,22 @@ class RetrievalEvaluationReport(RetrievalContract):
     lexical_cache_mode: str = "unknown"
     vector_search_mode: str = "exact_snapshot"
     real_review_accuracy: float | None = None
+
+
+class SearchHistoryItem(RetrievalContract):
+    id: str
+    index_id: str
+    repository: str
+    head_sha: str
+    query: str
+    strategy: RetrievalStrategy
+    requested_strategy: RetrievalStrategy
+    duration_ms: int
+    created_at: str
+
+
+class RetrievalComparisonRequest(RetrievalContract):
+    query: str = Field(min_length=1, max_length=4000)
+    relevant_symbols: tuple[str, ...] = Field(min_length=1, max_length=50)
+    strategies: tuple[RetrievalStrategy, ...] = ("bm25", "lexical_relations")
+    k: int = Field(default=8, ge=1, le=20)

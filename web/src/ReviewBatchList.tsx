@@ -26,6 +26,7 @@ export default function ReviewBatchList({ runId, agent, total, changeToken, onRe
       {page.data?.items.map(batch => <div className="review-agent-batch-row" key={batch.batch_number}>
         <span>第 {batch.batch_number}/{total} 批</span><b>{stopped && batch.status !== "succeeded" ? paused ? "已暂停" : "已停止" : labels[batch.status] ?? batch.status}</b>
         <small>{batch.error_message ?? (batch.duration_ms === null ? "" : `${batch.duration_ms} ms`)}</small>
+        {Boolean(batch.candidates?.length) && <details><summary>查看已保存的候选问题（{batch.candidates.length}）</summary><p>这是 AI 批次的过程结果，尚需汇总和核对；最终列表为空不代表没有发现问题。</p>{batch.candidates.map((item, index) => <article key={index}><h4>{item.title}</h4><p>{item.evidence}</p><p>{item.impact}</p><p>{item.suggestion}</p></article>)}</details>}
         {batch.status === "failed" && onRetry && !stopped && <button type="button" disabled={busy}
           onClick={() => onRetry(agent, batch.batch_number)}>重试第 {batch.batch_number} 批</button>}
       </div>)}

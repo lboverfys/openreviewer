@@ -128,7 +128,7 @@ class RetrievalRuntimeRepository:
         total = 0
         with self.sessions() as session, session.begin():
             total += self._delete_batch(session, RetrievalTraceRecord,
-                RetrievalTraceRecord.review_run_id.is_(None) & (RetrievalTraceRecord.created_at < now - timedelta(days=14)), batch_size)
+                RetrievalTraceRecord.review_run_id.is_(None) & RetrievalTraceRecord.agent.is_(None) & (RetrievalTraceRecord.created_at < now - timedelta(days=14)), batch_size)
             ids = session.scalars(expired_indexes).all()
             if ids:
                 session.execute(delete(CodeIndexRecord).where(CodeIndexRecord.id.in_(ids)))

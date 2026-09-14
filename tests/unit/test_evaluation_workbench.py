@@ -44,7 +44,7 @@ def test_provider_and_batch_copies_record_actual_application_and_knowledge_versi
     assert combine_model_review_results(review_input,(result,result)).provenance==result.provenance
 
 
-def test_duplicate_reference_matches_count_once_and_unsubmitted_votes_do_not_count():
+def test_duplicate_reference_matches_count_once_and_saved_drafts_are_visible():
     from datetime import UTC, datetime
 
     now=datetime.now(UTC)
@@ -61,4 +61,4 @@ def test_duplicate_reference_matches_count_once_and_unsubmitted_votes_do_not_cou
     assert status=="complete" and counts["valid_count"]==2
     assert counts["reference_true_positive_count"]==1
     status,counts=assessment_metrics(findings,(votes[0],votes[1].model_copy(update={"submitted_at":None})),refs)
-    assert status=="partial" and counts["valid_count"]==0
+    assert status=="partial" and counts["valid_count"]==2
