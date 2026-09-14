@@ -69,7 +69,7 @@ export function DetailDialog({children, className = "", open, onToggle, hideTrig
       else if (previousFocus?.isConnected) previousFocus.focus({preventScroll:true});
     };
   }, [visible]);
-  return <div className={"detail-disclosure " + className}>
+  return <div className={"detail-disclosure " + (hideTrigger ? "is-imperative " : "") + className}>
     {!hideTrigger && <button ref={trigger} type="button" className="detail-trigger" aria-haspopup="dialog" aria-expanded={visible} onClick={() => change(true)}>{title}<span aria-hidden="true">↗</span></button>}
     {visible && <dialog ref={dialog} className="detail-dialog workspace-surface" aria-labelledby={id}
       onCancel={event => {event.preventDefault(); change(false);}}

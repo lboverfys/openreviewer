@@ -29,7 +29,7 @@ function CaseDetails({entry}: {entry: Record<string, unknown>}) {
     })}</div>}
     {typeof entry.trace_id === "string" ? <section><button type="button" disabled={busy || Boolean(trace)} onClick={() => void load()}>{trace ? "已载入保存的代码" : "查看返回代码和完整检索过程"}</button>
       {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}{busy && <p role="status">正在读取保存的代码…</p>}
-      {trace && <RetrievalTracePanel traces={[trace]}/>} {!busy && !trace && <button type="button" onClick={() => void load()}>重新读取</button>}
+      {trace && <RetrievalTracePanel traces={[trace]}/>}
     </section> : <p className="ws-note">这份历史报告未保存代码正文和各路过程，不能事后补写。新对比会保存完整检索过程。</p>}
   </article>;
 }

@@ -4,6 +4,7 @@
 .app-notice.is-success { border-left-color: #159a6b; }
 .app-notice button { background: transparent; color: #566680; padding: 4px 8px; cursor: pointer; flex-shrink: 0; }
 .detail-disclosure { min-width: 0; }
+.detail-disclosure.is-imperative { display: contents; }
 .detail-disclosure > .detail-trigger { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--bg-card-soft); color: var(--accent); font-size: 12px; font-weight: 650; text-align: left; white-space: normal; cursor: pointer; }
 .detail-trigger small, .detail-trigger .ws-hint { margin-left: auto; }
 .detail-dialog.workspace-surface { padding: 0; margin: auto; width: min(1120px, calc(100vw - 40px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 48px); color: var(--text-main); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 24px 100px #14203855; overflow: hidden; }

@@ -36,7 +36,7 @@
 
 - Python：`D:\rubbish\zhongjian\envs\openreviewer\dev\Scripts\python.exe`；Node：`D:\Code\nodejs\node.exe`，22.19.0；前端依赖复用项目 `web/node_modules`。没有安装依赖，喵。
 - 临时数据库、测试日志、缓存、覆盖率与离线检索报告：`D:\rubbish\zhongjian\temp\openreviewer-20260915-eleven`，本轮检查约 594 MiB。最终真实源码离线复测报告为其中的 `original-query-v2.json`，喵。
-- 构建：`D:\rubbish\zhongjian\artifacts\openreviewer\20260915-eleven\web-final`；连同首轮构建约 1.65 MiB。所有可配置的测试和构建写入均在 D 盘；C 盘只使用已有工具标准配置与必要状态，喵。
+- 构建：`D:\rubbish\zhongjian\artifacts\openreviewer\20260915-eleven\web-publish`；连同两轮本地验收构建约 2.5 MiB。所有可配置的测试和构建写入均在 D 盘；C 盘只使用已有工具标准配置与必要状态，喵。
 - 原有未跟踪文件 `tests/performance/workspace_preview.py` 未修改、未删除、不提交，SHA256 保持 `718593281122B5E3A5AC1C136A62E4B7D80722545E07F8762C845685A3DFC182`，喵。
 
 ## 仍需如实说明的限制，喵
