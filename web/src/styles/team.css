@@ -7,3 +7,391 @@
 .team-member-avatar { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); font-size: 12px; font-weight: 750; flex: 0 0 30px; }
 .team-member-identity > div { min-width: 0; }
 .team-policy-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+
+/* ==========================================================
+   接入仓库面板 (Repository Connect Panel)
+   ========================================================== */
+.repo-connect-card {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px 28px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-card);
+}
+
+.repo-connect-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.repo-connect-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.repo-connect-title-row h2 {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.repo-app-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--accent);
+  background: var(--gradient-aurora-soft);
+  border: 1px solid var(--border-glow);
+}
+
+.repo-badge-icon {
+  flex-shrink: 0;
+}
+
+.repo-connect-subtitle {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* 步骤导航条 */
+.repo-connect-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repo-step-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card-soft);
+  border: 1px solid var(--border-soft);
+  transition: all 0.2s ease;
+}
+
+.repo-step-item.is-active {
+  background: #ffffff;
+  border-color: var(--border-glow);
+  box-shadow: 0 2px 8px -2px rgba(79, 70, 229, 0.12);
+}
+
+.repo-step-num {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 800;
+  flex-shrink: 0;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(79, 70, 229, 0.2);
+}
+
+.repo-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.repo-step-text strong {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.repo-step-text small {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 字段卡片 */
+.repo-fields-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.repo-field-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card-soft);
+  border: 1px solid var(--border-soft);
+}
+
+.repo-field-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.repo-field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.repo-field-label-text {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.repo-field-tip {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.repo-page-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.repo-page-btn {
+  font-size: 11px !important;
+  min-height: 26px !important;
+  padding: 2px 9px !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.repo-page-indicator {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 4px;
+}
+
+.repo-select-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.repo-select-wrapper select {
+  font-size: 13px !important;
+  padding: 8px 12px !important;
+  border-radius: var(--radius-sm) !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(16, 31, 56, 0.04);
+}
+
+/* 授权提示与操作卡片 */
+.repo-status-callout {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card-soft);
+}
+
+.repo-status-callout.is-success {
+  background: var(--color-completed-bg);
+  border-color: var(--color-completed-border);
+  color: var(--color-completed);
+}
+
+.repo-status-callout.is-warning {
+  background: #fdfaf3;
+  border-color: #f6e6be;
+}
+
+.repo-status-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+}
+
+.repo-status-callout.is-success .repo-status-icon {
+  background: rgba(21, 128, 61, 0.12);
+  color: var(--color-completed);
+  font-weight: bold;
+}
+
+.repo-status-callout.is-warning .repo-status-icon {
+  background: rgba(180, 83, 9, 0.1);
+  color: var(--color-queued);
+}
+
+.repo-status-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.repo-status-text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.repo-status-callout.is-success .repo-status-text {
+  color: var(--color-completed);
+  font-weight: 600;
+}
+
+.repo-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.repo-callout-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #ffffff !important;
+  background: var(--gradient-aurora);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  box-shadow: 0 2px 8px -2px rgba(79, 70, 229, 0.35);
+  transition: opacity 0.18s, transform 0.18s;
+}
+
+.repo-callout-link:hover {
+  opacity: 0.95;
+  transform: translateY(-1px);
+}
+
+.repo-callout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  font-size: 12px !important;
+  font-weight: 650 !important;
+  border-radius: var(--radius-sm) !important;
+  border: 1px solid var(--border-strong) !important;
+  background: #ffffff !important;
+  color: var(--text-secondary) !important;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+
+.repo-callout-btn:hover:not(:disabled) {
+  color: var(--accent) !important;
+  border-color: var(--border-glow) !important;
+  background: var(--accent-softer) !important;
+}
+
+/* 安全提示卡片 */
+.repo-security-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  border: 1px dashed var(--border-strong);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.repo-security-icon {
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.repo-security-note p {
+  margin: 0;
+}
+
+/* 底部操作区 */
+.repo-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 2px;
+}
+
+.repo-primary-btn {
+  padding: 8px 20px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+}
+
+.repo-cancel-btn {
+  padding: 8px 16px !important;
+  font-size: 12.5px !important;
+}
+
+.repo-action-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+}
+
+@media (max-width: 860px) {
+  .repo-connect-steps {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .repo-status-content {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .repo-status-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+  .repo-action-hint {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
