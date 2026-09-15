@@ -20,21 +20,22 @@
 .evaluation-finding > p, .evaluation-finding > details, .evaluation-finding > .evaluation-reviewers { margin: 12px 15px; }
 .evaluation-finding > p code { color: var(--text-muted); font-size: 11px; }
 .evaluation-finding details > p { margin-top: 8px; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
-.evaluation-finding details pre { margin: 10px 0; }
+.evaluation-finding details pre { margin: 10px 0; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--bg-card-soft); border: 1px solid var(--border-soft); color: var(--text-main); font-size: 12px; line-height: 1.7; }
 .evaluation-finding > form { padding: 14px 15px; border-top: 1px solid var(--border-soft); }
 .evaluation-finding .evaluation-form-grid { margin-bottom: 12px; }
-.evaluation-code { margin-top: 14px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); overflow: hidden; }
-.evaluation-code h4 { padding: 10px 13px; background: var(--bg-card-soft); border-bottom: 1px solid var(--border-soft); color: var(--text-secondary); overflow-wrap: anywhere; }
-.evaluation-code pre { margin: 0; max-height: 430px; white-space: pre; border-radius: 0; background: #142038; color: #d6e2f6; line-height: 1.75; font-size: 11.5px; }
+.evaluation-code { margin-top: 14px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); overflow: hidden; background: var(--bg-card); box-shadow: 0 1px 3px rgba(16, 31, 56, 0.03); }
+.evaluation-code h4 { padding: 11px 15px; background: var(--bg-card-soft); border-bottom: 1px solid var(--border-soft); color: var(--text-secondary); font-size: 12.5px; font-weight: 700; overflow-wrap: anywhere; }
+.evaluation-code pre { margin: 0; padding: 14px 16px; max-height: 430px; white-space: pre; border-radius: 0; background: var(--bg-card-soft); color: var(--text-main); line-height: 1.75; font-size: 12px; box-shadow: inset 0 1px 2px rgba(16, 31, 56, 0.02); }
 .evaluation-provenance { margin-top: 14px; }
 .evaluation-provenance article { padding: 13px 0; border-bottom: 1px solid var(--border-soft); overflow-wrap: anywhere; }
 .evaluation-provenance p { color: var(--text-muted); font-size: 12px; line-height: 1.8; margin-top: 5px; }
 .evaluation-provenance details { padding: 12px 0; }
 .evaluation-provenance .evaluation-notice { margin-bottom: 8px; }
-.evaluation-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin: 16px 0; }
-.evaluation-stats > div { padding: 13px 15px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--bg-card-soft); }
-.evaluation-stats strong { display: block; font-size: 23px; line-height: 1.3; color: var(--accent); font-weight: 800; }
-.evaluation-stats span { display: block; color: var(--text-muted); font-size: 11px; margin-top: 5px; }
+.evaluation-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin: 16px 0; }
+.evaluation-stats > div { padding: 16px 18px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--bg-card); box-shadow: 0 1px 3px rgba(16, 31, 56, 0.03); transition: transform 0.16s, box-shadow 0.16s; }
+.evaluation-stats > div:hover { transform: translateY(-2px); box-shadow: 0 4px 14px -3px rgba(16, 31, 56, 0.08); }
+.evaluation-stats strong { display: block; font-size: 24px; line-height: 1.25; color: var(--accent); font-weight: 850; font-variant-numeric: tabular-nums; }
+.evaluation-stats span { display: block; color: var(--text-muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 5px; }
 .evaluation-report-notes { margin: 12px 0; }
 .evaluation-report-notes .evaluation-notice { margin-top: 8px; }
 .evaluation-confidence { border: 1px solid var(--border-soft); background: var(--bg-card-soft); padding: 14px; font-size: 12px; border-radius: var(--radius-md); }
