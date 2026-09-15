@@ -174,10 +174,11 @@
   border-color: var(--border-soft);
 }
 .settings-tab-nav button.is-active {
-  background: var(--accent-soft);
-  border-color: var(--border-glow);
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.09) 0%, rgba(6, 182, 212, 0.05) 100%);
+  border-color: rgba(99, 102, 241, 0.25);
   color: var(--accent);
-  box-shadow: 0 8px 18px -10px rgba(79, 70, 229, 0.45);
+  font-weight: 700;
+  box-shadow: 0 2px 8px -2px rgba(79, 70, 229, 0.12);
 }
 .settings-tab-nav button > svg {
   flex-shrink: 0;

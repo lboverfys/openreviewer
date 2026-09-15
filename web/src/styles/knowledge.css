@@ -6,7 +6,7 @@
 .knowledge-hero p { color: var(--text-muted); font-size: 13px; line-height: 1.7; }
 .knowledge-hero > a { color: var(--accent); font-size: 13px; white-space: nowrap; }
 .knowledge-workspace { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; align-items: start; }
-.knowledge-document-pane, .knowledge-editor-pane { min-width: 0; background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 12px; }
+.knowledge-document-pane, .knowledge-editor-pane { min-width: 0; background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 14px; box-shadow: var(--shadow-card); }
 .knowledge-pane-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 16px; }
 .knowledge-pane-heading strong { font-size: 15px; }
 .knowledge-pane-heading > span { color: var(--text-muted); font-size: 12px; }
@@ -29,7 +29,7 @@
 .knowledge-list-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; border-top: 1px solid var(--border-soft); }
 .knowledge-main button:disabled { cursor: not-allowed; opacity: .5; }
 .knowledge-list-actions button, .knowledge-pack-tools button, .knowledge-document-heading > button, .knowledge-use-status button, .knowledge-editor-actions button, .knowledge-remove-action button, .knowledge-history button, .knowledge-search-test button, .knowledge-feedback button { min-height: 38px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 7px; font-size: 13px; font-weight: 650; background: var(--bg-card); color: var(--text-main); }
-.knowledge-main .knowledge-primary-btn { background: var(--accent); border-color: var(--accent); color: #fff; }
+.knowledge-main .knowledge-primary-btn { background: var(--gradient-aurora); border: none; color: #fff; box-shadow: 0 4px 14px -4px rgba(79, 70, 229, 0.45); }
 .knowledge-pack-tools { padding: 12px 16px; border-top: 1px solid var(--border-soft); font-size: 12px; }
 .knowledge-pack-tools summary { color: var(--text-muted); cursor: pointer; }
 .knowledge-pack-tools p { margin: 12px 0; }

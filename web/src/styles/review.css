@@ -1452,12 +1452,17 @@
 
 /* ---------------- 问题卡片 ---------------- */
 .review-finding-card {
-  padding: 17px 19px;
+  padding: 20px 22px;
   border-radius: var(--radius-md);
   background: var(--bg-card);
   border: 1px solid var(--border-soft);
   border-left: 4px solid var(--border-strong);
-  box-shadow: var(--shadow-card);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), 0 6px 20px -6px rgba(15, 23, 42, 0.05);
+  transition: transform 0.18s var(--ease-smooth), box-shadow 0.18s;
+}
+.review-finding-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.09);
 }
 .review-finding-card.finding-critical,
 .review-finding-card.finding-high { border-left-color: var(--color-failed); }

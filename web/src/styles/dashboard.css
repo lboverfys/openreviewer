@@ -230,6 +230,10 @@
 /* ---------------- 表格卡 ---------------- */
 .dash-table-card {
   overflow: hidden;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
 }
 .dash-table-toolbar {
   display: flex;
@@ -237,7 +241,7 @@
   justify-content: space-between;
   gap: 14px;
   flex-wrap: wrap;
-  padding: 12px 16px 10px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--border-soft);
 }
 .toolbar-left-group {
@@ -248,9 +252,10 @@
   min-width: 0;
 }
 .toolbar-left-group h3 {
-  font-size: 14.5px;
+  font-size: 15px;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
+  color: var(--text-main);
   white-space: nowrap;
 }
 
@@ -261,28 +266,30 @@
 }
 .dash-search-box > svg {
   position: absolute;
-  left: 12px;
-  color: var(--text-faint);
+  left: 14px;
+  color: var(--text-muted);
   pointer-events: none;
 }
 .dash-search-box input {
-  width: 250px;
-  padding: 8.5px 30px 8.5px 34px;
-  border-radius: 11px;
+  width: 290px;
+  padding: 9px 34px 9px 38px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
-  background: var(--bg-card-soft);
-  font-size: 12.5px;
+  background: var(--bg-card);
+  font-size: 13px;
+  color: var(--text-main);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
   transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
 }
 .dash-search-box input:focus {
   outline: none;
   border-color: var(--accent);
-  background: var(--bg-card);
+  background: #ffffff;
   box-shadow: var(--shadow-glow);
 }
 .dash-search-box .clear-x-btn {
   position: absolute;
-  right: 8px;
+  right: 10px;
   display: flex;
   width: 20px;
   height: 20px;
@@ -290,7 +297,7 @@
   justify-content: center;
   border-radius: 6px;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 .dash-search-box .clear-x-btn:hover {
   color: var(--color-failed);
@@ -307,26 +314,27 @@
   min-width: 900px;
 }
 .dash-data-table thead th {
-  padding: 8px 14px;
+  padding: 12px 18px;
   background: var(--bg-card-soft);
   border-bottom: 1px solid var(--border-soft);
   color: var(--text-muted);
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   text-align: left;
   white-space: nowrap;
 }
 .dash-data-table tbody td {
-  padding: 10px 14px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--border-soft);
   vertical-align: middle;
 }
 .dash-table-row {
-  transition: background 0.15s;
+  transition: background 0.15s var(--ease-smooth);
 }
 .dash-table-row:hover {
-  background: var(--bg-card-soft);
+  background: rgba(248, 250, 252, 0.9);
 }
 .dash-table-row:last-child td {
   border-bottom: none;
@@ -335,8 +343,8 @@
 /* PR 身份列 */
 .table-review-identity {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  align-items: center;
+  gap: 14px;
   min-width: 0;
 }
 .repo-avatar-icon {

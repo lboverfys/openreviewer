@@ -1,66 +1,66 @@
 /* ==========================================================
-   OpenReviewer 设计系统 · 晨曦白瓷（明亮版）
-   浅色画布 + 白瓷卡片 + 极光渐变点缀
+   OpenReviewer 设计系统 · 极光白金工作室（Neo-Lumina Studio）
+   高奢微光画布 + 悬浮白瓷卡片 + 拟态玻璃顶栏 + 极光主调
    ========================================================== */
 
 :root {
   /* 画布与卡片 */
-  --bg-canvas: #edf1f8;
+  --bg-canvas: #f8fafc;
   --bg-card: #ffffff;
-  --bg-card-soft: #f7f9fd;
-  --bg-inset: #eef3fa;
+  --bg-card-soft: #f8fafc;
+  --bg-inset: #f1f5f9;
   --bg-card-solid: #ffffff;
 
   /* 文字 */
-  --text-main: #101f38;
-  --text-secondary: #44536e;
-  --text-muted: #7585a1;
-  --text-faint: #a3b0c6;
+  --text-main: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --text-faint: #94a3b8;
 
   /* 品牌极光 */
   --accent: #4f46e5;
   --accent-hover: #4338ca;
-  --accent-cyan: #0891b2;
-  --accent-rose: #e11d48;
-  --accent-soft: rgba(79, 70, 229, 0.09);
-  --accent-softer: rgba(79, 70, 229, 0.05);
-  --gradient-aurora: linear-gradient(120deg, #6366f1 0%, #0ea5e9 100%);
-  --gradient-aurora-soft: linear-gradient(120deg, rgba(99, 102, 241, 0.14), rgba(14, 165, 233, 0.14));
+  --accent-cyan: #06b6d4;
+  --accent-rose: #f43f5e;
+  --accent-soft: rgba(79, 70, 229, 0.08);
+  --accent-softer: rgba(79, 70, 229, 0.04);
+  --gradient-aurora: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #06b6d4 100%);
+  --gradient-aurora-soft: linear-gradient(135deg, rgba(79, 70, 229, 0.09) 0%, rgba(124, 58, 237, 0.06) 50%, rgba(6, 182, 212, 0.08) 100%);
 
   /* 描边与阴影 */
-  --border-soft: #e1e8f3;
-  --border-strong: #cbd6e8;
-  --border-glow: #b9c6f2;
-  --shadow-card: 0 1px 2px rgba(16, 31, 56, 0.05), 0 10px 30px -14px rgba(16, 31, 56, 0.14);
-  --shadow-lift: 0 2px 6px rgba(16, 31, 56, 0.06), 0 18px 44px -16px rgba(79, 70, 229, 0.22);
-  --shadow-glow: 0 0 0 4px rgba(99, 102, 241, 0.12);
+  --border-soft: rgba(226, 232, 240, 0.85);
+  --border-strong: rgba(203, 213, 225, 0.9);
+  --border-glow: rgba(99, 102, 241, 0.35);
+  --shadow-card: 0 1px 3px 0 rgba(15, 23, 42, 0.03), 0 6px 18px -4px rgba(15, 23, 42, 0.05), 0 0 0 1px rgba(15, 23, 42, 0.04);
+  --shadow-lift: 0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 16px 32px -4px rgba(79, 70, 229, 0.16), 0 0 0 1px rgba(99, 102, 241, 0.2);
+  --shadow-glow: 0 0 0 3px rgba(99, 102, 241, 0.18);
 
   /* 圆角与动效 */
-  --radius-sm: 9px;
-  --radius-md: 13px;
-  --radius-lg: 17px;
-  --radius-xl: 24px;
-  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);
 
-  /* 状态色（明亮调校） */
-  --color-queued: #b45309;
-  --color-queued-bg: #fef3c7;
-  --color-queued-border: #f5d589;
-  --color-running: #0369a1;
-  --color-running-bg: #e0f2fe;
-  --color-running-border: #a5d9f5;
-  --color-waiting: #c2410c;
-  --color-waiting-bg: #ffedd5;
-  --color-waiting-border: #f6c89c;
-  --color-ready: #0f766e;
-  --color-ready-bg: #ccfbf1;
-  --color-ready-border: #8fe3d5;
-  --color-completed: #15803d;
-  --color-completed-bg: #dcfce7;
-  --color-completed-border: #a2e8ba;
-  --color-failed: #be123c;
-  --color-failed-bg: #ffe4e6;
-  --color-failed-border: #f5b3c0;
+  /* 状态色（高辨识度鲜明现代调校） */
+  --color-queued: #d97706;
+  --color-queued-bg: #fffbeb;
+  --color-queued-border: #fde68a;
+  --color-running: #0284c7;
+  --color-running-bg: #f0f9ff;
+  --color-running-border: #bae6fd;
+  --color-waiting: #ea580c;
+  --color-waiting-bg: #fff7ed;
+  --color-waiting-border: #ffedd5;
+  --color-ready: #0d9488;
+  --color-ready-bg: #f0fdfa;
+  --color-ready-border: #99f6e4;
+  --color-completed: #16a34a;
+  --color-completed-bg: #f0fdf4;
+  --color-completed-border: #bbf7d0;
+  --color-failed: #e11d48;
+  --color-failed-bg: #fff1f2;
+  --color-failed-border: #fecdd3;
 
   color-scheme: light;
 }
@@ -81,18 +81,37 @@ body,
 body {
   margin: 0;
   font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   color: var(--text-main);
   font-size: 14px;
   line-height: 1.6;
+  letter-spacing: -0.011em;
   -webkit-font-smoothing: antialiased;
-  background:
-    radial-gradient(1080px 520px at 88% -12%, rgba(99, 102, 241, 0.12), transparent 62%),
-    radial-gradient(920px 520px at -12% 18%, rgba(14, 165, 233, 0.12), transparent 58%),
-    radial-gradient(760px 560px at 52% 112%, rgba(244, 114, 182, 0.07), transparent 62%),
-    var(--bg-canvas);
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(1200px 700px at 85% -10%, rgba(99, 102, 241, 0.08), transparent 60%),
+    radial-gradient(1000px 600px at -10% 20%, rgba(14, 165, 233, 0.07), transparent 55%),
+    radial-gradient(800px 500px at 50% 100%, rgba(139, 92, 246, 0.04), transparent 60%);
   background-attachment: fixed;
+}
+
+/* 现代精致滚动条 */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  transition: background 0.2s;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.6);
 }
 
 h1, h2, h3, h4, p, dl, dd, figure {
@@ -188,25 +207,6 @@ pre {
 
 ::selection {
   background: rgba(99, 102, 241, 0.22);
-}
-
-/* 滚动条 */
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #c3cde0;
-  border-radius: 8px;
-  border: 2px solid transparent;
-  background-clip: content-box;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #9fb0cd;
-  background-clip: content-box;
 }
 
 :focus-visible {
