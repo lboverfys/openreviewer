@@ -44,6 +44,7 @@ from services.model_budget import (
     model_output_scope,
 )
 from services.model_review import (
+    PROMPT_VERSION,
     ModelReviewer,
     ModelServiceSettings,
     ReviewPrompt,
@@ -463,6 +464,8 @@ class _StructuredModelReviewer(ModelReviewer):
         )
         revision = os.environ.get("OPENREVIEWER_DEPLOYMENT_IMAGE", "").rpartition(":")[2]
         provenance = ReviewExecutionProvenance(
+            prompt_protocol_version=PROMPT_VERSION,
+            prompt_content_sha256=self._prompt_builder.content_sha256,
             application_revision=revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None,
             knowledge_versions=(
                 dict(review_input.knowledge_versions)

@@ -108,8 +108,8 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
     def _load_events(session: Session, review_run_id: str) -> tuple[StoredReviewEvent, ...]:
         return _store_queries._load_events(session, review_run_id)
 
-    def apply_action(self, review_run_id: str, action: ReviewAction, *, actor: str, request_id: str, target_stage: str | None=None, retry_scope: str | None=None, agent: str | None=None, batch_number: int | None=None, state_version: str | None=None, head_sha: str | None=None, capture_model_outputs: bool=False, scope: ResourceScope | None=None) -> tuple[str, str, ExecutionStatus]:
-        return _store_actions.apply_action(self, review_run_id, action, actor=actor, request_id=request_id, target_stage=target_stage, retry_scope=retry_scope, agent=agent, batch_number=batch_number, state_version=state_version, head_sha=head_sha, capture_model_outputs=capture_model_outputs, scope=scope)
+    def apply_action(self, review_run_id: str, action: ReviewAction, *, actor: str, request_id: str, target_stage: str | None=None, retry_scope: str | None=None, agent: str | None=None, batch_number: int | None=None, state_version: str | None=None, head_sha: str | None=None, capture_model_outputs: bool=False, review_profile_id: str | None=None, scope: ResourceScope | None=None) -> tuple[str, str, ExecutionStatus]:
+        return _store_actions.apply_action(self, review_run_id, action, actor=actor, request_id=request_id, target_stage=target_stage, retry_scope=retry_scope, agent=agent, batch_number=batch_number, state_version=state_version, head_sha=head_sha, capture_model_outputs=capture_model_outputs, review_profile_id=review_profile_id, scope=scope)
 
     @staticmethod
     def _existing_action_result(session: Session, review_run_id: str, action: ReviewAction, *, event_key: str, target_stage: str | None, retry_scope: str | None=None, agent: str | None=None, batch_number: int | None=None, scope: ResourceScope | None=None) -> tuple[str, str, ExecutionStatus] | None:

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from domain.enums import ReviewAgent
 from domain.evaluation_workbench import EvaluationComparisonReport
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 
@@ -167,7 +168,19 @@ class ProfileCreate(PlatformModel):
     name: str = Field(min_length=1, max_length=120)
     repository: str = Field(min_length=3, max_length=255)
     note: str = Field(default="", max_length=1000)
-    expected_ai_revision: int = Field(ge=0)
+    expected_ai_revision: int | None = Field(default=None, ge=0)
+    base_profile_id: str | None = Field(default=None, min_length=1, max_length=36)
+    role_instructions: dict[ReviewAgent, Annotated[str, Field(min_length=1, max_length=6000)]] = Field(default_factory=dict, max_length=4)
+    supplementary_instructions: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        if self.base_profile_id is None:
+            if self.expected_ai_revision is None:
+                raise ValueError("保存当前配置需要 AI 配置版本")
+            if self.role_instructions or self.supplementary_instructions is not None:
+                raise ValueError("Prompt 编辑必须基于已保存的不可变方案")
+        return self
 
 
 class KnowledgeProposalWrite(PlatformModel):
@@ -190,6 +203,10 @@ class ProfileView(PlatformModel):
     fingerprint: str
     ai_revision: int
     prompt_version: str
+    prompt_content_sha256: str | None = None
+    base_profile_id: str | None = None
+    role_instructions: dict[str, str] = Field(default_factory=dict)
+    supplementary_instructions: str = ""
     models: dict[str, str]
     knowledge_versions: dict[str, str]
     retrieval_settings: dict[str, object]

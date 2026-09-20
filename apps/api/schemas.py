@@ -455,6 +455,7 @@ class ReviewActionRequest(BaseModel):
     state_version: str | None = Field(default=None, min_length=1, max_length=128)
     head_sha: str | None = Field(default=None, min_length=40, max_length=64)
     capture_model_outputs: bool = False
+    review_profile_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class ReviewChangeTokenResponse(BaseModel):

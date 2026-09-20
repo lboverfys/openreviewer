@@ -176,6 +176,8 @@ def capture_review_sources(
             agent=row.agent, provider=row.provider or "unknown",
             protocol=row.protocol or "unknown", model=row.model or "unknown",
             prompt_version=row.prompt_version or "unknown",
+            prompt_protocol_version=context.get("prompt_protocol_version"),
+            prompt_content_sha256=context.get("prompt_content_sha256"),
             application_revision=context.get("application_revision"),
             knowledge_versions=context.get("knowledge_versions") or {},
             context_recorded=bool(context) and context.get("knowledge_versions") is not None,
@@ -233,6 +235,8 @@ def capture_review_sources(
             limitations.append("含跨提交复用结果，不属于独立模型调用对照；需要关闭增量复用后重新收录")
         if any(not version.context_recorded or version.application_revision is None for version in versions[run_id]):
             limitations.append("历史批次未记录完整的程序版本或知识引用版本")
+        if len({version.application_revision for version in versions[run_id]}) > 1:
+            limitations.append("同一运行的批次混用了程序版本，不能用于严格方案验收")
         if row.estimated_cost_microusd is None:
             limitations.append("未配置完整价格，估算费用未知")
         if row.capture_model_outputs and (not row.output_request_count or row.output_captured_count != row.output_request_count):
@@ -247,6 +251,8 @@ def capture_review_sources(
             and version.protocol == (declared_agents[version.agent].get("api_protocol")
                 or ("responses" if version.provider == "openai" else "messages"))
             and version.prompt_version == declared_prompt_version
+            and (not (row.profile_prompt or {}).get("content_sha256")
+                 or version.prompt_content_sha256 == row.profile_prompt["content_sha256"])
             and all(declared_knowledge.get(source) == version_hash
                     for source, version_hash in version.knowledge_versions.items())
             for version in versions[run_id]

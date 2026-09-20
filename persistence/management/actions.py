@@ -1,5 +1,6 @@
 """审查管理 actions 存储职责。"""
 
+import json
 from datetime import datetime, timedelta
 from hashlib import sha256
 
@@ -29,6 +30,7 @@ from persistence.models import (
     PullRequestVersionRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
+    ReviewProfileRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
 )
@@ -57,6 +59,7 @@ def apply_action(
     state_version: str | None = None,
     head_sha: str | None = None,
     capture_model_outputs: bool = False,
+    review_profile_id: str | None = None,
     scope: ResourceScope | None = None,
 ) -> tuple[str, str, ExecutionStatus]:
     """在一个短事务内执行加速、重试、取消或重新审查。"""
@@ -64,6 +67,8 @@ def apply_action(
     normalized_request_id = request_id.strip()
     if capture_model_outputs and action is not ReviewAction.REVIEW_SNAPSHOT:
         raise ReviewActionConflictError("输出证据留存只适用于显式历史版本评测试跑")
+    if review_profile_id is not None and action is not ReviewAction.REVIEW_SNAPSHOT:
+        raise ReviewActionConflictError("候选方案只适用于历史版本评测试跑")
     if not normalized_request_id:
         raise ReviewActionConflictError("操作幂等键不能为空")
     allowed_retry_scopes = {"failed_node", "stage", "new_review"}
@@ -124,6 +129,7 @@ def apply_action(
                 agent=agent,
                 batch_number=batch_number,
                 capture_model_outputs=capture_model_outputs,
+                review_profile_id=review_profile_id,
                 scope=scope,
             )
             if idempotent_result is not None:
@@ -170,6 +176,7 @@ def apply_action(
                 agent=agent,
                 batch_number=batch_number,
                 capture_model_outputs=capture_model_outputs,
+                review_profile_id=review_profile_id,
                 scope=scope,
             )
             if idempotent_result is not None:
@@ -510,6 +517,9 @@ def apply_action(
                     f"{sha256(normalized_request_id.encode('utf-8')).hexdigest()}"
                 )
                 legacy_rerun_key = rerun_key if snapshot_review else (f"manual-rerun:{review_run_id}:{request_id}")[:200]
+                request_fingerprint = sha256(json.dumps([
+                    run.request_fingerprint, normalized_head_sha, review_profile_id, capture_model_outputs,
+                ], separators=(",", ":")).encode()).hexdigest()
                 existing_rerun = session.scalar(
                     select(ReviewRunRecord.id).where(
                         ReviewRunRecord.idempotency_key.in_(
@@ -518,9 +528,13 @@ def apply_action(
                     )
                 )
                 if existing_rerun is not None:
-                    previous_capture = session.scalar(select(ReviewRunRecord.capture_model_outputs).where(ReviewRunRecord.id == existing_rerun))
-                    if previous_capture != capture_model_outputs:
+                    previous = session.execute(select(ReviewRunRecord.capture_model_outputs, ReviewRunRecord.request_fingerprint)
+                        .where(ReviewRunRecord.id == existing_rerun)).one()
+                    if previous.capture_model_outputs != capture_model_outputs:
                         raise ReviewActionConflictError("同一幂等键不能用于不同的评测输出留存选项")
+                    legacy_fingerprint = sha256(f"{run.request_fingerprint}:{normalized_head_sha}".encode()).hexdigest()
+                    if previous.request_fingerprint != request_fingerprint and not (review_profile_id is None and previous.request_fingerprint == legacy_fingerprint):
+                        raise ReviewActionConflictError("同一幂等键不能用于不同的试跑方案")
                     existing_task = session.scalar(
                         select(ReviewTaskRecord.id).where(
                             ReviewTaskRecord.review_run_id == existing_rerun
@@ -530,6 +544,14 @@ def apply_action(
                         raise ReviewManagementPersistenceError("重新审查任务记录不完整")
                     return existing_rerun, existing_task, initial_status
                 effective_policy = repository_policy_snapshot(session, run.repository)
+                if review_profile_id is not None:
+                    profile = session.scalar(select(ReviewProfileRecord.id).where(
+                        ReviewProfileRecord.id == review_profile_id,
+                        ReviewProfileRecord.repository_key == run.repository_key,
+                    ))
+                    if profile is None or effective_policy is None:
+                        raise ReviewNotFoundError("试跑方案不存在或不属于当前仓库")
+                    effective_policy = {**effective_policy, "review_profile_id": profile}
                 if snapshot_review and effective_policy is not None:
                     # 显式复查要产生新的模型结果，保留权限/预算，关闭本次的结果复用。
                     effective_policy = {**effective_policy, "incremental_review": False}
@@ -551,9 +573,7 @@ def apply_action(
                             review_conclusion=None,
                             coverage_status="unknown",
                             idempotency_key=rerun_key,
-                            request_fingerprint=sha256(
-                                f"{run.request_fingerprint}:{normalized_head_sha}".encode()
-                            ).hexdigest(),
+                            request_fingerprint=request_fingerprint,
                             created_at=now,
                             updated_at=now,
                         ),
@@ -607,6 +627,7 @@ def apply_action(
                             "new_review_task_id": new_task_id,
                             "snapshot_review": snapshot_review,
                             "capture_model_outputs": capture_model_outputs,
+                            "review_profile_id": review_profile_id,
                             "head_sha": normalized_head_sha,
                             "retry_scope": (
                                 "new_review" if new_review_action else retry_scope
@@ -750,6 +771,7 @@ def _existing_action_result(
     agent: str | None = None,
     batch_number: int | None = None,
     capture_model_outputs: bool = False,
+    review_profile_id: str | None = None,
     scope: ResourceScope | None = None,
 ) -> tuple[str, str, ExecutionStatus] | None:
     """读取已提交的人工动作，供加锁前后两次幂等检查复用。"""
@@ -780,6 +802,8 @@ def _existing_action_result(
         return None
     if bool(existing_event.get("capture_model_outputs", False)) != capture_model_outputs:
         raise ReviewActionConflictError("同一幂等键不能用于不同的评测输出留存选项")
+    if existing_event.get("review_profile_id") != review_profile_id:
+        raise ReviewActionConflictError("同一幂等键不能用于不同的试跑方案")
     if (
         not isinstance(existing_event, dict)
         or existing_event.get("target_stage") != target_stage

@@ -115,3 +115,5 @@ def test_stable_profile_fingerprint_does_not_change_with_executed_role_subset():
     assert _observation_values(source.model_copy(update={"profile_calls_consistent":False}))["provenance_complete"] is False
     changed = source.model_copy(update={"models":(source.models[0].model_copy(update={"application_revision":"f" * 40}),)})
     assert _observation_values(changed)["configuration_fingerprint"] != baseline["configuration_fingerprint"]
+    mixed = source.model_copy(update={"models":source.models + changed.models})
+    assert _observation_values(mixed)["provenance_complete"] is False

@@ -103,6 +103,8 @@ class ModelVersion(EvaluationContract):
     model: str
     protocol: str
     prompt_version: str
+    prompt_protocol_version: str | None = None
+    prompt_content_sha256: str | None = None
     application_revision: str | None = None
     knowledge_versions: dict[str, str] = Field(default_factory=dict)
     context_recorded: bool = False

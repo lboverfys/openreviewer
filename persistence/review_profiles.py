@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, true, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.pagination import CursorPage, encode_cursor
@@ -19,10 +19,11 @@ from persistence.models import (
 from persistence.pagination import apply_cursor
 from persistence.platform_common import platform_audit
 from persistence.platform_queries import repository_visible
+from services.model_review import StructuredReviewPromptBuilder
 from services.rbac import ResourceScope
 
 
-def _profile_view(row) -> ProfileView:
+def _profile_view(row, prompt_snapshot) -> ProfileView:
     summary = row.summary
     return ProfileView(
         id=row.id,
@@ -32,6 +33,10 @@ def _profile_view(row) -> ProfileView:
         fingerprint=row.fingerprint,
         ai_revision=row.ai_revision,
         prompt_version=summary["prompt_version"],
+        prompt_content_sha256=StructuredReviewPromptBuilder(prompt_snapshot).content_sha256,
+        base_profile_id=summary.get("base_profile_id"),
+        role_instructions=prompt_snapshot["roles"],
+        supplementary_instructions=prompt_snapshot.get("supplementary_instructions", ""),
         models=summary["models"],
         knowledge_versions=summary["knowledge_versions"],
         retrieval_settings=summary["retrieval_settings"],
@@ -114,7 +119,7 @@ class ReviewProfileRepository:
                 row.created_at,
                 details={"fingerprint": row.fingerprint},
             )
-            return _profile_view(row)
+            return _profile_view(row, row.snapshot["prompt"])
 
     def list(
         self,
@@ -134,6 +139,7 @@ class ReviewProfileRepository:
             model.fingerprint,
             model.ai_revision,
             model.summary,
+            model.snapshot["prompt"].label("prompt_snapshot"),
             model.created_by,
             model.created_at,
         ).where(repository_visible(scope, model.repository_key))
@@ -144,7 +150,7 @@ class ReviewProfileRepository:
         )
         with self.sessions() as session:
             rows = session.execute(statement).all()
-        items = tuple(_profile_view(row) for row in rows[:limit])
+        items = tuple(_profile_view(row, row.prompt_snapshot) for row in rows[:limit])
         return CursorPage(
             items=items,
             next_cursor=encode_cursor(items[-1].created_at, items[-1].id)
@@ -152,20 +158,22 @@ class ReviewProfileRepository:
             else None,
         )
 
-    def load(self, identifier: str) -> dict[str, Any]:
+    def load(self, identifier: str, scope: ResourceScope | None = None) -> dict[str, Any]:
         model = ReviewProfileRecord
         with self.sessions() as session:
             row = (
                 session.execute(
                     select(
                         model.id,
+                        model.repository,
                         model.snapshot,
                         model.ciphertext,
                         model.nonce,
                         model.key_version,
                         model.fingerprint,
                         model.ai_revision,
-                    ).where(model.id == identifier)
+                    ).where(model.id == identifier,
+                            repository_visible(scope, model.repository_key) if scope is not None else true())
                 )
                 .mappings()
                 .one_or_none()

@@ -295,6 +295,8 @@ class ModelReviewInput(ModelContract):
 class ReviewExecutionProvenance(ModelContract):
     application_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     knowledge_versions: dict[str, str] | None = None
+    prompt_protocol_version: str | None = None
+    prompt_content_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ModelReviewResult(ModelContract):

@@ -272,6 +272,7 @@ export const api = {
       stateVersion?: string;
       headSha?: string;
       captureModelOutputs?: boolean;
+      reviewProfileId?: string;
     },
   ) =>
     mutation(() => request<{
@@ -292,6 +293,7 @@ export const api = {
         ...(options?.stateVersion ? { state_version: options.stateVersion } : {}),
         ...(options?.headSha ? { head_sha: options.headSha } : {}),
         ...(options?.captureModelOutputs ? { capture_model_outputs: true } : {}),
+        ...(options?.reviewProfileId ? { review_profile_id: options.reviewProfileId } : {}),
       }),
     })),
   decideFinding: (

@@ -3513,6 +3513,10 @@ export interface components {
             };
             /** Model */
             model: string;
+            /** Prompt Content Sha256 */
+            prompt_content_sha256?: string | null;
+            /** Prompt Protocol Version */
+            prompt_protocol_version?: string | null;
             /** Prompt Version */
             prompt_version: string;
             /** Protocol */
@@ -3669,8 +3673,10 @@ export interface components {
         };
         /** ProfileCreate */
         ProfileCreate: {
+            /** Base Profile Id */
+            base_profile_id?: string | null;
             /** Expected Ai Revision */
-            expected_ai_revision: number;
+            expected_ai_revision?: number | null;
             /** Name */
             name: string;
             /**
@@ -3680,6 +3686,12 @@ export interface components {
             note: string;
             /** Repository */
             repository: string;
+            /** Role Instructions */
+            role_instructions?: {
+                [key: string]: string;
+            };
+            /** Supplementary Instructions */
+            supplementary_instructions?: string | null;
         };
         /** ProfileQuality */
         ProfileQuality: {
@@ -3702,6 +3714,8 @@ export interface components {
         ProfileView: {
             /** Ai Revision */
             ai_revision: number;
+            /** Base Profile Id */
+            base_profile_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -3725,6 +3739,8 @@ export interface components {
             name: string;
             /** Note */
             note: string;
+            /** Prompt Content Sha256 */
+            prompt_content_sha256?: string | null;
             /** Prompt Version */
             prompt_version: string;
             /** Repository */
@@ -3733,6 +3749,15 @@ export interface components {
             retrieval_settings: {
                 [key: string]: unknown;
             };
+            /** Role Instructions */
+            role_instructions?: {
+                [key: string]: string;
+            };
+            /**
+             * Supplementary Instructions
+             * @default
+             */
+            supplementary_instructions: string;
         };
         /** ProjectEvidence */
         ProjectEvidence: {
@@ -4399,6 +4424,8 @@ export interface components {
             head_sha?: string | null;
             /** Retry Scope */
             retry_scope?: ("failed_node" | "stage" | "new_review") | null;
+            /** Review Profile Id */
+            review_profile_id?: string | null;
             /** State Version */
             state_version?: string | null;
             target_stage?: components["schemas"]["ExecutionStatus"] | null;

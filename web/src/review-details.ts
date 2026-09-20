@@ -39,6 +39,7 @@ type ActionKeyTarget = {
   batchNumber?: number | null;
   stateVersion?: string | null;
   captureModelOutputs?: boolean;
+  reviewProfileId?: string;
 };
 
 // 同一页面状态下的网络重试必须复用一个幂等键；状态版本或失败批次变化
@@ -65,6 +66,7 @@ export function actionKey(
     target?.batchNumber == null ? "" : String(target.batchNumber),
     target?.stateVersion ?? "",
     String(target?.captureModelOutputs ?? false),
+    target?.reviewProfileId ?? "",
   ].join(":");
   const existing = pendingActionKeys.get(identity);
   if (existing) return existing;

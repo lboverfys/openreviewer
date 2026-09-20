@@ -283,6 +283,7 @@ def register_review_routes(
                 state_version=request_body.state_version,
                 head_sha=request_body.head_sha,
                 capture_model_outputs=request_body.capture_model_outputs,
+                review_profile_id=request_body.review_profile_id,
                 scope=principal.resource_scope,
             )
             # ``execution_status`` 是旧队列兼容字段；人工节点（尤其批准后）

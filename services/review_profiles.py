@@ -2,6 +2,7 @@
 
 import base64
 import json
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,8 +16,14 @@ from domain.enums import (
     ModelReasoningEffort,
     ReviewAgent,
 )
-from domain.platform import PlatformConflictError, ProfileCreate, ProfileView
+from domain.platform import (
+    PlatformConflictError,
+    PlatformNotFoundError,
+    ProfileCreate,
+    ProfileView,
+)
 from domain.retrieval import RetrievalSettings, RetrievalSettingsView
+from domain.security import redact_text
 from persistence.review_profiles import ReviewProfileRepository
 from services.agent_settings import AgentSettingsService
 from services.agent_workflow import FixedAgentWorkflow
@@ -63,6 +70,8 @@ class ReviewProfileService:
         self, draft: ProfileCreate, actor: str, scope: ResourceScope
     ) -> ProfileView:
         stamp = self.repository.stamp(draft.repository, scope)
+        if draft.base_profile_id is not None:
+            return self._create_candidate(draft, stamp, actor, scope)
         if stamp["ai"] != draft.expected_ai_revision:
             raise PlatformConflictError("AI 配置已变化，请刷新后保存方案")
         models = self.agents.model_settings()
@@ -81,7 +90,6 @@ class ReviewProfileService:
         if allowed_sources is not None:
             allowed = frozenset(allowed_sources)
             chunks = tuple(chunk for chunk in chunks if chunk.source in allowed)
-        identifier = str(uuid4())
         credentials: dict[str, str | None] = {
             agent.value: model.api_key for agent, model in models.items()
         }
@@ -91,7 +99,7 @@ class ReviewProfileService:
             values = asdict(model)
             values.pop("api_key")
             agents[agent.value] = values
-        prompt = {
+        prompt: dict[str, Any] = {
             "system": StructuredReviewPromptBuilder.SYSTEM_PROMPT,
             "roles": {
                 key.value: value
@@ -99,6 +107,7 @@ class ReviewProfileService:
             },
             "version": PROMPT_VERSION,
         }
+        prompt["content_sha256"] = StructuredReviewPromptBuilder(prompt).content_sha256
         snapshot = json.loads(
             _json(
                 {
@@ -120,6 +129,31 @@ class ReviewProfileService:
                 }
             )
         )
+        return self._save_snapshot(draft, stamp, actor, scope, snapshot, credentials, stamp["ai"])
+
+    def _create_candidate(self, draft: ProfileCreate, stamp, actor: str, scope: ResourceScope) -> ProfileView:
+        assert draft.base_profile_id is not None
+        source = self.repository.load(draft.base_profile_id, scope)
+        if source["repository"].casefold() != draft.repository.casefold():
+            raise PlatformNotFoundError("基础方案不属于目标仓库")
+        snapshot = deepcopy(source["snapshot"])
+        if sha256(_json(snapshot).encode()).hexdigest() != source["fingerprint"]:
+            raise ValueError("基础方案快照校验失败")
+        if snapshot.get("schema_version") != 1 or snapshot["prompt"]["version"] != PROMPT_VERSION:
+            raise ValueError("基础方案协议与当前程序不兼容")
+        prompt = snapshot["prompt"]
+        prompt.pop("content_sha256", None)
+        prompt["roles"].update({agent.value: redact_text(value) for agent, value in draft.role_instructions.items()})
+        if draft.supplementary_instructions is not None:
+            prompt["supplementary_instructions"] = redact_text(draft.supplementary_instructions)
+        prompt["content_sha256"] = StructuredReviewPromptBuilder(prompt).content_sha256
+        credentials = json.loads(base64.urlsafe_b64decode(self.cipher.decrypt(
+            f"review_profile:{source['id']}", source["ciphertext"], source["nonce"], source["key_version"],
+        )))
+        return self._save_snapshot(draft, stamp, actor, scope, snapshot, credentials, source["ai_revision"])
+
+    def _save_snapshot(self, draft, stamp, actor, scope, snapshot, credentials, ai_revision) -> ProfileView:
+        identifier = str(uuid4())
         serialized = _json(snapshot).encode()
         if len(serialized) > 2 * 1024 * 1024:
             raise ValueError("审查方案超过 2 MiB，请缩小仓库知识范围")
@@ -135,17 +169,19 @@ class ReviewProfileService:
                 "repository_key": stamp["repository"].casefold(),
                 "note": draft.note,
                 "fingerprint": sha256(serialized).hexdigest(),
-                "ai_revision": draft.expected_ai_revision,
+                "ai_revision": ai_revision,
                 "snapshot": snapshot,
                 "summary": {
-                    "prompt_version": prompt["version"],
+                    "prompt_version": snapshot["prompt"]["version"],
+                    "prompt_content_sha256": snapshot["prompt"]["content_sha256"],
+                    "base_profile_id": draft.base_profile_id,
                     "models": {
-                        agent: model["model"] for agent, model in agents.items()
+                        agent: model["model"] for agent, model in snapshot["agents"].items()
                     },
                     "knowledge_versions": {
-                        chunk.source: chunk.version for chunk in chunks
+                        chunk["source"]: chunk["version"] for chunk in snapshot["knowledge"]
                     },
-                    "retrieval_settings": retrieval.settings.model_dump(mode="json"),
+                    "retrieval_settings": snapshot["retrieval"]["settings"],
                 },
                 "ciphertext": encrypted.ciphertext,
                 "nonce": encrypted.nonce,

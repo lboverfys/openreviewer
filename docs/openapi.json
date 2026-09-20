@@ -5135,6 +5135,28 @@
             "title": "Model",
             "type": "string"
           },
+          "prompt_content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Content Sha256"
+          },
+          "prompt_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Protocol Version"
+          },
           "prompt_version": {
             "title": "Prompt Version",
             "type": "string"
@@ -5502,10 +5524,30 @@
       "ProfileCreate": {
         "additionalProperties": false,
         "properties": {
+          "base_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Profile Id"
+          },
           "expected_ai_revision": {
-            "minimum": 0.0,
-            "title": "Expected Ai Revision",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Ai Revision"
           },
           "name": {
             "maxLength": 120,
@@ -5524,12 +5566,36 @@
             "minLength": 3,
             "title": "Repository",
             "type": "string"
+          },
+          "role_instructions": {
+            "additionalProperties": {
+              "maxLength": 6000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxProperties": 4,
+            "propertyNames": {
+              "$ref": "#/components/schemas/ReviewAgent"
+            },
+            "title": "Role Instructions",
+            "type": "object"
+          },
+          "supplementary_instructions": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplementary Instructions"
           }
         },
         "required": [
           "name",
-          "repository",
-          "expected_ai_revision"
+          "repository"
         ],
         "title": "ProfileCreate",
         "type": "object"
@@ -5600,6 +5666,17 @@
             "title": "Ai Revision",
             "type": "integer"
           },
+          "base_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Profile Id"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -5639,6 +5716,17 @@
             "title": "Note",
             "type": "string"
           },
+          "prompt_content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Content Sha256"
+          },
           "prompt_version": {
             "title": "Prompt Version",
             "type": "string"
@@ -5651,6 +5739,18 @@
             "additionalProperties": true,
             "title": "Retrieval Settings",
             "type": "object"
+          },
+          "role_instructions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Role Instructions",
+            "type": "object"
+          },
+          "supplementary_instructions": {
+            "default": "",
+            "title": "Supplementary Instructions",
+            "type": "string"
           }
         },
         "required": [
@@ -7420,6 +7520,19 @@
               }
             ],
             "title": "Retry Scope"
+          },
+          "review_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Profile Id"
           },
           "state_version": {
             "anyOf": [

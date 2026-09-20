@@ -118,7 +118,7 @@ def _observation_values(source: EvaluationSource) -> dict[str, Any]:
         "source_run_id": source.review_run_id, "source_snapshot": snapshot,
         "snapshot_sha256": _digest(snapshot), "configuration_fingerprint": _digest(configuration),
         "model_label": " / ".join(dict.fromkeys(model.model for model in source.models))[:600],
-        "provenance_complete": bool(source.models) and (
+        "provenance_complete": bool(source.models) and len({model.application_revision for model in source.models}) == 1 and (
             not (source.repository_policy or {}).get("review_profile_id") or source.profile_calls_consistent
         ) and all(
             model.context_recorded and model.application_revision is not None and model.reused_from_run_id is None

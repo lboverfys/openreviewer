@@ -554,22 +554,37 @@ class StructuredReviewPromptBuilder:
 
     def __init__(self, snapshot: dict[str, object] | None = None) -> None:
         self.version = PROMPT_VERSION
+        self.supplementary_instructions = ""
+        self._content_versioned = False
         if snapshot is not None:
             system, roles, version = snapshot.get("system"), snapshot.get("roles"), snapshot.get("version")
             if not isinstance(system, str) or not isinstance(roles, dict) or version != PROMPT_VERSION:
                 raise ValueError("审查方案 Prompt 快照无效或协议不兼容")
             self.SYSTEM_PROMPT = system
             self.ROLE_INSTRUCTIONS = {agent: str(roles[agent.value]) for agent in ReviewAgent}
-            digest = sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
-            self.version = f"{version}.{digest}"
+            supplementary = snapshot.get("supplementary_instructions", "")
+            if not isinstance(supplementary, str):
+                raise ValueError("补充审查要求格式无效")
+            self.supplementary_instructions = supplementary
+            self._content_versioned = "content_sha256" in snapshot
+            if self._content_versioned:
+                if snapshot["content_sha256"] != self.content_sha256:
+                    raise ValueError("Prompt 内容指纹校验失败")
+            else:
+                # 保留旧快照的实际请求身份，不重写历史 Prompt。
+                digest = sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+                self.version = f"{version}.{digest}"
 
     @property
     def content_sha256(self) -> str:
-        return sha256(json.dumps({
+        content = {
             "system": self.SYSTEM_PROMPT,
             "roles": {agent.value: instruction for agent, instruction in self.ROLE_INSTRUCTIONS.items()},
             "version": PROMPT_VERSION,
-        }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        }
+        if self.supplementary_instructions:
+            content["supplementary_instructions"] = self.supplementary_instructions
+        return sha256(json.dumps(content, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
     def build(
         self,
@@ -628,6 +643,8 @@ class StructuredReviewPromptBuilder:
                 "agent": review_input.review_agent.value,
                 "responsibility": self.ROLE_INSTRUCTIONS[review_input.review_agent],
             }
+        if self.supplementary_instructions:
+            payload["supplementary_review_requirements"] = self.supplementary_instructions
         if review_input.context_evidence:
             payload["context_evidence"] = [{**item.model_dump(mode="json", include=_CONTEXT_PROMPT_FIELDS), "reference_id": f"ctx_{number}"}
                                            for number, item in enumerate(review_input.context_evidence, 1)]
@@ -648,6 +665,7 @@ class StructuredReviewPromptBuilder:
                 "api_protocol": api_protocol.value if api_protocol is not None else None,
                 "model": model,
                 "prompt_version": self.version,
+                **({"prompt_content_sha256": self.content_sha256} if self._content_versioned else {}),
                 "system": self.SYSTEM_PROMPT,
                 "user": user,
             },

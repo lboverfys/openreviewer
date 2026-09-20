@@ -8,6 +8,7 @@ import Pagination from "./Pagination";
 import { useCursorPage } from "./useCursorPage";
 import RetrievalTracePanel from "./RetrievalTracePanel";
 import StaticAnalysisPanel from "./StaticAnalysisPanel";
+import SnapshotProfilePicker from "./SnapshotProfilePicker";
 import "./styles/retrieval.css";
 import {
   DetailIcon,
@@ -209,7 +210,8 @@ function ReviewDetailPage({
   const [retrievalLoadError, setRetrievalLoadError] = useState("");
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [captureModelOutputs, setCaptureModelOutputs] = useState(false);
-  useEffect(() => setCaptureModelOutputs(false), [reviewRunId]);
+  const [trialProfileId, setTrialProfileId] = useState("");
+  useEffect(() => {setCaptureModelOutputs(false);setTrialProfileId("");}, [reviewRunId]);
   const retrievalEvidence = useMemo<Record<string, ContextEvidence>>(
     () => Object.fromEntries(retrievalTraces.flatMap(trace => trace.candidates).map(item => [item.reference_id, item])),
     [retrievalTraces],
@@ -218,6 +220,7 @@ function ReviewDetailPage({
   const [loading, setLoading] = useState(cachedDetails === undefined);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
+  const handleTrialError = useCallback((reason: unknown) => setActionError(errorMessage(reason)), []);
   useEffect(() => setActionError(""), [reviewRunId]);
   const [actionBusy, setActionBusy] = useState<ReviewAction | null>(null);
   const [findingBusy, setFindingBusy] = useState<string | null>(null);
@@ -367,7 +370,7 @@ function ReviewDetailPage({
   async function runAction(action: ReviewAction) {
     if (!details || !allowedReviewActions(user, [action]).length) return;
     if (action === "cancel" && !window.confirm("取消后停止后续执行并保留已有记录。已发出的模型请求无法撤回，可能仍会计费。确定取消吗？")) return;
-    if (action === "review_snapshot" && !window.confirm("将使用已保存的代码和当前审查配置真实调用模型，另存一条复查记录。不会重新运行 CI 或发布到 GitHub，继续吗？")) return;
+    if (action === "review_snapshot" && !window.confirm(`将使用已保存的代码和${trialProfileId ? "所选审查方案" : "当前审查配置"}真实调用模型，另存一条复查记录。不会重新运行 CI 或发布到 GitHub，继续吗？`)) return;
     if (action === "approve" && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
     if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
@@ -386,6 +389,7 @@ function ReviewDetailPage({
         actionKey(action, details.review_run_id, {
           stateVersion: details.change_token,
           captureModelOutputs: action === "review_snapshot" && captureModelOutputs,
+          reviewProfileId: action === "review_snapshot" ? trialProfileId : undefined,
         }),
         action === "retry_stage" ? retryTargetStage : undefined,
         {
@@ -403,6 +407,7 @@ function ReviewDetailPage({
           stateVersion: details.change_token,
           headSha: details.head_sha,
           captureModelOutputs: action === "review_snapshot" && captureModelOutputs,
+          reviewProfileId: action === "review_snapshot" ? trialProfileId : undefined,
         },
       );
       if ((action === "rerun" || action === "new_review" || action === "review_snapshot") && result.review_run_id !== details.review_run_id) {
@@ -731,6 +736,8 @@ function ReviewDetailPage({
                 {action === "retry" && <small>{details.coverage_status === "partial" ? "保留已经成功的批次" : "重新执行 AI 阶段，可能再次产生费用"}</small>}
                 {(action === "new_review" || action === "rerun") && <small>创建新记录，不覆盖当前任务</small>}
                 {action === "review_snapshot" && <small>使用已保存代码，另存检查结果</small>}
+                {action === "review_snapshot" && hasPermission(user, "settings:manage") && <SnapshotProfilePicker repository={details.repository}
+                  selected={trialProfileId} onSelected={setTrialProfileId} disabled={actionBusy !== null} onError={handleTrialError}/>}
                 {action === "review_snapshot" && <label><input type="checkbox" checked={captureModelOutputs} disabled={actionBusy !== null}
                   onChange={event => setCaptureModelOutputs(event.target.checked)} />留存本次评测输出（30 天，可能含业务代码）</label>}
               </div>

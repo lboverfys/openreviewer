@@ -7,6 +7,8 @@ import type { PlatformPanelProps } from "./PlatformPage";
 import { useCursorPage } from "./useCursorPage";
 import { formatDate } from "./utils";
 import ProfileActivationPanel from "./ProfileActivationPanel";
+import ProfileCandidateEditor from "./ProfileCandidateEditor";
+import type { ReviewProfile } from "./types";
 import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty, WorkspaceSection } from "./Workspace";
 
 const agentLabels: Record<string, string> = { security: "安全", convention: "规范", logic: "逻辑", summary: "汇总" };
@@ -23,6 +25,7 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState("");
   const [pendingProfile, setPendingProfile] = useState<string | null>(null);
+  const [candidateBase, setCandidateBase] = useState<ReviewProfile | null>(null);
   const load = useCallback((cursor?: string, signal?: AbortSignal, force?: boolean) => platformApi.profiles(repository, cursor, signal, force), [repository]);
   const profiles = useCursorPage({ cacheKey: `profiles:${repository}`, load, onError, enabled: Boolean(selected) });
   useEffect(() => { if (repositories.data?.items.length && !repositories.data.items.some(item => item.id === repositoryId)) setRepositoryId(repositories.data.items[0].id); }, [repositories.data, repositoryId]);
@@ -33,6 +36,8 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
     try { await platformApi.createProfile({ name, note, repository, expected_ai_revision: aiRevision }); setName(""); setNote(""); setCreating(false); setMessage("已保存不可变方案，可在下方启用。"); await profiles.refresh(); }
     catch (error) { onError(error); } finally { setBusy(false); }
   };
+  if (candidateBase) return <ProfileCandidateEditor base={candidateBase} onError={onError} onCancel={() => setCandidateBase(null)}
+    onSaved={() => {setCandidateBase(null);setMessage("候选已保存。可到同一审查详情选择方案并复查此版本，仓库当前绑定保持不变。");void profiles.refresh();}}/>;
   if (pendingProfile && selected) return <><WorkspaceBack onClick={() => setPendingProfile(null)}>返回方案历史</WorkspaceBack>
     <ProfileActivationPanel key={`${pendingProfile}:${repository}`} id={pendingProfile} repository={repository} revision={selected.revision} onError={onError} onCancel={() => setPendingProfile(null)} onDone={async () => { setPendingProfile(null); setMessage("仓库已切换方案，新任务将使用此版本。"); await repositories.refresh(); }} />
   </>;
@@ -55,8 +60,12 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
       <div className="profile-history">{selected && profiles.data?.items.map(item => <article className="platform-profile" key={item.id}><div><div className="profile-heading"><h3>{item.name}</h3>{selected.policy.review_profile_id === item.id && <WorkspaceBadge tone="accent">当前启用</WorkspaceBadge>}</div>{item.note && <p>{item.note}</p>}
         <div className="profile-models">{Object.entries(item.models).map(([key, value]) => <span key={key}><b>{agentLabels[key] ?? key}</b>{value}</span>)}</div>
         <div className="profile-metadata"><span>{formatDate(item.created_at)}</span><span>{item.created_by}</span><span>知识 {Object.keys(item.knowledge_versions).length} 份</span></div>
-        <DetailDialog className="profile-version"><summary>版本信息</summary><p>Prompt {item.prompt_version} · 版本 {item.fingerprint.slice(0, 12)}</p></DetailDialog>
-      </div><button className="ws-link-button" disabled={busy || selected.policy.review_profile_id === item.id} onClick={() => { setPendingProfile(item.id); setMessage(""); }}>启用 / 恢复此方案</button></article>)}</div>
+        <DetailDialog className="profile-version"><summary>版本信息</summary><p>Prompt 协议 {item.prompt_version} · 内容 {item.prompt_content_sha256?.slice(0,12) ?? "历史未记录"} · 方案 {item.fingerprint.slice(0, 12)}</p>
+          {item.base_profile_id && <p>基础方案：{item.base_profile_id}</p>}
+          {Object.entries(item.role_instructions ?? {}).map(([key,value]) => <p key={key}>{agentLabels[key] ?? key}：{value}</p>)}
+          {item.supplementary_instructions && <p>补充要求：{item.supplementary_instructions}</p>}</DetailDialog>
+      </div><div className="ws-actions"><button className="ws-link-button" disabled={busy} onClick={() => setCandidateBase(item)}>基于此方案创建候选</button>
+        <button className="ws-link-button" disabled={busy || selected.policy.review_profile_id === item.id} onClick={() => { setPendingProfile(item.id); setMessage(""); }}>启用 / 恢复此方案</button></div></article>)}</div>
       {!repositories.loading && !selected && <WorkspaceEmpty title="先选择一个仓库" description="尚未添加仓库时，可先前往团队管理配置。" />}
       {selected && !profiles.loading && !profiles.data?.items.length && <WorkspaceEmpty title="尚未保存审查方案" description="保存当前配置，建立可追溯、可恢复的方案版本。" />}
       {selected && <Pagination page={profiles.page} count={profiles.data?.items.length ?? 0} hasNext={Boolean(profiles.data?.next_cursor)} busy={profiles.loading} onPrevious={profiles.previous} onNext={profiles.next} />}

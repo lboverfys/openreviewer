@@ -221,7 +221,7 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged,
         <p>提交 {shortSha(sample.head_sha)} · 配置版本 {detail.source.configuration_revision ?? "历史未记录"} · 审查范围版本 <code>{detail.source.plan_fingerprint}</code></p>
         {detail.source.limitations.map(item => <p className="evaluation-notice" key={item}>{item}</p>)}
         {detail.source.models.map((model,index) => <article key={model.agent + ":" + index}><h4>{model.agent} · {model.provider} / {model.model}</h4>
-          <p>Prompt：{model.prompt_version} · 程序版本：{model.application_revision ? shortSha(model.application_revision) : "历史未记录"}</p>
+          <p>Prompt 协议：{model.prompt_protocol_version ?? model.prompt_version} · 内容 {model.prompt_content_sha256?.slice(0,12) ?? "历史未记录"} · 程序版本：{model.application_revision ? shortSha(model.application_revision) : "历史未记录"}</p>
           <p>知识引用：{Object.entries(model.knowledge_versions ?? {}).map(([name,version]) => name + "@" + version).join("、") || (model.context_recorded ? "本次没有引用" : "历史未记录")}</p></article>)}
         <DetailDialog><summary>仓库规则与检索索引</summary>
           {detail.source.rule_versions.map(item => <p key={item.source}><code>{item.source}</code> · {item.sha256}</p>)}
