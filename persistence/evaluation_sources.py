@@ -14,9 +14,11 @@ from domain.evaluation_workbench import (
     EvaluationNotFoundError,
     EvaluationSource,
     ModelVersion,
+    OutputEvidenceSummary,
     RetrievalVersion,
 )
 from domain.security import redact_sensitive, redact_text
+from persistence.evaluation_outputs import output_summary_query
 from persistence.models import (
     CodeIndexRecord,
     ModelCallRecord,
@@ -31,6 +33,7 @@ from persistence.models import (
     ReviewUnitRecord,
 )
 from persistence.resource_scope import resource_predicate
+from services.model_review import StructuredReviewPromptBuilder
 from services.rbac import ResourceScope
 
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
@@ -47,6 +50,7 @@ def capture_review_sources(
     """最多 30 个运行用六条批量查询收录，正文流式读取并限制总字节。"""
     if not run_ids or len(run_ids) > 30 or len(set(run_ids)) != len(run_ids):
         raise ValueError("每次请选择 1 至 30 条不同的审查运行")
+    outputs = output_summary_query(run_ids, captured_at)
     statement = (
         select(
             ReviewRunRecord.id, ReviewRunRecord.installation_id,
@@ -54,6 +58,10 @@ def capture_review_sources(
             ReviewRunRecord.repository_key, ReviewRunRecord.pull_request_number,
             ReviewRunRecord.head_sha, ReviewRunRecord.coverage_status,
             ReviewRunRecord.repository_policy, ReviewRunRecord.created_at,
+            ReviewRunRecord.capture_model_outputs,
+            outputs.c.request_count.label("output_request_count"),
+            outputs.c.captured_count.label("output_captured_count"),
+            outputs.c.expires_at.label("output_expires_at"),
             ReviewPlanRecord.id.label("plan_id"), ReviewPlanRecord.plan_fingerprint,
             ReviewPlanRecord.unit_count,
             ReviewPlanRecord.planner_version, ReviewPlanRecord.model_review_completed_at,
@@ -66,10 +74,11 @@ def capture_review_sources(
             PullRequestVersionRecord.title.label("pr_title"),
             ReviewProfileRecord.fingerprint.label("profile_fingerprint"),
             ReviewProfileRecord.snapshot["agents"].label("profile_agents"),
-            ReviewProfileRecord.snapshot["prompt"]["version"].as_string().label("profile_prompt_version"),
+            ReviewProfileRecord.snapshot["prompt"].label("profile_prompt"),
             ReviewProfileRecord.summary["knowledge_versions"].label("profile_knowledge_versions"),
         )
         .select_from(ReviewRunRecord)
+        .outerjoin(outputs, outputs.c.review_run_id == ReviewRunRecord.id)
         .outerjoin(ReviewPlanRecord, ReviewPlanRecord.review_run_id == ReviewRunRecord.id)
         .outerjoin(ModelCallRecord, ModelCallRecord.review_plan_id == ReviewPlanRecord.id)
         .outerjoin(PullRequestVersionRecord,
@@ -226,13 +235,18 @@ def capture_review_sources(
             limitations.append("历史批次未记录完整的程序版本或知识引用版本")
         if row.estimated_cost_microusd is None:
             limitations.append("未配置完整价格，估算费用未知")
+        if row.capture_model_outputs and (not row.output_request_count or row.output_captured_count != row.output_request_count):
+            limitations.append("指定评测调用的输出捕获尚未完整，不能声称原始输出证据齐全")
         declared_agents = row.profile_agents or {}
         declared_knowledge = row.profile_knowledge_versions or {}
+        declared_prompt_version = StructuredReviewPromptBuilder(row.profile_prompt).version if row.profile_prompt else None
         calls_consistent = bool(row.profile_fingerprint) and all(
             version.agent in declared_agents
             and all(getattr(version, key) == declared_agents[version.agent].get(field)
-                    for key, field in (("provider", "provider"), ("model", "model"), ("protocol", "api_protocol")))
-            and version.prompt_version == row.profile_prompt_version
+                    for key, field in (("provider", "provider"), ("model", "model")))
+            and version.protocol == (declared_agents[version.agent].get("api_protocol")
+                or ("responses" if version.provider == "openai" else "messages"))
+            and version.prompt_version == declared_prompt_version
             and all(declared_knowledge.get(source) == version_hash
                     for source, version_hash in version.knowledge_versions.items())
             for version in versions[run_id]
@@ -247,6 +261,12 @@ def capture_review_sources(
             plan_fingerprint=row.plan_fingerprint, planner_version=row.planner_version,
             configuration_revision=row.configuration_revision, repository_policy=row.repository_policy,
             profile_fingerprint=row.profile_fingerprint, profile_calls_consistent=calls_consistent,
+            model_output_evidence=OutputEvidenceSummary(
+                capture_requested=row.capture_model_outputs, request_count=row.output_request_count or 0,
+                captured_count=row.output_captured_count or 0,
+                incomplete_count=(row.output_request_count or 0) - (row.output_captured_count or 0),
+                expires_at=row.output_expires_at,
+            ),
             rule_versions=tuple(rules[run_id]),
             models=tuple(sorted(versions[run_id], key=lambda item: (
                 item.agent, item.model, item.prompt_version, item.protocol,

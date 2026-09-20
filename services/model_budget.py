@@ -6,6 +6,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Protocol
 
+from domain.evaluation_outputs import CapturedModelOutput, ModelOutputSource
+
 
 @dataclass(frozen=True, slots=True)
 class ModelBudgetRequest:
@@ -21,6 +23,9 @@ class ModelBudgetRequest:
     purpose: str = "review"
     connection_key: str | None = None
     timeout_seconds: int = 300
+    output_source: ModelOutputSource | None = None
+    request_sha256: str | None = None
+    attempt_kind: str = "initial"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,10 +37,13 @@ class ModelBudgetReservation:
     reserved_output_tokens: int
     reserved_cost_microusd: int
     remaining_duration_ms: int
+    capture_output: bool = False
 
 
 class ModelBudgetAccountant(Protocol):
     def reserve(self, request: ModelBudgetRequest) -> ModelBudgetReservation: ...
+
+    def record_output(self, reservation: ModelBudgetReservation, output: CapturedModelOutput) -> None: ...
 
     def settle(
         self,
@@ -54,6 +62,21 @@ _CURRENT_ACCOUNTANT: ContextVar[ModelBudgetAccountant | None] = ContextVar(
     "openreviewer_model_budget_accountant",
     default=None,
 )
+
+_OUTPUT_SOURCE: ContextVar[ModelOutputSource | None] = ContextVar("evaluation_output_source", default=None)
+
+
+def current_output_source() -> ModelOutputSource | None:
+    return _OUTPUT_SOURCE.get()
+
+
+@contextmanager
+def model_output_scope(source: ModelOutputSource | None) -> Iterator[None]:
+    token = _OUTPUT_SOURCE.set(source)
+    try:
+        yield
+    finally:
+        _OUTPUT_SOURCE.reset(token)
 
 _REQUEST_GUARD: ContextVar[Callable[[], None] | None] = ContextVar(
     "openreviewer_repository_request_guard", default=None,

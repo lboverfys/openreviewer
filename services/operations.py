@@ -13,7 +13,7 @@ from domain.enums import ExecutionStatus
 from domain.security import redact_sensitive
 
 # 就绪探针必须与 Alembic 当前 head 完全一致；否则新迁移后的实例会被错误摘流量。
-EXPECTED_DATABASE_REVISION = "20260921_0064"
+EXPECTED_DATABASE_REVISION = "20260921_0065"
 OUTBOX_LOGGER = logging.getLogger("openreviewer.outbox")
 LOGGER = logging.getLogger("openreviewer.operations")
 
@@ -236,6 +236,7 @@ class RetentionCutoffs:
     # 允许旧的仓储调用方省略新数据类；正式运维路径由 from_settings 提供。
     quota_buckets: datetime | None = None
     finding_evaluations: datetime | None = None
+    evaluation_outputs_now: datetime | None = None
 
     @classmethod
     def from_settings(
@@ -251,6 +252,7 @@ class RetentionCutoffs:
             reviews=now - settings.review_retention,
             quota_buckets=now - settings.quota_bucket_retention,
             finding_evaluations=now - settings.finding_evaluation_retention,
+            evaluation_outputs_now=now,
         )
 
 
@@ -265,6 +267,7 @@ class CleanupResult:
     quota_buckets: int = 0
     finding_evaluations: int = 0
     retrieval_records: int = 0
+    evaluation_outputs: int = 0
 
     @property
     def total(self) -> int:
@@ -279,6 +282,7 @@ class CleanupResult:
                 self.quota_buckets,
                 self.finding_evaluations,
                 self.retrieval_records,
+                self.evaluation_outputs,
             )
         )
 
@@ -516,5 +520,6 @@ class WorkerMaintenance:
                     "pull_request_versions": result.pull_request_versions,
                     "quota_buckets": result.quota_buckets,
                     "finding_evaluations": result.finding_evaluations,
+                    "evaluation_outputs": result.evaluation_outputs,
                 },
             )

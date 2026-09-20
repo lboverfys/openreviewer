@@ -9,10 +9,16 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.enums import ExecutionStatus
+from domain.evaluation_outputs import MAX_RUN_OUTPUT_BYTES, CapturedModelOutput
 from domain.platform import MonthlyBudgetExceededError, month_start
 from domain.repository_policy import RepositoryPolicy
+from persistence.models import (
+    EvaluationModelOutputRecord,
+    RepositoryPolicyRecord,
+    ReviewRunRecord,
+    ReviewTaskRecord,
+)
 from persistence.models import ModelUsageRequestRecord as Request
-from persistence.models import RepositoryPolicyRecord, ReviewRunRecord, ReviewTaskRecord
 from persistence.models import RepositoryUsageMonthRecord as Month
 from persistence.platform_common import dialect_insert, platform_audit
 from persistence.provider_channels import acquire_channel, lock_channel, settle_channel
@@ -55,12 +61,16 @@ class SqlAlchemyUsageLedger:
         now = self.clock()
         month = month_start(now)
         identifier = str(uuid4())
+        capture_requested = False
         with self.sessions() as session, session.begin():
             target = session.execute(
                 select(
                     ReviewRunRecord.installation_id,
                     ReviewRunRecord.repository,
                     ReviewRunRecord.repository_key,
+                    ReviewRunRecord.capture_model_outputs,
+                    ReviewRunRecord.head_sha,
+                    ReviewRunRecord.repository_policy,
                 )
                 .join(
                     ReviewTaskRecord,
@@ -157,6 +167,24 @@ class SqlAlchemyUsageLedger:
                     permit_expires_at=now + timedelta(seconds=request.timeout_seconds),
                 )
             )
+            source = request.output_source
+            capture_requested = target.capture_model_outputs and request.purpose == "review" and source is not None
+            if capture_requested and source is not None:
+                if source.review_run_id != lease.review_run_id or source.review_plan_id != lease.review_plan_id or source.head_sha != target.head_sha:
+                    raise ValueError("评测输出来源与当前任务不一致")
+                if not request.request_sha256:
+                    raise ValueError("评测输出缺少请求指纹")
+                session.add(EvaluationModelOutputRecord(
+                    id=identifier, review_run_id=source.review_run_id, review_plan_id=source.review_plan_id,
+                    installation_id=target.installation_id, repository=target.repository, repository_key=target.repository_key,
+                    head_sha=source.head_sha, profile_id=(target.repository_policy or {}).get("review_profile_id"),
+                    agent=agent, batch_number=source.batch_number, split_depth=source.split_depth,
+                    request_sequence=reserved.request_count, attempt_kind=request.attempt_kind,
+                    provider=request.provider, model=request.model, api_protocol=request.api_protocol,
+                    prompt_content_sha256=source.prompt_content_sha256, request_sha256=request.request_sha256,
+                    application_revision=source.application_revision, status="pending",
+                    created_at=now, expires_at=now + timedelta(days=30),
+                ))
             if budget is not None:
                 threshold = budget * policy.budget_warning_percent
                 total = (
@@ -184,7 +212,40 @@ class SqlAlchemyUsageLedger:
             reserved_output_tokens=request.output_token_upper_bound,
             reserved_cost_microusd=cost,
             remaining_duration_ms=0,
+            capture_output=capture_requested,
         )
+
+    def record_output(self, reservation: ModelBudgetReservation, output: CapturedModelOutput) -> None:
+        record = EvaluationModelOutputRecord
+        with self.sessions() as session, session.begin():
+            row = session.execute(select(record.id, record.review_run_id, record.status, record.expires_at)
+                .where(record.id == reservation.id).with_for_update()).one_or_none()
+            if row is None:
+                raise ValueError("评测请求的预占证据记录不存在")
+            now = self.clock()
+            expires_at = row.expires_at.replace(tzinfo=UTC) if row.expires_at.tzinfo is None else row.expires_at
+            if expires_at <= now or row.status == "expired":
+                return
+            if output.status == "parse_failed":
+                session.execute(update(record).where(record.id == row.id, record.status == "captured")
+                    .values(status="parse_failed", error_code=output.error_code))
+                return
+            if row.status != "pending":
+                return
+            values: dict[str, object] = {"status": output.status, "output_format": output.format,
+                "output_text": output.text, "output_sha256": output.sha256, "byte_size": output.byte_size,
+                "error_code": output.error_code, "captured_at": now}
+            if output.text is not None:
+                accepted = session.scalar(update(ReviewRunRecord).where(
+                    ReviewRunRecord.id == row.review_run_id,
+                    ReviewRunRecord.evaluation_output_bytes + output.byte_size <= MAX_RUN_OUTPUT_BYTES,
+                ).values(evaluation_output_bytes=ReviewRunRecord.evaluation_output_bytes + output.byte_size)
+                    .returning(ReviewRunRecord.id))
+                if accepted is None:
+                    source_exists = session.scalar(select(ReviewRunRecord.id).where(ReviewRunRecord.id == row.review_run_id)) is not None
+                    values.update(status="run_limit" if source_exists else "missing", output_text=None, output_sha256=None, byte_size=0,
+                                  error_code=None if source_exists else "source_run_removed")
+            session.execute(update(record).where(record.id == row.id).values(**values))
 
     def settle(
         self,

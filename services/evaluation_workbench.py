@@ -46,6 +46,7 @@ from domain.evaluation_workbench import (
 )
 from domain.pagination import CursorPage, decode_cursor, encode_cursor
 from domain.security import redact_text
+from persistence.evaluation_outputs import list_output_evidence
 from persistence.evaluation_reports import comparison_report
 from persistence.evaluation_sources import capture_review_sources
 from persistence.models import (
@@ -143,6 +144,10 @@ def _audit(session: Session, dataset_id: str, actor: str, action: str, payload: 
 class EvaluationWorkbench:
     def __init__(self, sessions: sessionmaker[Session]) -> None:
         self.sessions = sessions
+
+    def outputs(self, run_id: str, scope: ResourceScope, *, limit: int = 10, cursor: str | None = None):
+        with self.sessions() as session:
+            return list_output_evidence(session, run_id, scope, limit=limit, cursor=cursor)
 
     @staticmethod
     def _review_mode(session: Session, case_id: str) -> EvaluationReviewMode:
@@ -364,6 +369,16 @@ class EvaluationWorkbench:
             for source in sources.values()
         ):
             raise ValueError("同一评测集只能收录同一仓库和安装范围")
+        if dataset.review_mode == "dual":
+            leaked = session.scalar(select(EvaluationCaseRecord.id)
+                .join(EvaluationDatasetRecord, EvaluationDatasetRecord.id == EvaluationCaseRecord.dataset_id)
+                .where(EvaluationDatasetRecord.repository_key == dataset.repository_key,
+                       EvaluationDatasetRecord.installation_id == dataset.installation_id,
+                       EvaluationCaseRecord.dataset_id != dataset.id,
+                       EvaluationCaseRecord.pull_request_number.in_(numbers),
+                       EvaluationCaseRecord.split != draft.split).limit(1))
+            if leaked is not None:
+                raise EvaluationConflictError("同一 PR 已在其他评测集中用于另一划分，不能混入调参集和验收集")
         rows = session.execute(select(
             EvaluationCaseRecord, EvaluationObservationRecord.variant,
             EvaluationObservationRecord.source_run_id,

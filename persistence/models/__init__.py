@@ -10,6 +10,9 @@ from persistence.models.base import NAMING_CONVENTION as NAMING_CONVENTION
 from persistence.models.base import Base as Base
 from persistence.models.base import enum_values as enum_values
 from persistence.models.base import utc_now as utc_now
+from persistence.models.evaluation_outputs import (
+    EvaluationModelOutputRecord as EvaluationModelOutputRecord,
+)
 from persistence.models.evaluations import EvaluationCaseRecord as EvaluationCaseRecord
 from persistence.models.evaluations import (
     EvaluationDatasetRecord as EvaluationDatasetRecord,

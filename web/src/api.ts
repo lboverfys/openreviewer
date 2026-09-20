@@ -271,6 +271,7 @@ export const api = {
       batchNumber?: number;
       stateVersion?: string;
       headSha?: string;
+      captureModelOutputs?: boolean;
     },
   ) =>
     mutation(() => request<{
@@ -290,6 +291,7 @@ export const api = {
         ...(options?.batchNumber ? { batch_number: options.batchNumber } : {}),
         ...(options?.stateVersion ? { state_version: options.stateVersion } : {}),
         ...(options?.headSha ? { head_sha: options.headSha } : {}),
+        ...(options?.captureModelOutputs ? { capture_model_outputs: true } : {}),
       }),
     })),
   decideFinding: (

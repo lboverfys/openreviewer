@@ -2,6 +2,7 @@ import type { components } from "./generated/openapi";
 
 type Schemas = components["schemas"];
 export type EvaluationOverview = Schemas["EvaluationOverview"];
+export type EvaluationOutput = Schemas["EvaluationOutputView"];
 export type UsageMonth = Schemas["UsageMonth"];
 export type UsageRequest = Schemas["UsageRequest"];
 export type UsageBreakdown = Schemas["UsageBreakdown"];

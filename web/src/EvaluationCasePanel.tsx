@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { api } from "./api";
 import EvaluationImportPanel from "./EvaluationImportPanel";
 import EvaluationOverviewPanel from "./EvaluationOverviewPanel";
+import EvaluationOutputPanel from "./EvaluationOutputPanel";
 import EvaluationSourcePicker from "./EvaluationSourcePicker";
 import Pagination from "./Pagination";
 import type { AuthUser, EvaluationCaseDetail, EvaluationDataset, EvaluationDecision, EvaluationFinding, EvaluationObservationDetail, EvaluationReference, EvaluationVariant } from "./types";
@@ -212,6 +213,11 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged,
       </>}
       {tab !== "versions" && <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={busy || page.loading} onPrevious={page.previous} onNext={page.next} label={tab === "changes" ? "变更代码分页" : "评测问题分页"} />}
       {tab === "versions" && <div className="evaluation-provenance">
+        {detail.source.model_output_evidence?.capture_requested ? <>
+          <p>收录时的调用输出：{detail.source.model_output_evidence.captured_count} / {detail.source.model_output_evidence.request_count} 份完整，{detail.source.model_output_evidence.incomplete_count} 份缺失或不完整。
+            {detail.source.model_output_evidence.expires_at && new Date(detail.source.model_output_evidence.expires_at).getTime() <= Date.now() ? " 在线留存已到期，请核对受控归档。" : " 完整性以各调用当前状态和归档校验为准。"}</p>
+          <EvaluationOutputPanel runId={detail.source.review_run_id} onError={onError} />
+        </> : <p>本次未启用调用输出留存，或历史未记录；结构化审查快照不能代替供应商原始输出。</p>}
         <p>提交 {shortSha(sample.head_sha)} · 配置版本 {detail.source.configuration_revision ?? "历史未记录"} · 审查范围版本 <code>{detail.source.plan_fingerprint}</code></p>
         {detail.source.limitations.map(item => <p className="evaluation-notice" key={item}>{item}</p>)}
         {detail.source.models.map((model,index) => <article key={model.agent + ":" + index}><h4>{model.agent} · {model.provider} / {model.model}</h4>

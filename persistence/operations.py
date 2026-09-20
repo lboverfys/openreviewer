@@ -13,6 +13,7 @@ from domain.security import redact_sensitive
 from persistence.models import (
     AdminSessionRecord,
     CodeIndexRecord,
+    EvaluationModelOutputRecord,
     FindingEvaluationRecord,
     GitHubWebhookDeliveryRecord,
     ModelHttpCallRecord,
@@ -381,6 +382,15 @@ class SqlAlchemyOperationsRepository:
                     if cutoffs.finding_evaluations is not None
                     else 0
                 )
+                evaluation_outputs = 0
+                if cutoffs.evaluation_outputs_now is not None:
+                    record = EvaluationModelOutputRecord
+                    ids = session.scalars(select(record.id).where(
+                        record.expires_at <= cutoffs.evaluation_outputs_now, record.status != "expired",
+                    ).order_by(record.expires_at, record.id).limit(batch_size).with_for_update(skip_locked=True)).all()
+                    if ids:
+                        evaluation_outputs = _affected_rows(session.execute(update(record).where(record.id.in_(ids))
+                            .values(output_text=None, status="expired")))
         except SQLAlchemyError as exc:
             raise OperationsError("保留期清理失败") from exc
         retrieval_records = RetrievalRuntimeRepository(self._sessions).cleanup(min(100, batch_size))
@@ -394,6 +404,7 @@ class SqlAlchemyOperationsRepository:
             quota_buckets=quota_buckets,
             finding_evaluations=finding_evaluations,
             retrieval_records=retrieval_records,
+            evaluation_outputs=evaluation_outputs,
         )
 
     @staticmethod

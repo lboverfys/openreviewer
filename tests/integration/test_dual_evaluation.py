@@ -11,6 +11,7 @@ from sqlalchemy import update
 from apps.api.main import create_app
 from domain.evaluation_workbench import (
     EvaluationConflictError,
+    EvaluationDatasetCreate,
     EvaluationDecision,
     FindingReviewWrite,
     ReferenceReviewWrite,
@@ -88,6 +89,13 @@ def test_dual_disposition_disputes_and_missing_provenance_are_excluded(database)
     report = service.report(dataset.id, ALL)
     assert report.quality_pairs == 0 and report.provenance_missing_pairs == 1
     assert report.performance_pairs == 1
+
+
+def test_dual_validation_rejects_pr_used_for_tuning_in_another_dataset(database):
+    service, _, _, runs = create_pair(database, split="tuning")
+    with pytest.raises(EvaluationConflictError, match="其他评测集"):
+        service.create_dataset(EvaluationDatasetCreate(name="禁止泄漏", review_run_ids=(runs["base"],),
+            review_mode="dual", split="validation"), "independent-validation", "alice", ALL)
 
 
 def test_reference_disagreement_keeps_validity_and_location_disagreement_has_own_denominator(database):

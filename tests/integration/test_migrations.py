@@ -44,6 +44,7 @@ def test_initial_migration_creates_durable_review_task_schema(
         assert set(inspector.get_table_names()) == {
             "admin_sessions",
             "code_chunks",
+            "evaluation_model_outputs",
             "code_parse_cache",
             "code_embeddings",
             "code_indexes",

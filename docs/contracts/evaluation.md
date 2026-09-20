@@ -186,3 +186,49 @@ model_review_batches、review_plan_rules、pull_request_versions、retrieval_tra
 CI 覆盖权限与同源保护、批量查询数量、来源清理后的保留、同提交配对、样本划分隔离、
 双人复核/分歧/未知费用、并发版本冲突、分页与前端交互。真实人工标签由成员提供；
 CI 的测试数据不会复制到线上充当评测成绩。
+
+## 指定任务的调用输出证据
+
+“复查此版本”提供默认不勾选的“留存本次评测输出”选项。动作参数
+`capture_model_outputs=true` 只适用于 `review_snapshot`，同一幂等键更改留存选项返回 409。
+连接测试和日常审查不会因此启用正文记录。双人验收收录还检查同 PR 是否已在其他集用于
+另一划分，防止 tuning/validation 交叉；问题家族的隔离仍需人工检查。
+
+`evaluation_model_outputs.id` 与 `model_usage_requests.id` 共用实际 HTTP 尝试身份；
+记录运行、计划、角色、批次、拆分层级、尝试类型、精确模型/协议、请求和 Prompt 内容哈希。
+捕获在结构化问题解析之前执行，格式纠正、兼容重试和截断后的调用分别留痕。
+只保存供应商的可见答案文本，按协议排除独立 reasoning/thinking 字段；不保存请求头或密钥。
+流式结果标为 `stream_reassembled_output_text`，不称为原始 HTTP/SSE 字节。
+HTTP/流式协议无法解析时仅保存失败事实，不把不明负载或最终 Finding 反推成原始回答。
+
+正文使用既有脱敏后计算 SHA-256；单次最多 256 KiB UTF-8 字节，每运行累计最多 8 MiB。
+超过边界保留 `oversized/run_limit`，不保存截断正文。计费事务和正文加工分离，写入失败
+保留未完成状态及安全关联日志，正常结果仍按既有逻辑结算，不为补证据重发收费请求。
+新记录创建即为 pending，不能把仅有成功结果而缺捕获记录的请求当作证据完整。
+
+正文默认保留 30 天，维护清理分批将记录置为 expired 并移除正文；保留请求身份、哈希和
+来源元数据，以明确区分“曾经捕获”和“目前仍可获取”。原审查清理不级联删除捕获记录。
+正式报告必须在到期前显式归档；评测快照显示收录时完整数量和到期时间，当前调用状态
+通过按仓库权限过滤的 `/api/v1/evaluations/runs/{id}/outputs` 分页读取，该接口不返回正文。
+
+### 受控归档与复算
+
+维护入口 `python -m apps.maintenance.export_workflow_evidence export` 要求
+`--dataset-id`、`--repository`、`--installation-id` 和显式 `--output`；
+通过重复 `--run-id` 补全计划中的失败、中断或未进入工作台的运行。程序不能从成功样本
+反推出未提供的计划清单，清单必须由实验负责人固定。
+
+Windows 的输出和复算临时目录必须使用 D 盘绝对路径，拒绝 Git 工作区、已有归档目录和覆盖。
+建议归档到 `D:\rubbish\zhongjian\artifacts\openreviewer\controlled\<批次>`，
+复算临时目录用 `D:\rubbish\zhongjian\temp\openreviewer\<独立任务>`。
+数据库连接通过现有维护环境传入，不能在命令行中写真实密码。
+
+归档包括计划运行、成功快照、未纳入数量、账本用量、每次调用输出、人工结论和聚合报告。
+最多 200 PR、400 个计划运行、400 组观察、20000 个归档文件；观察每批 10 条、调用每批
+25 条导出，清单逐文件记录字节数和哈希。正式 manifest 最后生成，没有 manifest 的目录
+不视为完整归档。最终 Finding 只放在工作流观察里，不重复分配给多次 HTTP 尝试。
+
+使用 `python -m apps.maintenance.export_workflow_evidence verify --archive <归档目录>
+--work-directory <D盘临时目录>` 验证哈希，重新计算人工一致性和参考确认，再用原有
+`comparison_report()` 对隔离临时 SQLite 元数据复算聚合。临时库不用于并发验证，复算后删除。
+该目录含受控业务代码和复核身份，不可直接公开；对外只使用已脱敏的聚合报告。

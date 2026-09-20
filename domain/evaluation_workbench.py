@@ -123,6 +123,38 @@ class EvaluationChange(EvaluationContract):
     patch: str
 
 
+class OutputEvidenceSummary(EvaluationContract):
+    capture_requested: bool = False
+    request_count: int = 0
+    captured_count: int = 0
+    incomplete_count: int = 0
+    expires_at: datetime | None = None
+
+
+class EvaluationOutputView(EvaluationContract):
+    id: str
+    review_run_id: str
+    agent: str
+    batch_number: int | None
+    split_depth: int
+    request_sequence: int
+    attempt_kind: str
+    provider: str
+    model: str
+    api_protocol: str
+    prompt_content_sha256: str
+    request_sha256: str
+    application_revision: str | None
+    status: str
+    output_format: str
+    output_sha256: str | None
+    byte_size: int
+    error_code: str | None
+    created_at: datetime
+    captured_at: datetime | None
+    expires_at: datetime
+
+
 class EvaluationSource(EvaluationContract):
     source_kind: Literal["normalized_review_run"] = "normalized_review_run"
     review_run_id: str
@@ -138,6 +170,7 @@ class EvaluationSource(EvaluationContract):
     configuration_revision: int | None
     profile_fingerprint: str | None = None
     profile_calls_consistent: bool = False
+    model_output_evidence: OutputEvidenceSummary | None = None
     repository_policy: dict[str, object] | None
     rule_versions: tuple[dict[str, str], ...] = ()
     models: tuple[ModelVersion, ...] = ()

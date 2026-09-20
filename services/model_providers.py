@@ -1,6 +1,7 @@
 """OpenAI 与 Anthropic 官方 API 的严格结构化输出适配器。"""
 
 import json
+import logging
 import os
 import re
 import time
@@ -19,6 +20,11 @@ from domain.enums import (
     ModelProvider,
     ReviewAgent,
 )
+from domain.evaluation_outputs import (
+    CapturedModelOutput,
+    ModelOutputSource,
+    capture_output_text,
+)
 from domain.model_review import (
     ModelReviewInput,
     ModelReviewOutput,
@@ -34,6 +40,8 @@ from services.model_budget import (
     ModelBudgetReservation,
     check_model_request_limit,
     current_model_budget_accountant,
+    current_output_source,
+    model_output_scope,
 )
 from services.model_review import (
     ModelReviewer,
@@ -174,7 +182,14 @@ class _StructuredModelReviewer(ModelReviewer):
         from services.egress import check_paths, review_egress
 
         policy = review_input.repository_policy
-        with review_egress(policy.egress if policy else EgressPolicy()):
+        revision = os.environ.get("OPENREVIEWER_DEPLOYMENT_IMAGE", "").rpartition(":")[2]
+        source = None if review_input.connection_test else ModelOutputSource(
+            review_run_id=review_input.review_run_id, review_plan_id=review_input.review_plan_id,
+            head_sha=review_input.head_sha, prompt_content_sha256=self._prompt_builder.content_sha256,
+            application_revision=revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None,
+            batch_number=review_input.evaluation_batch_number, split_depth=review_input.evaluation_split_depth,
+        )
+        with review_egress(policy.egress if policy else EgressPolicy()), model_output_scope(source):
             check_paths(tuple(unit.file for unit in review_input.units)
                         + tuple(rule.path for rule in review_input.rules)
                         + tuple(item.file for item in review_input.context_evidence)
@@ -260,6 +275,8 @@ class _StructuredModelReviewer(ModelReviewer):
             reservation_id = audit.budget_reservation.id
             if reservation_id in settled_reservations:
                 return
+            if uncertain:
+                self._record_output(audit.budget_reservation, CapturedModelOutput(status="parse_failed", error_code="unknown_usage"))
             self._settle_budget_audit(audit, usage, uncertain=uncertain)
             settled_reservations.add(reservation_id)
 
@@ -285,6 +302,7 @@ class _StructuredModelReviewer(ModelReviewer):
                     request_path,
                     headers=self._request_headers(),
                     body=request_body,
+                    attempt_kind="initial" if len(attempted_bodies) == 1 else "compatibility",
                 )
                 break
             except SafeApplicationError as exc:
@@ -350,6 +368,7 @@ class _StructuredModelReviewer(ModelReviewer):
                             request_path,
                             headers=self._request_headers(),
                             body=repair_body,
+                            attempt_kind="repair",
                         )
                         try:
                             output, repair_usage, response_id = parse_batch_response(
@@ -510,6 +529,10 @@ class _StructuredModelReviewer(ModelReviewer):
     ) -> SafeApplicationError:
         """给解析错误补上 HTTP 审计字段，但不保存供应商响应正文。"""
 
+        self._record_output(audit.budget_reservation, CapturedModelOutput(
+            status="parse_failed", error_code=error.error.code.value,
+        ))
+
         return SafeApplicationError(
             SafeError(
                 code=error.error.code,
@@ -601,6 +624,7 @@ class _StructuredModelReviewer(ModelReviewer):
                 path,
                 headers=self._request_headers(),
                 body=body,
+                attempt_kind="compact",
             )
             try:
                 output, retry_usage, response_id = self._parse_success(retry_payload)
@@ -912,6 +936,7 @@ class _StructuredModelReviewer(ModelReviewer):
         *,
         headers: dict[str, str],
         body: dict[str, object],
+        attempt_kind: str = "initial",
     ) -> tuple[dict[str, object], ModelHttpAudit]:
         try:
             request_content = json.dumps(
@@ -947,7 +972,7 @@ class _StructuredModelReviewer(ModelReviewer):
         from services.egress import check_payload
 
         check_payload(self._settings.resolved_api_base_url, body)
-        reservation = self._reserve_budget(request_content, body)
+        reservation = self._reserve_budget(request_content, body, attempt_kind)
         started = self._monotonic()
         audit: ModelHttpAudit | None = None
         budget_settled = False
@@ -1237,13 +1262,18 @@ class _StructuredModelReviewer(ModelReviewer):
                             retryable=False,
                             details=self._audit_details(current_audit),
                         ) from exc
-        except SafeApplicationError:
+        except SafeApplicationError as exc:
+            self._record_output(reservation, CapturedModelOutput(
+                status="oversized" if exc.error.code is ErrorCode.MODEL_RESPONSE_TOO_LARGE else "transport_failed",
+                error_code=exc.error.code.value,
+            ))
             if audit is not None:
                 audit = finalize_audit()
             if audit is not None and not budget_settled:
                 self._settle_budget_audit(audit, None, uncertain=True)
             raise
         except httpx.TimeoutException as exc:
+            self._record_output(reservation, CapturedModelOutput(status="transport_failed", error_code="timeout"))
             audit = ModelHttpAudit(
                 # A response may have already yielded headers before the
                 # body stream times out.  Preserve that audit context instead
@@ -1268,6 +1298,7 @@ class _StructuredModelReviewer(ModelReviewer):
                 details={"path": path, **self._audit_details(audit)},
             ) from exc
         except httpx.RequestError as exc:
+            self._record_output(reservation, CapturedModelOutput(status="transport_failed", error_code="network_error"))
             audit = ModelHttpAudit(
                 # Request errors can also be raised while consuming a
                 # response body; keep any audit data collected so far.
@@ -1296,6 +1327,7 @@ class _StructuredModelReviewer(ModelReviewer):
             ) from exc
         except Exception as exc:
             # 第三方 Transport/响应迭代器不一定继承 httpx.RequestError。
+            self._record_output(reservation, CapturedModelOutput(status="transport_failed", error_code="transport_error"))
             # reservation 已在进入 HTTP 前创建；任何未知异常都必须先以
             # uncertain 结算，避免数据库中的 reserved 记录永久占用预算。
             audit = ModelHttpAudit(
@@ -1326,6 +1358,7 @@ class _StructuredModelReviewer(ModelReviewer):
             try:
                 decoded = json.loads(content)
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                self._record_output(reservation, CapturedModelOutput(status="transport_failed", error_code="invalid_response_json"))
                 self._settle_budget_audit(audit, None, uncertain=True)
                 self._observe_external(
                     audit.duration_ms / 1000,
@@ -1338,6 +1371,7 @@ class _StructuredModelReviewer(ModelReviewer):
                     details=self._audit_details(audit),
                 ) from exc
         if not isinstance(decoded, dict):
+            self._record_output(reservation, CapturedModelOutput(status="transport_failed", error_code="invalid_response_object"))
             self._settle_budget_audit(audit, None, uncertain=True)
             self._observe_external(
                 audit.duration_ms / 1000,
@@ -1353,7 +1387,28 @@ class _StructuredModelReviewer(ModelReviewer):
             audit.duration_ms / 1000,
             status_code=audit.response_status,
         )
+        if reservation is not None and reservation.capture_output:
+            try:
+                captured = capture_output_text(decoded, self.api_protocol.value, streamed=sse_parser is not None)
+            except (ValueError, TypeError, UnicodeError):
+                captured = CapturedModelOutput(status="missing", error_code="output_encoding_invalid")
+            self._record_output(reservation, captured)
         return decoded, audit
+
+    @staticmethod
+    def _record_output(reservation: ModelBudgetReservation | None, output: CapturedModelOutput) -> None:
+        if reservation is None or not reservation.capture_output:
+            return
+        accountant = current_model_budget_accountant()
+        if accountant is None:
+            return
+        try:
+            accountant.record_output(reservation, output)
+        except Exception:
+            # 独立证据写入失败保留 pending 标记，不能导致重发请求或跳过原有结算。
+            logging.getLogger(__name__).warning("评测输出留存失败", extra={
+                "event": "evaluation.output_capture_failed", "usage_request_id": reservation.id,
+            })
 
     def _observe_external(
         self,
@@ -1419,6 +1474,7 @@ class _StructuredModelReviewer(ModelReviewer):
         self,
         request_content: bytes,
         body: dict[str, object],
+        attempt_kind: str = "initial",
     ) -> ModelBudgetReservation | None:
         accountant = current_model_budget_accountant()
         if accountant is None:
@@ -1459,6 +1515,8 @@ class _StructuredModelReviewer(ModelReviewer):
                 input_token_upper_bound=input_limit,
                 output_token_upper_bound=output_limit,
                 cost_upper_bound_microusd=cost_limit,
+                output_source=current_output_source(), request_sha256=sha256(request_content).hexdigest(),
+                attempt_kind=attempt_kind,
                 connection_key=sha256((self._settings.resolved_api_base_url + "\0" + self._settings.api_key).encode()).hexdigest(),
                 timeout_seconds=int(self._settings.connect_timeout_seconds + self._settings.read_timeout_seconds
                     + self._settings.write_timeout_seconds + self._settings.pool_timeout_seconds + 60),

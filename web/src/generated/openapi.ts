@@ -446,6 +446,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/evaluations/runs/{run_id}/outputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Outputs */
+        get: operations["outputs_api_v1_evaluations_runs__run_id__outputs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/evaluations/sources": {
         parameters: {
             query?: never;
@@ -2167,6 +2184,13 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** CursorPage[EvaluationOutputView] */
+        CursorPage_EvaluationOutputView_: {
+            /** Items */
+            items: components["schemas"]["EvaluationOutputView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** CursorPage[EvaluationRunOption] */
         CursorPage_EvaluationRunOption_: {
             /** Items */
@@ -2681,6 +2705,57 @@ export interface components {
             /** Imported */
             imported: number;
         };
+        /** EvaluationOutputView */
+        EvaluationOutputView: {
+            /** Agent */
+            agent: string;
+            /** Api Protocol */
+            api_protocol: string;
+            /** Application Revision */
+            application_revision: string | null;
+            /** Attempt Kind */
+            attempt_kind: string;
+            /** Batch Number */
+            batch_number: number | null;
+            /** Byte Size */
+            byte_size: number;
+            /** Captured At */
+            captured_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Code */
+            error_code: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Id */
+            id: string;
+            /** Model */
+            model: string;
+            /** Output Format */
+            output_format: string;
+            /** Output Sha256 */
+            output_sha256: string | null;
+            /** Prompt Content Sha256 */
+            prompt_content_sha256: string;
+            /** Provider */
+            provider: string;
+            /** Request Sequence */
+            request_sequence: number;
+            /** Request Sha256 */
+            request_sha256: string;
+            /** Review Run Id */
+            review_run_id: string;
+            /** Split Depth */
+            split_depth: number;
+            /** Status */
+            status: string;
+        };
         /** EvaluationOverview */
         EvaluationOverview: {
             /** Case Count */
@@ -2867,6 +2942,7 @@ export interface components {
             limitations: string[];
             /** Model Duration Ms */
             model_duration_ms: number;
+            model_output_evidence?: components["schemas"]["OutputEvidenceSummary"] | null;
             /**
              * Models
              * @default []
@@ -3526,6 +3602,31 @@ export interface components {
              * @enum {string}
              */
             variant: "baseline" | "candidate";
+        };
+        /** OutputEvidenceSummary */
+        OutputEvidenceSummary: {
+            /**
+             * Capture Requested
+             * @default false
+             */
+            capture_requested: boolean;
+            /**
+             * Captured Count
+             * @default 0
+             */
+            captured_count: number;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Incomplete Count
+             * @default 0
+             */
+            incomplete_count: number;
+            /**
+             * Request Count
+             * @default 0
+             */
+            request_count: number;
         };
         /**
          * Permission
@@ -4253,6 +4354,11 @@ export interface components {
             agent?: components["schemas"]["ReviewAgent"] | null;
             /** Batch Number */
             batch_number?: number | null;
+            /**
+             * Capture Model Outputs
+             * @default false
+             */
+            capture_model_outputs: boolean;
             /** Head Sha */
             head_sha?: string | null;
             /** Retry Scope */
@@ -5973,6 +6079,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EvaluationComparisonReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    outputs_api_v1_evaluations_runs__run_id__outputs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_EvaluationOutputView_"];
                 };
             };
             /** @description Validation Error */

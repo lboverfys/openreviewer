@@ -56,11 +56,14 @@ def apply_action(
     batch_number: int | None = None,
     state_version: str | None = None,
     head_sha: str | None = None,
+    capture_model_outputs: bool = False,
     scope: ResourceScope | None = None,
 ) -> tuple[str, str, ExecutionStatus]:
     """在一个短事务内执行加速、重试、取消或重新审查。"""
 
     normalized_request_id = request_id.strip()
+    if capture_model_outputs and action is not ReviewAction.REVIEW_SNAPSHOT:
+        raise ReviewActionConflictError("输出证据留存只适用于显式历史版本评测试跑")
     if not normalized_request_id:
         raise ReviewActionConflictError("操作幂等键不能为空")
     allowed_retry_scopes = {"failed_node", "stage", "new_review"}
@@ -120,6 +123,7 @@ def apply_action(
                 retry_scope=retry_scope,
                 agent=agent,
                 batch_number=batch_number,
+                capture_model_outputs=capture_model_outputs,
                 scope=scope,
             )
             if idempotent_result is not None:
@@ -165,6 +169,7 @@ def apply_action(
                 retry_scope=retry_scope,
                 agent=agent,
                 batch_number=batch_number,
+                capture_model_outputs=capture_model_outputs,
                 scope=scope,
             )
             if idempotent_result is not None:
@@ -513,6 +518,9 @@ def apply_action(
                     )
                 )
                 if existing_rerun is not None:
+                    previous_capture = session.scalar(select(ReviewRunRecord.capture_model_outputs).where(ReviewRunRecord.id == existing_rerun))
+                    if previous_capture != capture_model_outputs:
+                        raise ReviewActionConflictError("同一幂等键不能用于不同的评测输出留存选项")
                     existing_task = session.scalar(
                         select(ReviewTaskRecord.id).where(
                             ReviewTaskRecord.review_run_id == existing_rerun
@@ -537,6 +545,7 @@ def apply_action(
                             pull_request_number=run.pull_request_number,
                             head_sha=normalized_head_sha,
                             snapshot_review=snapshot_review,
+                            capture_model_outputs=capture_model_outputs,
                             execution_status=initial_status.value,
                             workflow_status=initial_workflow.value,
                             review_conclusion=None,
@@ -597,6 +606,7 @@ def apply_action(
                             "new_review_run_id": new_run_id,
                             "new_review_task_id": new_task_id,
                             "snapshot_review": snapshot_review,
+                            "capture_model_outputs": capture_model_outputs,
                             "head_sha": normalized_head_sha,
                             "retry_scope": (
                                 "new_review" if new_review_action else retry_scope
@@ -739,6 +749,7 @@ def _existing_action_result(
     retry_scope: str | None = None,
     agent: str | None = None,
     batch_number: int | None = None,
+    capture_model_outputs: bool = False,
     scope: ResourceScope | None = None,
 ) -> tuple[str, str, ExecutionStatus] | None:
     """读取已提交的人工动作，供加锁前后两次幂等检查复用。"""
@@ -767,6 +778,8 @@ def _existing_action_result(
     ).scalar_one_or_none()
     if existing_event is None:
         return None
+    if bool(existing_event.get("capture_model_outputs", False)) != capture_model_outputs:
+        raise ReviewActionConflictError("同一幂等键不能用于不同的评测输出留存选项")
     if (
         not isinstance(existing_event, dict)
         or existing_event.get("target_stage") != target_stage

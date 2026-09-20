@@ -19,6 +19,7 @@ from domain.evaluation_workbench import (
     EvaluationFindingView,
     EvaluationImportResult,
     EvaluationNotFoundError,
+    EvaluationOutputView,
     EvaluationOverview,
     EvaluationRevision,
     EvaluationRunOption,
@@ -57,6 +58,14 @@ def register_evaluation_routes(
     require_editor: Callable[..., SessionPrincipal],
     require_same_origin: Callable[..., None],
 ) -> None:
+    @application.get("/api/v1/evaluations/runs/{run_id}/outputs", response_model=CursorPage[EvaluationOutputView])
+    def outputs(
+        run_id: str, principal: Annotated[SessionPrincipal, Depends(require_viewer)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        cursor: Annotated[str | None, Query(max_length=512)] = None,
+    ):
+        return _guard(lambda: get_service().outputs(run_id, principal.resource_scope, limit=limit, cursor=cursor))
+
     @application.get("/api/v1/evaluations/sources", response_model=CursorPage[EvaluationRunOption])
     def sources(
         principal: Annotated[SessionPrincipal, Depends(require_viewer)],

@@ -563,6 +563,14 @@ class StructuredReviewPromptBuilder:
             digest = sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
             self.version = f"{version}.{digest}"
 
+    @property
+    def content_sha256(self) -> str:
+        return sha256(json.dumps({
+            "system": self.SYSTEM_PROMPT,
+            "roles": {agent.value: instruction for agent, instruction in self.ROLE_INSTRUCTIONS.items()},
+            "version": PROMPT_VERSION,
+        }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
     def build(
         self,
         review_input: ModelReviewInput,

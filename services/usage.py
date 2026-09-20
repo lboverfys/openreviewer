@@ -3,11 +3,14 @@
 from collections.abc import Callable
 from typing import Protocol
 
+from domain.evaluation_outputs import CapturedModelOutput
 from services.model_budget import ModelBudgetRequest, ModelBudgetReservation
 from services.task_queue import ReviewTaskLease
 
 
 class UsageLedger(Protocol):
+    def record_output(self, reservation: ModelBudgetReservation, output: CapturedModelOutput) -> None: ...
+
     def reserve(
         self, lease: ReviewTaskLease, agent: str, request: ModelBudgetRequest
     ) -> ModelBudgetReservation: ...
@@ -33,6 +36,9 @@ class MonthlyModelAccountant:
 
     def reserve(self, request: ModelBudgetRequest) -> ModelBudgetReservation:
         return self.ledger.reserve(self.lease(), self.agent, request)
+
+    def record_output(self, reservation: ModelBudgetReservation, output: CapturedModelOutput) -> None:
+        self.ledger.record_output(reservation, output)
 
     def settle(
         self,

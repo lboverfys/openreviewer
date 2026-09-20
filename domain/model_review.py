@@ -219,6 +219,8 @@ class ModelReviewInput(ModelContract):
     # 截断时由 Worker 拆分输入，而不是重复发送同一份大请求。
     connection_test: bool = Field(default=False, exclude=True)
     allow_truncation_retry: bool = Field(default=True, exclude=True)
+    evaluation_batch_number: int | None = Field(default=None, ge=1, exclude=True)
+    evaluation_split_depth: int = Field(default=0, ge=0, le=8, exclude=True)
 
     @field_validator("knowledge_references", "prior_agent_results")
     @classmethod

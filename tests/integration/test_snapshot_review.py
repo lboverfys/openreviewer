@@ -48,6 +48,23 @@ def test_cancel_running_task_stops_lease_and_all_timeline_nodes(database):
     assert ReviewAction.REVIEW_SNAPSHOT in detail.available_actions
 
 
+def test_capture_is_explicit_and_idempotency_cannot_change_capture_options(database):
+    clock = MutableClock(datetime(2026, 9, 14, tzinfo=UTC))
+    _, _, _, run_id = _prepare_planning_lease(database, clock, complete_context=True)
+    service = ReviewManagementService(SqlAlchemyReviewManagementRepository(database.sessions, clock=clock))
+    service.apply_action(run_id, ReviewAction.CANCEL, actor="tester", request_id="capture-stop")
+    first = service.apply_action(run_id, ReviewAction.REVIEW_SNAPSHOT, actor="tester", request_id="capture-trial", capture_model_outputs=True)
+    repeated = service.apply_action(run_id, ReviewAction.REVIEW_SNAPSHOT, actor="tester", request_id="capture-trial", capture_model_outputs=True)
+    assert first == repeated
+    with pytest.raises(ReviewActionConflictError, match="留存"):
+        service.apply_action(run_id, ReviewAction.REVIEW_SNAPSHOT, actor="tester", request_id="capture-trial", capture_model_outputs=False)
+    with pytest.raises(ReviewActionConflictError, match="留存"):
+        service.apply_action(run_id, ReviewAction.CANCEL, actor="tester", request_id="capture-invalid", capture_model_outputs=True)
+    with database.sessions() as session:
+        assert session.get(ReviewRunRecord, first[0]).capture_model_outputs is True
+        assert session.get(ReviewRunRecord, run_id).capture_model_outputs is False
+
+
 def test_retrieving_context_does_not_claim_that_model_agents_have_started(database):
     clock = MutableClock(datetime(2026, 9, 14, tzinfo=UTC))
     _, _, _, run_id = _prepare_planning_lease(database, clock, complete_context=True)

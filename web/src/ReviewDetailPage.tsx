@@ -208,6 +208,8 @@ function ReviewDetailPage({
   const [retrievalTraces, setRetrievalTraces] = useState<RetrievalTrace[]>([]);
   const [retrievalLoadError, setRetrievalLoadError] = useState("");
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [captureModelOutputs, setCaptureModelOutputs] = useState(false);
+  useEffect(() => setCaptureModelOutputs(false), [reviewRunId]);
   const retrievalEvidence = useMemo<Record<string, ContextEvidence>>(
     () => Object.fromEntries(retrievalTraces.flatMap(trace => trace.candidates).map(item => [item.reference_id, item])),
     [retrievalTraces],
@@ -383,6 +385,7 @@ function ReviewDetailPage({
         action,
         actionKey(action, details.review_run_id, {
           stateVersion: details.change_token,
+          captureModelOutputs: action === "review_snapshot" && captureModelOutputs,
         }),
         action === "retry_stage" ? retryTargetStage : undefined,
         {
@@ -399,6 +402,7 @@ function ReviewDetailPage({
           batchNumber: undefined,
           stateVersion: details.change_token,
           headSha: details.head_sha,
+          captureModelOutputs: action === "review_snapshot" && captureModelOutputs,
         },
       );
       if ((action === "rerun" || action === "new_review" || action === "review_snapshot") && result.review_run_id !== details.review_run_id) {
@@ -727,6 +731,8 @@ function ReviewDetailPage({
                 {action === "retry" && <small>{details.coverage_status === "partial" ? "保留已经成功的批次" : "重新执行 AI 阶段，可能再次产生费用"}</small>}
                 {(action === "new_review" || action === "rerun") && <small>创建新记录，不覆盖当前任务</small>}
                 {action === "review_snapshot" && <small>使用已保存代码，另存检查结果</small>}
+                {action === "review_snapshot" && <label><input type="checkbox" checked={captureModelOutputs} disabled={actionBusy !== null}
+                  onChange={event => setCaptureModelOutputs(event.target.checked)} />留存本次评测输出（30 天，可能含业务代码）</label>}
               </div>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
           </div>

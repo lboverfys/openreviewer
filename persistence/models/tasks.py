@@ -128,6 +128,8 @@ class ReviewRunRecord(Base):
     pull_request_number: Mapped[int] = mapped_column(Integer, nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     snapshot_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    capture_model_outputs: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    evaluation_output_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
     workflow_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default=ExecutionStatus.QUEUED.value

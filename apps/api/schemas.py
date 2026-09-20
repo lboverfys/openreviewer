@@ -454,6 +454,7 @@ class ReviewActionRequest(BaseModel):
     batch_number: int | None = Field(default=None, ge=1, le=3000)
     state_version: str | None = Field(default=None, min_length=1, max_length=128)
     head_sha: str | None = Field(default=None, min_length=40, max_length=64)
+    capture_model_outputs: bool = False
 
 
 class ReviewChangeTokenResponse(BaseModel):

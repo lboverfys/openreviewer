@@ -99,6 +99,20 @@ it("操作失败提示不会被随后成功的后台刷新清除", async () => {
   action.mockRestore();
 });
 
+it("历史复查只在用户显式勾选后留存评测输出", async () => {
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details, available_actions:["review_snapshot"]});
+  const confirm = vi.spyOn(window,"confirm").mockReturnValue(true);
+  const action = vi.spyOn(api,"reviewAction").mockRejectedValue(new ApiError("测试未启动收费请求",409));
+  render(<ReviewDetailPage user={{...user,permissions:["reviews:view","reviews:manage"]}} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  const checkbox = await screen.findByRole("checkbox",{name:/留存本次评测输出/});
+  expect(checkbox).not.toBeChecked();
+  fireEvent.click(checkbox);
+  fireEvent.click(screen.getByRole("button",{name:"复查此版本"}));
+  await waitFor(()=>expect(action).toHaveBeenCalled());
+  expect(action.mock.calls[0][4]).toMatchObject({captureModelOutputs:true,headSha:details.head_sha});
+  action.mockRestore(); confirm.mockRestore();
+});
+
 it("文件范围不足不会被显示成 Agent 未完成或汇总未执行", async () => {
   vi.mocked(api.reviewDetails).mockResolvedValue({...details, phase:"completed",coverage_status:"partial",
     model_review_completed_at:"2026-09-14T00:00:00Z",aggregation_status:"local",summary_status:"skipped",

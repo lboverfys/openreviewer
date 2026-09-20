@@ -1640,6 +1640,33 @@
         "title": "CursorPage[EvaluationFindingView]",
         "type": "object"
       },
+      "CursorPage_EvaluationOutputView_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationOutputView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[EvaluationOutputView]",
+        "type": "object"
+      },
       "CursorPage_EvaluationRunOption_": {
         "properties": {
           "items": {
@@ -3066,6 +3093,158 @@
         "title": "EvaluationImportResult",
         "type": "object"
       },
+      "EvaluationOutputView": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "api_protocol": {
+            "title": "Api Protocol",
+            "type": "string"
+          },
+          "application_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Revision"
+          },
+          "attempt_kind": {
+            "title": "Attempt Kind",
+            "type": "string"
+          },
+          "batch_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Number"
+          },
+          "byte_size": {
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "captured_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captured At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_format": {
+            "title": "Output Format",
+            "type": "string"
+          },
+          "output_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Sha256"
+          },
+          "prompt_content_sha256": {
+            "title": "Prompt Content Sha256",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "request_sequence": {
+            "title": "Request Sequence",
+            "type": "integer"
+          },
+          "request_sha256": {
+            "title": "Request Sha256",
+            "type": "string"
+          },
+          "review_run_id": {
+            "title": "Review Run Id",
+            "type": "string"
+          },
+          "split_depth": {
+            "title": "Split Depth",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "review_run_id",
+          "agent",
+          "batch_number",
+          "split_depth",
+          "request_sequence",
+          "attempt_kind",
+          "provider",
+          "model",
+          "api_protocol",
+          "prompt_content_sha256",
+          "request_sha256",
+          "application_revision",
+          "status",
+          "output_format",
+          "output_sha256",
+          "byte_size",
+          "error_code",
+          "created_at",
+          "captured_at",
+          "expires_at"
+        ],
+        "title": "EvaluationOutputView",
+        "type": "object"
+      },
       "EvaluationOverview": {
         "additionalProperties": false,
         "properties": {
@@ -3509,6 +3688,16 @@
           "model_duration_ms": {
             "title": "Model Duration Ms",
             "type": "integer"
+          },
+          "model_output_evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutputEvidenceSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "models": {
             "default": [],
@@ -5158,6 +5347,45 @@
           "updated_at"
         ],
         "title": "ObservationView",
+        "type": "object"
+      },
+      "OutputEvidenceSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_requested": {
+            "default": false,
+            "title": "Capture Requested",
+            "type": "boolean"
+          },
+          "captured_count": {
+            "default": 0,
+            "title": "Captured Count",
+            "type": "integer"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "incomplete_count": {
+            "default": 0,
+            "title": "Incomplete Count",
+            "type": "integer"
+          },
+          "request_count": {
+            "default": 0,
+            "title": "Request Count",
+            "type": "integer"
+          }
+        },
+        "title": "OutputEvidenceSummary",
         "type": "object"
       },
       "Permission": {
@@ -6994,6 +7222,11 @@
               }
             ],
             "title": "Batch Number"
+          },
+          "capture_model_outputs": {
+            "default": false,
+            "title": "Capture Model Outputs",
+            "type": "boolean"
           },
           "head_sha": {
             "anyOf": [
@@ -11357,6 +11590,74 @@
           }
         },
         "summary": "Report"
+      }
+    },
+    "/api/v1/evaluations/runs/{run_id}/outputs": {
+      "get": {
+        "operationId": "outputs_api_v1_evaluations_runs__run_id__outputs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_EvaluationOutputView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Outputs"
       }
     },
     "/api/v1/evaluations/sources": {

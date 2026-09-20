@@ -438,6 +438,7 @@ class ReviewManagementRepository(Protocol):
         batch_number: int | None = None,
         state_version: str | None = None,
         head_sha: str | None = None,
+        capture_model_outputs: bool = False,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         """幂等执行任务控制动作并返回运行、任务和新状态。"""
@@ -633,9 +634,12 @@ class ReviewManagementService:
         batch_number: int | None = None,
         state_version: str | None = None,
         head_sha: str | None = None,
+        capture_model_outputs: bool = False,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         effective_scope = _effective_scope(scope)
+        if capture_model_outputs and action is not ReviewAction.REVIEW_SNAPSHOT:
+            raise ReviewActionConflictError("输出证据留存只适用于显式历史版本评测试跑")
         if action in {ReviewAction.RERUN, ReviewAction.NEW_REVIEW}:
             if retry_scope not in {None, "new_review"}:
                 raise ReviewActionConflictError("重试范围与当前操作不匹配")
@@ -677,6 +681,7 @@ class ReviewManagementService:
                 batch_number=batch_number,
                 state_version=state_version,
                 head_sha=head_sha,
+                capture_model_outputs=capture_model_outputs,
             )
         return self._repository.apply_action(
             review_run_id,
@@ -689,6 +694,7 @@ class ReviewManagementService:
             batch_number=batch_number,
             state_version=state_version,
             head_sha=head_sha,
+            capture_model_outputs=capture_model_outputs,
             scope=effective_scope,
         )
 

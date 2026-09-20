@@ -409,7 +409,7 @@ class _PersistentBatchedReviewer:
                 _raise_if_lease_lost(self._lease_cursor)
                 result = remap_model_review_result(
                     self._review_with_truncation_split(
-                        batch.review_input,
+                        batch.review_input.model_copy(update={"evaluation_batch_number": batch.number}),
                         checkpoint_results=checkpoint_results,
                         checkpoint_split_nodes=checkpoint_split_nodes,
                         on_checkpoint=persist_checkpoint,
@@ -623,7 +623,7 @@ class _PersistentBatchedReviewer:
                 return remember(
                     self._reviewer.review(
                         review_input.model_copy(
-                            update={"allow_truncation_retry": False}
+                            update={"allow_truncation_retry": False, "evaluation_split_depth": depth}
                         )
                     )
                 )
