@@ -1,0 +1,3 @@
+<mapper namespace="sample.UserMapper">
+    <select id="getById">SELECT id FROM users WHERE id = #{id}</select>
+</mapper>

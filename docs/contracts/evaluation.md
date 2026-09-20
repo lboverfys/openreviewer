@@ -82,6 +82,24 @@ structured-review-v5 增加 context_evidence 和 context_references。现有录�
 
 检索策略评测另行保存 annotation_source、代码索引版本、模型名及固定查询集。agent_annotated 结果不能标记为 independent_human。自动标注的检索相关性不等同于真实缺陷金标。
 
+每个策略保留总体字段，并增加 development/validation 两组统计：样本数、Recall@K、MRR、
+K、中位数和 P95 耗时。复用现有逐项结果分桶，不增加检索或模型请求；空组返回 null，
+历史没有分层的报告不把总体成绩当成验收成绩。页面默认展示 validation。
+报告记录索引提交、解析器、候选/上下文上限、向量覆盖和预热条件。每策略的实际请求数覆盖
+该策略全部样本；共享查询预热单列并计入总请求数，费用缺完整尝试依据时保持未知。
+检索相关性不等于缺陷找回率，统一热缓存耗时不等于首次访问或公网端到端耗时。
+
+`python -m apps.maintenance.retrieval_cli regression --output <报告路径>` 使用
+`OPENREVIEWER_TEST_POSTGRES_URL` 指定的本机 `openreviewer_test` 空数据库；缺库、非本机、
+非 PostgreSQL 或已有表均明确拒绝，不能因此清理已有数据。仅在该空库创建所需扩展与表，
+结束后清理本次创建的表。设置外部调用暂停，并注入拒绝外部客户端的工厂，只执行 R0/R1。
+`--measure` 只测量而不修改基线；变更数据或解析器后必须重新审阅实际结果。
+
+固定源码和基线在 `tests/fixtures/retrieval_regression`，属于项目自有合成回归夹具，
+包含 Java 方法、Mapper/XML 跨文件路径和没有可见查询线索的失败案例。首次隔离 PostgreSQL
+实测后冻结相关性下限，CI 用断开关系检索的负向测试证明门禁会失败，不设跨硬件延迟阈值。
+该公开夹具是反复使用的回归集，不是从未见过的真实验证集；正式模型调参仍需独立新批次。
+
 ## 真实 PR 评测工作台
 
 本工作台衡量真实审查流程在人工复核样本上的效果，复用现有角色、资源隔离、审查结果和

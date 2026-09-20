@@ -1,0 +1,22 @@
+{
+  "version": "java-mybatis-contract-v1",
+  "annotation_source": "synthetic_contract",
+  "description": "项目自有固定源码，仅用于确定性回归；不是独立人工查询集或真实 PR 成绩。",
+  "k": 8,
+  "files": ["UserMapper.java", "UserService.java", "UserMapper.xml"],
+  "cases": [
+    {"id": "service-method", "query": "UserService load", "relevant_symbols": ["sample.UserService.load(long)"], "split": "development"},
+    {"id": "mapper-sql", "query": "SELECT users WHERE", "relevant_symbols": ["sample.UserMapper.getById"], "split": "validation"},
+    {"id": "cross-file", "query": "resource owner isolation", "seed_files": ["UserService.java"], "relevant_symbols": ["sample.UserMapper.getById"], "split": "validation"},
+    {"id": "no-visible-clue", "query": "invisible behavior", "relevant_symbols": ["sample.UserMapper.getById"], "split": "validation"}
+  ],
+  "baseline": {
+    "parser_version": "java-mybatis-v2",
+    "dataset_fingerprint": "f59f8e8e1de2c63616ce78d0072d16f0bf6b3fbb5e9d28f1565a38b1c9184bc1",
+    "basis": "2026-09-21 在隔离 PostgreSQL 实测的固定合成夹具；保存实际相关性值作为回归下限，不对跨硬件耗时设阈值。不是人工真实评测成绩。",
+    "validation": {
+      "bm25": {"sample_count": 3, "recall_at_k": 0.3333333333333333, "mrr": 0.3333333333333333},
+      "lexical_relations": {"sample_count": 3, "recall_at_k": 0.6666666666666666, "mrr": 0.6666666666666666}
+    }
+  }
+}

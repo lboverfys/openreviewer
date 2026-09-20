@@ -84,6 +84,20 @@ jobs:
       - name: Verify request ledger at 100k rows
         run: python -m pytest tests/performance/platform_scale.py -q -s -W error
 
+      - name: Verify deterministic Java and MyBatis retrieval
+        env:
+          OPENREVIEWER_RETRIEVAL_API_DISABLED: "true"
+        run: python -m apps.maintenance.retrieval_cli regression --output reports/retrieval-regression.json
+
+      - name: Upload deterministic retrieval evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: retrieval-regression-${{ github.sha }}
+          path: reports/retrieval-regression.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   web-test:
     name: Test React on Node 22.19
     runs-on: ubuntu-24.04

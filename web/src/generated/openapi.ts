@@ -4003,6 +4003,10 @@ export interface components {
              * @enum {string}
              */
             annotation_source: "synthetic_contract" | "agent_annotated" | "independent_human" | "single_reviewer";
+            /** Candidate K */
+            candidate_k?: number | null;
+            /** Context K */
+            context_k?: number | null;
             /** Dataset Version */
             dataset_version: string;
             /** Embedding Model */
@@ -4011,13 +4015,19 @@ export interface components {
             generated_at: string;
             /** Id */
             id: string;
+            /** Index Head Sha */
+            index_head_sha?: string | null;
             /** Index Id */
             index_id: string;
+            /** Indexed Chunks */
+            indexed_chunks?: number | null;
             /**
              * Lexical Cache Mode
              * @default unknown
              */
             lexical_cache_mode: string;
+            /** Parser Version */
+            parser_version?: string | null;
             /**
              * Query Cache Mode
              * @default shared_warm
@@ -4027,8 +4037,14 @@ export interface components {
             real_review_accuracy?: number | null;
             /** Rerank Model */
             rerank_model: string;
+            /** Shared Prewarm Requests */
+            shared_prewarm_requests?: number | null;
             /** Strategies */
             strategies: components["schemas"]["StrategyEvaluation"][];
+            /** Total Model Requests */
+            total_model_requests?: number | null;
+            /** Vector Count */
+            vector_count?: number | null;
             /**
              * Vector Search Mode
              * @default exact_snapshot
@@ -4225,6 +4241,26 @@ export interface components {
              * @default false
              */
             tested: boolean;
+        };
+        /** RetrievalSplitEvaluation */
+        RetrievalSplitEvaluation: {
+            /** K */
+            k: number;
+            /** Median Duration Ms */
+            median_duration_ms: number | null;
+            /** Mrr */
+            mrr: number | null;
+            /** P95 Duration Ms */
+            p95_duration_ms: number | null;
+            /** Recall At K */
+            recall_at_k: number | null;
+            /** Sample Count */
+            sample_count: number;
+            /**
+             * Split
+             * @enum {string}
+             */
+            split: "development" | "validation";
         };
         /** RetrievalTrace */
         RetrievalTrace: {
@@ -5050,10 +5086,14 @@ export interface components {
             cases: {
                 [key: string]: unknown;
             }[];
+            /** Estimated Cost Microusd */
+            estimated_cost_microusd?: number | null;
             /** K */
             k: number;
             /** Median Duration Ms */
             median_duration_ms: number;
+            /** Model Requests */
+            model_requests?: number | null;
             /** Mrr */
             mrr: number;
             /** P95 Duration Ms */
@@ -5062,6 +5102,11 @@ export interface components {
             recall_at_k: number;
             /** Sample Count */
             sample_count: number;
+            /**
+             * Splits
+             * @default []
+             */
+            splits: components["schemas"]["RetrievalSplitEvaluation"][];
             /**
              * Strategy
              * @enum {string}

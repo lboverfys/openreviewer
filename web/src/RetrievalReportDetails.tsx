@@ -3,6 +3,7 @@ import { api } from "./api";
 import { Notice } from "./Feedback";
 import RetrievalTracePanel, { retrievalStrategyLabels } from "./RetrievalTracePanel";
 import type { RetrievalEvaluationReport, RetrievalTrace } from "./types";
+import type { RetrievalReportSplit } from "./RetrievalMetricsTable";
 
 function CaseDetails({entry}: {entry: Record<string, unknown>}) {
   const [trace, setTrace] = useState<RetrievalTrace | null>(null);
@@ -34,10 +35,10 @@ function CaseDetails({entry}: {entry: Record<string, unknown>}) {
   </article>;
 }
 
-export default function RetrievalReportDetails({report}: {report: RetrievalEvaluationReport}) {
+export default function RetrievalReportDetails({report, split = "all"}: {report: RetrievalEvaluationReport; split?: RetrievalReportSplit}) {
   const [strategy, setStrategy] = useState(report.strategies[0]?.strategy);
   const selected = report.strategies.find(item => item.strategy === strategy);
   return <><nav className="ws-tabs" aria-label="查看检索方式">{report.strategies.map(item => <button type="button" key={item.strategy} aria-pressed={strategy === item.strategy} onClick={() => setStrategy(item.strategy)}>{retrievalStrategyLabels[item.strategy]}</button>)}</nav>
-    {selected?.cases.map((entry, index) => <CaseDetails key={strategy + ":" + index} entry={entry}/>)}
+    {selected?.cases.filter(entry => split === "all" || entry.split === split).map((entry, index) => <CaseDetails key={strategy + ":" + index} entry={entry}/>)}
   </>;
 }

@@ -1,4 +1,5 @@
 import RetrievalReportDetails from "./RetrievalReportDetails";
+import RetrievalMetricsTable, { type RetrievalReportSplit } from "./RetrievalMetricsTable";
 import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
@@ -19,6 +20,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
   onSignedOut: (message?: string) => void; initialReviewRunId?: string;
 }) {
   const [tab, setTab] = useState<Tab>("search");
+  const [reportSplit, setReportSplit] = useState<RetrievalReportSplit>("validation");
   const [operations, setOperations] = useState<RetrievalOperations | null>(() => peekReadCache<RetrievalOperations>("retrieval-operations") ?? null);
   const cachedSettings = peekReadCache<RetrievalSettingsView>("retrieval-settings");
   const [view, setView] = useState<RetrievalSettingsView | null>(cachedSettings ?? null);
@@ -181,16 +183,17 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
       {tab === "evaluations" && <section className="retrieval-card">
         <RetrievalCompareForm indexId={selectedId} onSaved={() => {void reportPage.refresh(); setMessage("对比已保存，标注依据和结果可在报告中查看。");}} onError={handleError}/><h2>已保存的对比</h2><p className="retrieval-muted">对照相同样本、模型与 K 值，查看每一路召回和精排带来的变化。检索指标不等同于代码审查准确率。</p>
         {!reports.length && <div className="retrieval-empty">还没有对比报告。在上方填写应该找到的代码，即可完成一次网页对比。</div>}
+        <label>报告划分<select aria-label="报告划分" value={reportSplit} onChange={event => setReportSplit(event.target.value as RetrievalReportSplit)}>
+          <option value="validation">验收集</option><option value="development">调参集</option><option value="all">全部样本（兼容历史报告）</option></select></label>
         {reports.map(report => {
-          const baseline = report.strategies.find(item => item.strategy === "bm25");
           return <article className="retrieval-report" key={report.id}>
             <header><div><h3>{report.dataset_version}</h3><small>{annotationLabels[report.annotation_source]} · {formatDate(report.generated_at)}</small></div><button onClick={() => downloadReport(report)}>导出报告</button></header>
             <p>{report.embedding_model} / {report.rerank_model}</p><p className="retrieval-muted">查询缓存：{report.query_cache_mode === "not_used" ? "未使用" : report.query_cache_mode === "shared_warm" ? "统一预热" : report.query_cache_mode} · 向量搜索：{vectorSearchLabel(report.vector_search_mode)}</p>
             <p className="retrieval-muted">词法缓存：{report.lexical_cache_mode === "shared_warm" ? "各策略统一预热" : "未记录"}</p>
-            <div className="retrieval-table-scroll"><table><thead><tr><th>策略</th><th>样本数</th><th>Recall@K</th><th>MRR</th><th>中位耗时</th><th>P95 耗时</th><th>召回率较基线</th></tr></thead><tbody>
-              {report.strategies.map(item => <tr key={item.strategy}><td>{retrievalStrategyLabels[item.strategy]}</td><td>{item.sample_count}</td><td>{(item.recall_at_k * 100).toFixed(1)}% <small>K={item.k}</small></td><td>{item.mrr.toFixed(3)}</td><td>{formatDuration(Math.round(item.median_duration_ms))}</td><td>{formatDuration(Math.round(item.p95_duration_ms))}</td><td>{baseline ? `${item.recall_at_k >= baseline.recall_at_k ? "+" : ""}${((item.recall_at_k - baseline.recall_at_k) * 100).toFixed(1)} 个百分点` : "—"}</td></tr>)}
-            </tbody></table></div>
-            <DetailDialog><summary>标注依据与返回代码</summary><RetrievalReportDetails report={report}/></DetailDialog>
+            <p className="retrieval-muted">索引提交 {report.index_head_sha?.slice(0,12) ?? "历史未记录"} · 解析器 {report.parser_version ?? "历史未记录"} · 候选上限 {report.candidate_k ?? "未记录"} · 向量覆盖 {report.vector_count ?? "未记录"}/{report.indexed_chunks ?? "未记录"}</p>
+            <RetrievalMetricsTable report={report} split={reportSplit}/>
+            <p className="retrieval-muted">请求数按该策略全部样本统计；共享预热另有 {report.shared_prewarm_requests ?? "未记录"} 次，总请求 {report.total_model_requests ?? "未记录"} 次。费用缺少完整调用依据时为未知；耗时为统一预热后的检索耗时。</p>
+            <DetailDialog><summary>标注依据与返回代码</summary><RetrievalReportDetails report={report} split={reportSplit}/></DetailDialog>
             <p className="retrieval-muted">真实审查准确率：{report.real_review_accuracy == null ? "未评测" : `${(report.real_review_accuracy * 100).toFixed(1)}%`}。标注来源和样本规模是解释结果的必要条件。</p>
           </article>;
         })}

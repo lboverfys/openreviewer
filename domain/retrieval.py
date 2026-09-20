@@ -25,6 +25,7 @@ MAX_CHUNK_CHARS = 6_000
 RetrievalStrategy = Literal["bm25", "lexical_relations", "hybrid", "hybrid_relations", "reranked"]
 AnnotationSource = Literal["synthetic_contract", "agent_annotated", "independent_human", "single_reviewer"]
 RetrievalRoute = Literal["bm25", "vector", "relation"]
+RetrievalEvaluationSplit = Literal["development", "validation"]
 
 
 def stable_key(*parts: object) -> str:
@@ -248,7 +249,17 @@ class RetrievalEvaluationCase(RetrievalContract):
     relevant_symbols: tuple[str, ...] = Field(min_length=1)
     seed_files: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
-    split: Literal["development", "validation"] = "validation"
+    split: RetrievalEvaluationSplit = "validation"
+
+
+class RetrievalSplitEvaluation(RetrievalContract):
+    split: RetrievalEvaluationSplit
+    sample_count: int
+    recall_at_k: float | None
+    mrr: float | None
+    k: int
+    median_duration_ms: float | None
+    p95_duration_ms: float | None
 
 
 class StrategyEvaluation(RetrievalContract):
@@ -260,6 +271,9 @@ class StrategyEvaluation(RetrievalContract):
     median_duration_ms: float
     p95_duration_ms: float
     cases: tuple[dict[str, object], ...]
+    splits: tuple[RetrievalSplitEvaluation, ...] = ()
+    model_requests: int | None = None
+    estimated_cost_microusd: int | None = None
 
 
 class RetrievalEvaluationReport(RetrievalContract):
@@ -275,6 +289,14 @@ class RetrievalEvaluationReport(RetrievalContract):
     lexical_cache_mode: str = "unknown"
     vector_search_mode: str = "exact_snapshot"
     real_review_accuracy: float | None = None
+    index_head_sha: str | None = None
+    parser_version: str | None = None
+    candidate_k: int | None = None
+    context_k: int | None = None
+    indexed_chunks: int | None = None
+    vector_count: int | None = None
+    shared_prewarm_requests: int | None = None
+    total_model_requests: int | None = None
 
 
 class SearchHistoryItem(RetrievalContract):

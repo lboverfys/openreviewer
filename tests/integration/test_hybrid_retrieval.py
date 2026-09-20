@@ -148,6 +148,38 @@ def test_metrics_are_computed_from_labels_and_preserve_annotation_origin(retriev
     assert all(item.recall_at_k == 1 for item in report.strategies)
     assert report.real_review_accuracy is None
     assert report.annotation_source == "synthetic_contract"
+    for strategy in report.strategies:
+        validation = next(item for item in strategy.splits if item.split == "validation")
+        development = next(item for item in strategy.splits if item.split == "development")
+        assert validation.recall_at_k == strategy.recall_at_k and validation.sample_count == 1
+        assert development.sample_count == 0
+        assert development.recall_at_k is development.mrr is development.p95_duration_ms is None
+
+
+def test_evaluation_splits_reuse_case_results_without_extra_searches(retrieval, monkeypatch):
+    service, _, _ = retrieval
+    index = service.index_sources(TARGET, sources())
+    searches = []
+    original = service._search
+
+    def counted(*args, **kwargs):
+        trace = original(*args, **kwargs)
+        searches.append(trace)
+        return trace
+
+    monkeypatch.setattr(service, "_search", counted)
+    report = service.evaluate(index.id, (
+        RetrievalEvaluationCase(id="development", query="SELECT users", relevant_symbols=("sample.UserMapper.getById",), split="development"),
+        RetrievalEvaluationCase(id="validation", query="invisible", relevant_symbols=("sample.UserMapper.getById",), split="validation"),
+    ), dataset_version="separated-v1", annotation_source="synthetic_contract", strategies=("bm25", "lexical_relations"))
+    assert len(searches) == 4
+    for strategy in report.strategies:
+        assert strategy.recall_at_k == 0.5
+        assert strategy.splits[0].recall_at_k == 1
+        assert strategy.splits[1].recall_at_k == 0
+        assert strategy.splits[1].p95_duration_ms == strategy.cases[1]["duration_ms"]
+        assert strategy.model_requests == strategy.estimated_cost_microusd == 0
+    assert report.index_head_sha == index.head_sha and report.parser_version == index.parser_version
 
 
 def test_candidate_loading_is_one_query_for_multiple_ids(retrieval):

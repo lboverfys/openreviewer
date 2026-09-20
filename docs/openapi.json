@@ -6479,6 +6479,28 @@
             "title": "Annotation Source",
             "type": "string"
           },
+          "candidate_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate K"
+          },
+          "context_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context K"
+          },
           "dataset_version": {
             "title": "Dataset Version",
             "type": "string"
@@ -6495,14 +6517,47 @@
             "title": "Id",
             "type": "string"
           },
+          "index_head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Head Sha"
+          },
           "index_id": {
             "title": "Index Id",
             "type": "string"
+          },
+          "indexed_chunks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indexed Chunks"
           },
           "lexical_cache_mode": {
             "default": "unknown",
             "title": "Lexical Cache Mode",
             "type": "string"
+          },
+          "parser_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Version"
           },
           "query_cache_mode": {
             "default": "shared_warm",
@@ -6524,12 +6579,45 @@
             "title": "Rerank Model",
             "type": "string"
           },
+          "shared_prewarm_requests": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shared Prewarm Requests"
+          },
           "strategies": {
             "items": {
               "$ref": "#/components/schemas/StrategyEvaluation"
             },
             "title": "Strategies",
             "type": "array"
+          },
+          "total_model_requests": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Model Requests"
+          },
+          "vector_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Count"
           },
           "vector_search_mode": {
             "default": "exact_snapshot",
@@ -6897,6 +6985,82 @@
           "key_configured"
         ],
         "title": "RetrievalSettingsView",
+        "type": "object"
+      },
+      "RetrievalSplitEvaluation": {
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "title": "K",
+            "type": "integer"
+          },
+          "median_duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Duration Ms"
+          },
+          "mrr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mrr"
+          },
+          "p95_duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Duration Ms"
+          },
+          "recall_at_k": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recall At K"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "split": {
+            "enum": [
+              "development",
+              "validation"
+            ],
+            "title": "Split",
+            "type": "string"
+          }
+        },
+        "required": [
+          "split",
+          "sample_count",
+          "recall_at_k",
+          "mrr",
+          "k",
+          "median_duration_ms",
+          "p95_duration_ms"
+        ],
+        "title": "RetrievalSplitEvaluation",
         "type": "object"
       },
       "RetrievalTrace": {
@@ -9468,6 +9632,17 @@
             "title": "Cases",
             "type": "array"
           },
+          "estimated_cost_microusd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Microusd"
+          },
           "k": {
             "title": "K",
             "type": "integer"
@@ -9475,6 +9650,17 @@
           "median_duration_ms": {
             "title": "Median Duration Ms",
             "type": "number"
+          },
+          "model_requests": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Requests"
           },
           "mrr": {
             "title": "Mrr",
@@ -9491,6 +9677,14 @@
           "sample_count": {
             "title": "Sample Count",
             "type": "integer"
+          },
+          "splits": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RetrievalSplitEvaluation"
+            },
+            "title": "Splits",
+            "type": "array"
           },
           "strategy": {
             "enum": [

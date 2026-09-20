@@ -23,9 +23,11 @@ from domain.retrieval import (
     IndexView,
     RetrievalEvaluationCase,
     RetrievalEvaluationReport,
+    RetrievalEvaluationSplit,
     RetrievalRoute,
     RetrievalSettings,
     RetrievalSettingsView,
+    RetrievalSplitEvaluation,
     RetrievalStrategy,
     RetrievalTrace,
     RouteMetric,
@@ -127,6 +129,17 @@ def reciprocal_rank_fusion(routes: dict[str, list[tuple[str, float]]], limit: in
             scores[chunk_id] += 1 / (_RRF_K + rank)
             origins[chunk_id].append(route)
     return [(key, score, tuple(origins[key])) for key, score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]]
+
+
+def _evaluation_metrics(items: list[dict[str, object]], k: int) -> dict[str, Any]:
+    durations = sorted(cast(int, item["duration_ms"]) for item in items)
+    return {
+        "sample_count": len(items), "k": k,
+        "recall_at_k": statistics.mean(cast(float, item["recall_at_k"]) for item in items) if items else None,
+        "mrr": statistics.mean(cast(float, item["mrr"]) for item in items) if items else None,
+        "median_duration_ms": statistics.median(durations) if durations else None,
+        "p95_duration_ms": durations[math.ceil(len(durations) * 0.95) - 1] if durations else None,
+    }
 
 
 class HybridRetrievalService:
@@ -485,6 +498,7 @@ class HybridRetrievalService:
         reports: list[StrategyEvaluation] = []
         traces: list[RetrievalTrace] = []
         vector_modes: set[str] = set()
+        prewarm_requests = 0
         try:
             # 每个策略使用相同的词法热缓存，避免后运行的策略白占缓存优势。
             lexical = self._lexical(index_id)
@@ -503,9 +517,10 @@ class HybridRetrievalService:
                     self.repository.store_embeddings(view.settings.embedding_fingerprint, [
                         (keys[digest], digest, vector) for (digest, _), vector in zip(batch, response.vectors, strict=True)
                     ])
+                prewarm_requests = client.budget.used
             for strategy in strategies:
                 items: list[dict[str, object]] = []
-                recalls, ranks, durations = [], [], []
+                requests_before = client.budget.used if client is not None else 0
                 for case in cases:
                     trace = self._search(index, SearchQuery(query=case.query, seed_files=case.seed_files, symbols=case.symbols, strategy=strategy, limit=k), view.settings, client)
                     # 空关系是一次真实检索结果，也应保留；服务失败仍禁止冒充完整策略。
@@ -518,19 +533,18 @@ class HybridRetrievalService:
                     recall = len(relevant.intersection(symbols)) / len(relevant)
                     rank = next((position for position, symbol in enumerate(symbols, 1) if symbol in relevant), None)
                     reciprocal = 1 / rank if rank else 0
-                    recalls.append(recall)
-                    ranks.append(reciprocal)
-                    durations.append(trace.duration_ms)
                     items.append({"case_id": case.id, "query": case.query, "expected_symbols": list(case.relevant_symbols), "head_sha": index.head_sha, "repository": index.repository, "split": case.split, "query_cache_hit": trace.query_cache_hit, "recall_at_k": recall, "mrr": reciprocal, "symbols": symbols, "duration_ms": trace.duration_ms, "warnings": list(trace.warnings),
                         "actual_strategy": trace.strategy,
                         "routes": [metric.model_dump(mode="json") for metric in trace.routes],
                         "trace_id": trace.id,
                         "embedding_ms": trace.embedding_ms, "rerank_ms": trace.rerank_ms})
-                ordered = sorted(durations)
+                model_requests = (client.budget.used if client is not None else 0) - requests_before
                 reports.append(StrategyEvaluation(
-                    strategy=strategy, sample_count=len(cases), recall_at_k=statistics.mean(recalls),
-                    mrr=statistics.mean(ranks), k=k, median_duration_ms=statistics.median(durations),
-                    p95_duration_ms=ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)], cases=tuple(items),
+                    strategy=strategy, **_evaluation_metrics(items, k), cases=tuple(items),
+                    splits=tuple(RetrievalSplitEvaluation(split=cast(RetrievalEvaluationSplit, split), **_evaluation_metrics(
+                        [item for item in items if item["split"] == split], k,
+                    )) for split in ("development", "validation")),
+                    model_requests=model_requests, estimated_cost_microusd=0 if not model_requests else None,
                 ))
         finally:
             if client is not None:
@@ -542,6 +556,11 @@ class HybridRetrievalService:
             strategies=tuple(reports),
             query_cache_mode="shared_warm" if client is not None else "not_used",
             lexical_cache_mode="shared_warm",
+            index_head_sha=index.head_sha, parser_version=index.parser_version,
+            candidate_k=view.settings.candidate_k, context_k=view.settings.context_k,
+            indexed_chunks=index.chunk_count, vector_count=index.vector_count,
+            shared_prewarm_requests=prewarm_requests,
+            total_model_requests=client.budget.used if client is not None else 0,
             vector_search_mode=",".join(sorted(vector_modes - {"unused"})) or "not_used",
         )
         self.repository.save_evaluation(report, traces)
