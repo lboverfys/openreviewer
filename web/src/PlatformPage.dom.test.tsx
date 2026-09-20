@@ -21,6 +21,7 @@ beforeEach(() => {
     if (method === "POST") return new Response(JSON.stringify(item));
     if (path.includes("/work-items")) return new Response(JSON.stringify({ items: [item] }));
     if (path.includes("/approvals")) return new Response(JSON.stringify({ items: [] }));
+    if (path.includes("/breakdown")) return new Response(JSON.stringify([{agent:path.includes("group_by=agent") ? "logic" : null, model:"fixture-model", purpose:"review", request_count:2, estimated_cost_microusd:100, unknown_count:1, known_count:1, known_cost_share:1, settled_priced_count:1, settled_reservation_microusd:150, settled_cost_microusd:100}]));
     if (path.includes("/usage?")) return new Response(JSON.stringify({ items: [{ id: "month-1", repository: "example/project", installation_id: 1, month: "2026-09", request_count: 2, estimated_cost_microusd: 100, reserved_cost_microusd: 60, input_tokens: 10, output_tokens: 5, unknown_count: 1, uncertain_count: 1, budget_microusd: 200, warning_percent: 80, warning: true, created_at: now }] }));
     if (path.includes("/diagnostics")) return new Response(JSON.stringify({ repositories: [], failures: [], provider_channels: [], since: now, until: now }));
     return new Response(JSON.stringify({ items: [] }));
@@ -61,6 +62,18 @@ it("费用页面区分已估算费用、保留预占和未知请求", async () =
   expect(screen.getByText("$0.000100")).toBeInTheDocument();
   expect(screen.getByText("费用未知 1 · 请求不确定 1")).toBeInTheDocument();
   expect(screen.getByText("待确认预占")).toBeInTheDocument();
+});
+
+it("请求汇总可以切到角色并保留未知费用与同批预占口径", async () => {
+  render(<PlatformPage user={admin} initialTab="usage" onSignedOut={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", {name:"查看请求"}));
+  fireEvent.click(await screen.findByRole("button", {name:/按模型、用途与角色汇总/}));
+  await screen.findByText("fixture-model");
+  fireEvent.change(screen.getByLabelText("费用分组"), {target:{value:"agent"}});
+  await screen.findByText("逻辑");
+  expect(calls.some(call => call.path.includes("group_by=agent"))).toBe(true);
+  expect(screen.getByText(/已知 1 次 \/ 未知 1 次/)).toBeInTheDocument();
+  expect(screen.getByText(/预占 \$0.000150 \/ 估算 \$0.000100/)).toBeInTheDocument();
 });
 
 it("审批筛选只发出对应待办请求", async () => {

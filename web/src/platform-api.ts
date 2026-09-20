@@ -18,7 +18,7 @@ export const platformApi = {
   proposeKnowledge: (id: string, body: import("./types").KnowledgeProposalWrite) => mutation(() => request<import("./types").KnowledgeProposalView>(`${base}/work-items/${encodeURIComponent(id)}/knowledge`, { method: "POST", body: JSON.stringify(body) })),
   usage: (month: string, cursor?: string, signal?: AbortSignal, force = false) => page<UsageMonth>("/usage", `usage:${month}`, { month }, cursor, signal, force),
   requests: (id: string, cursor?: string, signal?: AbortSignal, force = false) => page<UsageRequest>(`/usage/${encodeURIComponent(id)}/requests`, `usage-requests:${id}`, {}, cursor, signal, force),
-  breakdown: (id: string, signal?: AbortSignal) => request<UsageBreakdown[]>(`${base}/usage/${encodeURIComponent(id)}/breakdown`, { signal }),
+  breakdown: (id: string, signal?: AbortSignal, groupBy: "model" | "agent" = "model") => request<UsageBreakdown[]>(`${base}/usage/${encodeURIComponent(id)}/breakdown?group_by=${groupBy}`, { signal }),
   workItems: (mine: boolean, status: string, overdue: boolean, cursor?: string, signal?: AbortSignal, force = false) => page<WorkItem>("/work-items", `work:${mine}:${status}:${overdue}`, { mine: String(mine), overdue: String(overdue), ...(status ? { status } : {}) }, cursor, signal, force),
   createWork: (body: WorkItemCreate) => mutation(() => request<WorkItem>(`${base}/work-items`, { method: "POST", body: JSON.stringify(body) })),
   updateWork: (id: string, body: WorkItemUpdate) => mutation(() => request<WorkItem>(`${base}/work-items/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) })),

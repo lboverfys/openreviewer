@@ -1,8 +1,9 @@
 """费用页面只读取月度汇总与有界请求列表。"""
 
 from datetime import UTC, datetime
+from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from domain.pagination import CursorPage, encode_cursor
@@ -18,6 +19,7 @@ from persistence.models import RepositoryPolicyRecord
 from persistence.models import RepositoryUsageMonthRecord as Month
 from persistence.pagination import apply_cursor
 from persistence.resource_scope import resource_predicate
+from persistence.usage_statistics import request_statistics_statement
 from services.rbac import ResourceScope
 
 
@@ -108,7 +110,7 @@ class UsageQueries:
         )
 
     def breakdown(
-        self, scope: ResourceScope, month_id: str
+        self, scope: ResourceScope, month_id: str, group_by: Literal["model", "agent"] = "model",
     ) -> tuple[UsageBreakdown, ...]:
         with self.sessions() as session:
             if (
@@ -118,28 +120,12 @@ class UsageQueries:
                 is None
             ):
                 raise PlatformNotFoundError("月份不存在")
-            rows = (
-                session.execute(
-                    select(
-                        Request.model,
-                        Request.purpose,
-                        func.count().label("request_count"),
-                        func.coalesce(
-                            func.sum(Request.estimated_cost_microusd), 0
-                        ).label("estimated_cost_microusd"),
-                        func.count()
-                        .filter(Request.estimated_cost_microusd.is_(None))
-                        .label("unknown_count"),
-                    )
-                    .where(Request.month_id == month_id, _scope(Request, scope))
-                    .group_by(
-                        Request.model,
-                        Request.purpose,
-                    )
-                    .order_by(func.count().desc(), Request.model, Request.purpose)
-                    .limit(100)
-                )
-                .mappings()
-                .all()
-            )
-        return tuple(UsageBreakdown.model_validate(row) for row in rows)
+            dimensions = ("agent",) if group_by == "agent" else ("provider", "model", "purpose")
+            rows = session.execute(request_statistics_statement(
+                and_(Request.month_id == month_id, _scope(Request, scope)), dimensions,
+            ).limit(101)).mappings().all()
+        return tuple(UsageBreakdown.model_validate({
+            **({"model":"全部模型", "purpose":"all"} if group_by == "agent" else {}), **row,
+            "group_by":group_by, "groups_truncated":len(rows) > 100,
+            "known_cost_share":row["estimated_cost_microusd"] / row["total_estimated_cost_microusd"] if row["total_estimated_cost_microusd"] else None,
+        }) for row in rows[:100])

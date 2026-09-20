@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -159,10 +159,11 @@ def register_platform_routes(
         response_model=tuple[UsageBreakdown, ...],
     )
     def breakdown(
-        month_id: str, principal: Annotated[SessionPrincipal, Depends(require_manager)]
+        month_id: str, principal: Annotated[SessionPrincipal, Depends(require_manager)],
+        group_by: Literal["model", "agent"] = "model",
     ):
         return _guard(
-            lambda: get_service().usage.breakdown(principal.resource_scope, month_id)
+            lambda: get_service().usage.breakdown(principal.resource_scope, month_id, group_by)
         )
 
     @application.get(

@@ -9,7 +9,7 @@ import { formatDate } from "./utils";
 import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty } from "./Workspace";
 
 export const formatMoney = (value: number | null | undefined) => value == null ? "未记录" : `$${(value / 1_000_000).toFixed(6)}`;
-const purposeLabels: Record<string, string> = { review: "代码审查", embedding: "向量检索", rerank: "精排" };
+const purposeLabels: Record<string, string> = { review: "代码审查", embedding: "向量检索", rerank: "精排", all: "全部用途" };
 const agentLabels: Record<string, string> = { security: "安全", convention: "规范", logic: "逻辑", summary: "汇总", retrieval: "检索" };
 
 export default function UsagePanel({ onError }: PlatformPanelProps) {
@@ -32,10 +32,11 @@ export default function UsagePanel({ onError }: PlatformPanelProps) {
 
 function UsageDetails({ month, onError, onRefreshSummary }: PlatformPanelProps & { month: UsageMonth; onRefreshSummary: () => void }) {
   const [groups, setGroups] = useState<UsageBreakdown[]>([]);
+  const [groupBy, setGroupBy] = useState<"model" | "agent">("model");
   const [version, setVersion] = useState(0);
   const load = useCallback((cursor?: string, signal?: AbortSignal, force?: boolean) => platformApi.requests(month.id, cursor, signal, force), [month.id]);
   const page = useCursorPage({ cacheKey: `usage-requests:${month.id}`, load, onError });
-  useEffect(() => { const controller = new AbortController(); void platformApi.breakdown(month.id, controller.signal).then(setGroups).catch(error => { if (!controller.signal.aborted) onError(error); }); return () => controller.abort(); }, [month.id, onError, version]);
+  useEffect(() => { const controller = new AbortController(); void platformApi.breakdown(month.id, controller.signal, groupBy).then(value => {if (!controller.signal.aborted) setGroups(value);}).catch(error => { if (!controller.signal.aborted) onError(error); }); return () => controller.abort(); }, [month.id, onError, version, groupBy]);
   return <>
     <section className="team-card"><div className="team-toolbar"><div><h2>{month.repository} · 请求账本</h2><p>{month.month} · UTC 自然月 · 安装 {month.installation_id}</p></div><button disabled={page.loading} onClick={() => { void page.refresh(); setVersion(value => value + 1); onRefreshSummary(); }}>刷新明细</button></div></section>
     <div className="ws-metrics">
@@ -50,7 +51,19 @@ function UsageDetails({ month, onError, onRefreshSummary }: PlatformPanelProps &
       </tr>)}</tbody></table></div>
       {!page.loading && !page.data?.items.length && <WorkspaceEmpty title="暂无请求明细" />}
       <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next} />
-      <DetailDialog className="usage-groups"><summary>按模型与用途汇总<span className="ws-chip">{groups.length} 组</span></summary><div className="platform-metrics">{groups.map(item => <div key={`${item.purpose}:${item.model}`}><strong>{item.model}</strong><span>{purposeLabels[item.purpose] ?? item.purpose} · {item.request_count} 次</span><span>{formatMoney(item.estimated_cost_microusd)} · {item.unknown_count} 次费用未知</span></div>)}</div></DetailDialog>
+      <DetailDialog className="usage-groups"><summary>按模型、用途与角色汇总<span className="ws-chip">{groups.length} 组</span></summary>
+        <label>费用分组<select aria-label="费用分组" value={groupBy} onChange={event => setGroupBy(event.target.value as "model" | "agent")}><option value="model">模型与用途</option><option value="agent">Agent 角色</option></select></label>
+        {groups.some(item => item.groups_truncated) && <p className="ws-note">只显示前 100 组；合计与费用占比的分母仍覆盖全部请求。</p>}
+        <div className="platform-metrics">{groups.map(item => <div key={`${item.agent ?? ""}:${item.provider ?? ""}:${item.purpose}:${item.model}`}>
+          <strong>{item.agent ? agentLabels[item.agent] ?? item.agent : item.model}</strong><span>{item.provider ? item.provider + " · " : ""}{purposeLabels[item.purpose] ?? item.purpose} · {item.request_count} 次</span>
+          <span>已知估算费用 {formatMoney(item.estimated_cost_microusd)} · 已知 {item.known_count ?? "未记录"} 次 / 未知 {item.unknown_count} 次</span>
+          <span>占全部已知费用 {item.known_cost_share == null ? "—" : (item.known_cost_share * 100).toFixed(1) + "%"}</span>
+          <span>待确认 {item.reserved_count ?? "未记录"} · 用量不确定 {item.uncertain_count ?? "未记录"} · 已结算 {item.settled_count ?? "未记录"}</span>
+          <span>请求 P50 / P95：{item.p50_duration_ms == null ? "未记录" : item.p50_duration_ms + " ms"} / {item.p95_duration_ms == null ? "未记录" : item.p95_duration_ms + " ms"}（{item.duration_sample_count ?? "未记录"} 次，含失败请求）</span>
+          <span>同批已结算且费用已知请求 {item.settled_priced_count ?? "未记录"} 次：预占 {formatMoney(item.settled_reservation_microusd)} / 估算 {formatMoney(item.settled_cost_microusd)}</span>
+        </div>)}</div>
+        <p>请求耗时采用离散 P50/P95，不是 PR 总耗时。已结算不等于审查成功；用量不确定不等于 HTTP 失败。未知费用包含仍在途请求。</p>
+      </DetailDialog>
     </section>
   </>;
 }

@@ -96,12 +96,36 @@ class UsageRequest(PlatformModel):
     created_at: datetime
 
 
-class UsageBreakdown(PlatformModel):
-    model: str
-    purpose: str
+class RequestStatistics(PlatformModel):
     request_count: int
     estimated_cost_microusd: int
     unknown_count: int
+    known_count: int = 0
+    reserved_count: int = 0
+    uncertain_count: int = 0
+    settled_count: int = 0
+    http_2xx_count: int = 0
+    http_non_2xx_count: int = 0
+    http_unknown_count: int = 0
+    duration_sample_count: int = 0
+    p50_duration_ms: int | None = None
+    p95_duration_ms: int | None = None
+    settled_priced_count: int = 0
+    settled_reservation_microusd: int = 0
+    settled_cost_microusd: int = 0
+
+
+class UsageBreakdown(RequestStatistics):
+    model: str
+    purpose: str
+    provider: str | None = None
+    agent: str | None = None
+    group_by: Literal["model", "agent"] = "model"
+    total_request_count: int = 0
+    total_estimated_cost_microusd: int = 0
+    total_unknown_count: int = 0
+    known_cost_share: float | None = None
+    groups_truncated: bool = False
 
 
 WorkStatus = Literal["open", "in_progress", "resolved", "wont_fix"]
@@ -259,6 +283,77 @@ class FailureDiagnostic(PlatformModel):
     count: int
 
 
+class CompletedWorkflowCost(PlatformModel):
+    completed_runs: int
+    priced_runs: int
+    missing_ledger_runs: int
+    incomplete_cost_runs: int
+    mean_estimated_cost_microusd: float | None
+    mean_turnaround_ms: float | None
+
+
+class BatchHealth(PlatformModel):
+    total: int
+    pending: int
+    running: int
+    succeeded: int
+    failed: int
+    claimed: int
+    reclaimed: int
+    terminal_claimed: int
+    single_claim_succeeded: int
+    reused_batches: int
+    estimated_avoided_input_tokens: int
+    reused_input_unknown_batches: int
+
+
+class EvidenceHealth(PlatformModel):
+    total: int
+    matched: int
+    unmatched: int
+    infrastructure: int
+    not_covered: int
+    unclassified: int
+    automatic_coverage: float | None
+    eligible_pass_rate: float | None
+
+
+class EvidenceReasonCount(PlatformModel):
+    status: str | None
+    reason: str | None
+    category: str
+    count: int
+
+
+class RetrievalCacheHealth(PlatformModel):
+    groups: int
+    query_recorded_groups: int
+    query_all_hit_groups: int
+    rerank_recorded_groups: int
+    rerank_all_hit_groups: int
+
+
+class IndexReuseHealth(PlatformModel):
+    indexes: int
+    parsed_files: int
+    reused_files: int
+    embedded_vectors: int
+    reused_vectors: int
+
+
+class ReviewInsights(PlatformModel):
+    requests: RequestStatistics
+    completed_cost: CompletedWorkflowCost
+    batches: BatchHealth
+    batch_errors: tuple[FailureDiagnostic, ...]
+    batch_errors_truncated: bool = False
+    evidence: EvidenceHealth
+    evidence_reasons: tuple[EvidenceReasonCount, ...]
+    evidence_reasons_truncated: bool = False
+    retrieval_cache: RetrievalCacheHealth
+    index_reuse: IndexReuseHealth
+
+
 class DiagnosticReport(PlatformModel):
     since: datetime
     until: datetime
@@ -266,6 +361,7 @@ class DiagnosticReport(PlatformModel):
     failures: tuple[FailureDiagnostic, ...]
     truncated: bool = False
     provider_channels: tuple[ProviderChannelView, ...] = ()
+    insights: ReviewInsights | None = None
 
 
 class ProviderChannelView(PlatformModel):

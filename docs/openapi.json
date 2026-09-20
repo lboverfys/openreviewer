@@ -1098,6 +1098,75 @@
         "title": "BallotSummary",
         "type": "object"
       },
+      "BatchHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "claimed": {
+            "title": "Claimed",
+            "type": "integer"
+          },
+          "estimated_avoided_input_tokens": {
+            "title": "Estimated Avoided Input Tokens",
+            "type": "integer"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "reclaimed": {
+            "title": "Reclaimed",
+            "type": "integer"
+          },
+          "reused_batches": {
+            "title": "Reused Batches",
+            "type": "integer"
+          },
+          "reused_input_unknown_batches": {
+            "title": "Reused Input Unknown Batches",
+            "type": "integer"
+          },
+          "running": {
+            "title": "Running",
+            "type": "integer"
+          },
+          "single_claim_succeeded": {
+            "title": "Single Claim Succeeded",
+            "type": "integer"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "integer"
+          },
+          "terminal_claimed": {
+            "title": "Terminal Claimed",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "pending",
+          "running",
+          "succeeded",
+          "failed",
+          "claimed",
+          "reclaimed",
+          "terminal_claimed",
+          "single_claim_succeeded",
+          "reused_batches",
+          "estimated_avoided_input_tokens",
+          "reused_input_unknown_batches"
+        ],
+        "title": "BatchHealth",
+        "type": "object"
+      },
       "BatchProgress": {
         "properties": {
           "completed": {
@@ -1245,6 +1314,59 @@
           "review_run_id"
         ],
         "title": "CodeIndexCreate",
+        "type": "object"
+      },
+      "CompletedWorkflowCost": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_runs": {
+            "title": "Completed Runs",
+            "type": "integer"
+          },
+          "incomplete_cost_runs": {
+            "title": "Incomplete Cost Runs",
+            "type": "integer"
+          },
+          "mean_estimated_cost_microusd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Estimated Cost Microusd"
+          },
+          "mean_turnaround_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Turnaround Ms"
+          },
+          "missing_ledger_runs": {
+            "title": "Missing Ledger Runs",
+            "type": "integer"
+          },
+          "priced_runs": {
+            "title": "Priced Runs",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "completed_runs",
+          "priced_runs",
+          "missing_ledger_runs",
+          "incomplete_cost_runs",
+          "mean_estimated_cost_microusd",
+          "mean_turnaround_ms"
+        ],
+        "title": "CompletedWorkflowCost",
         "type": "object"
       },
       "ConfigurationAuditListResponse": {
@@ -2165,6 +2287,16 @@
             },
             "title": "Failures",
             "type": "array"
+          },
+          "insights": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewInsights"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "provider_channels": {
             "default": [],
@@ -3825,6 +3957,112 @@
         "title": "EvaluationSourceMetadata",
         "type": "object"
       },
+      "EvidenceHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "automatic_coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Automatic Coverage"
+          },
+          "eligible_pass_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible Pass Rate"
+          },
+          "infrastructure": {
+            "title": "Infrastructure",
+            "type": "integer"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "integer"
+          },
+          "not_covered": {
+            "title": "Not Covered",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "unclassified": {
+            "title": "Unclassified",
+            "type": "integer"
+          },
+          "unmatched": {
+            "title": "Unmatched",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "matched",
+          "unmatched",
+          "infrastructure",
+          "not_covered",
+          "unclassified",
+          "automatic_coverage",
+          "eligible_pass_rate"
+        ],
+        "title": "EvidenceHealth",
+        "type": "object"
+      },
+      "EvidenceReasonCount": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "category",
+          "count"
+        ],
+        "title": "EvidenceReasonCount",
+        "type": "object"
+      },
       "EvidenceVerificationStatus": {
         "description": "\u5e73\u53f0\u56de\u8bfb\u6e90\u7801\u540e\u5f97\u5230\u7684\u81ea\u52a8\u8bc1\u636e\u6838\u9a8c\u72b6\u6001\uff0c\u4e0d\u4ee3\u8868\u4eba\u5de5\u4e8b\u5b9e\u88c1\u51b3\u3002",
         "enum": [
@@ -3977,6 +4215,40 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IndexReuseHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "embedded_vectors": {
+            "title": "Embedded Vectors",
+            "type": "integer"
+          },
+          "indexes": {
+            "title": "Indexes",
+            "type": "integer"
+          },
+          "parsed_files": {
+            "title": "Parsed Files",
+            "type": "integer"
+          },
+          "reused_files": {
+            "title": "Reused Files",
+            "type": "integer"
+          },
+          "reused_vectors": {
+            "title": "Reused Vectors",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "indexes",
+          "parsed_files",
+          "reused_files",
+          "embedded_vectors",
+          "reused_vectors"
+        ],
+        "title": "IndexReuseHealth",
         "type": "object"
       },
       "IndexTarget": {
@@ -6515,6 +6787,141 @@
         "title": "RepositoryWrite",
         "type": "object"
       },
+      "RequestStatistics": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_sample_count": {
+            "default": 0,
+            "title": "Duration Sample Count",
+            "type": "integer"
+          },
+          "estimated_cost_microusd": {
+            "title": "Estimated Cost Microusd",
+            "type": "integer"
+          },
+          "http_2xx_count": {
+            "default": 0,
+            "title": "Http 2Xx Count",
+            "type": "integer"
+          },
+          "http_non_2xx_count": {
+            "default": 0,
+            "title": "Http Non 2Xx Count",
+            "type": "integer"
+          },
+          "http_unknown_count": {
+            "default": 0,
+            "title": "Http Unknown Count",
+            "type": "integer"
+          },
+          "known_count": {
+            "default": 0,
+            "title": "Known Count",
+            "type": "integer"
+          },
+          "p50_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50 Duration Ms"
+          },
+          "p95_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Duration Ms"
+          },
+          "request_count": {
+            "title": "Request Count",
+            "type": "integer"
+          },
+          "reserved_count": {
+            "default": 0,
+            "title": "Reserved Count",
+            "type": "integer"
+          },
+          "settled_cost_microusd": {
+            "default": 0,
+            "title": "Settled Cost Microusd",
+            "type": "integer"
+          },
+          "settled_count": {
+            "default": 0,
+            "title": "Settled Count",
+            "type": "integer"
+          },
+          "settled_priced_count": {
+            "default": 0,
+            "title": "Settled Priced Count",
+            "type": "integer"
+          },
+          "settled_reservation_microusd": {
+            "default": 0,
+            "title": "Settled Reservation Microusd",
+            "type": "integer"
+          },
+          "uncertain_count": {
+            "default": 0,
+            "title": "Uncertain Count",
+            "type": "integer"
+          },
+          "unknown_count": {
+            "title": "Unknown Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_count",
+          "estimated_cost_microusd",
+          "unknown_count"
+        ],
+        "title": "RequestStatistics",
+        "type": "object"
+      },
+      "RetrievalCacheHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "groups": {
+            "title": "Groups",
+            "type": "integer"
+          },
+          "query_all_hit_groups": {
+            "title": "Query All Hit Groups",
+            "type": "integer"
+          },
+          "query_recorded_groups": {
+            "title": "Query Recorded Groups",
+            "type": "integer"
+          },
+          "rerank_all_hit_groups": {
+            "title": "Rerank All Hit Groups",
+            "type": "integer"
+          },
+          "rerank_recorded_groups": {
+            "title": "Rerank Recorded Groups",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "groups",
+          "query_recorded_groups",
+          "query_all_hit_groups",
+          "rerank_recorded_groups",
+          "rerank_all_hit_groups"
+        ],
+        "title": "RetrievalCacheHealth",
+        "type": "object"
+      },
       "RetrievalComparisonRequest": {
         "additionalProperties": false,
         "properties": {
@@ -8958,6 +9365,65 @@
         "title": "ReviewFindingResponse",
         "type": "object"
       },
+      "ReviewInsights": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_errors": {
+            "items": {
+              "$ref": "#/components/schemas/FailureDiagnostic"
+            },
+            "title": "Batch Errors",
+            "type": "array"
+          },
+          "batch_errors_truncated": {
+            "default": false,
+            "title": "Batch Errors Truncated",
+            "type": "boolean"
+          },
+          "batches": {
+            "$ref": "#/components/schemas/BatchHealth"
+          },
+          "completed_cost": {
+            "$ref": "#/components/schemas/CompletedWorkflowCost"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/EvidenceHealth"
+          },
+          "evidence_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceReasonCount"
+            },
+            "title": "Evidence Reasons",
+            "type": "array"
+          },
+          "evidence_reasons_truncated": {
+            "default": false,
+            "title": "Evidence Reasons Truncated",
+            "type": "boolean"
+          },
+          "index_reuse": {
+            "$ref": "#/components/schemas/IndexReuseHealth"
+          },
+          "requests": {
+            "$ref": "#/components/schemas/RequestStatistics"
+          },
+          "retrieval_cache": {
+            "$ref": "#/components/schemas/RetrievalCacheHealth"
+          }
+        },
+        "required": [
+          "requests",
+          "completed_cost",
+          "batches",
+          "batch_errors",
+          "evidence",
+          "evidence_reasons",
+          "retrieval_cache",
+          "index_reuse"
+        ],
+        "title": "ReviewInsights",
+        "type": "object"
+      },
       "ReviewItemResponse": {
         "properties": {
           "attempt_count": {
@@ -9857,13 +10323,107 @@
       "UsageBreakdown": {
         "additionalProperties": false,
         "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "duration_sample_count": {
+            "default": 0,
+            "title": "Duration Sample Count",
+            "type": "integer"
+          },
           "estimated_cost_microusd": {
             "title": "Estimated Cost Microusd",
+            "type": "integer"
+          },
+          "group_by": {
+            "default": "model",
+            "enum": [
+              "model",
+              "agent"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "groups_truncated": {
+            "default": false,
+            "title": "Groups Truncated",
+            "type": "boolean"
+          },
+          "http_2xx_count": {
+            "default": 0,
+            "title": "Http 2Xx Count",
+            "type": "integer"
+          },
+          "http_non_2xx_count": {
+            "default": 0,
+            "title": "Http Non 2Xx Count",
+            "type": "integer"
+          },
+          "http_unknown_count": {
+            "default": 0,
+            "title": "Http Unknown Count",
+            "type": "integer"
+          },
+          "known_cost_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Known Cost Share"
+          },
+          "known_count": {
+            "default": 0,
+            "title": "Known Count",
             "type": "integer"
           },
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "p50_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50 Duration Ms"
+          },
+          "p95_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Duration Ms"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
           },
           "purpose": {
             "title": "Purpose",
@@ -9873,17 +10433,62 @@
             "title": "Request Count",
             "type": "integer"
           },
+          "reserved_count": {
+            "default": 0,
+            "title": "Reserved Count",
+            "type": "integer"
+          },
+          "settled_cost_microusd": {
+            "default": 0,
+            "title": "Settled Cost Microusd",
+            "type": "integer"
+          },
+          "settled_count": {
+            "default": 0,
+            "title": "Settled Count",
+            "type": "integer"
+          },
+          "settled_priced_count": {
+            "default": 0,
+            "title": "Settled Priced Count",
+            "type": "integer"
+          },
+          "settled_reservation_microusd": {
+            "default": 0,
+            "title": "Settled Reservation Microusd",
+            "type": "integer"
+          },
+          "total_estimated_cost_microusd": {
+            "default": 0,
+            "title": "Total Estimated Cost Microusd",
+            "type": "integer"
+          },
+          "total_request_count": {
+            "default": 0,
+            "title": "Total Request Count",
+            "type": "integer"
+          },
+          "total_unknown_count": {
+            "default": 0,
+            "title": "Total Unknown Count",
+            "type": "integer"
+          },
+          "uncertain_count": {
+            "default": 0,
+            "title": "Uncertain Count",
+            "type": "integer"
+          },
           "unknown_count": {
             "title": "Unknown Count",
             "type": "integer"
           }
         },
         "required": [
-          "model",
-          "purpose",
           "request_count",
           "estimated_cost_microusd",
-          "unknown_count"
+          "unknown_count",
+          "model",
+          "purpose"
         ],
         "title": "UsageBreakdown",
         "type": "object"
@@ -13286,6 +13891,20 @@
             "required": true,
             "schema": {
               "title": "Month Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "model",
+              "enum": [
+                "model",
+                "agent"
+              ],
+              "title": "Group By",
               "type": "string"
             }
           }

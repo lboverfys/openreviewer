@@ -2016,6 +2016,33 @@ export interface components {
              */
             updated_at: string;
         };
+        /** BatchHealth */
+        BatchHealth: {
+            /** Claimed */
+            claimed: number;
+            /** Estimated Avoided Input Tokens */
+            estimated_avoided_input_tokens: number;
+            /** Failed */
+            failed: number;
+            /** Pending */
+            pending: number;
+            /** Reclaimed */
+            reclaimed: number;
+            /** Reused Batches */
+            reused_batches: number;
+            /** Reused Input Unknown Batches */
+            reused_input_unknown_batches: number;
+            /** Running */
+            running: number;
+            /** Single Claim Succeeded */
+            single_claim_succeeded: number;
+            /** Succeeded */
+            succeeded: number;
+            /** Terminal Claimed */
+            terminal_claimed: number;
+            /** Total */
+            total: number;
+        };
         /** BatchProgress */
         BatchProgress: {
             /** Completed */
@@ -2057,6 +2084,21 @@ export interface components {
         CodeIndexCreate: {
             /** Review Run Id */
             review_run_id: string;
+        };
+        /** CompletedWorkflowCost */
+        CompletedWorkflowCost: {
+            /** Completed Runs */
+            completed_runs: number;
+            /** Incomplete Cost Runs */
+            incomplete_cost_runs: number;
+            /** Mean Estimated Cost Microusd */
+            mean_estimated_cost_microusd: number | null;
+            /** Mean Turnaround Ms */
+            mean_turnaround_ms: number | null;
+            /** Missing Ledger Runs */
+            missing_ledger_runs: number;
+            /** Priced Runs */
+            priced_runs: number;
         };
         /** ConfigurationAuditListResponse */
         ConfigurationAuditListResponse: {
@@ -2325,6 +2367,7 @@ export interface components {
         DiagnosticReport: {
             /** Failures */
             failures: components["schemas"]["FailureDiagnostic"][];
+            insights?: components["schemas"]["ReviewInsights"] | null;
             /**
              * Provider Channels
              * @default []
@@ -2998,6 +3041,36 @@ export interface components {
             /** Turnaround Ms */
             turnaround_ms: number;
         };
+        /** EvidenceHealth */
+        EvidenceHealth: {
+            /** Automatic Coverage */
+            automatic_coverage: number | null;
+            /** Eligible Pass Rate */
+            eligible_pass_rate: number | null;
+            /** Infrastructure */
+            infrastructure: number;
+            /** Matched */
+            matched: number;
+            /** Not Covered */
+            not_covered: number;
+            /** Total */
+            total: number;
+            /** Unclassified */
+            unclassified: number;
+            /** Unmatched */
+            unmatched: number;
+        };
+        /** EvidenceReasonCount */
+        EvidenceReasonCount: {
+            /** Category */
+            category: string;
+            /** Count */
+            count: number;
+            /** Reason */
+            reason: string | null;
+            /** Status */
+            status: string | null;
+        };
         /**
          * EvidenceVerificationStatus
          * @description 平台回读源码后得到的自动证据核验状态，不代表人工事实裁决。
@@ -3050,6 +3123,19 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** IndexReuseHealth */
+        IndexReuseHealth: {
+            /** Embedded Vectors */
+            embedded_vectors: number;
+            /** Indexes */
+            indexes: number;
+            /** Parsed Files */
+            parsed_files: number;
+            /** Reused Files */
+            reused_files: number;
+            /** Reused Vectors */
+            reused_vectors: number;
         };
         /** IndexTarget */
         IndexTarget: {
@@ -4001,6 +4087,87 @@ export interface components {
             /** Repository */
             repository: string;
         };
+        /** RequestStatistics */
+        RequestStatistics: {
+            /**
+             * Duration Sample Count
+             * @default 0
+             */
+            duration_sample_count: number;
+            /** Estimated Cost Microusd */
+            estimated_cost_microusd: number;
+            /**
+             * Http 2Xx Count
+             * @default 0
+             */
+            http_2xx_count: number;
+            /**
+             * Http Non 2Xx Count
+             * @default 0
+             */
+            http_non_2xx_count: number;
+            /**
+             * Http Unknown Count
+             * @default 0
+             */
+            http_unknown_count: number;
+            /**
+             * Known Count
+             * @default 0
+             */
+            known_count: number;
+            /** P50 Duration Ms */
+            p50_duration_ms?: number | null;
+            /** P95 Duration Ms */
+            p95_duration_ms?: number | null;
+            /** Request Count */
+            request_count: number;
+            /**
+             * Reserved Count
+             * @default 0
+             */
+            reserved_count: number;
+            /**
+             * Settled Cost Microusd
+             * @default 0
+             */
+            settled_cost_microusd: number;
+            /**
+             * Settled Count
+             * @default 0
+             */
+            settled_count: number;
+            /**
+             * Settled Priced Count
+             * @default 0
+             */
+            settled_priced_count: number;
+            /**
+             * Settled Reservation Microusd
+             * @default 0
+             */
+            settled_reservation_microusd: number;
+            /**
+             * Uncertain Count
+             * @default 0
+             */
+            uncertain_count: number;
+            /** Unknown Count */
+            unknown_count: number;
+        };
+        /** RetrievalCacheHealth */
+        RetrievalCacheHealth: {
+            /** Groups */
+            groups: number;
+            /** Query All Hit Groups */
+            query_all_hit_groups: number;
+            /** Query Recorded Groups */
+            query_recorded_groups: number;
+            /** Rerank All Hit Groups */
+            rerank_all_hit_groups: number;
+            /** Rerank Recorded Groups */
+            rerank_recorded_groups: number;
+        };
         /** RetrievalComparisonRequest */
         RetrievalComparisonRequest: {
             /**
@@ -4840,6 +5007,29 @@ export interface components {
              */
             verification_status: string;
         };
+        /** ReviewInsights */
+        ReviewInsights: {
+            /** Batch Errors */
+            batch_errors: components["schemas"]["FailureDiagnostic"][];
+            /**
+             * Batch Errors Truncated
+             * @default false
+             */
+            batch_errors_truncated: boolean;
+            batches: components["schemas"]["BatchHealth"];
+            completed_cost: components["schemas"]["CompletedWorkflowCost"];
+            evidence: components["schemas"]["EvidenceHealth"];
+            /** Evidence Reasons */
+            evidence_reasons: components["schemas"]["EvidenceReasonCount"][];
+            /**
+             * Evidence Reasons Truncated
+             * @default false
+             */
+            evidence_reasons_truncated: boolean;
+            index_reuse: components["schemas"]["IndexReuseHealth"];
+            requests: components["schemas"]["RequestStatistics"];
+            retrieval_cache: components["schemas"]["RetrievalCacheHealth"];
+        };
         /** ReviewItemResponse */
         ReviewItemResponse: {
             /** Attempt Count */
@@ -5158,14 +5348,105 @@ export interface components {
         };
         /** UsageBreakdown */
         UsageBreakdown: {
+            /** Agent */
+            agent?: string | null;
+            /**
+             * Duration Sample Count
+             * @default 0
+             */
+            duration_sample_count: number;
             /** Estimated Cost Microusd */
             estimated_cost_microusd: number;
+            /**
+             * Group By
+             * @default model
+             * @enum {string}
+             */
+            group_by: "model" | "agent";
+            /**
+             * Groups Truncated
+             * @default false
+             */
+            groups_truncated: boolean;
+            /**
+             * Http 2Xx Count
+             * @default 0
+             */
+            http_2xx_count: number;
+            /**
+             * Http Non 2Xx Count
+             * @default 0
+             */
+            http_non_2xx_count: number;
+            /**
+             * Http Unknown Count
+             * @default 0
+             */
+            http_unknown_count: number;
+            /** Known Cost Share */
+            known_cost_share?: number | null;
+            /**
+             * Known Count
+             * @default 0
+             */
+            known_count: number;
             /** Model */
             model: string;
+            /** P50 Duration Ms */
+            p50_duration_ms?: number | null;
+            /** P95 Duration Ms */
+            p95_duration_ms?: number | null;
+            /** Provider */
+            provider?: string | null;
             /** Purpose */
             purpose: string;
             /** Request Count */
             request_count: number;
+            /**
+             * Reserved Count
+             * @default 0
+             */
+            reserved_count: number;
+            /**
+             * Settled Cost Microusd
+             * @default 0
+             */
+            settled_cost_microusd: number;
+            /**
+             * Settled Count
+             * @default 0
+             */
+            settled_count: number;
+            /**
+             * Settled Priced Count
+             * @default 0
+             */
+            settled_priced_count: number;
+            /**
+             * Settled Reservation Microusd
+             * @default 0
+             */
+            settled_reservation_microusd: number;
+            /**
+             * Total Estimated Cost Microusd
+             * @default 0
+             */
+            total_estimated_cost_microusd: number;
+            /**
+             * Total Request Count
+             * @default 0
+             */
+            total_request_count: number;
+            /**
+             * Total Unknown Count
+             * @default 0
+             */
+            total_unknown_count: number;
+            /**
+             * Uncertain Count
+             * @default 0
+             */
+            uncertain_count: number;
             /** Unknown Count */
             unknown_count: number;
         };
@@ -6945,7 +7226,9 @@ export interface operations {
     };
     breakdown_api_v1_platform_usage__month_id__breakdown_get: {
         parameters: {
-            query?: never;
+            query?: {
+                group_by?: "model" | "agent";
+            };
             header?: never;
             path: {
                 month_id: string;

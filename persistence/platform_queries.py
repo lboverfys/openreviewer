@@ -25,6 +25,7 @@ from persistence.models import (
 )
 from persistence.pagination import apply_cursor
 from persistence.resource_scope import resource_predicate
+from persistence.review_insights import collect_review_insights
 from services.rbac import ResourceScope
 
 
@@ -241,6 +242,7 @@ class PlatformQueries:
                 channels = tuple(
                     ProviderChannelView.model_validate(row) for row in channel_rows
                 )
+            insights = collect_review_insights(session, scope, since, now)
         return DiagnosticReport(
             since=since,
             until=now,
@@ -250,6 +252,7 @@ class PlatformQueries:
             failures=tuple(FailureDiagnostic.model_validate(row) for row in failures),
             truncated=len(rows) > 100,
             provider_channels=channels,
+            insights=insights,
         )
 
     def audits(

@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from persistence.models import ModelUsageRequestRecord, RepositoryUsageMonthRecord
 from persistence.usage_queries import UsageQueries
+from persistence.usage_statistics import request_statistics_statement
 from services.rbac import ResourceScope
 from tests.integration.test_postgres_contract import (
     postgres_database as postgres_database,
@@ -58,6 +59,7 @@ def test_request_ledger_at_100k_rows(postgres_database):
                             "estimated_cost_microusd": 1,
                             "input_tokens": 1,
                             "output_tokens": 1,
+                            "duration_ms": number % 1000,
                             "created_at": now,
                         }
                         for number in range(start, start + 1000)
@@ -107,6 +109,19 @@ def test_request_ledger_at_100k_rows(postgres_database):
                 text("EXPLAIN (FORMAT JSON) " + sql)
             ).scalar_one()[0]
             assert "Index" in json.dumps(plan)
+            aggregation = request_statistics_statement(
+                ModelUsageRequestRecord.month_id == "scale-month", ("agent",)
+            )
+            group = connection.execute(aggregation).mappings().one()
+            assert group["request_count"] == group["total_request_count"] == count
+            assert group["estimated_cost_microusd"] == count
+            assert (group["p50_duration_ms"], group["p95_duration_ms"]) == (499, 949)
+            aggregate_sql = str(aggregation.compile(
+                dialect=connection.dialect, compile_kwargs={"literal_binds": True}
+            ))
+            aggregate_plan = connection.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + aggregate_sql
+            )).scalar_one()[0]
             print(
                 json.dumps(
                     {
@@ -114,6 +129,7 @@ def test_request_ledger_at_100k_rows(postgres_database):
                         "page_size": 10,
                         "list_queries": len(statements),
                         "plan": plan,
+                        "agent_aggregation_plan": aggregate_plan,
                     }
                 )
             )

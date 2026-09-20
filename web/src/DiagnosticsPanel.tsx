@@ -8,6 +8,7 @@ import { useCursorPage } from "./useCursorPage";
 import { formatDate } from "./utils";
 import { WorkspaceBadge, WorkspaceEmpty } from "./Workspace";
 import WorkerNodesPanel from "./WorkerNodesPanel";
+import ReviewInsightsPanel from "./ReviewInsightsPanel";
 
 const duration = (value: number | null | undefined) => value == null ? "未记录" : `${(value / 1000).toFixed(1)} 秒`;
 const auditLabels: Record<string, string> = { "platform.profile.created": "保存审查方案", "platform.profile.activated": "启用审查方案", "platform.static.imported": "导入静态报告", "platform.egress.denied": "外发策略阻止请求", "platform.work.created": "创建待办", "platform.work.updated": "更新待办" };
@@ -38,6 +39,7 @@ export default function DiagnosticsPanel({ onError }: PlatformPanelProps) {
         </section>
         <section className="team-card"><div className="team-toolbar"><h2>最近任务错误</h2><span className="ws-hint">最近 {days} 天</span></div>{report.failures.length ? <div className="diagnostic-failure-list">{report.failures.map(item => <div key={item.code}><code>{item.code}</code><WorkspaceBadge tone="danger">{item.count} 次</WorkspaceBadge></div>)}</div> : <WorkspaceEmpty title="暂无已记录错误" description="当前统计范围内没有任务错误。" />}</section>
       </div>
+      {report.insights && <ReviewInsightsPanel data={report.insights}/>}
     </>}
     <DetailDialog className="team-card" onToggle={event => setAuditOpen(event.currentTarget.open)}><summary>操作记录<span className="ws-hint">查看方案、待办与数据外发变更</span></summary>{auditOpen && <>
       <div className="team-table-wrap"><table><thead><tr><th>时间</th><th>仓库</th><th>操作人</th><th>操作</th><th>版本</th></tr></thead><tbody>{audits.data?.items.map(item => <tr key={item.id}><td>{formatDate(item.created_at)}</td><td>{item.repository}</td><td>{item.actor}</td><td>{auditLabels[item.event_type] ?? item.event_type}</td><td>{item.revision ?? "—"}</td></tr>)}</tbody></table></div>
