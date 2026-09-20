@@ -9,8 +9,9 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly requestId?: string,
   ) {
-    super(message);
+    super(requestId ? `${message}\n请求 ID：${requestId}` : message);
     this.name = "ApiError";
   }
 }
@@ -499,12 +500,13 @@ export async function request<T>(
         detail?: string;
         error?: { message?: string };
       };
-      if (body.detail) message = body.detail;
-      else if (body.error?.message) message = body.error.message;
+      if (typeof body.detail === "string") message = body.detail;
+      else if (typeof body.error?.message === "string") message = body.error.message;
     } catch {
       // 代理返回非 JSON 错误页面时，保留安全的 HTTP 兜底信息。
     }
-    throw new ApiError(message, response.status);
+    const requestId = response.headers.get("X-Request-ID");
+    throw new ApiError(message, response.status, requestId && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(requestId) ? requestId : undefined);
   }
 
   if (response.status === 204) return undefined as T;

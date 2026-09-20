@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
 from apps.api.platform_services import PlatformServices
+from apps.api.request_logging import RequestLoggingMiddleware
 from apps.api.routes.dashboard import register_dashboard_routes
 from apps.api.routes.evaluations import register_evaluation_routes
 from apps.api.routes.knowledge import register_knowledge_routes
@@ -39,11 +40,11 @@ from apps.api.schemas import (
     WebhookReceiptResponse,
 )
 from domain.enums import ExecutionStatus
+from domain.logging import configure_json_logging
 from domain.security import (
     ErrorCode,
     SafeApplicationError,
     SafeError,
-    install_redacting_log_filters,
 )
 from persistence.auth import SqlAlchemyLoginAttemptLimiter, SqlAlchemySessionStore
 from persistence.dashboard import SqlAlchemyDashboardRepository
@@ -253,7 +254,7 @@ def create_app(
             进入时不主动连接数据库；路由完成后先让应用退出，再释放懒加载的
             ``owned_database``。异常不会吞掉，仍交由 ASGI 服务器报告。
         """
-        install_redacting_log_filters()
+        configure_json_logging(os.environ.get("OPENREVIEWER_LOG_LEVEL", "INFO").upper())
         yield
         database: Database | None = application.state.owned_database
         github_api: GitHubApiClient | None = application.state.owned_github_api
@@ -1485,6 +1486,7 @@ def create_app(
         ensure_permission=ensure_permission,
     )
 
+    application.add_middleware(RequestLoggingMiddleware)
     return application
 
 

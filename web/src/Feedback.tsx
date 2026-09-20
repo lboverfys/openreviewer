@@ -9,6 +9,8 @@ function textOf(node: ReactNode): string {
 /** 操作提示不占页面空间；业务状态仍留在对应内容区。 */
 export function Notice({ children, kind = "error", onDismiss }: {children: ReactNode; kind?: string; onDismiss?: () => void}) {
   const message = textOf(children);
+  const requestId = message.match(/请求 ID：([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?![A-Za-z0-9._-])/)?.[1];
+  const [copyStatus, setCopyStatus] = useState("");
   const [visible, setVisible] = useState(true);
   const element = useRef<HTMLDivElement>(null);
   const dismissed = useRef(onDismiss);
@@ -24,8 +26,13 @@ export function Notice({ children, kind = "error", onDismiss }: {children: React
     window.addEventListener("hashchange", close);
     return () => {window.clearTimeout(timer); window.removeEventListener("hashchange", close);};
   }, [message, kind]);
+  const copyRequestId = async () => {
+    if (!requestId) return;
+    try { await navigator.clipboard.writeText(requestId); setCopyStatus("已复制"); }
+    catch { setCopyStatus("复制失败，请选择提示中的请求 ID 复制"); }
+  };
   return visible ? createPortal(<div ref={element} className={"app-notice is-" + kind} role={kind === "error" ? "alert" : "status"}>
-    <span>{children}</span><button type="button" aria-label="关闭通知" onClick={close}>×</button>
+    <span>{children}{requestId && <><button type="button" onClick={() => void copyRequestId()}>复制请求 ID</button><small role="status">{copyStatus}</small></>}</span><button type="button" aria-label="关闭通知" onClick={close}>×</button>
   </div>, document.body) : null;
 }
 

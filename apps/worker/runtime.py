@@ -17,6 +17,7 @@ from apps.worker.logging_context import LOGGER
 from apps.worker.review_pipeline import _advance_to_supported_boundary
 from apps.worker.settings import WorkerSettings
 from domain.enums import ExecutionStatus, WorkerStatus
+from domain.logging import log_context, log_event
 from domain.model_review import (
     MaterializedFinding,
     ModelReviewInput,
@@ -416,118 +417,123 @@ class WorkerRuntime:
         if self._worker_ownership_lost.is_set():
             return True
 
-        self._record_owned_heartbeat(WorkerStatus.BUSY, lease.task_id)
-        cursor = _LeaseCursor(self._queue, lease, self._settings.lease_duration)
-        busy_heartbeat = (
-            _BusyHeartbeat(
-                self._queue,
-                worker_id,
-                lease.task_id,
-                self._instance_id,
-                self._settings.poll_interval,
-                cursor,
-                on_worker_ownership_lost=self._mark_worker_ownership_lost,
-            )
-            if (
-                self._context_loader is not None
-                or self._rule_loader is not None
-                or self._model_reviewer is not None
-                or self._ai_runtime_provider is not None
-            )
-            else None
-        )
-        try:
-            # 线程启动也必须位于统一的异常边界内。极端情况下 start() 失败
-            # 时，任务仍已被领取；后续流程会把它安全重试/失败并释放心跳。
-            if busy_heartbeat is not None:
-                busy_heartbeat.start()
-            profile_getter = getattr(self._queue, "task_profile_id", None)
-            profile_id = profile_getter(cursor.lease) if profile_getter else None
-            if profile_id:
-                if self._profile_loader is None:
-                    raise TaskQueueError("Worker 尚未配置审查方案加载器")
-                ai_runtime = self._profile_loader(profile_id)
-            next_status = self._advance_to_supported_boundary(cursor, ai_runtime)
-            LOGGER.info(
-                "任务 %s 已进入 %s",
-                lease.task_id,
-                next_status.value,
-            )
-        except Exception as exc:
-            safe_error = SafeError.from_exception(exc)
-            LOGGER.error(
-                "任务 %s 处理失败，错误码=%s，说明=%s",
-                lease.task_id,
-                safe_error.code.value,
-                safe_error.safe_message,
+        with log_context(review_run_id=lease.review_run_id, review_task_id=lease.task_id,
+                         attempt_count=lease.attempt_count, model_attempt_count=lease.model_attempt_count):
+            log_event("worker_task_claimed", status="running")
+            self._record_owned_heartbeat(WorkerStatus.BUSY, lease.task_id)
+            cursor = _LeaseCursor(self._queue, lease, self._settings.lease_duration)
+            busy_heartbeat = (
+                _BusyHeartbeat(
+                    self._queue,
+                    worker_id,
+                    lease.task_id,
+                    self._instance_id,
+                    self._settings.poll_interval,
+                    cursor,
+                    on_worker_ownership_lost=self._mark_worker_ownership_lost,
+                )
+                if (
+                    self._context_loader is not None
+                    or self._rule_loader is not None
+                    or self._model_reviewer is not None
+                    or self._ai_runtime_provider is not None
+                )
+                else None
             )
             try:
-                lease_write_lost = (
-                    safe_error.code is ErrorCode.TASK_LEASE_LOST
-                    or self._worker_ownership_lost.is_set()
-                    or cursor.is_lease_lost
+                # 线程启动也必须位于统一的异常边界内。极端情况下 start() 失败
+                # 时，任务仍已被领取；后续流程会把它安全重试/失败并释放心跳。
+                if busy_heartbeat is not None:
+                    busy_heartbeat.start()
+                profile_getter = getattr(self._queue, "task_profile_id", None)
+                profile_id = profile_getter(cursor.lease) if profile_getter else None
+                if profile_id:
+                    if self._profile_loader is None:
+                        raise TaskQueueError("Worker 尚未配置审查方案加载器")
+                    ai_runtime = self._profile_loader(profile_id)
+                next_status = self._advance_to_supported_boundary(cursor, ai_runtime)
+                LOGGER.info(
+                    "任务 %s 已进入 %s",
+                    lease.task_id,
+                    next_status.value,
                 )
-                if lease_write_lost:
-                    # 租约丢失意味着另一 Worker 已接管，或恢复流程正在处理
-                    # 这条任务。再次调用 retry_or_fail 只会发起一次必然失败
-                    # 的所有权查询，并可能让数据库故障日志被重复放大；旧
-                    # Worker 不得对任务状态做任何写入。心跳线程可能只报告了
-                    # 进程 token 丢失而原始异常仍是普通模型错误，所以不能只看
-                    # safe_error.code。
-                    LOGGER.warning(
-                        "任务 %s 的租约已丢失，跳过失败上报并交由恢复流程接管",
-                        lease.task_id,
+                log_event("worker_task_advanced", status=next_status.value)
+            except Exception as exc:
+                safe_error = SafeError.from_exception(exc)
+                LOGGER.error(
+                    "任务 %s 处理失败，错误码=%s，说明=%s",
+                    lease.task_id,
+                    safe_error.code.value,
+                    safe_error.safe_message,
+                )
+                log_event("worker_task_failed", error_code=safe_error.code.value, status="failed")
+                try:
+                    lease_write_lost = (
+                        safe_error.code is ErrorCode.TASK_LEASE_LOST
+                        or self._worker_ownership_lost.is_set()
+                        or cursor.is_lease_lost
                     )
-                elif (
-                    safe_error.details.get("budget_reason")
-                    == "repository_monthly_budget"
-                ):
-                    pause_budget = getattr(
-                        self._queue, "pause_for_monthly_budget", None
-                    )
-                    if pause_budget is not None:
-                        pause_budget(cursor.lease, safe_error)
+                    if lease_write_lost:
+                        # 租约丢失意味着另一 Worker 已接管，或恢复流程正在处理
+                        # 这条任务。再次调用 retry_or_fail 只会发起一次必然失败
+                        # 的所有权查询，并可能让数据库故障日志被重复放大；旧
+                        # Worker 不得对任务状态做任何写入。心跳线程可能只报告了
+                        # 进程 token 丢失而原始异常仍是普通模型错误，所以不能只看
+                        # safe_error.code。
+                        LOGGER.warning(
+                            "任务 %s 的租约已丢失，跳过失败上报并交由恢复流程接管",
+                            lease.task_id,
+                        )
+                    elif (
+                        safe_error.details.get("budget_reason")
+                        == "repository_monthly_budget"
+                    ):
+                        pause_budget = getattr(
+                            self._queue, "pause_for_monthly_budget", None
+                        )
+                        if pause_budget is not None:
+                            pause_budget(cursor.lease, safe_error)
+                        else:
+                            self._queue.retry_or_fail(cursor.lease, safe_error)
                     else:
                         self._queue.retry_or_fail(cursor.lease, safe_error)
+                except TaskQueueError as persistence_error:
+                    persisted_error = SafeError.from_exception(persistence_error)
+                    LOGGER.error(
+                        "任务 %s 的失败状态无法持久化，错误码=%s",
+                        lease.task_id,
+                        persisted_error.code.value,
+                    )
+            finally:
+                if (
+                    ai_runtime is not None
+                    and ai_runtime.profile_id is not None
+                    and ai_runtime.agent_workflow is not None
+                ):
+                    ai_runtime.agent_workflow.close()
+                heartbeat_stopped = True
+                if busy_heartbeat is not None:
+                    heartbeat_stopped = busy_heartbeat.stop()
+                if heartbeat_stopped and not self._worker_ownership_lost.is_set():
+                    try:
+                        self._record_owned_heartbeat(WorkerStatus.IDLE, None)
+                    except TaskQueueError:
+                        # 进程 token 可能恰好在 stop() 与收尾写之间被接管；
+                        # 此时旧实例没有资格重试写入，主循环也已被回调停止。
+                        LOGGER.exception(
+                            "Worker %s 收尾心跳写入失败，跳过旧实例状态更新",
+                            worker_id,
+                        )
                 else:
-                    self._queue.retry_or_fail(cursor.lease, safe_error)
-            except TaskQueueError as persistence_error:
-                persisted_error = SafeError.from_exception(persistence_error)
-                LOGGER.error(
-                    "任务 %s 的失败状态无法持久化，错误码=%s",
-                    lease.task_id,
-                    persisted_error.code.value,
-                )
-        finally:
-            if (
-                ai_runtime is not None
-                and ai_runtime.profile_id is not None
-                and ai_runtime.agent_workflow is not None
-            ):
-                ai_runtime.agent_workflow.close()
-            heartbeat_stopped = True
-            if busy_heartbeat is not None:
-                heartbeat_stopped = busy_heartbeat.stop()
-            if heartbeat_stopped and not self._worker_ownership_lost.is_set():
-                try:
-                    self._record_owned_heartbeat(WorkerStatus.IDLE, None)
-                except TaskQueueError:
-                    # 进程 token 可能恰好在 stop() 与收尾写之间被接管；
-                    # 此时旧实例没有资格重试写入，主循环也已被回调停止。
-                    LOGGER.exception(
-                        "Worker %s 收尾心跳写入失败，跳过旧实例状态更新",
+                    # 后台线程仍可能完成一轮 BUSY 写入；此时写 IDLE 反而会被
+                    # 迟到结果覆盖。下一轮主循环会在安全边界再次确认线程已退出。
+                    if busy_heartbeat is not None:
+                        self._lingering_heartbeats.append(busy_heartbeat)
+                    LOGGER.warning(
+                        "Worker %s 暂不写入 IDLE，等待忙碌心跳线程退出",
                         worker_id,
                     )
-            else:
-                # 后台线程仍可能完成一轮 BUSY 写入；此时写 IDLE 反而会被
-                # 迟到结果覆盖。下一轮主循环会在安全边界再次确认线程已退出。
-                if busy_heartbeat is not None:
-                    self._lingering_heartbeats.append(busy_heartbeat)
-                LOGGER.warning(
-                    "Worker %s 暂不写入 IDLE，等待忙碌心跳线程退出",
-                    worker_id,
-                )
-        return True
+            return True
 
     def _advance_to_supported_boundary(
         self, cursor: _LeaseCursor, ai_runtime: ActiveAiRuntime | None = None

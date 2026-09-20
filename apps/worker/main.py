@@ -1,6 +1,5 @@
 """Worker main 职责模块。"""
 
-import logging
 import os
 import signal
 
@@ -30,7 +29,7 @@ from apps.worker.results import _agent_conclusion_payload as _agent_conclusion_p
 from apps.worker.results import _workflow_result as _workflow_result
 from apps.worker.runtime import WorkerRuntime
 from apps.worker.settings import WorkerSettings
-from domain.security import install_redacting_log_filters
+from domain.logging import configure_json_logging
 from persistence.database import Database
 from persistence.operations import SqlAlchemyOperationsRepository
 from persistence.retrieval import RetrievalRepository
@@ -74,11 +73,7 @@ def main() -> None:
     配置或数据库初始化失败会让进程以异常结束，交由 Compose 重启策略处理；
     运行期间的任务级错误由 ``WorkerRuntime`` 按租约规则处理。
     """
-    logging.basicConfig(
-        level=os.environ.get("OPENREVIEWER_LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    install_redacting_log_filters()
+    configure_json_logging(os.environ.get("OPENREVIEWER_LOG_LEVEL", "INFO").upper())
     settings = WorkerSettings.from_environment()
     github_api = GitHubApiClient()
     ai_runtime_provider: SqlAlchemyAiRuntimeProvider | None = None

@@ -125,3 +125,28 @@ Worker 心跳、Outbox 与供应商通道。需要服务器命令时先明确环
 请求账本、工作项和方案有独立生命周期，不能随源审查一起删除。
 
 审查、预算、检索和评测的准确口径分别见 [文档导航](../docs/README.md)。
+
+## 请求与运行关联排障
+
+API 接受 1–64 位字母、数字、点、下划线或短横线组成的 `X-Request-ID`（首字符为字母或数字），
+不合法时生成新 ID，响应头回传。页面错误提示可以复制它。JSON 应用日志只保留固定排障字段，
+不记录正文、任意 extra、密钥或异常原文；原有日志保留代码位置，Nginx 访问日志继续保留。
+先按 `request_id` 找 `review_submitted` / `review_action_completed`，获得 `review_run_id` 和
+`review_task_id`，再跨 API/Worker 按运行查 `worker_task_claimed`、`worker_task_advanced`、
+`worker_task_failed`、`model_request_reserved` / `model_request_settled`、`publication_*`。
+模型请求用 `usage_request_id` 关联账本，重试类型、批次和租约尝试分别保存。Worker 不依赖
+已结束 HTTP 的上下文；Agent 线程和心跳线程显式复制上下文。流式响应只记录结束或异常。
+
+| 故障 | 先核对 | 处理边界 |
+| --- | --- | --- |
+| Worker 不新鲜、队列积压 | 诊断中的最近心跳、当前运行、租约和暂停原因 | 先排查数据库/进程；恢复按现有租约机制，不手工把未知批次改成功 |
+| 供应商失败、熔断 | 请求 HTTP 状态、`usage_request_id`、预占与通道状态 | 修正凭据或额度后走页面重试；未知用量保留，外部调用可能重复收费 |
+| API 失败或延迟异常 | 请求 ID、路由、耗时、安全错误码，再看 DB/下游健康 | 保留原状态码与请求 ID；创建/发布重试沿用原幂等键，禁止绕过批准 |
+
+2026-09-21 实际核对 niuma-2 挂载 `alertmanager-noop.yml`，外部渠道未接通。隔离测试复用
+v0.28.1 镜像和仓库 webhook 配置（只缩短等待/分组间隔），在回环接收端验证 v4 payload。
+触发于 2026-09-20 19:10:03 UTC、19:10:04 收到；恢复于 19:10:04、19:10:05 收到。
+临时容器与端口已清理；这是接收链路验证，不是外部群组送达。可在已授权的隔离 Linux/Docker
+环境使用 `tests/operations/alertmanager_smoke.py --config deployment/observability/alertmanager.yml
+--output <已有专用目录中的新文件>` 复验，工具只使用现有镜像，不自动拉取。
+外部渠道应另行确定收件方；飞书/钉钉需要格式适配，不能将普通 webhook URL 直接替换。

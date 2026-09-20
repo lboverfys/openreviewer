@@ -72,7 +72,10 @@ jobs:
           --cov-report=term-missing
 
       - name: Verify management queries at 10k and 100k rows
-        run: python -m pytest tests/performance/management_scale.py -q -s -W error
+        shell: bash
+        run: |
+          mkdir -p reports/performance
+          python -m pytest tests/performance/management_scale.py -q -s -W error | tee reports/performance/management.log
       - name: Upload isolated worker recovery evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -82,7 +85,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
       - name: Verify request ledger at 100k rows
-        run: python -m pytest tests/performance/platform_scale.py -q -s -W error
+        shell: bash
+        run: |
+          mkdir -p reports/performance
+          python -m pytest tests/performance/platform_scale.py -q -s -W error | tee reports/performance/ledger.log
+
+      - name: Upload isolated query plans
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: query-plans-${{ github.sha }}
+          path: reports/performance/*.log
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Verify deterministic Java and MyBatis retrieval
         env:

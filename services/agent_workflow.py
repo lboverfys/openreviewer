@@ -10,6 +10,7 @@ import json
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -316,7 +317,7 @@ class FixedAgentWorkflow:
         else:
             with ThreadPoolExecutor(max_workers=self._max_concurrency) as pool:
                 futures = {
-                    pool.submit(invoke, agent): agent
+                    pool.submit(copy_context().run, invoke, agent): agent
                     for agent in PARALLEL_AGENTS
                 }
                 for future in as_completed(futures):

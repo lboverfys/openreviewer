@@ -16,6 +16,13 @@ afterEach(() => {
 });
 
 describe("API 请求生命周期", () => {
+  it("保留合法错误请求 ID，拒绝非法响应头并兼容非字符串 detail", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({detail:"请求冲突"}), {status:409,headers:{"X-Request-ID":"request-123"}}))
+      .mockResolvedValueOnce(new Response(JSON.stringify({detail:[{msg:"invalid"}]}), {status:422,headers:{"X-Request-ID":"invalid value"}}));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(api.me()).rejects.toMatchObject({status:409, requestId:"request-123", message:"请求冲突\n请求 ID：request-123"});
+    await expect(api.me()).rejects.toMatchObject({status:422, requestId:undefined, message:"请求失败（HTTP 422）"});
+  });
   it("为所有请求携带同源凭据并解析成功响应", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

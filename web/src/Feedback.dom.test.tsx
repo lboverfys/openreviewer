@@ -1,11 +1,29 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { DetailDialog, Notice } from "./Feedback";
 import { readAppView } from "./App";
 
 afterEach(() => {cleanup(); vi.useRealTimers(); document.body.style.overflow = "";});
+
+it("错误通知可复制请求 ID，剪贴板不可用时保留手动复制提示", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {configurable:true,value:{writeText}});
+  try {
+    render(<Notice>请求失败，请求 ID：request-123</Notice>);
+    fireEvent.click(screen.getByRole("button", {name:"复制请求 ID"}));
+    await waitFor(() => expect(screen.getByText("已复制")).toBeInTheDocument());
+    expect(writeText).toHaveBeenCalledWith("request-123");
+    writeText.mockRejectedValue(new Error("clipboard unavailable"));
+    fireEvent.click(screen.getByRole("button", {name:"复制请求 ID"}));
+    await screen.findByText("复制失败，请选择提示中的请求 ID 复制");
+  } finally {
+    if (original) Object.defineProperty(navigator, "clipboard", original);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  }
+});
 
 it("通知独立于正文，自动消失且切页立即清理", () => {
   vi.useFakeTimers();

@@ -45,7 +45,7 @@ it("搜索记录离开后可重新载入，并按查询与策略读取", async (
 });
 
 it("单人统计明确展示不确定和未知费用，不虚构准确率", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json({case_count: 1, observation_count: 1, reviewed_observations: 1,
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({review_mode:"single", review_source:"登录账号单人核对", case_count: 1, observation_count: 1, reviewed_observations: 1,
     valid_findings: 1, false_positive_findings: 1, unreviewed_findings: 0, uncertain_findings: 1,
     missing_reference_cases: 1, model_duration_ms: 1200, estimated_cost_microusd: null, unpriced_observations: 1})));
   render(<EvaluationOverviewPanel datasetId="set-1" version={1} onError={vi.fn()}/>);

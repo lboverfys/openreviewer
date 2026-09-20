@@ -1,6 +1,7 @@
 """Worker heartbeat 职责模块。"""
 
 from collections.abc import Callable
+from contextvars import copy_context
 from datetime import timedelta
 from inspect import Parameter, signature
 from threading import Event, Lock, RLock, Thread
@@ -260,7 +261,8 @@ class _BusyHeartbeat:
         self._stop_requested = Event()
         self._operation_lock = Lock()
         self._thread = Thread(
-            target=self._run,
+            target=copy_context().run,
+            args=(self._run,),
             name=f"openreviewer-heartbeat-{worker_id}",
             daemon=True,
         )

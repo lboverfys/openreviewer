@@ -1,15 +1,24 @@
 """十万请求账本的稳定分页和索引检查；造数只进入 CI 隔离 PostgreSQL。"""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import event, insert, select, text
+from sqlalchemy import event, insert, select, text, update
 from sqlalchemy.orm import sessionmaker
 
-from persistence.models import ModelUsageRequestRecord, RepositoryUsageMonthRecord
+from persistence.models import (
+    ModelUsageRequestRecord,
+    RepositoryUsageMonthRecord,
+    ReviewPlanRecord,
+    ReviewRunRecord,
+)
+from persistence.review_insights import collect_review_insights
 from persistence.usage_queries import UsageQueries
 from persistence.usage_statistics import request_statistics_statement
 from services.rbac import ResourceScope
+from tests.integration.test_postgres_contract import (
+    _prepare_postgres_budget_lease,
+)
 from tests.integration.test_postgres_contract import (
     postgres_database as postgres_database,
 )
@@ -18,16 +27,21 @@ from tests.integration.test_postgres_contract import (
 def test_request_ledger_at_100k_rows(postgres_database):
     count = 100_000
     now = datetime(2026, 9, 13, tzinfo=UTC)
+    _, lease, plan_id = _prepare_postgres_budget_lease(postgres_database)
     with postgres_database.engine.connect() as connection:
         transaction = connection.begin()
         try:
+            connection.execute(update(ReviewRunRecord).where(ReviewRunRecord.id == lease.review_run_id)
+                .values(coverage_status="complete", created_at=now - timedelta(seconds=10)))
+            connection.execute(update(ReviewPlanRecord).where(ReviewPlanRecord.id == plan_id)
+                .values(model_review_completed_at=now))
             connection.execute(
                 insert(RepositoryUsageMonthRecord),
                 {
                     "id": "scale-month",
-                    "installation_id": 10,
-                    "repository": "scale/repo",
-                    "repository_key": "scale/repo",
+                    "installation_id": 32,
+                    "repository": "lboverfys/BudgetConcurrencyContract",
+                    "repository_key": "lboverfys/budgetconcurrencycontract",
                     "month": now.replace(day=1),
                     "request_count": count,
                     "input_tokens": count,
@@ -46,10 +60,10 @@ def test_request_ledger_at_100k_rows(postgres_database):
                         {
                             "id": f"usage-scale-{number}",
                             "month_id": "scale-month",
-                            "review_run_id": "scale-run",
-                            "installation_id": 10,
-                            "repository": "scale/repo",
-                            "repository_key": "scale/repo",
+                            "review_run_id": lease.review_run_id,
+                            "installation_id": 32,
+                            "repository": "lboverfys/BudgetConcurrencyContract",
+                            "repository_key": "lboverfys/budgetconcurrencycontract",
                             "agent": "logic",
                             "purpose": "review",
                             "provider": "openai",
@@ -122,6 +136,26 @@ def test_request_ledger_at_100k_rows(postgres_database):
             aggregate_plan = connection.execute(text(
                 "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + aggregate_sql
             )).scalar_one()[0]
+            insight_queries = []
+
+            def capture_insight(_conn, _cursor, sql, parameters, *_args):
+                if sql.lstrip().upper().startswith("SELECT"):
+                    insight_queries.append((sql, parameters))
+
+            event.listen(connection, "before_cursor_execute", capture_insight)
+            try:
+                with queries.sessions() as session:
+                    report = collect_review_insights(session, ResourceScope.unrestricted_scope(),
+                        now - timedelta(days=1), now + timedelta(days=1))
+            finally:
+                event.remove(connection, "before_cursor_execute", capture_insight)
+            assert len(insight_queries) == 8
+            assert report.requests.request_count == count
+            assert report.completed_cost.priced_runs == 1
+            assert report.completed_cost.mean_estimated_cost_microusd == count
+            insight_plans = [connection.exec_driver_sql(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, parameters
+            ).scalar_one()[0] for sql, parameters in insight_queries]
             print(
                 json.dumps(
                     {
@@ -130,6 +164,9 @@ def test_request_ledger_at_100k_rows(postgres_database):
                         "list_queries": len(statements),
                         "plan": plan,
                         "agent_aggregation_plan": aggregate_plan,
+                        "insights_query_count": len(insight_queries),
+                        "insights_fixture": "one completed run; 100k requests; other fact tables empty",
+                        "insights_plans": insight_plans,
                     }
                 )
             )

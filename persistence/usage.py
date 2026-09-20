@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from domain.enums import ExecutionStatus
 from domain.evaluation_outputs import MAX_RUN_OUTPUT_BYTES, CapturedModelOutput
+from domain.logging import log_event
 from domain.platform import MonthlyBudgetExceededError, month_start
 from domain.repository_policy import RepositoryPolicy
 from persistence.models import (
@@ -204,6 +205,13 @@ class SqlAlchemyUsageLedger:
                             "budget_microusd": budget,
                         },
                     )
+        log_event("model_request_reserved", review_run_id=lease.review_run_id,
+            review_task_id=lease.task_id, agent=agent, usage_request_id=identifier,
+            attempt_count=lease.attempt_count, model_attempt_count=lease.model_attempt_count,
+            attempt_kind=request.attempt_kind, purpose=request.purpose,
+            batch_number=request.output_source.batch_number if request.output_source else None,
+            split_depth=request.output_source.split_depth if request.output_source else None,
+            status="reserved")
         return ModelBudgetReservation(
             id=identifier,
             review_plan_id=lease.review_plan_id or "",
@@ -284,7 +292,7 @@ class SqlAlchemyUsageLedger:
                     duration_ms=duration_ms,
                     completed_at=now,
                 )
-                .returning(Request.month_id, Request.reserved_cost_microusd)
+                .returning(Request.month_id, Request.reserved_cost_microusd, Request.review_run_id, Request.agent)
             ).one_or_none()
             if row is None:
                 return
@@ -310,3 +318,7 @@ class SqlAlchemyUsageLedger:
                 )
             )
             settle_channel(session, connection_key, circuit, response_status, now)
+        log_event("model_request_settled", review_run_id=row.review_run_id,
+            agent=row.agent, usage_request_id=reservation.id,
+            status="uncertain" if uncertain else "settled",
+            response_status=response_status, duration_ms=duration_ms)

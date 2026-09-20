@@ -116,9 +116,14 @@ class ReviewService:
             sort_keys=True,
         ).encode("utf-8")
         request_fingerprint = sha256(canonical_payload).hexdigest()
-        return self._repository.create_or_get(
+        result = self._repository.create_or_get(
             request,
             normalized_key,
             request_fingerprint,
             actor,
         )
+        from domain.logging import log_event
+
+        log_event("review_submitted", review_run_id=result.review_run_id,
+                  review_task_id=result.review_task_id, status=result.execution_status)
+        return result

@@ -313,6 +313,10 @@ def register_review_routes(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="GitHub publish is not configured or temporarily unavailable",
             ) from exc
+        from domain.logging import log_event
+
+        log_event("review_action_completed", review_run_id=new_run_id,
+            review_task_id=task_id, action=request_body.action.value, status=execution_status)
         return ReviewActionResponse(
             action=request_body.action,
             review_run_id=new_run_id,

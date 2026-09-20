@@ -9,6 +9,7 @@ from hashlib import sha256
 from typing import Final, Protocol
 from uuid import uuid4
 
+from domain.logging import log_context, log_event
 from domain.security import ErrorCode, SafeApplicationError, SafeError, redact_text
 from services.external_actions import ExternalActionStore, remote_id_from_result
 from services.github import GitHubApiClient
@@ -79,6 +80,16 @@ class GitHubReviewPublisher:
         self._action_store = action_store
 
     def __call__(self, details: StoredReviewDetails) -> None:
+        with log_context(review_run_id=details.review_run_id):
+            log_event("publication_started", action="publish")
+            try:
+                self._publish(details)
+            except Exception as exc:
+                log_event("publication_failed", error_code=SafeError.from_exception(exc).code.value)
+                raise
+            log_event("publication_completed", action="publish")
+
+    def _publish(self, details: StoredReviewDetails) -> None:
         token = self._tokens.get_token(details.installation_id)
         owner = f"publisher:{uuid4()}"
         current_sha = self._validate_target(details, token)

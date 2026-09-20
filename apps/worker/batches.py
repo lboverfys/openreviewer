@@ -17,6 +17,7 @@ from apps.worker.heartbeat import (
 )
 from apps.worker.logging_context import LOGGER
 from domain.enums import ReviewAgent
+from domain.logging import log_context
 from domain.model_review import ModelReviewInput, ModelReviewResult
 from domain.review_planning import ReviewUnit
 from domain.security import ErrorCode, SafeApplicationError, SafeError
@@ -97,7 +98,7 @@ class _PersistentBatchedReviewer:
         egress_factory = getattr(self._queue, "model_egress_context", None)
         egress = (egress_factory(review_input.repository, review_input.review_run_id)
                   if egress_factory else nullcontext())
-        with egress, model_request_scope(self._request_guard), model_budget_scope(accountant):
+        with log_context(agent=self._agent.value), egress, model_request_scope(self._request_guard), model_budget_scope(accountant):
             from services.egress import check_paths, check_texts
             from services.review_reuse import (
                 restore_reused,
