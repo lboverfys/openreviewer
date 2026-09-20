@@ -37,6 +37,7 @@ def test_quality_rejects_foreign_scope_and_changed_evidence(database, tmp_path):
         repository.quality(profile.id, ResourceScope(), dataset.id)
     quality = repository.quality(profile.id, ALL, dataset.id)
     assert quality.status == "unverified"
+    assert any("单人" in reason for reason in quality.reasons)
     assert any("绑定" in reason for reason in quality.reasons)
     with database.sessions() as session, session.begin():
         session.execute(update(EvaluationObservationRecord).values(revision=EvaluationObservationRecord.revision + 1))
@@ -50,3 +51,15 @@ def test_unreviewed_evidence_export_does_not_invent_metrics():
     assert evidence.evaluation_status == "awaiting_human_review"
     assert evidence.evaluation is None
     assert any("不得填写" in message for message in evidence.limitations)
+
+
+def test_single_person_report_never_becomes_strict_evidence(database):
+    from tests.integration.test_evaluation_workbench import set_reference, submit_ballot
+
+    service, dataset, case_id, _ = create_pair(database, baseline_findings=["问题"])
+    set_reference(service, case_id)
+    for variant in ("baseline", "candidate"):
+        submit_ballot(service, case_id, variant, "alice", [("valid", "auth")])
+    report = service.report(dataset.id, ALL)
+    assert report.quality_pairs == report.reference_pairs == 1
+    assert project_evidence(report).evaluation_status == "partial_review"

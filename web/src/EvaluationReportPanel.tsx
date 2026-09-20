@@ -50,6 +50,7 @@ export default function EvaluationReportPanel({ datasetId, onError }: { datasetI
     </div></div>
     {loading && <p role="status">正在聚合评测结果…</p>}
     {report && <>
+      <p className="evaluation-hint">{report.review_mode === "dual" ? "双人验收 · 严格排除来源不完整和处置分歧的配对" : "单人核对 · 不构成方案验收依据"} · 参考分歧 {report.reference_disputed_pairs ?? 0} 对 · 定位分歧 {report.location_disagreements ?? 0} 条</p>
       <div className="evaluation-stats">
         <div><strong>{report.case_count}</strong><span>PR 样本</span></div>
         <div><strong>{report.performance_pairs}</strong><span>同提交的两份审查</span></div>

@@ -10,6 +10,7 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
   onSaved: (datasetId: string) => void; onCancel: () => void; onError: (error: unknown) => void;
 }) {
   const [name, setName] = useState("");
+  const [reviewMode, setReviewMode] = useState<"single" | "dual">("single");
   const [variant] = useState<EvaluationVariant>(sample?.baseline ? "candidate" : "baseline");
   const [split, setSplit] = useState<EvaluationSplit>(sample?.split ?? "validation");
   const [kind, setKind] = useState<EvaluationImport["kind"]>(sample?.kind ?? "normal");
@@ -26,7 +27,7 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
         await api.importEvaluationObservations(dataset.id, body);
         onSaved(dataset.id);
       } else {
-        const created = await api.createEvaluationDataset({...body, name:name.trim() || "审查核对 · " + new Date().toLocaleDateString("zh-CN")}, requestKey.current);
+        const created = await api.createEvaluationDataset({...body, review_mode:reviewMode, name:name.trim() || "审查核对 · " + new Date().toLocaleDateString("zh-CN")}, requestKey.current);
         onSaved(created.id);
       }
     } catch (error) { onError(error); } finally { setBusy(false); }
@@ -38,6 +39,8 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
       <fieldset disabled={busy}>
         <WorkspaceSection title="选择审查结果" description="一份结果即可开始核对；第二份结果仅用于可选比较。"><div className="evaluation-form-grid">
           {!dataset && <label>评测名称（可不填）<input maxLength={120} value={name} placeholder="例如：NiuMa 审查质量核对" onChange={event => setName(event.target.value)} /></label>}
+          {!dataset && <label>核对方式<select aria-label="核对方式" value={reviewMode} onChange={event => setReviewMode(event.target.value as "single" | "dual")}>
+            <option value="single">单人日常核对</option><option value="dual">双人独立验收</option></select><small>创建后固定。双人验收需要两位不同成员提交；首次提交前隐藏对方判断。</small></label>}
 
         </div></WorkspaceSection>
         <DetailDialog className="ws-disclosure"><summary>样本分类（可选）</summary><div className="ws-disclosure-body evaluation-form-grid">

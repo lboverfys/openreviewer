@@ -40,6 +40,15 @@ it("只读成员可以查看评测集但没有收录入口",async()=>{
   expect(screen.queryByRole("button",{name:"开始新评测"})).not.toBeInTheDocument();
 });
 
+it("创建双人验收集时明确选择不可变的核对方式",async()=>{
+  render(<EvaluationPage user={user} reviewRunId="run-1" onSignedOut={vi.fn()}/>);
+  fireEvent.change(screen.getByLabelText("核对方式"),{target:{value:"dual"}});
+  expect(screen.getByText(/首次提交前隐藏对方判断/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button",{name:"开始核对问题"}));
+  await waitFor(()=>expect(requests.some(item=>item.method==="POST")).toBe(true));
+  expect(requests.find(item=>item.method==="POST")?.body).toMatchObject({review_mode:"dual"});
+});
+
 it("已收起记录单独查询，恢复后打开原评测且不重新发起模型",async()=>{
   vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
     const path=String(input); requests.push({path,method:init?.method??"GET",body:init?.body?JSON.parse(String(init.body)):null,headers:new Headers(init?.headers)});

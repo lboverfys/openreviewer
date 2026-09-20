@@ -48,6 +48,7 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
   if (importing && editable) return <EvaluationImportPanel key={variant} dataset={dataset} sample={sample} onSaved={() => {setImporting(false); setVariant(sample.baseline ? "candidate" : "baseline"); setShowResults(false); updated();}} onCancel={() => setImporting(false)} onError={onError} />;
   return <section className="evaluation-case">
     <div className="evaluation-card">
+      <p className="evaluation-hint">{dataset.review_mode === "dual" ? "双人独立验收：先参与的两位成员分别核对全部问题并提交。首次提交前隐藏对方判断；修改后需要重新提交。" : "单人日常核对：以最近保存的判断为准。"}</p>
       <div className="evaluation-toolbar"><div><h2>PR #{sample.pull_request_number} · {sample.title}</h2><p className="evaluation-hint">{sample.repository} · <code>{shortSha(sample.head_sha)}</code> · {sample.split === "validation" ? "验收集" : "调参集"}</p></div>
         <button type="button" disabled={busy} onClick={() => void load()}>刷新样本</button></div>
       <a href={"https://github.com/" + sample.repository + "/pull/" + sample.pull_request_number + "/files/" + sample.head_sha} target="_blank" rel="noreferrer">在 GitHub 核对该提交</a>

@@ -26,6 +26,7 @@ from persistence.models import (
     ReviewFindingRecord,
     ReviewPlanRecord,
     ReviewPlanRuleRecord,
+    ReviewProfileRecord,
     ReviewRunRecord,
     ReviewUnitRecord,
 )
@@ -63,12 +64,20 @@ def capture_review_sources(
             ModelCallRecord.cache_write_input_tokens, ModelCallRecord.duration_ms,
             ModelCallRecord.estimated_cost_microusd, ModelCallRecord.finding_count,
             PullRequestVersionRecord.title.label("pr_title"),
+            ReviewProfileRecord.fingerprint.label("profile_fingerprint"),
+            ReviewProfileRecord.snapshot["agents"].label("profile_agents"),
+            ReviewProfileRecord.snapshot["prompt"]["version"].as_string().label("profile_prompt_version"),
+            ReviewProfileRecord.summary["knowledge_versions"].label("profile_knowledge_versions"),
         )
         .select_from(ReviewRunRecord)
         .outerjoin(ReviewPlanRecord, ReviewPlanRecord.review_run_id == ReviewRunRecord.id)
         .outerjoin(ModelCallRecord, ModelCallRecord.review_plan_id == ReviewPlanRecord.id)
         .outerjoin(PullRequestVersionRecord,
                    PullRequestVersionRecord.id == ReviewPlanRecord.pull_request_version_id)
+        .outerjoin(ReviewProfileRecord, and_(
+            ReviewProfileRecord.id == ReviewRunRecord.repository_policy["review_profile_id"].as_string(),
+            ReviewProfileRecord.repository_key == ReviewRunRecord.repository_key,
+        ))
         .where(
             ReviewRunRecord.id.in_(run_ids),
             resource_predicate(
@@ -106,6 +115,7 @@ def capture_review_sources(
         ReviewFindingRecord.suggestion, ReviewFindingRecord.confidence,
         ReviewFindingRecord.verification_status.label("location_status"),
         ReviewFindingRecord.evidence_verification_status.label("evidence_status"),
+        ReviewFindingRecord.evidence_verification_reason.label("evidence_reason"),
         ReviewFindingRecord.context_references,
     ).where(ReviewFindingRecord.review_run_id.in_(run_ids))
       .order_by(ReviewFindingRecord.review_run_id, ReviewFindingRecord.created_at, ReviewFindingRecord.id)
@@ -216,6 +226,19 @@ def capture_review_sources(
             limitations.append("历史批次未记录完整的程序版本或知识引用版本")
         if row.estimated_cost_microusd is None:
             limitations.append("未配置完整价格，估算费用未知")
+        declared_agents = row.profile_agents or {}
+        declared_knowledge = row.profile_knowledge_versions or {}
+        calls_consistent = bool(row.profile_fingerprint) and all(
+            version.agent in declared_agents
+            and all(getattr(version, key) == declared_agents[version.agent].get(field)
+                    for key, field in (("provider", "provider"), ("model", "model"), ("protocol", "api_protocol")))
+            and version.prompt_version == row.profile_prompt_version
+            and all(declared_knowledge.get(source) == version_hash
+                    for source, version_hash in version.knowledge_versions.items())
+            for version in versions[run_id]
+        )
+        if (row.repository_policy or {}).get("review_profile_id") and not calls_consistent:
+            limitations.append("实际模型、协议或知识版本与绑定方案不一致，或方案来源缺失")
         source = EvaluationSource(
             review_run_id=run_id, installation_id=row.installation_id,
             repository_id=row.repository_id, repository=row.repository,
@@ -223,6 +246,7 @@ def capture_review_sources(
             head_sha=row.head_sha, title=redact_text(row.pr_title or f"PR #{row.pull_request_number}")[:300],
             plan_fingerprint=row.plan_fingerprint, planner_version=row.planner_version,
             configuration_revision=row.configuration_revision, repository_policy=row.repository_policy,
+            profile_fingerprint=row.profile_fingerprint, profile_calls_consistent=calls_consistent,
             rule_versions=tuple(rules[run_id]),
             models=tuple(sorted(versions[run_id], key=lambda item: (
                 item.agent, item.model, item.prompt_version, item.protocol,

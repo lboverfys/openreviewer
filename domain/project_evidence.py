@@ -22,6 +22,8 @@ def project_evidence(report: EvaluationComparisonReport | None) -> ProjectEviden
     status: Literal["awaiting_human_review", "partial_review", "reviewed_samples"] = "awaiting_human_review"
     if report and report.quality_pairs:
         status = "reviewed_samples" if (report.reference_pairs == report.case_count
+            and report.review_mode == "dual" and not report.disputed_pairs
+            and not report.reference_disputed_pairs
             and not report.provenance_missing_pairs and report.split == "validation") else "partial_review"
     return ProjectEvidence(generated_at=datetime.now(UTC), evaluation_status=status,
         evaluation=report, limitations=(

@@ -1,9 +1,9 @@
-"""评测集、独立审查快照与登录成员的单人核对用例。"""
+"""评测集、独立审查快照及单人/双人复核用例。"""
 
 import json
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import and_, insert, select, true, update
@@ -25,6 +25,7 @@ from domain.evaluation_workbench import (
     EvaluationImportResult,
     EvaluationNotFoundError,
     EvaluationOverview,
+    EvaluationReviewMode,
     EvaluationRunOption,
     EvaluationSource,
     EvaluationSourceMetadata,
@@ -62,7 +63,7 @@ from persistence.resource_scope import resource_predicate
 from services.rbac import ResourceScope
 
 _DATASET_COLUMNS = (
-    "id", "name", "repository", "case_count", "revision", "archived_at",
+    "id", "name", "review_mode", "repository", "case_count", "revision", "archived_at",
     "created_by", "created_at", "updated_at",
 )
 _CASE_COLUMNS = (
@@ -107,11 +108,18 @@ def _observation_values(source: EvaluationSource) -> dict[str, Any]:
             (item.embedding_model, item.strategy or "unknown") for item in source.retrieval
         }),
     }
+    if source.profile_fingerprint:
+        configuration = {
+            "profile_fingerprint": source.profile_fingerprint,
+            "application_revisions": sorted({model.application_revision or "unknown" for model in source.models}),
+        }
     return {
         "source_run_id": source.review_run_id, "source_snapshot": snapshot,
         "snapshot_sha256": _digest(snapshot), "configuration_fingerprint": _digest(configuration),
         "model_label": " / ".join(dict.fromkeys(model.model for model in source.models))[:600],
-        "provenance_complete": all(
+        "provenance_complete": bool(source.models) and (
+            not (source.repository_policy or {}).get("review_profile_id") or source.profile_calls_consistent
+        ) and all(
             model.context_recorded and model.application_revision is not None and model.reused_from_run_id is None
             for model in source.models
         ),
@@ -135,6 +143,20 @@ def _audit(session: Session, dataset_id: str, actor: str, action: str, payload: 
 class EvaluationWorkbench:
     def __init__(self, sessions: sessionmaker[Session]) -> None:
         self.sessions = sessions
+
+    @staticmethod
+    def _review_mode(session: Session, case_id: str) -> EvaluationReviewMode:
+        return cast(EvaluationReviewMode, session.scalar(select(EvaluationDatasetRecord.review_mode)
+            .join(EvaluationCaseRecord, EvaluationCaseRecord.dataset_id == EvaluationDatasetRecord.id)
+            .where(EvaluationCaseRecord.id == case_id)))
+
+    @staticmethod
+    def _visible_ballots(record, review_mode, actor):
+        ballots = tuple(EvaluationBallot.model_validate(item) for item in record.ballots)
+        own = tuple(item for item in ballots if actor and item.reviewer.casefold() == actor.casefold())
+        if review_mode == "dual" and not any(item.first_submitted_at or item.submitted_at for item in own):
+            return own
+        return ballots
 
     def sources(
         self, scope: ResourceScope, *, limit: int = 10, cursor: str | None = None,
@@ -195,10 +217,13 @@ class EvaluationWorkbench:
         from sqlalchemy import func
         c, o = EvaluationCaseRecord, EvaluationObservationRecord
         with self.sessions() as session:
-            self._dataset(session, identifier, scope)
+            dataset = self._dataset(session, identifier, scope)
             complete = o.assessment_status == "complete"
             fields = {"reviewed_findings": "adjudicated_count", "valid_findings": "valid_count",
-                      "false_positive_findings": "false_positive_count"}
+                      "false_positive_findings": "false_positive_count",
+                      "disputed_findings": "disagreement_count",
+                      "reference_disagreements": "reference_disagreement_count",
+                      "location_disagreements": "location_disagreement_count"}
             row = session.execute(select(
                 func.count(func.distinct(c.id)).label("case_count"),
                 func.count(o.id).label("observation_count"),
@@ -215,7 +240,10 @@ class EvaluationWorkbench:
             ).select_from(c).outerjoin(o, and_(o.case_id == c.id, o.variant == variant) if variant else o.case_id == c.id).where(
                 c.dataset_id == identifier, c.id == case_id if case_id else true(),
             ).limit(1)).mappings().one()
-            return EvaluationOverview(**row)
+            return EvaluationOverview(**row, review_mode=cast(EvaluationReviewMode, dataset.review_mode), review_source=(
+                "两位不同成员独立提交，按一致判断统计" if dataset.review_mode == "dual"
+                else "单人核对，以最近保存的判断为准"
+            ))
 
     def report(self, identifier: str, scope: ResourceScope, split: EvaluationSplit = "validation"):
         with self.sessions() as session:
@@ -226,7 +254,7 @@ class EvaluationWorkbench:
         cursor: str | None = None,
     ) -> CursorPage[EvaluationAuditView]:
         with self.sessions() as session:
-            self._dataset(session, identifier, scope)
+            mode = self._dataset(session, identifier, scope).review_mode
             statement = select(
                 OutboxEventRecord.id, OutboxEventRecord.event_type,
                 OutboxEventRecord.payload, OutboxEventRecord.occurred_at,
@@ -235,7 +263,10 @@ class EvaluationWorkbench:
             rows = session.execute(apply_cursor(
                 statement, OutboxEventRecord.occurred_at, OutboxEventRecord.id, cursor,
             ).limit(limit + 1)).mappings().all()
-        items = tuple(EvaluationAuditView.model_validate(row) for row in rows[:limit])
+        items = tuple(EvaluationAuditView.model_validate({**row, "payload": {
+            key: value for key, value in row["payload"].items()
+            if mode != "dual" or key not in {"verdict", "reference_key", "agrees", "note"}
+        }}) for row in rows[:limit])
         return CursorPage(items=items, next_cursor=(
             encode_cursor(items[-1].occurred_at, items[-1].id) if len(rows) > limit else None
         ))
@@ -295,6 +326,7 @@ class EvaluationWorkbench:
             first = next(iter(sources.values()))
             record = EvaluationDatasetRecord(
                 id=str(uuid4()), name=redact_text(draft.name),
+                review_mode=draft.review_mode,
                 installation_id=first.installation_id, repository_id=first.repository_id,
                 repository=first.repository, repository_key=first.repository_key,
                 request_key=request_key, request_fingerprint=fingerprint,
@@ -408,7 +440,8 @@ class EvaluationWorkbench:
         columns = [getattr(EvaluationCaseRecord, key) for key in _CASE_COLUMNS]
         columns.append(EvaluationDatasetRecord.repository)
         if detail:
-            columns.extend([EvaluationCaseRecord.reference_defects, EvaluationCaseRecord.reference_reviews])
+            columns.extend([EvaluationCaseRecord.reference_defects, EvaluationCaseRecord.reference_reviews,
+                            EvaluationDatasetRecord.review_mode])
         for prefix, observation in (("baseline", baseline), ("candidate", candidate)):
             columns.extend(getattr(observation, key).label(f"{prefix}_{key}") for key in _OBSERVATION_COLUMNS)
         return (select(*columns).select_from(EvaluationCaseRecord)
@@ -418,7 +451,7 @@ class EvaluationWorkbench:
             .where(dataset_scope(scope)))
 
     @staticmethod
-    def _case_view(row, *, detail: bool = False):
+    def _case_view(row, *, detail: bool = False, actor: str | None = None):
         payload = {key: row[key] for key in (*_CASE_COLUMNS, "repository")}
         for variant in ("baseline", "candidate"):
             payload[variant] = (
@@ -426,7 +459,12 @@ class EvaluationWorkbench:
                 if row[f"{variant}_id"] is not None else None
             )
         if detail:
-            payload.update(reference_defects=row["reference_defects"], reference_reviews=row["reference_reviews"])
+            reviews = row["reference_reviews"]
+            if row["review_mode"] == "dual" and not any(
+                actor and item["reviewer"].casefold() == actor.casefold() for item in reviews
+            ):
+                reviews = []
+            payload.update(reference_defects=row["reference_defects"], reference_reviews=reviews)
             return EvaluationCaseDetail.model_validate(payload)
         return EvaluationCaseView.model_validate(payload)
 
@@ -447,14 +485,14 @@ class EvaluationWorkbench:
             encode_cursor(items[-1].created_at, items[-1].id) if len(rows) > limit else None
         ))
 
-    def case(self, identifier: str, scope: ResourceScope) -> EvaluationCaseDetail:
+    def case(self, identifier: str, scope: ResourceScope, *, actor: str | None = None) -> EvaluationCaseDetail:
         with self.sessions() as session:
             row = session.execute(self._case_query(scope, detail=True).where(
                 EvaluationCaseRecord.id == identifier,
             )).mappings().one_or_none()
             if row is None:
                 raise EvaluationNotFoundError("评测样本不存在")
-            return self._case_view(row, detail=True)
+            return self._case_view(row, detail=True, actor=actor)
 
     @staticmethod
     def _locked_case(session: Session, identifier: str, scope: ResourceScope) -> EvaluationCaseRecord:
@@ -493,8 +531,10 @@ class EvaluationWorkbench:
         return record
 
     @staticmethod
-    def _observation_detail(record: EvaluationObservationRecord) -> ObservationDetail:
-        ballots = tuple(EvaluationBallot.model_validate(item) for item in record.ballots)
+    def _observation_detail(
+        record: EvaluationObservationRecord, review_mode: EvaluationReviewMode = "single", actor: str | None = None,
+    ) -> ObservationDetail:
+        ballots = EvaluationWorkbench._visible_ballots(record, review_mode, actor)
         changes = record.source_snapshot.get("changes", [])
         return ObservationDetail(
             observation=_observation_view(record),
@@ -509,13 +549,16 @@ class EvaluationWorkbench:
             ) for item in ballots),
         )
 
-    def observation(self, case_id: str, variant: EvaluationVariant, scope: ResourceScope) -> ObservationDetail:
+    def observation(
+        self, case_id: str, variant: EvaluationVariant, scope: ResourceScope, *, actor: str | None = None,
+    ) -> ObservationDetail:
         with self.sessions() as session:
-            return self._observation_detail(self._observation(session, case_id, variant, scope))
+            record = self._observation(session, case_id, variant, scope)
+            return self._observation_detail(record, self._review_mode(session, case_id), actor)
 
     def findings(
         self, case_id: str, variant: EvaluationVariant, scope: ResourceScope,
-        *, limit: int = 10, cursor: str | None = None,
+        *, limit: int = 10, cursor: str | None = None, actor: str | None = None,
     ) -> CursorPage[EvaluationFindingView]:
         with self.sessions() as session:
             record = self._observation(session, case_id, variant, scope)
@@ -531,7 +574,7 @@ class EvaluationWorkbench:
                 if not 0 <= offset <= 500:
                     raise ValueError("分页游标超出范围")
             source = EvaluationSource.model_validate(record.source_snapshot)
-            ballots = tuple(EvaluationBallot.model_validate(item) for item in record.ballots)
+            ballots = self._visible_ballots(record, self._review_mode(session, case_id), actor)
             items = tuple(EvaluationFindingView(
                 finding=finding, reviews=tuple(FindingReview(
                     reviewer=ballot.reviewer, decision=ballot.decisions[finding.id],
@@ -617,7 +660,7 @@ class EvaluationWorkbench:
                 "revision": record.revision, "reviews_reset": bool(reviewed or draft.reset_reviews),
             })
             session.commit()
-        return self.case(identifier, scope)
+        return self.case(identifier, scope, actor=actor)
 
     def review_reference(
         self, identifier: str, draft: ReferenceReviewWrite, actor: str, scope: ResourceScope,
@@ -629,30 +672,35 @@ class EvaluationWorkbench:
             if record.reference_defects is None:
                 raise ValueError("请先填写参考缺陷；确认无缺陷时保存空列表")
             reviews = [ReferenceReview.model_validate(item) for item in record.reference_reviews]
+            mode = self._review_mode(session, identifier)
             index = next((number for number, item in enumerate(reviews) if item.reviewer.casefold() == actor.casefold()), None)
             review = ReferenceReview(reviewer=actor, agrees=draft.agrees,
                                      note=redact_text(draft.note), reviewed_at=now)
             if index is None:
+                if mode == "dual" and len(reviews) >= 2:
+                    raise EvaluationConflictError("双人验收只允许先参与的两位成员确认参考标签")
                 reviews.append(review)
             else:
                 reviews[index] = review
             record.reference_reviews = [item.model_dump(mode="json") for item in reviews]
-            record.reference_status = reference_status(tuple(reviews))
+            record.reference_status = reference_status(tuple(reviews), mode)
             record.revision += 1
             record.updated_at = now
             _audit(session, record.dataset_id, actor, "reference_reviewed", {
                 "case_id": identifier, "agrees": draft.agrees, "revision": record.revision,
             })
             session.commit()
-        return self.case(identifier, scope)
+        return self.case(identifier, scope, actor=actor)
 
     @staticmethod
     def _ballot(
-        record: EvaluationObservationRecord, actor: str, now: datetime,
+        record: EvaluationObservationRecord, actor: str, now: datetime, mode: EvaluationReviewMode,
     ) -> tuple[list[EvaluationBallot], int]:
         ballots = [EvaluationBallot.model_validate(item) for item in record.ballots]
         index = next((number for number, item in enumerate(ballots) if item.reviewer.casefold() == actor.casefold()), None)
         if index is None:
+            if mode == "dual" and len(ballots) >= 2:
+                raise EvaluationConflictError("双人验收只允许先参与的两位成员核对该结果")
             index = len(ballots)
             ballots.append(EvaluationBallot(reviewer=actor, updated_at=now))
         return ballots, index
@@ -661,12 +709,13 @@ class EvaluationWorkbench:
     def _save_ballots(
         case: EvaluationCaseRecord, record: EvaluationObservationRecord,
         source: EvaluationSource, ballots: list[EvaluationBallot], now: datetime,
+        mode: EvaluationReviewMode,
     ) -> None:
         references = (
             tuple(ReferenceDefect.model_validate(item) for item in case.reference_defects)
             if case.reference_defects is not None else None
         )
-        state, metrics = assessment_metrics(source.findings, tuple(ballots), references)
+        state, metrics = assessment_metrics(source.findings, tuple(ballots), references, mode)
         record.ballots = [item.model_dump(mode="json") for item in ballots]
         record.assessment_status = state
         record.metrics = metrics
@@ -694,18 +743,19 @@ class EvaluationWorkbench:
                 or key not in {str(item["key"]) for item in case.reference_defects or []}
             ):
                 raise ValueError("只有有效问题可以关联本样本的参考缺陷")
-            ballots, index = self._ballot(record, actor, now)
+            mode = self._review_mode(session, case_id)
+            ballots, index = self._ballot(record, actor, now, mode)
             decisions = {**ballots[index].decisions, finding_id: draft.decision}
             ballots[index] = ballots[index].model_copy(update={
                 "decisions": decisions, "submitted_at": None, "updated_at": now,
             })
-            self._save_ballots(case, record, source, ballots, now)
+            self._save_ballots(case, record, source, ballots, now, mode)
             _audit(session, case.dataset_id, actor, "finding_reviewed", {
                 "case_id": case_id, "variant": variant, "finding_id": finding_id,
                 "verdict": draft.decision.model_dump(mode="json")["verdict"], "reference_key": key,
             })
             session.commit()
-            return self._observation_detail(record)
+            return self._observation_detail(record, mode, actor)
 
     def submit_review(
         self, case_id: str, variant: EvaluationVariant, expected_revision: int,
@@ -717,13 +767,19 @@ class EvaluationWorkbench:
             record = self._observation(session, case_id, variant, scope, lock=True)
             self._revision(record.revision, expected_revision)
             source = EvaluationSource.model_validate(record.source_snapshot)
-            ballots, index = self._ballot(record, actor, now)
-            ballots[index] = ballots[index].model_copy(update={"submitted_at": now, "updated_at": now})
-            self._save_ballots(case, record, source, ballots, now)
+            mode = self._review_mode(session, case_id)
+            ballots, index = self._ballot(record, actor, now, mode)
+            if mode == "dual" and set(ballots[index].decisions) != {item.id for item in source.findings}:
+                raise ValueError("请先核对全部问题；无法确认时可选择暂不确定")
+            ballots[index] = ballots[index].model_copy(update={
+                "submitted_at": now, "updated_at": now,
+                "first_submitted_at": ballots[index].first_submitted_at or now,
+            })
+            self._save_ballots(case, record, source, ballots, now, mode)
             _audit(session, case.dataset_id, actor, "review_submitted",
                    {"case_id": case_id, "variant": variant, "revision": record.revision})
             session.commit()
-            return self._observation_detail(record)
+            return self._observation_detail(record, mode, actor)
 
     def replace_observation(
         self, case_id: str, variant: EvaluationVariant, draft: ObservationReplace,
@@ -734,6 +790,7 @@ class EvaluationWorkbench:
             source = capture_review_sources(session, (draft.review_run_id,), scope, now)[draft.review_run_id]
             case = self._locked_case(session, case_id, scope)
             dataset = self._dataset(session, case.dataset_id, scope)
+            mode = cast(EvaluationReviewMode, dataset.review_mode)
             record = self._observation(session, case_id, variant, scope, lock=True)
             self._revision(record.revision, draft.expected_revision)
             if (
@@ -745,7 +802,7 @@ class EvaluationWorkbench:
             ):
                 raise ValueError("更换的运行必须属于同一仓库、PR 和提交 SHA")
             if record.source_run_id == source.review_run_id:
-                return self._observation_detail(record)
+                return self._observation_detail(record, mode, actor)
             opposite = session.scalar(select(EvaluationObservationRecord.source_run_id).where(
                 EvaluationObservationRecord.case_id == case_id,
                 EvaluationObservationRecord.variant != variant,
@@ -767,7 +824,7 @@ class EvaluationWorkbench:
                 "source_run_id": source.review_run_id,
             })
             session.commit()
-            return self._observation_detail(record)
+            return self._observation_detail(record, mode, actor)
 
     @staticmethod
     def _revision(actual: int, expected: int) -> None:

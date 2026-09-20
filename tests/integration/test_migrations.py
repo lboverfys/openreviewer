@@ -38,6 +38,9 @@ def test_initial_migration_creates_durable_review_task_schema(
     engine = create_engine(database_url)
     try:
         inspector = inspect(engine)
+        review_mode_column = next(column for column in inspector.get_columns("evaluation_datasets") if column["name"] == "review_mode")
+        assert review_mode_column["nullable"] is False
+        assert "single" in review_mode_column["default"]
         assert set(inspector.get_table_names()) == {
             "admin_sessions",
             "code_chunks",

@@ -143,7 +143,7 @@ def register_evaluation_routes(
 
     @application.get("/api/v1/evaluations/cases/{case_id}", response_model=EvaluationCaseDetail)
     def case_detail(case_id: str, principal: Annotated[SessionPrincipal, Depends(require_viewer)]):
-        return _guard(lambda: get_service().case(case_id, principal.resource_scope))
+        return _guard(lambda: get_service().case(case_id, principal.resource_scope, actor=principal.username))
 
     @application.put("/api/v1/evaluations/cases/{case_id}/reference", response_model=EvaluationCaseDetail)
     def update_reference(
@@ -166,7 +166,7 @@ def register_evaluation_routes(
         case_id: str, variant: EvaluationVariant,
         principal: Annotated[SessionPrincipal, Depends(require_viewer)],
     ):
-        return _guard(lambda: get_service().observation(case_id, variant, principal.resource_scope))
+        return _guard(lambda: get_service().observation(case_id, variant, principal.resource_scope, actor=principal.username))
 
     @application.get("/api/v1/evaluations/cases/{case_id}/observations/{variant}/findings",
                      response_model=CursorPage[EvaluationFindingView])
@@ -176,7 +176,7 @@ def register_evaluation_routes(
         limit: Annotated[int, Query(ge=1, le=100)] = 10,
         cursor: Annotated[str | None, Query(max_length=512)] = None,
     ):
-        return _guard(lambda: get_service().findings(case_id, variant, principal.resource_scope, limit=limit, cursor=cursor))
+        return _guard(lambda: get_service().findings(case_id, variant, principal.resource_scope, limit=limit, cursor=cursor, actor=principal.username))
 
     @application.put("/api/v1/evaluations/cases/{case_id}/observations/{variant}/findings/{finding_id}/review",
                      response_model=ObservationDetail)

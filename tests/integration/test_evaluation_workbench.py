@@ -45,7 +45,7 @@ OWN = ResourceScope(repositories=frozenset({"lboverfys/NiuMa"}))
 DENIED = ResourceScope(repositories=frozenset({"other/private"}))
 
 
-def create_pair(database, *, split="validation", baseline_findings=None, candidate_findings=None, candidate_cost=2000):
+def create_pair(database, *, split="validation", baseline_findings=None, candidate_findings=None, candidate_cost=2000, review_mode="single"):
     runs = seed_evaluation_runs(database, [
         {"label":"base","pr":301,"findings":baseline_findings if baseline_findings is not None else ["权限问题","无效建议"],"cost":1000},
         {"label":"candidate","pr":301,"findings":candidate_findings if candidate_findings is not None else ["已找到权限问题"],"cost":candidate_cost,"model":"candidate-model"},
@@ -53,6 +53,7 @@ def create_pair(database, *, split="validation", baseline_findings=None, candida
     service = EvaluationWorkbench(database.sessions)
     dataset = service.create_dataset(EvaluationDatasetCreate(
         name="授权评测", review_run_ids=(runs["base"],), split=split,
+        review_mode=review_mode,
     ), "create-pair", TEST_USERNAME, ALL)
     service.import_observations(dataset.id, ObservationImport(
         review_run_ids=(runs["candidate"],), variant="candidate", split=split,

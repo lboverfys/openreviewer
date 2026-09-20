@@ -13,6 +13,7 @@ from domain.security import redact_text
 EvaluationSplit = Literal["tuning", "validation"]
 EvaluationVariant = Literal["baseline", "candidate"]
 EvaluationKind = Literal["normal", "known_defect", "cross_file"]
+EvaluationReviewMode = Literal["single", "dual"]
 AssessmentStatus = Literal["pending", "partial", "disputed", "complete"]
 MAX_EVALUATION_CASES = 200
 MAX_EVALUATION_FINDINGS = 500
@@ -63,6 +64,7 @@ class EvaluationFinding(EvaluationContract):
     confidence: float
     location_status: str
     evidence_status: str
+    evidence_reason: str | None = None
     context_references: tuple[str, ...] = ()
 
 
@@ -84,6 +86,7 @@ class EvaluationBallot(EvaluationContract):
         default_factory=dict, max_length=MAX_EVALUATION_FINDINGS,
     )
     submitted_at: datetime | None = None
+    first_submitted_at: datetime | None = None
     updated_at: datetime
 
 
@@ -133,6 +136,8 @@ class EvaluationSource(EvaluationContract):
     plan_fingerprint: str
     planner_version: str
     configuration_revision: int | None
+    profile_fingerprint: str | None = None
+    profile_calls_consistent: bool = False
     repository_policy: dict[str, object] | None
     rule_versions: tuple[dict[str, str], ...] = ()
     models: tuple[ModelVersion, ...] = ()
@@ -158,6 +163,7 @@ class EvaluationSourceMetadata(EvaluationSource):
 class EvaluationDatasetView(EvaluationContract):
     id: str
     name: str
+    review_mode: EvaluationReviewMode = "single"
     repository: str
     case_count: int
     revision: int
@@ -264,10 +270,15 @@ class ObservationImport(EvaluationContract):
 
 class EvaluationDatasetCreate(ObservationImport):
     name: str = Field(min_length=1, max_length=120)
+    review_mode: EvaluationReviewMode = "single"
 
 
 class EvaluationOverview(EvaluationContract):
     review_source: str = "单人核对，以最近保存的判断为准"
+    review_mode: EvaluationReviewMode = "single"
+    disputed_findings: int = 0
+    reference_disagreements: int = 0
+    location_disagreements: int = 0
     uncertain_findings: int = 0
     model_duration_ms: int = 0
     turnaround_ms: int = 0
@@ -354,6 +365,9 @@ class EvaluationComparisonReport(EvaluationContract):
     metric_scope: Literal["paired_review_workflow"] = "paired_review_workflow"
     dataset_id: str
     dataset_name: str
+    review_mode: EvaluationReviewMode = "single"
+    reference_disputed_pairs: int = 0
+    location_disagreements: int = 0
     repository: str
     split: EvaluationSplit
     generated_at: datetime
@@ -382,8 +396,9 @@ def assessment_metrics(
     findings: tuple[EvaluationFinding, ...],
     ballots: tuple[EvaluationBallot, ...],
     references: tuple[ReferenceDefect, ...] | None,
+    review_mode: EvaluationReviewMode = "single",
 ) -> tuple[AssessmentStatus, dict[str, int]]:
-    """使用最近一位核对者保存的判断；不确定和未核对不计为有效。"""
+    """日常使用最新判断；双人只统计两位不同成员已提交的一致意见。"""
     counts: dict[str, int] = {
         "finding_count": len(findings), "adjudicated_count": 0,
         "unadjudicated_count": len(findings), "disagreement_count": 0,
@@ -391,24 +406,42 @@ def assessment_metrics(
         "out_of_scope_count": 0, "known_issue_count": 0,
         "location_assessed_count": 0, "location_correct_count": 0,
         "reference_true_positive_count": 0, "reference_unexpected_valid_count": 0,
+        "reference_disagreement_count": 0, "location_disagreement_count": 0,
+        "uncertain_count": 0,
     }
     if not ballots:
         return "pending", counts
     latest = max(reversed(ballots), key=lambda ballot: ballot.updated_at)
+    if review_mode == "dual":
+        if (len(ballots) != 2 or len({item.reviewer.casefold() for item in ballots}) != 2
+                or any(item.submitted_at is None for item in ballots)):
+            return "partial", counts
+        latest = ballots[0]
     expected = {item.key for item in references or ()}
     matched: set[str] = set()
     verdicts: Counter[str] = Counter()
     for finding in findings:
         left = latest.decisions.get(finding.id)
-        if left is None or left.verdict == "uncertain":
+        right = ballots[1].decisions.get(finding.id) if review_mode == "dual" else left
+        if left is None or right is None:
+            continue
+        if left.verdict == "uncertain" or right.verdict == "uncertain":
+            counts["uncertain_count"] += 1
+            continue
+        if left.verdict != right.verdict:
+            counts["disagreement_count"] += 1
             continue
         verdicts[str(left.model_dump(mode="json")["verdict"])] += 1
         counts["adjudicated_count"] += 1
-        if left.location_correct is not None:
+        if left.location_correct != right.location_correct:
+            counts["location_disagreement_count"] += 1
+        elif left.location_correct is not None:
             counts["location_assessed_count"] += 1
             counts["location_correct_count"] += int(left.location_correct)
         if left.verdict is FindingEvaluationVerdict.VALID:
-            if left.reference_key is not None and left.reference_key in expected:
+            if left.reference_key != right.reference_key:
+                counts["reference_disagreement_count"] += 1
+            elif left.reference_key is not None and left.reference_key in expected:
                 matched.add(left.reference_key)
             else:
                 counts["reference_unexpected_valid_count"] += 1
@@ -418,12 +451,22 @@ def assessment_metrics(
         len(findings) - counts["adjudicated_count"] - counts["disagreement_count"]
     )
     counts["reference_true_positive_count"] = len(matched)
+    if review_mode == "dual":
+        if counts["disagreement_count"]:
+            return "disputed", counts
+        return ("complete" if counts["adjudicated_count"] == len(findings) else "partial"), counts
     counts["uncertain_count"] = sum(item.verdict == "uncertain" for item in latest.decisions.values())
     status: AssessmentStatus = "complete" if latest.submitted_at is not None else "partial"
     return status, counts
 
 
-def reference_status(reviews: tuple[ReferenceReview, ...]) -> str:
+def reference_status(
+    reviews: tuple[ReferenceReview, ...], review_mode: EvaluationReviewMode = "single",
+) -> str:
     if not reviews:
         return "pending"
+    if review_mode == "dual":
+        if len(reviews) != 2 or len({item.reviewer.casefold() for item in reviews}) != 2:
+            return "partial"
+        return "confirmed" if all(item.agrees for item in reviews) else "disputed"
     return "confirmed" if max(reviews, key=lambda review: review.reviewed_at).agrees else "pending"

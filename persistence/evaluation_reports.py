@@ -39,8 +39,15 @@ def comparison_report(
         candidate.assessment_status == "complete",
         baseline.metrics["adjudicated_count"].as_integer() == baseline.finding_count,
         candidate.metrics["adjudicated_count"].as_integer() == candidate.finding_count,
+        or_(EvaluationDatasetRecord.review_mode == "single", and_(
+            baseline.provenance_complete.is_(True), candidate.provenance_complete.is_(True),
+        )),
     )
-    referenced = and_(quality, EvaluationCaseRecord.reference_status == "confirmed")
+    reference_agreement = and_(
+        func.coalesce(baseline.metrics["reference_disagreement_count"].as_integer(), 0) == 0,
+        func.coalesce(candidate.metrics["reference_disagreement_count"].as_integer(), 0) == 0,
+    )
+    referenced = and_(quality, EvaluationCaseRecord.reference_status == "confirmed", reference_agreement)
     priced = and_(paired, baseline.estimated_cost_microusd.is_not(None),
                   candidate.estimated_cost_microusd.is_not(None))
 
@@ -50,6 +57,7 @@ def comparison_report(
     columns = [
         EvaluationDatasetRecord.id, EvaluationDatasetRecord.name,
         EvaluationDatasetRecord.repository, EvaluationDatasetRecord.revision,
+        EvaluationDatasetRecord.review_mode,
         func.count(EvaluationCaseRecord.id).label("case_count"),
         func.coalesce(func.sum(EvaluationCaseRecord.revision), 0).label("case_revisions"),
         total(paired).label("performance_pairs"), total(quality).label("quality_pairs"),
@@ -64,6 +72,9 @@ def comparison_report(
         total(and_(paired, or_(baseline.provenance_complete.is_(False),
                               candidate.provenance_complete.is_(False)))).label("provenance_missing_pairs"),
         total(referenced, func.coalesce(EvaluationCaseRecord.reference_count, 0)).label("reference_expected_count"),
+        total(and_(paired, or_(EvaluationCaseRecord.reference_status == "disputed", ~reference_agreement))).label("reference_disputed_pairs"),
+        total(paired, func.coalesce(baseline.metrics["location_disagreement_count"].as_integer(), 0)
+              + func.coalesce(candidate.metrics["location_disagreement_count"].as_integer(), 0)).label("location_disagreements"),
     ]
     for kind in ("normal", "known_defect", "cross_file"):
         columns.append(total(EvaluationCaseRecord.kind == kind).label(f"{kind}_count"))
@@ -90,7 +101,8 @@ def comparison_report(
             repository_key_column=EvaluationDatasetRecord.repository_key,
         ))
         .group_by(EvaluationDatasetRecord.id, EvaluationDatasetRecord.name,
-                  EvaluationDatasetRecord.repository, EvaluationDatasetRecord.revision))
+                  EvaluationDatasetRecord.repository, EvaluationDatasetRecord.revision,
+                  EvaluationDatasetRecord.review_mode))
     row = session.execute(statement).mappings().one_or_none()
     if row is None:
         raise EvaluationNotFoundError("评测集不存在")
@@ -123,7 +135,14 @@ def comparison_report(
             configuration_count=number(f"{prefix}_configuration_count"),
         )
         scores[prefix] = EvaluationScore.model_validate(payload)
-    notices = []
+    notices = [
+        "有效问题比例为有效问题/已裁决问题，分母含重复、范围外与既有问题",
+        "Wilson 区间为描述性区间；同 PR 的问题可能相关，点估计差异不证明显著改进",
+    ]
+    if row["review_mode"] == "single":
+        notices.append("当前为单人日常核对，不构成严格双人验收或方案验收依据")
+    else:
+        notices.append("严格质量只纳入双方来源完整、独立运行且双人处置一致的配对；参考匹配分歧另行排除")
     if split == "tuning":
         notices.append("当前为调参集报告；最终效果请使用独立验收集验证")
     if not number("quality_pairs"):
@@ -143,6 +162,7 @@ def comparison_report(
     return EvaluationComparisonReport(
         metric_scope="paired_review_workflow",
         dataset_id=identifier, dataset_name=row["name"], repository=row["repository"],
+        review_mode=row["review_mode"],
         split=split, generated_at=datetime.now(UTC),
         data_version=sha256(f"{identifier}:{split}:{row['revision']}:{row['case_revisions']}".encode()).hexdigest()[:20],
         **{key: number(key) for key in (
@@ -150,6 +170,7 @@ def comparison_report(
             "performance_pairs", "quality_pairs", "reference_pairs", "priced_pairs",
             "missing_baseline", "missing_candidate", "pending_pairs", "disputed_pairs",
             "identical_run_pairs", "provenance_missing_pairs",
+            "reference_disputed_pairs", "location_disagreements",
         )},
         baseline=scores["baseline"], candidate=scores["candidate"],
         deltas=deltas, notices=tuple(notices),

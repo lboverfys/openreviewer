@@ -2604,6 +2604,11 @@
             "title": "Known Defect Count",
             "type": "integer"
           },
+          "location_disagreements": {
+            "default": 0,
+            "title": "Location Disagreements",
+            "type": "integer"
+          },
           "metric_scope": {
             "const": "paired_review_workflow",
             "default": "paired_review_workflow",
@@ -2649,12 +2654,26 @@
             "title": "Quality Pairs",
             "type": "integer"
           },
+          "reference_disputed_pairs": {
+            "default": 0,
+            "title": "Reference Disputed Pairs",
+            "type": "integer"
+          },
           "reference_pairs": {
             "title": "Reference Pairs",
             "type": "integer"
           },
           "repository": {
             "title": "Repository",
+            "type": "string"
+          },
+          "review_mode": {
+            "default": "single",
+            "enum": [
+              "single",
+              "dual"
+            ],
+            "title": "Review Mode",
             "type": "string"
           },
           "split": {
@@ -2712,6 +2731,15 @@
             "maxLength": 120,
             "minLength": 1,
             "title": "Name",
+            "type": "string"
+          },
+          "review_mode": {
+            "default": "single",
+            "enum": [
+              "single",
+              "dual"
+            ],
+            "title": "Review Mode",
             "type": "string"
           },
           "review_run_ids": {
@@ -2787,6 +2815,15 @@
           },
           "repository": {
             "title": "Repository",
+            "type": "string"
+          },
+          "review_mode": {
+            "default": "single",
+            "enum": [
+              "single",
+              "dual"
+            ],
+            "title": "Review Mode",
             "type": "string"
           },
           "revision": {
@@ -2896,6 +2933,17 @@
           "evidence": {
             "title": "Evidence",
             "type": "string"
+          },
+          "evidence_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Reason"
           },
           "evidence_status": {
             "title": "Evidence Status",
@@ -3025,6 +3073,11 @@
             "title": "Case Count",
             "type": "integer"
           },
+          "disputed_findings": {
+            "default": 0,
+            "title": "Disputed Findings",
+            "type": "integer"
+          },
           "estimated_cost_microusd": {
             "anyOf": [
               {
@@ -3040,6 +3093,11 @@
             "title": "False Positive Findings",
             "type": "integer"
           },
+          "location_disagreements": {
+            "default": 0,
+            "title": "Location Disagreements",
+            "type": "integer"
+          },
           "missing_reference_cases": {
             "title": "Missing Reference Cases",
             "type": "integer"
@@ -3052,6 +3110,20 @@
           "observation_count": {
             "title": "Observation Count",
             "type": "integer"
+          },
+          "reference_disagreements": {
+            "default": 0,
+            "title": "Reference Disagreements",
+            "type": "integer"
+          },
+          "review_mode": {
+            "default": "single",
+            "enum": [
+              "single",
+              "dual"
+            ],
+            "title": "Review Mode",
+            "type": "string"
           },
           "review_source": {
             "default": "\u5355\u4eba\u6838\u5bf9\uff0c\u4ee5\u6700\u8fd1\u4fdd\u5b58\u7684\u5224\u65ad\u4e3a\u51c6",
@@ -3457,6 +3529,22 @@
           "planner_version": {
             "title": "Planner Version",
             "type": "string"
+          },
+          "profile_calls_consistent": {
+            "default": false,
+            "title": "Profile Calls Consistent",
+            "type": "boolean"
+          },
+          "profile_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Fingerprint"
           },
           "pull_request_number": {
             "title": "Pull Request Number",

@@ -26,6 +26,7 @@ class EvaluationDatasetRecord(Base):
     __table_args__ = (
         UniqueConstraint("request_key"),
         CheckConstraint("revision > 0", name="revision_positive"),
+        CheckConstraint("review_mode IN ('single','dual')", name="review_mode_value"),
         CheckConstraint("case_count BETWEEN 0 AND 200", name="case_count_bounded"),
         Index(
             "ix_evaluation_datasets_archive_created", "archived_at", "created_at", "id"
@@ -39,6 +40,9 @@ class EvaluationDatasetRecord(Base):
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    review_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="single", server_default="single",
+    )
     installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     repository: Mapped[str] = mapped_column(String(255), nullable=False)

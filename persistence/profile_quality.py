@@ -46,6 +46,8 @@ def profile_quality(session, identifier, scope, dataset_id=None, *, lock=False):
         if session.scalar(dataset_query) is None:
             raise PlatformNotFoundError("评测集不存在或不属于此仓库")
         report = comparison_report(session, dataset_id, scope, "validation")
+        if report.review_mode != "dual":
+            reasons.append("单人日常核对不能作为方案验收依据，请新建双人验收集独立复核")
         observation = EvaluationObservationRecord
         rows = session.execute(select(
             observation.variant, observation.source_snapshot["repository_policy"]["review_profile_id"].as_string().label("profile_id"),

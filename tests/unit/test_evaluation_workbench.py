@@ -1,6 +1,7 @@
 """评测纯逻辑与实际供应商适配器的版本记录。"""
 
 import httpx
+import pytest
 
 from domain.enums import ModelApiProtocol, ModelProvider
 from domain.evaluation_workbench import (
@@ -8,7 +9,9 @@ from domain.evaluation_workbench import (
     EvaluationDecision,
     EvaluationFinding,
     ReferenceDefect,
+    ReferenceReview,
     assessment_metrics,
+    reference_status,
 )
 from domain.model_review import ModelReviewResult
 from services.model_providers import create_model_reviewer
@@ -62,3 +65,53 @@ def test_duplicate_reference_matches_count_once_and_saved_drafts_are_visible():
     assert counts["reference_true_positive_count"]==1
     status,counts=assessment_metrics(findings,(votes[0],votes[1].model_copy(update={"submitted_at":None})),refs)
     assert status=="partial" and counts["valid_count"]==2
+
+
+@pytest.mark.parametrize("verdict,submitted,expected", [
+    ("valid", True, "complete"), ("uncertain", True, "partial"),
+    ("false_positive", True, "disputed"), ("valid", False, "partial"),
+])
+def test_dual_consensus_does_not_accept_uncertain_or_draft(verdict, submitted, expected):
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    finding = EvaluationFinding(id="one", fingerprint="one", title="权限", severity="high", category="authorization",
+        file=None, start_line=None, end_line=None, evidence="引用", impact="影响", suggestion="建议",
+        confidence=1, location_status="unverified", evidence_status="unverified")
+    ballots = (
+        EvaluationBallot(reviewer="alice", decisions={"one":EvaluationDecision(verdict="valid")}, submitted_at=now, updated_at=now),
+        EvaluationBallot(reviewer="bob", decisions={"one":EvaluationDecision(verdict=verdict)}, submitted_at=now if submitted else None, updated_at=now),
+    )
+    status, counts = assessment_metrics((finding,), ballots, None, "dual")
+    assert status == expected
+    assert counts["valid_count"] == (1 if expected == "complete" else 0)
+    duplicate = (ballots[0], ballots[0].model_copy(update={"reviewer":"ALICE"}))
+    assert assessment_metrics((finding,), duplicate, None, "dual")[0] == "partial"
+    reviews = tuple(ReferenceReview(reviewer=name, agrees=True, reviewed_at=now) for name in ("alice", "ALICE"))
+    assert reference_status(reviews, "dual") == "partial"
+
+
+def test_stable_profile_fingerprint_does_not_change_with_executed_role_subset():
+    from datetime import UTC, datetime
+
+    from domain.evaluation_workbench import EvaluationSource, ModelVersion
+    from services.evaluation_workbench import _observation_values
+
+    source = EvaluationSource(review_run_id="run", installation_id=1, repository_id=1,
+        repository="example/repo", repository_key="example/repo", pull_request_number=1,
+        head_sha="a" * 40, title="示例", plan_fingerprint="b" * 64, planner_version="test",
+        configuration_revision=1, repository_policy={"review_profile_id":"profile"},
+        profile_fingerprint="c" * 64, profile_calls_consistent=True,
+        models=(ModelVersion(agent="logic", provider="openai", protocol="responses", model="model",
+            prompt_version="test", application_revision="d" * 40, context_recorded=True),),
+        findings=(), input_tokens=1, output_tokens=1, model_duration_ms=1, turnaround_ms=1,
+        estimated_cost_microusd=1, completed_at=datetime.now(UTC), captured_at=datetime.now(UTC))
+    baseline = _observation_values(source)
+    other = source.model_copy(update={"models": source.models + (source.models[0].model_copy(update={
+        "agent":"security", "knowledge_versions":{"rules.md":"e" * 16},
+    }),)})
+    assert _observation_values(other)["configuration_fingerprint"] == baseline["configuration_fingerprint"]
+    assert baseline["provenance_complete"] is True
+    assert _observation_values(source.model_copy(update={"profile_calls_consistent":False}))["provenance_complete"] is False
+    changed = source.model_copy(update={"models":(source.models[0].model_copy(update={"application_revision":"f" * 40}),)})
+    assert _observation_values(changed)["configuration_fingerprint"] != baseline["configuration_fingerprint"]

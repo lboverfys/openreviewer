@@ -2503,6 +2503,11 @@ export interface components {
             /** Known Defect Count */
             known_defect_count: number;
             /**
+             * Location Disagreements
+             * @default 0
+             */
+            location_disagreements: number;
+            /**
              * Metric Scope
              * @default paired_review_workflow
              * @constant
@@ -2526,10 +2531,21 @@ export interface components {
             provenance_missing_pairs: number;
             /** Quality Pairs */
             quality_pairs: number;
+            /**
+             * Reference Disputed Pairs
+             * @default 0
+             */
+            reference_disputed_pairs: number;
             /** Reference Pairs */
             reference_pairs: number;
             /** Repository */
             repository: string;
+            /**
+             * Review Mode
+             * @default single
+             * @enum {string}
+             */
+            review_mode: "single" | "dual";
             /**
              * Split
              * @enum {string}
@@ -2546,6 +2562,12 @@ export interface components {
             kind: "normal" | "known_defect" | "cross_file";
             /** Name */
             name: string;
+            /**
+             * Review Mode
+             * @default single
+             * @enum {string}
+             */
+            review_mode: "single" | "dual";
             /** Review Run Ids */
             review_run_ids: string[];
             /**
@@ -2580,6 +2602,12 @@ export interface components {
             name: string;
             /** Repository */
             repository: string;
+            /**
+             * Review Mode
+             * @default single
+             * @enum {string}
+             */
+            review_mode: "single" | "dual";
             /** Revision */
             revision: number;
             /**
@@ -2616,6 +2644,8 @@ export interface components {
             end_line: number | null;
             /** Evidence */
             evidence: string;
+            /** Evidence Reason */
+            evidence_reason?: string | null;
             /** Evidence Status */
             evidence_status: string;
             /** File */
@@ -2655,10 +2685,20 @@ export interface components {
         EvaluationOverview: {
             /** Case Count */
             case_count: number;
+            /**
+             * Disputed Findings
+             * @default 0
+             */
+            disputed_findings: number;
             /** Estimated Cost Microusd */
             estimated_cost_microusd?: number | null;
             /** False Positive Findings */
             false_positive_findings: number;
+            /**
+             * Location Disagreements
+             * @default 0
+             */
+            location_disagreements: number;
             /** Missing Reference Cases */
             missing_reference_cases: number;
             /**
@@ -2668,6 +2708,17 @@ export interface components {
             model_duration_ms: number;
             /** Observation Count */
             observation_count: number;
+            /**
+             * Reference Disagreements
+             * @default 0
+             */
+            reference_disagreements: number;
+            /**
+             * Review Mode
+             * @default single
+             * @enum {string}
+             */
+            review_mode: "single" | "dual";
             /**
              * Review Source
              * @default 单人核对，以最近保存的判断为准
@@ -2827,6 +2878,13 @@ export interface components {
             plan_fingerprint: string;
             /** Planner Version */
             planner_version: string;
+            /**
+             * Profile Calls Consistent
+             * @default false
+             */
+            profile_calls_consistent: boolean;
+            /** Profile Fingerprint */
+            profile_fingerprint?: string | null;
             /** Pull Request Number */
             pull_request_number: number;
             /** Repository */
