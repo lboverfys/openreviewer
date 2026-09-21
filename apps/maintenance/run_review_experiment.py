@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
+from itertools import zip_longest
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,7 +21,11 @@ from domain.security import SafeError
 from persistence.database import Database
 from persistence.experiment_inputs import frozen_experiment_inputs
 from persistence.review_profiles import ReviewProfileRepository
-from services.agent_workflow import FixedAgentWorkflow, WorkflowExecution
+from services.agent_workflow import (
+    PARALLEL_AGENTS,
+    FixedAgentWorkflow,
+    WorkflowExecution,
+)
 from services.ai_settings import AiSecretCipher
 from services.experiment_accounting import ExperimentBudget
 from services.model_budget import model_budget_scope
@@ -46,10 +51,16 @@ VARIANTS = {
 def run_generalist(review_input, reviewer, references, versions):
     """同一逻辑模型审查完整输入，取消角色筛选与汇总调用，作为独立单路基线。"""
     started = datetime.now(UTC)
+    # 三路轮流提供依据，去重后使用与正常请求相同的 16 条上限；不纳入汇总专用知识。
+    selected = tuple(dict.fromkeys(
+        item for group in zip_longest(*(references.get(agent, ()) for agent in PARALLEL_AGENTS))
+        for item in group if item is not None
+    ))[:16]
     result = reviewer.review(review_input.model_copy(update={
         "review_agent": None,
-        "knowledge_references": tuple(dict.fromkeys(item for group in references.values() for item in group)),
-        "knowledge_versions": {key: value for group in versions.values() for key, value in group.items()},
+        "knowledge_references": selected,
+        "knowledge_versions": {key: value for group in versions.values() for key, value in group.items()
+            if any(reference.startswith(key + "#") for reference in selected)},
     }))
     succeeded = result.status is ModelCallStatus.SUCCEEDED
     return WorkflowExecution(

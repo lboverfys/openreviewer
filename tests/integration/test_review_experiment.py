@@ -99,6 +99,14 @@ def test_ablation_makes_fresh_calls_keeps_production_unchanged_and_has_no_human_
     )
     requests = []
 
+    # 真实方案可能跨角色产生超过单次上限的知识；测试必须走实际分批与协议验证。
+    reference_groups = {agent: tuple(f"{agent.value}-{number}.md#rule@v1: 已核对的测试规则"
+        for number in range(8)) for agent in (*PARALLEL_AGENTS, ReviewAgent.SUMMARY)}
+    version_groups = {agent: {f"{agent.value}-{number}.md": "v1" for number in range(8)}
+        for agent in reference_groups}
+    monkeypatch.setattr("apps.maintenance.run_review_experiment.references_for",
+        lambda *_args: (reference_groups, version_groups))
+
     def handler(request):
         requests.append(json.loads(request.content))
         return httpx.Response(
