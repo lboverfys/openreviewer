@@ -37,7 +37,8 @@ def test_queue_claim_capacity_and_repository_fairness(postgres_database, workers
         repo = repositories[0] if number < 28 else repositories[1 + (number - 28) % 3]
         item = service.submit(ReviewRequest(installation_id=10, repository_id=97 + workers,
             repository=repo, pull_request_number=number + 1,
-            head_sha=f"{workers * 100 + number:040x}"), f"capacity-{workers}-{number}")
+            head_sha=f"{workers * 100 + number:040x}"), f"capacity-{workers}-{number}",
+            actor=f"capacity-{workers}-member-{number // 10}")
         source[item.review_task_id] = repo
     queue = SqlAlchemyReviewTaskQueue(postgres_database.sessions)
     barrier, lock = Barrier(workers), Lock()
@@ -86,7 +87,7 @@ def test_queue_claim_capacity_and_repository_fairness(postgres_database, workers
     assert len(completed) == len(source)
     values = sorted(row[1] for row in completed.values())
     print(json.dumps({"scope": "queue_claim_with_simulated_20ms_handler", "workers": workers,
-        "tasks": len(source), "seconds": round(duration, 3), "tasks_per_second": round(len(source) / duration, 2),
+        "tasks": len(source), "requesting_members": 4, "seconds": round(duration, 3), "tasks_per_second": round(len(source) / duration, 2),
         "claim_p95_ms": round(values[math.ceil(len(values) * .95) - 1], 2),
         "polls": dict(attempts), "peak_repository_concurrency": dict(peaks),
         "max_queue_wait_ms": {repo: round(max(row[2] for row in completed.values() if row[0] == repo), 2) for repo in repositories},

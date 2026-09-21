@@ -32,6 +32,14 @@
   .settings-input-with-suffix [data-slot="input"] { padding-right: 56px; }
   .knowledge-document-list > button { align-items: flex-start; }
   .settings-tab-nav button { height: auto; min-height: 40px; text-align: left; justify-content: flex-start; }
+  .settings-provider-card, .settings-source-control > button, .settings-protocol-options > button,
+  .settings-preset-control > button, .evaluation-comparison-options > button {
+    height: auto; min-height: 64px; min-width: 0; white-space: normal; padding: 12px 16px;
+  }
+  .settings-source-control > button, .settings-protocol-options > button,
+  .settings-preset-control > button, .evaluation-comparison-options > button {
+    flex-direction: column; align-items: flex-start; text-align: left;
+  }
   .dash-search-box { min-width: 0; }
   .dash-search-box [data-slot="input"] { min-width: 0; padding-right: 36px; }
   .dash-search-box [data-slot="button"] { width: 24px; height: 24px; padding: 0; border: 0; box-shadow: none; }
