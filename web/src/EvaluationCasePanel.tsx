@@ -89,7 +89,7 @@ export default function EvaluationCasePanel({ dataset, caseId, user, canEdit, on
         </DetailDialog>}
       </>}
       <button type="button" onClick={() => setShowResults(false)}>返回继续核对</button>
-    </> : sample[variant] && <ObservationPanel key={caseId + ":" + variant} sample={sample} variant={variant} user={user} editable={editable} onError={onError} onChanged={updated} onComplete={() => setShowResults(true)} />}
+    </> : sample[variant] && <ObservationPanel key={caseId + ":" + variant} sample={sample} variant={variant} reviewMode={dataset.review_mode} user={user} editable={editable} onError={onError} onChanged={updated} onComplete={() => setShowResults(true)} />}
 
   </section>;
 }
@@ -143,8 +143,8 @@ function ReferenceEditor({ sample, onSaved, onError }: {
   </form>;
 }
 
-function ObservationPanel({ sample, variant, user, editable, onError, onChanged, onComplete }: {
-  sample: EvaluationCaseDetail; variant: EvaluationVariant; user: AuthUser; editable: boolean;
+function ObservationPanel({ sample, variant, reviewMode, user, editable, onError, onChanged, onComplete }: {
+  sample: EvaluationCaseDetail; variant: EvaluationVariant; reviewMode: EvaluationDataset["review_mode"]; user: AuthUser; editable: boolean;
   onError: (error: unknown) => void; onChanged: () => void; onComplete: () => void;
 }) {
   const slot = sample[variant]!;
@@ -199,12 +199,12 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged,
     {detail && !replacing && <>
       <div className="evaluation-observation-meta"><a href={"#review/" + detail.observation.source_run_id}>查看来源审查 →</a><span>{detail.observation.model_label}</span><span>配置版本 {detail.source.configuration_revision ?? "历史未记录"}</span><WorkspaceBadge>{detail.observation.finding_count} 条问题</WorkspaceBadge></div>
       <p className="evaluation-hint">这里展示来源运行当时的模型与结果，修改当前模型配置不会改写这份快照；复核也不会自动再发起模型调用。</p>
-      <div className="evaluation-reviewers">{detail.ballots.length ? detail.ballots.map(item => <span key={item.reviewer}>{item.reviewer}：{item.decision_count}/{detail.observation.finding_count} 条 · {item.submitted_at ? "已提交" : "草稿"}</span>) : <span>由当前账号核对即可完成，无需第二个账号。</span>}</div>
+      <div className="evaluation-reviewers">{detail.ballots.length ? detail.ballots.map(item => <span key={item.reviewer}>{item.reviewer}：{item.decision_count}/{detail.observation.finding_count} 条 · {item.submitted_at ? "已提交" : "草稿"}</span>) : <span>{reviewMode === "dual" ? "请独立核对全部问题后提交；双人验收需要两位不同成员的提交。" : "由当前账号核对即可完成，无需第二个账号。"}</span>}</div>
       <nav className="evaluation-tabs" aria-label="复核内容">{([["findings","核对问题"],["changes","变更代码"],["versions","模型与版本"]] as const).map(([key,label]) => <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</nav>
       {tab === "findings" && <>
         {findings.data?.items.map(item => <FindingEditor key={item.finding.id} item={item} user={user} references={sample.reference_defects ?? []} disabled={busy || !editable}
           onSave={decision => void action(() => api.saveEvaluationFindingReview(sample.id,variant,item.finding.id,detail.observation.revision,decision))} />)}
-        {findings.data?.items.length === 0 && !findings.loading && <WorkspaceEmpty title="本次审查没有输出问题" description="你可以直接完成核对；未提供可靠的已知缺陷清单时，不计算找回率。" />}
+        {findings.data?.items.length === 0 && !findings.loading && <WorkspaceEmpty title="本次审查没有输出问题" description={reviewMode === "dual" ? "两位成员仍需分别提交独立复核；未提供可靠的已知缺陷清单时，不计算找回率。" : "你可以直接完成核对；未提供可靠的已知缺陷清单时，不计算找回率。"} />}
       </>}
       {tab === "changes" && <>
         <p className="evaluation-hint">这里保存收录时的 PR 审查变更。未改动的关联文件可到 GitHub 的同一提交核对。</p>
@@ -228,8 +228,8 @@ function ObservationPanel({ sample, variant, user, editable, onError, onChanged,
           {detail.source.retrieval.map((item,index) => <p key={item.index_id + ":" + index}>{item.agent} · {item.strategy || "策略未记录"} · 索引 {item.index_id.slice(0,12)} · 提交 {shortSha(item.index_head_sha)} · {item.embedding_model}</p>)}
         </DetailDialog><small>快照校验值：{detail.observation.snapshot_sha256}</small>
       </div>}
-      {editable && <div className="evaluation-actions"><button type="button" className="evaluation-primary" disabled={busy} onClick={() => void action(() => api.submitEvaluationReview(sample.id,variant,detail.observation.revision), true)}>{busy ? "正在保存…" : "完成核对并查看统计"}</button>
-        <span className="evaluation-hint">可以保留暂不确定或未核对的问题；它们不会算作有效问题。</span></div>}
+      {editable && <div className="evaluation-actions"><button type="button" className="evaluation-primary" disabled={busy} onClick={() => void action(() => api.submitEvaluationReview(sample.id,variant,detail.observation.revision), true)}>{busy ? "正在保存…" : reviewMode === "dual" ? "提交我的独立复核并查看统计" : "完成核对并查看统计"}</button>
+        <span className="evaluation-hint">{reviewMode === "dual" ? "提交前必须核对全部问题；无法确认时可选择暂不确定，它们不会算作有效问题。" : "可以保留暂不确定或未核对的问题；它们不会算作有效问题。"}</span></div>}
     </>}
       {detail && replacing && editable && <div className="evaluation-replace"><p className="ws-note">更换运行会清空该组已有复核，参考标签保留。</p>
         <EvaluationSourcePicker datasetId={sample.dataset_id} caseId={sample.id} single selected={replacement} onSelected={setReplacement} onError={onError} disabled={busy}

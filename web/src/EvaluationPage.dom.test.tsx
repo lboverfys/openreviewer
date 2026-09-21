@@ -10,7 +10,7 @@ import type { AuthUser, EvaluationDataset } from "./types";
 
 const now="2026-09-12T10:00:00Z";
 const user={username:"alice",role:"adjudicator",permissions:["reviews:view","findings:adjudicate"],expires_at:now} as AuthUser;
-const dataset={id:"set-1",name:"权限评测",repository:"example/repo",case_count:1,revision:2,created_by:"alice",created_at:now,updated_at:now,archived_at:null} as EvaluationDataset;
+const dataset={id:"set-1",name:"权限评测",repository:"example/repo",review_mode:"single",case_count:1,revision:2,created_by:"alice",created_at:now,updated_at:now,archived_at:null} as EvaluationDataset;
 const source={review_run_id:"run-1",repository:"example/repo",pull_request_number:1,head_sha:"a".repeat(40),title:"权限修复",finding_count:1,model:"test-model",completed_at:now,created_at:now};
 let requests: Array<{path:string;method:string;body:unknown;headers:Headers}>;
 beforeEach(()=>{
@@ -111,4 +111,26 @@ it("问题复核发生版本冲突时保留输入",async()=>{
   fireEvent.click(screen.getByRole("button",{name:"保存补充判断"}));
   await waitFor(()=>expect(error).toHaveBeenCalled());
   expect(screen.getByLabelText("核对说明")).toHaveValue("输入需要保留");
+});
+
+it.each([0,1])("双人验收在 %i 条问题且尚无复核时仍要求两位成员独立提交",async(findingCount)=>{
+  const observation={id:"obs-dual",variant:"baseline",source_run_id:"run-1",snapshot_sha256:"c".repeat(64),
+    model_label:"test-model",finding_count:findingCount,assessment_status:"pending",revision:1};
+  const sample={id:"case-dual",dataset_id:"set-1",repository:"example/repo",pull_request_number:1,head_sha:"a".repeat(40),
+    title:"权限修复",split:"validation",kind:"normal",reference_status:"pending",revision:1,
+    baseline:observation,candidate:null,reference_defects:null,reference_reviews:[]};
+  vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=String(input);requests.push({path,method:init?.method??"GET",body:null,headers:new Headers(init?.headers)});
+    if(path.includes("/findings"))return Response.json({items:findingCount?[{finding:{id:"f1",title:"缺少归属检查",severity:"high",category:"authorization"},reviews:[]}]:[]});
+    if(path.includes("/observations/"))return Response.json({observation,ballots:[],source:{limitations:[],models:[],rule_versions:[],retrieval:[]}});
+    return Response.json(sample);
+  }));
+  render(<EvaluationCasePanel dataset={{...dataset,review_mode:"dual"}} caseId="case-dual" user={user} canEdit onError={vi.fn()} onChanged={vi.fn()}/>);
+  await screen.findByRole("button",{name:"提交我的独立复核并查看统计"});
+  expect(screen.getByText("请独立核对全部问题后提交；双人验收需要两位不同成员的提交。")).toBeInTheDocument();
+  expect(screen.getByText("提交前必须核对全部问题；无法确认时可选择暂不确定，它们不会算作有效问题。")).toBeInTheDocument();
+  expect(screen.queryByText("由当前账号核对即可完成，无需第二个账号。")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button",{name:"完成核对并查看统计"})).not.toBeInTheDocument();
+  if(!findingCount) expect(await screen.findByText("两位成员仍需分别提交独立复核；未提供可靠的已知缺陷清单时，不计算找回率。")).toBeInTheDocument();
+  expect(requests.every(item=>item.method==="GET")).toBe(true);
 });
