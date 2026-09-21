@@ -34,8 +34,8 @@ def seed_evaluation_runs(database, specs):
         head = spec.get("head_sha", "a" * 40)
         pr = spec["pr"]
         version_key = f"{repo_id}:{pr}:{head}"
-        created = now + timedelta(seconds=number)
-        completed = created + timedelta(milliseconds=spec.get("turnaround_ms", 3000))
+        created = spec.get("created_at", now + timedelta(seconds=number))
+        completed = spec.get("completed_at", created + timedelta(milliseconds=spec.get("turnaround_ms", 3000)))
         if version_key not in versions:
             versions[version_key] = {
                 "id": str(uuid5(NAMESPACE_URL, "evaluation-test:" + version_key)), "review_version_key": version_key,
@@ -83,7 +83,7 @@ def seed_evaluation_runs(database, specs):
         })
         batches.append({
             "id": str(uuid4()), "review_plan_id": plan_id, "agent": "logic",
-            "batch_number": 1, "batch_count": 1, "unit_keys": [unit_key],
+            "batch_number": 1, "batch_count": spec.get("batch_count", 1), "unit_keys": [unit_key],
             "estimated_input_tokens": 110, "status": "succeeded", "attempt_count": 1,
             "duration_ms": duration, "response_status": 200,
             "result": {
@@ -109,6 +109,8 @@ def seed_evaluation_runs(database, specs):
                 "title": title, "evidence": spec.get("evidence", "接口没有校验资源归属"),
                 "impact": "可能读取其他用户的数据", "suggestion": "增加资源归属校验",
                 "confidence": 0.9, "verification_status": "verified",
+                "evidence_verification_status":spec.get("evidence_status","unverified"),
+                "evidence_verification_reason":spec.get("evidence_reason","not_checked"),
                 "adjudication_status": "valid", "lifecycle_status": "new",
                 "created_at": created, "updated_at": completed,
             })

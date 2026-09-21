@@ -90,6 +90,12 @@ jobs:
           mkdir -p reports/performance
           python -m pytest tests/performance/platform_scale.py -q -s -W error | tee reports/performance/ledger.log
 
+      - name: Verify diagnostics with multiple repositories and related facts
+        shell: bash
+        run: |
+          mkdir -p reports/performance
+          python -m pytest tests/performance/diagnostics_scale.py -q -s -W error | tee reports/performance/diagnostics.log
+
       - name: Upload isolated query plans
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
