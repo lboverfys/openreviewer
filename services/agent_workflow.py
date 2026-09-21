@@ -83,6 +83,7 @@ class WorkflowExecution:
     summary_status: str = "not_executed"
     failed_agents: tuple[ReviewAgent, ...] = ()
     failed_batches: tuple[tuple[str, int], ...] = ()
+    excluded_agents: tuple[ReviewAgent, ...] = ()
 
 
 class _PartialAgentReviewError(SafeApplicationError):
@@ -199,7 +200,10 @@ class FixedAgentWorkflow:
         # 汇总失败后的人工重试会复用前三路结果，但必须再次进入汇总模型；
         # 该标记只由持久化租约投影，普通运行仍按候选去重结果决定是否调用。
         force_summary: bool = False,
+        excluded_agents: frozenset[ReviewAgent] = frozenset(),
     ) -> WorkflowExecution:
+        if excluded_agents and (not excluded_agents.issubset(PARALLEL_AGENTS) or len(excluded_agents) > 1):
+            raise ValueError("消融实验每次只允许排除一个审查角色，不能排除汇总")
         started_at = self._clock()
         refs = references or {}
         versions = reference_versions or {}
@@ -212,6 +216,8 @@ class FixedAgentWorkflow:
         def invoke(agent: ReviewAgent) -> AgentExecution:
             if lease_lost.is_set():
                 raise TaskLeaseLostError()
+            if agent in excluded_agents:
+                return AgentExecution(agent, "excluded", None, 0, "本轮消融实验明确排除")
             agent_input = scope_model_review_input(review_input, agent)
             # 有 Unit 但没有命中该 Agent 职责时，不发送空模型请求。这个状态
             # 是“不适用”，不是配置缺失，也不应出现在失败重试列表中。
@@ -370,6 +376,8 @@ class FixedAgentWorkflow:
             if not failed and not disabled
             else "至少一个 Agent 未启用或失败，结果覆盖不完整"
         )
+        if excluded_agents and not failed and not disabled:
+            summary = f"选定的 {len(PARALLEL_AGENTS)-len(excluded_agents)} 路 Agent 完成，汇总 {len(findings)} 条候选问题"
         if (not failed and not disabled or partial_result) and on_aggregating is not None:
             # 回调位于三路结果已确定、汇总模型尚未调用的边界。持久化实现可在
             # 这里用短事务暴露 DAG 状态，异常则直接阻止后续外部模型请求。
@@ -508,6 +516,7 @@ class FixedAgentWorkflow:
             summary=summary,
             started_at=started_at,
             completed_at=completed_at,
+            excluded_agents=tuple(agent for agent in PARALLEL_AGENTS if agent in excluded_agents),
             summary_execution=summary_execution,
             coverage_status=coverage_status,
             partial_result=partial_result,
