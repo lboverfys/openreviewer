@@ -36,10 +36,12 @@ it("候选编辑、固定提交试跑、收录候选和未复核报告使用同�
   vi.spyOn(window,"confirm").mockReturnValue(true);
   const open=vi.fn();
   const page=render(<ReviewDetailPage user={user} reviewRunId={details.review_run_id} onOpenReview={open} onBack={vi.fn()} onSignedOut={vi.fn()}/>);
+  fireEvent.click(await screen.findByRole("button", {name:"复查此版本"}));
+  expect(action).not.toHaveBeenCalled();
   await screen.findByRole("option",{name:/候选方案/});
   fireEvent.change(screen.getByLabelText("本次试跑方案"),{target:{value:"candidate"}});
   fireEvent.click(screen.getByRole("checkbox",{name:/留存本次评测输出/}));
-  fireEvent.click(screen.getByRole("button",{name:"复查此版本"}));
+  fireEvent.click(screen.getByRole("button",{name:"确认并开始复查"}));
   await waitFor(()=>expect(open).toHaveBeenCalledWith("trial"));
   expect(action.mock.calls[0][0]).toBe(details.review_run_id);
   expect(action.mock.calls[0][4]).toMatchObject({headSha:details.head_sha,reviewProfileId:"candidate",captureModelOutputs:true});
@@ -61,7 +63,7 @@ it("候选编辑、固定提交试跑、收录候选和未复核报告使用同�
   render(<EvaluationReportPanel datasetId="set" onError={onError}/>);
   await screen.findByText("请完成两份审查的核对");
   expect(screen.queryByText("100.0%")).not.toBeInTheDocument();
-  expect(screen.getAllByText("未知")).toHaveLength(2);
+  expect(screen.getAllByText("未知")).toHaveLength(4);
   expect(activate).not.toHaveBeenCalled();
   expect(action).toHaveBeenCalledOnce();
   expect(onError).not.toHaveBeenCalled();

@@ -1,3 +1,6 @@
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
 import { DetailDialog } from "./Feedback";
 import { useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
@@ -34,26 +37,26 @@ export default function EvaluationImportPanel({ dataset, sample, initialRunId, o
   }
   const opposite = sample?.[variant === "baseline" ? "candidate" : "baseline"]?.source_run_id;
   return <section className="evaluation-card evaluation-editor" aria-label="选择要核对的审查">
-    <div className="ws-editor-heading"><div><h2>{dataset ? "添加到 " + dataset.name : "开始一次效果评测"}</h2><p>选择一份已完成的审查，下一步直接判断问题。</p></div><div className="ws-actions"><WorkspaceBadge tone="accent">已选 {selected.length} 条</WorkspaceBadge><button type="button" disabled={busy} onClick={onCancel}>取消添加</button></div></div>
+    <div className="ws-editor-heading"><div><h2>{dataset ? "添加到 " + dataset.name : "开始一次效果评测"}</h2><p>选择一份已完成的审查，下一步直接判断问题。</p></div><div className="ws-actions"><WorkspaceBadge tone="accent">已选 {selected.length} 条</WorkspaceBadge><Button variant="outline" type="button" disabled={busy} onClick={onCancel}>取消添加</Button></div></div>
     <form onSubmit={submit}>
       <fieldset disabled={busy}>
         <WorkspaceSection title="选择审查结果" description="一份结果即可开始核对；第二份结果仅用于可选比较。"><div className="evaluation-form-grid">
-          {!dataset && <label>评测名称（可不填）<input maxLength={120} value={name} placeholder="例如：NiuMa 审查质量核对" onChange={event => setName(event.target.value)} /></label>}
-          {!dataset && <label>核对方式<select aria-label="核对方式" value={reviewMode} onChange={event => setReviewMode(event.target.value as "single" | "dual")}>
-            <option value="single">单人日常核对</option><option value="dual">双人独立验收</option></select><small>创建后固定。双人验收需要两位不同成员提交；首次提交前隐藏对方判断。</small></label>}
+          {!dataset && <label>评测名称（可不填）<Input maxLength={120} value={name} placeholder="例如：NiuMa 审查质量核对" onChange={event => setName(event.target.value)} /></label>}
+          {!dataset && <label>核对方式<NativeSelect aria-label="核对方式" value={reviewMode} onChange={event => setReviewMode(event.target.value as "single" | "dual")}>
+            <option value="single">单人日常核对</option><option value="dual">双人独立验收</option></NativeSelect><small>创建后固定。双人验收需要两位不同成员提交；首次提交前隐藏对方判断。</small></label>}
 
         </div></WorkspaceSection>
         <DetailDialog className="ws-disclosure"><summary>样本分类（可选）</summary><div className="ws-disclosure-body evaluation-form-grid">
-          <label>样本用途<select disabled={Boolean(sample)} value={split} onChange={event => setSplit(event.target.value as EvaluationSplit)}>
-            <option value="validation">正式验收</option><option value="tuning">调试配置</option></select><small>默认用于验收。调试过配置的样本应单独保留，避免评测结果失真。</small></label>
-          <label>变更类型<select disabled={Boolean(sample)} value={kind} onChange={event => setKind(event.target.value as EvaluationImport["kind"])}>
-            <option value="normal">普通变更</option><option value="known_defect">包含已知缺陷</option><option value="cross_file">涉及跨文件问题</option></select></label>
+          <label>样本用途<NativeSelect disabled={Boolean(sample)} value={split} onChange={event => setSplit(event.target.value as EvaluationSplit)}>
+            <option value="validation">正式验收</option><option value="tuning">调试配置</option></NativeSelect><small>默认用于验收。调试过配置的样本应单独保留，避免评测结果失真。</small></label>
+          <label>变更类型<NativeSelect disabled={Boolean(sample)} value={kind} onChange={event => setKind(event.target.value as EvaluationImport["kind"])}>
+            <option value="normal">普通变更</option><option value="known_defect">包含已知缺陷</option><option value="cross_file">涉及跨文件问题</option></NativeSelect></label>
         </div></DetailDialog>
         {initialRunId && <p className="evaluation-hint">已预选来自任务详情的运行，可在下方调整。</p>}
         <div className="evaluation-source-step"><EvaluationSourcePicker datasetId={dataset?.id} caseId={sample?.id} selected={selected} onSelected={setSelected}
           onError={onError} disabled={busy} excludeRunId={opposite} single /></div>
-        <div className="ws-form-actions is-sticky"><button className="evaluation-primary" type="submit" disabled={!selected.length}>{busy ? "正在准备…" : sample ? "添加这份审查进行比较" : "开始核对问题"}</button>
-          <button type="button" onClick={onCancel}>取消</button></div>
+        <div className="ws-form-actions is-sticky"><Button variant="default" className="evaluation-primary" type="submit" disabled={!selected.length}>{busy ? "正在准备…" : sample ? "添加这份审查进行比较" : "开始核对问题"}</Button>
+          <Button variant="outline" type="button" onClick={onCancel}>取消</Button></div>
       </fieldset>
     </form>
   </section>;

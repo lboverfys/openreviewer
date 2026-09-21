@@ -1,3 +1,6 @@
+import { Button } from "./components/ui/button";
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "./components/ui/table";
+import { NativeSelect } from "./components/ui/native-select";
 import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
@@ -11,7 +14,6 @@ import type { AuthUser, EvaluationDataset, EvaluationSplit } from "./types";
 import { useCursorPage } from "./useCursorPage";
 import { formatDate, shortSha } from "./utils";
 import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty, WorkspaceHeader } from "./Workspace";
-import "./styles/evaluation.css";
 
 export default function EvaluationPage({ user, datasetId, caseId, reviewRunId, onSignedOut }: {
   user: AuthUser; datasetId?: string; caseId?: string; reviewRunId?: string;
@@ -55,12 +57,12 @@ function DatasetList({ canEdit,reviewRunId,onError }: {canEdit:boolean;reviewRun
   return <>
     <section className="evaluation-card">
       <div className="evaluation-toolbar"><div><h2>评测记录</h2><p>从一份审查结果开始，按需要再添加结果进行比较。</p></div><div className="ws-actions">
-        <button type="button" disabled={page.loading} onClick={()=>void page.refresh()}>刷新列表</button>
-        {canEdit && <button type="button" className="evaluation-primary" onClick={()=>setCreating(true)}>开始新评测</button>}</div></div>
-      <nav className="evaluation-tabs" aria-label="评测记录范围"><button type="button" aria-pressed={!archived} onClick={()=>setArchived(false)}>评测列表</button><button type="button" aria-pressed={archived} onClick={()=>setArchived(true)}>已收起记录</button></nav>
-      <div className="evaluation-table-wrap"><table><thead><tr><th>名称 / 仓库</th><th>审查数量</th><th>创建人</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody>{page.data?.items.map(item=><tr key={item.id}><td><strong>{item.name}</strong><small>{item.repository}</small></td><td className="ws-numeric">{item.case_count}</td><td>{item.created_by}</td><td><WorkspaceBadge tone={item.archived_at ? "neutral" : "accent"}>{item.archived_at?"已收起":"可继续核对"}</WorkspaceBadge></td>
-          <td><button type="button" onClick={()=>open(item.id)}>查看评测</button>{item.archived_at && canEdit && <button type="button" disabled={restoring!==null} onClick={()=>void restore(item)}>{restoring===item.id?"恢复中…":"恢复评测"}</button>}</td></tr>)}</tbody></table></div>
+        <Button variant="outline" type="button" disabled={page.loading} onClick={()=>void page.refresh()}>刷新列表</Button>
+        {canEdit && <Button variant="default" type="button" className="evaluation-primary" onClick={()=>setCreating(true)}>开始新评测</Button>}</div></div>
+      <nav className="evaluation-tabs" aria-label="评测记录范围"><Button variant="outline" type="button" aria-pressed={!archived} onClick={()=>setArchived(false)}>评测列表</Button><Button variant="outline" type="button" aria-pressed={archived} onClick={()=>setArchived(true)}>已收起记录</Button></nav>
+      <div className="evaluation-table-wrap"><Table><TableHeader><TableRow><TableHead>名称 / 仓库</TableHead><TableHead>审查数量</TableHead><TableHead>创建人</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
+        <TableBody>{page.data?.items.map(item=><TableRow key={item.id}><TableCell><strong>{item.name}</strong><small>{item.repository}</small></TableCell><TableCell className="ws-numeric">{item.case_count}</TableCell><TableCell>{item.created_by}</TableCell><TableCell><WorkspaceBadge tone={item.archived_at ? "neutral" : "accent"}>{item.archived_at?"已收起":"可继续核对"}</WorkspaceBadge></TableCell>
+          <TableCell><Button variant="outline" type="button" onClick={()=>open(item.id)}>查看评测</Button>{item.archived_at && canEdit && <Button variant="outline" type="button" disabled={restoring!==null} onClick={()=>void restore(item)}>{restoring===item.id?"恢复中…":"恢复评测"}</Button>}</TableCell></TableRow>)}</TableBody></Table></div>
       {!page.loading && page.data?.items.length===0 && <WorkspaceEmpty title={archived?"没有已收起的评测":"尚无评测记录"} description={archived?"收起的评测会保留在这里，可随时恢复。":"从已完成的审查中选择样本，先核对一组结果就能开始。"} />}
       <Pagination page={page.page} count={page.data?.items.length??0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next} label="评测集分页"/>
     </section>
@@ -97,30 +99,30 @@ function DatasetWorkspace({ datasetId,caseId,user,canEdit,reviewRunId,onError }:
   if (caseId && tab === "samples") return <><WorkspaceBack onClick={() => { window.location.hash = "evaluations"; }}>返回评测记录</WorkspaceBack><EvaluationCasePanel key={caseId} dataset={dataset} caseId={caseId} user={user} canEdit={canEdit} onError={onError} onChanged={changed}/></>;
   return <>
     <section className="evaluation-card"><div className="evaluation-toolbar"><div><h2>{dataset.name}</h2><p>{dataset.repository} · {dataset.case_count} 个 PR · {dataset.archived_at?"已收起，可恢复":"可继续核对"}</p></div>
-      {canEdit && <button type="button" disabled={busy} onClick={()=>void archive()}>{dataset.archived_at?"恢复评测":"收起这条评测"}</button>}</div>
+      {canEdit && <Button variant="outline" type="button" disabled={busy} onClick={()=>void archive()}>{dataset.archived_at?"恢复评测":"收起这条评测"}</Button>}</div>
       <p className="evaluation-hint">收起只会移出常用列表，复核结果仍保留。返回评测列表可从“已收起记录”找回。</p>
-      <nav className="evaluation-tabs" aria-label="评测集内容">{([["samples","核对问题"],["report","评测结果"],["audits","变更记录"]] as const).map(([key,label])=><button type="button" key={key} aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}</nav>
+      <nav className="evaluation-tabs" aria-label="评测集内容">{([["samples","核对问题"],["report","评测结果"],["audits","变更记录"]] as const).map(([key,label])=><Button variant="outline" type="button" key={key} aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</Button>)}</nav>
     </section>
     {tab==="samples" && <EvaluationOverviewPanel datasetId={datasetId} version={refreshVersion} onError={onError}/>}
     {tab==="report" && <><EvaluationOverviewPanel datasetId={datasetId} version={refreshVersion} onError={onError}/><DetailDialog className="evaluation-card"><summary>比较两份结果（可选，仅同一提交）</summary><EvaluationReportPanel datasetId={datasetId} onError={onError}/></DetailDialog></>}
     {tab==="samples" && <>
       <section className="evaluation-card"><div className="evaluation-toolbar"><h3>待核对的审查</h3>
-        <label>筛选样本集<select value={split??"all"} onChange={event=>setSplit(event.target.value==="all"?undefined:event.target.value as EvaluationSplit)}><option value="all">全部</option><option value="tuning">调参集</option><option value="validation">验收集</option></select></label>
-        <button type="button" disabled={cases.loading} onClick={()=>void cases.refresh()}>刷新列表</button>
-        {canEdit && !dataset.archived_at && <button type="button" className="evaluation-primary" onClick={()=>setImporting(value=>!value)}>添加审查结果</button>}</div>
-        <div className="evaluation-table-wrap"><table><thead><tr><th>PR / 提交</th><th>样本用途</th><th>参考问题</th><th>第一份审查</th><th>第二份审查（可选）</th><th>操作</th></tr></thead>
-          <tbody>{cases.data?.items.map(item=><tr key={item.id}><td><strong>PR #{item.pull_request_number} · {item.title}</strong><small>{shortSha(item.head_sha)}</small></td><td>{item.split==="validation"?"验收":"调参"}</td>
-            <td>{item.reference_count==null?"未标注":item.reference_count+" 条"}<small>{item.reference_status==="confirmed"?"已确认":item.reference_status==="disputed"?"存在分歧":"待确认"}</small></td>
-            <td>{item.baseline?assessmentLabels[item.baseline.assessment_status]:"未添加"}</td><td>{item.candidate?assessmentLabels[item.candidate.assessment_status]:"未添加"}</td>
-            <td><button type="button" onClick={()=>{window.location.hash="evaluations/"+datasetId+"?case="+item.id;}}>核对问题</button></td></tr>)}</tbody></table></div>
+        <label>筛选样本集<NativeSelect value={split??"all"} onChange={event=>setSplit(event.target.value==="all"?undefined:event.target.value as EvaluationSplit)}><option value="all">全部</option><option value="tuning">调参集</option><option value="validation">验收集</option></NativeSelect></label>
+        <Button variant="outline" type="button" disabled={cases.loading} onClick={()=>void cases.refresh()}>刷新列表</Button>
+        {canEdit && !dataset.archived_at && <Button variant="default" type="button" className="evaluation-primary" onClick={()=>setImporting(value=>!value)}>添加审查结果</Button>}</div>
+        <div className="evaluation-table-wrap"><Table><TableHeader><TableRow><TableHead>PR / 提交</TableHead><TableHead>样本用途</TableHead><TableHead>参考问题</TableHead><TableHead>第一份审查</TableHead><TableHead>第二份审查（可选）</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
+          <TableBody>{cases.data?.items.map(item=><TableRow key={item.id}><TableCell><strong>PR #{item.pull_request_number} · {item.title}</strong><small>{shortSha(item.head_sha)}</small></TableCell><TableCell>{item.split==="validation"?"验收":"调参"}</TableCell>
+            <TableCell>{item.reference_count==null?"未标注":item.reference_count+" 条"}<small>{item.reference_status==="confirmed"?"已确认":item.reference_status==="disputed"?"存在分歧":"待确认"}</small></TableCell>
+            <TableCell>{item.baseline?assessmentLabels[item.baseline.assessment_status]:"未添加"}</TableCell><TableCell>{item.candidate?assessmentLabels[item.candidate.assessment_status]:"未添加"}</TableCell>
+            <TableCell><Button variant="outline" type="button" onClick={()=>{window.location.hash="evaluations/"+datasetId+"?case="+item.id;}}>核对问题</Button></TableCell></TableRow>)}</TableBody></Table></div>
         {!cases.loading && cases.data?.items.length===0 && <WorkspaceEmpty title="当前筛选下没有样本" description="可调整样本划分，或收录已完成的审查运行。" />}
         <Pagination page={cases.page} count={cases.data?.items.length??0} hasNext={Boolean(cases.data?.next_cursor)} busy={cases.loading} onPrevious={cases.previous} onNext={cases.next} label="评测样本分页"/>
       </section>
     </>}
-    {tab==="audits" && <section className="evaluation-card"><h3>变更记录</h3><div className="evaluation-table-wrap"><table>
-      <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>详情</th></tr></thead><tbody>{audits.data?.items.map(item=><tr key={item.id}>
-        <td>{formatDate(item.occurred_at)}</td><td>{String(item.payload.actor??"")}</td><td>{auditLabel(item.event_type)}</td><td><DetailDialog><summary>查看详情</summary><pre>{JSON.stringify(item.payload,null,2)}</pre></DetailDialog></td>
-      </tr>)}</tbody></table></div><Pagination page={audits.page} count={audits.data?.items.length??0} hasNext={Boolean(audits.data?.next_cursor)} busy={audits.loading} onPrevious={audits.previous} onNext={audits.next} label="评测审计分页"/></section>}
+    {tab==="audits" && <section className="evaluation-card"><h3>变更记录</h3><div className="evaluation-table-wrap"><Table>
+      <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>操作人</TableHead><TableHead>操作</TableHead><TableHead>详情</TableHead></TableRow></TableHeader><TableBody>{audits.data?.items.map(item=><TableRow key={item.id}>
+        <TableCell>{formatDate(item.occurred_at)}</TableCell><TableCell>{String(item.payload.actor??"")}</TableCell><TableCell>{auditLabel(item.event_type)}</TableCell><TableCell><DetailDialog><summary>查看详情</summary><pre>{JSON.stringify(item.payload,null,2)}</pre></DetailDialog></TableCell>
+      </TableRow>)}</TableBody></Table></div><Pagination page={audits.page} count={audits.data?.items.length??0} hasNext={Boolean(audits.data?.next_cursor)} busy={audits.loading} onPrevious={audits.previous} onNext={audits.next} label="评测审计分页"/></section>}
   </>;
 }
 

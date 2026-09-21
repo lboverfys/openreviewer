@@ -68,11 +68,16 @@ class EvaluationFinding(EvaluationContract):
     context_references: tuple[str, ...] = ()
 
 
+FAILURE_REASONS = ("context_missing", "reasoning_error", "evidence_mismatch", "location_error", "redundant_report", "other")
+FailureReason = Literal["context_missing", "reasoning_error", "evidence_mismatch", "location_error", "redundant_report", "other"]
+
+
 class EvaluationDecision(EvaluationContract):
     verdict: FindingEvaluationVerdict | Literal["uncertain"]
     location_correct: bool | None = None
     reference_key: str | None = Field(default=None, max_length=80)
     note: str = Field(default="", max_length=1000)
+    failure_reason: FailureReason | None = None
 
     @field_validator("note")
     @classmethod
@@ -371,6 +376,13 @@ class EvaluationImportResult(EvaluationContract):
 
 
 class EvaluationScore(EvaluationContract):
+    clean_pr_count: int = 0
+    false_alarm_pr_count: int = 0
+    clean_pr_false_alarm_rate: float | None = None
+    priced_reference_pairs: int = 0
+    cost_per_confirmed_defect_usd: float | None = None
+    failure_reasons: dict[str, int] = Field(default_factory=dict)
+    failure_reason_disagreements: int = 0
     sample_count: int
     finding_count: int
     valid_count: int
@@ -443,6 +455,8 @@ def assessment_metrics(
         "reference_true_positive_count": 0, "reference_unexpected_valid_count": 0,
         "reference_disagreement_count": 0, "location_disagreement_count": 0,
         "uncertain_count": 0,
+        "failure_reason_disagreements": 0,
+        **{f"failure_{reason}": 0 for reason in FAILURE_REASONS},
     }
     if not ballots:
         return "pending", counts
@@ -468,6 +482,10 @@ def assessment_metrics(
             continue
         verdicts[str(left.model_dump(mode="json")["verdict"])] += 1
         counts["adjudicated_count"] += 1
+        if left.failure_reason != right.failure_reason:
+            counts["failure_reason_disagreements"] += 1
+        elif left.failure_reason is not None:
+            counts[f"failure_{left.failure_reason}"] += 1
         if left.location_correct != right.location_correct:
             counts["location_disagreement_count"] += 1
         elif left.location_correct is not None:

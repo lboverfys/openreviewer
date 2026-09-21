@@ -1,3 +1,6 @@
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { Textarea } from "./components/ui/textarea";
 import { DetailDialog, Notice } from "./Feedback";
 import { ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
@@ -350,28 +353,28 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
           </div>
           <nav className="related-actions"><a href="#retrieval">搜索代码</a></nav>
         </header>
-        {message && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}{lastRemoved && messageKind === "success" && <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销删除</button>}</Notice>}
+        {message && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}{lastRemoved && messageKind === "success" && <Button variant="outline" type="button" disabled={Boolean(busy) || dirty} onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销删除</Button>}</Notice>}
         <div className="knowledge-workspace">
           <aside className="knowledge-document-pane" aria-label="知识文档列表">
             <div className="knowledge-pane-heading"><strong>规则文档</strong><span>{library?.enabled_count ?? 0} 份使用中</span></div>
             <div className="knowledge-list-tools">
               <div className="knowledge-view-tabs" role="tablist" aria-label="文档范围">
-                <button type="button" role="tab" aria-selected={!archivedView} disabled={Boolean(busy)}
-                  onClick={() => changeView(false)}>文档列表</button>
-                <button type="button" role="tab" aria-selected={archivedView} disabled={Boolean(busy)}
-                  onClick={() => changeView(true)}>回收站</button>
+                <Button variant="outline" type="button" role="tab" aria-selected={!archivedView} disabled={Boolean(busy)}
+                  onClick={() => changeView(false)}>文档列表</Button>
+                <Button variant="outline" type="button" role="tab" aria-selected={archivedView} disabled={Boolean(busy)}
+                  onClick={() => changeView(true)}>回收站</Button>
               </div>
-              <input aria-label="搜索文档" value={listQuery} onChange={event => setListQuery(event.target.value)} placeholder="搜索名称或正文" />
+              <Input aria-label="搜索文档" value={listQuery} onChange={event => setListQuery(event.target.value)} placeholder="搜索名称或正文" />
               {archivedView && <p>删除的文档保留在这里，可以恢复或彻底删除。</p>}
             </div>
             <div className="knowledge-document-list">
-              {visibleItems.map(item => <button key={item.id} type="button"
+              {visibleItems.map(item => <Button variant="outline" key={item.id} type="button"
                 className={document?.id === item.id ? "is-selected" : ""}
                 disabled={Boolean(busy) && busy !== "open"}
                 onClick={() => { if (allowLeavingDraft()) void openDocument(item.id); }}>
                 <span><strong>{item.title}</strong><small>{item.source}</small></span>
                 <i>{item.archived ? "已移出" : item.enabled ? "使用中" : "已暂停"}</i>
-              </button>)}
+              </Button>)}
               {!busy && visibleItems.length === 0 && <p className="knowledge-list-empty">
                 {archivedView ? "没有已移出的文档。" : "没有符合条件的文档。"}
               </p>}
@@ -381,9 +384,9 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
               onPrevious={() => setOffset(value => Math.max(0, value - PAGE_SIZE))}
               onNext={() => setOffset(value => value + PAGE_SIZE)} label="知识文档分页" />
             <div className="knowledge-list-actions">
-              <button type="button" disabled={Boolean(busy)} onClick={startNewDocument}>新建文档</button>
-              <button type="button" disabled={Boolean(busy)} onClick={() => uploadRef.current?.click()}>导入 .md 文件</button>
-              <input ref={uploadRef} type="file" accept=".md,text/markdown,text/plain" hidden onChange={event => void uploadMarkdown(event)} />
+              <Button variant="outline" type="button" disabled={Boolean(busy)} onClick={startNewDocument}>新建文档</Button>
+              <Button variant="outline" type="button" disabled={Boolean(busy)} onClick={() => uploadRef.current?.click()}>导入 .md 文件</Button>
+              <Input ref={uploadRef} type="file" accept=".md,text/markdown,text/plain" hidden onChange={event => void uploadMarkdown(event)} />
             </div>
 
           </aside>
@@ -393,35 +396,35 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
               <div className="knowledge-document-heading">
                 <div><h2>{creating ? "新建规则文档" : document?.title}</h2>
                   <small>{creating ? "写好后保存即可使用。" : document?.source + " · 正文第 " + document?.current_version + " 版"}</small></div>
-                {document && !document.archived && !editing && <button type="button" onClick={() => setEditing(true)} disabled={Boolean(busy)}>编辑文档</button>}
+                {document && !document.archived && !editing && <Button variant="outline" type="button" onClick={() => setEditing(true)} disabled={Boolean(busy)}>编辑文档</Button>}
               </div>
               {document && <section className={"knowledge-use-status" + (document.archived ? " is-removed" : "")} aria-label="文档使用状态">
                 <div><strong>{document.archived ? "已删除到回收站" : document.enabled ? "AI 可以使用这份规则" : "已暂停使用"}</strong>
                   <p>{document.archived ? "正文和历史版本都在，恢复后即可重新使用。"
                     : document.enabled ? "暂停后仍留在列表，点击按钮直接保存，无需再点保存。"
                     : "文档仍保留。开启后，AI 才能从当前知识库检索这份规则。"}</p></div>
-                {document.archived ? <button type="button" className="knowledge-primary-btn" disabled={Boolean(busy)}
-                  onClick={() => void restoreDocument(document)}>恢复并使用</button>
-                  : <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void toggleEnabled()}>
-                    {busy === "enable" ? "正在保存…" : document.enabled ? "暂停使用" : "开启使用"}</button>}
+                {document.archived ? <Button variant="default" type="button" className="knowledge-primary-btn" disabled={Boolean(busy)}
+                  onClick={() => void restoreDocument(document)}>恢复并使用</Button>
+                  : <Button variant="outline" type="button" disabled={Boolean(busy) || dirty} onClick={() => void toggleEnabled()}>
+                    {busy === "enable" ? "正在保存…" : document.enabled ? "暂停使用" : "开启使用"}</Button>}
               </section>}
-              {document && <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void deleteDocument()}>彻底删除文档</button>}
+              {document && <Button variant="outline" type="button" disabled={Boolean(busy) || dirty} onClick={() => void deleteDocument()}>彻底删除文档</Button>}
               {editing ? <>
                 <div className="knowledge-document-fields">
-                  <label>文件名<input value={draft.source} maxLength={200} disabled={Boolean(busy)}
+                  <label>文件名<Input value={draft.source} maxLength={200} disabled={Boolean(busy)}
                     onChange={event => setDraft(current => ({ ...current, source: event.target.value }))} /></label>
-                  <label>适用仓库<input value={draft.repository_scope} maxLength={255} placeholder="留空表示通用规则" disabled={Boolean(busy)}
+                  <label>适用仓库<Input value={draft.repository_scope} maxLength={255} placeholder="留空表示通用规则" disabled={Boolean(busy)}
                     onChange={event => setDraft(current => ({ ...current, repository_scope: event.target.value }))} /></label>
                   <small>文件名以 .md 结尾；仓库填写 owner/repository，留空表示所有仓库通用。</small>
                 </div>
                 <label className="knowledge-body-label">规则正文
-                  <textarea className="knowledge-editor" value={draft.content} spellCheck={false} disabled={Boolean(busy)}
+                  <Textarea className="knowledge-editor" value={draft.content} spellCheck={false} disabled={Boolean(busy)}
                     onChange={event => setDraft(current => ({ ...current, content: event.target.value }))} />
                 </label>
                 <div className="knowledge-editor-actions">
-                  <button type="button" className="knowledge-primary-btn" disabled={Boolean(busy) || (!creating && !dirty)}
-                    onClick={() => void saveDocument()}>{busy === "save" ? "正在保存…" : creating ? "保存并使用" : "保存修改"}</button>
-                  <button type="button" disabled={Boolean(busy)} onClick={() => selectDocument(document)}>取消编辑</button>
+                  <Button variant="default" type="button" className="knowledge-primary-btn" disabled={Boolean(busy) || (!creating && !dirty)}
+                    onClick={() => void saveDocument()}>{busy === "save" ? "正在保存…" : creating ? "保存并使用" : "保存修改"}</Button>
+                  <Button variant="outline" type="button" disabled={Boolean(busy)} onClick={() => selectDocument(document)}>取消编辑</Button>
                   {dirty && <span>有未保存的修改</span>}
                 </div>
               </> : <article className="knowledge-markdown-preview">
@@ -429,7 +432,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
               </article>}
               {document && !document.archived && <div className="knowledge-remove-action">
                 <p>暂时不用可“暂停使用”；不再常用可删除到回收站，之后仍能恢复。</p>
-                <button type="button" disabled={Boolean(busy) || dirty} onClick={() => void removeDocument()}>删除到回收站</button>
+                <Button variant="outline" type="button" disabled={Boolean(busy) || dirty} onClick={() => void removeDocument()}>删除到回收站</Button>
               </div>}
               <p className="knowledge-snapshot-note">这些操作影响当前知识库；已有审查保留原来的引用；删除后固定方案也不会在新任务中使用这份文档。</p>
               <div className="knowledge-extra-tools">
@@ -441,8 +444,8 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                       <div key={version.version}><span><strong>第 {version.version} 版</strong>
                         <small>{formatDate(version.created_at)} · {version.created_by}</small></span>
                         {version.version === document.current_version ? <b>当前正文</b>
-                          : <button type="button" disabled={Boolean(busy) || document.archived || dirty}
-                            onClick={() => void restoreVersion(version.version)}>采用这版内容</button>}
+                          : <Button variant="outline" type="button" disabled={Boolean(busy) || document.archived || dirty}
+                            onClick={() => void restoreVersion(version.version)}>采用这版内容</Button>}
                       </div>)}</div>
                     <Pagination page={history.page} count={(history.data?.items ?? document.versions).length}
                       hasNext={Boolean(history.data ? history.data.next_cursor : document.version_next_cursor)}
@@ -454,8 +457,8 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                   {searchOpen && <section className="knowledge-search-test">
                     <p>只查询已经保存并启用的规则，不发起模型审查。</p>
                     <form onSubmit={event => { event.preventDefault(); void testSearch(); }}>
-                      <input aria-label="规则关键词" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="例如：退款、权限、标签删除" />
-                      <button type="submit" disabled={!searchQuery.trim() || Boolean(busy)}>{busy === "search" ? "查找中…" : "查找规则"}</button>
+                      <Input aria-label="规则关键词" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="例如：退款、权限、标签删除" />
+                      <Button variant="outline" type="submit" disabled={!searchQuery.trim() || Boolean(busy)}>{busy === "search" ? "查找中…" : "查找规则"}</Button>
                     </form>
                     <div className="knowledge-citations">{citations.map((item, index) =>
                       <article key={item.source + ":" + item.heading + ":" + index}><strong>{item.heading}</strong><small>{item.source}</small><p>{item.excerpt}</p></article>

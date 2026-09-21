@@ -1,3 +1,5 @@
+import { NativeSelect } from "./components/ui/native-select";
+import { Button } from "./components/ui/button";
 import { DetailDialog } from "./Feedback";
 import type { ReactNode } from "react";
 import type { CodeIndexView, IndexTarget } from "./types";
@@ -18,20 +20,20 @@ export default function CodeIndexPanel({indexPagination, targetPagination,  inde
     <h2>仓库与版本</h2>
     <p className="retrieval-muted">每份索引固定到一次提交，证据始终可追溯。</p>
     <form onSubmit={event => { event.preventDefault(); onBuild(); }}>
-      <label>选择仓库与 PR<select value={reviewRunId} onChange={event => onTarget(event.target.value)}>
+      <label>选择仓库与 PR<NativeSelect value={reviewRunId} onChange={event => onTarget(event.target.value)}>
         <option value="">选择最近审查的提交</option>
         {reviewRunId && !targets.some(item => item.review_run_id === reviewRunId) && <option value={reviewRunId}>当前审查提交</option>}
         {targets.map(item => <option key={item.review_run_id} value={item.review_run_id}>{item.repository} · PR #{item.pull_request_number} · {item.head_sha.slice(0, 7)}</option>)}
-      </select></label>
+      </NativeSelect></label>
       {targetPagination}
-      <button className="primary retrieval-full-button" disabled={busy || !reviewRunId}>建立基础索引</button>
+      <Button variant="default" className="primary retrieval-full-button" disabled={busy || !reviewRunId}>建立基础索引</Button>
       <p className="retrieval-form-hint">只解析代码，基础索引不调用模型。</p>
     </form>
     <div className="retrieval-library-divider" />
-    <label>选择索引<select value={selectedId} onChange={event => onSelect(event.target.value)}>
+    <label>选择索引<NativeSelect value={selectedId} onChange={event => onSelect(event.target.value)}>
       <option value="">请选择索引</option>
       {indexes.map(item => <option value={item.id} key={item.id}>{item.repository} · {item.head_sha.slice(0, 7)} · {item.parser_version === "java-mybatis-v2" ? "含方法注释" : "原始索引"}</option>)}
-    </select></label>
+    </NativeSelect></label>
     {indexPagination}
     {selected ? <>
       <div className="retrieval-repository-name"><span className="retrieval-repository-icon" aria-hidden="true">⌘</span><div><strong>{selected.repository}</strong><code>{selected.head_sha.slice(0, 12)}</code></div></div>
@@ -44,8 +46,8 @@ export default function CodeIndexPanel({indexPagination, targetPagination,  inde
       <p className="retrieval-form-hint">解析 {selected.parsed_files ?? 0} · 复用 {selected.reused_files ?? 0} · {formatDate(selected.created_at)}</p>
       {selected.parser_version !== "java-mybatis-v2" && <p className="ws-note">这是旧解析的索引。选择上方相同提交并建立基础索引，可使用包含方法注释的新解析；原报告和参考代码保留。</p>}
       {!pending && (selected.error || selected.vector_error) && <div className="retrieval-warning">{selected.error || selected.vector_error}</div>}
-      {!selected.lexical_ready && !pending && <button className="retrieval-full-button" disabled={busy} onClick={() => onRetry(selected.id)}>恢复基础索引</button>}
-      {selected.lexical_ready && selected.vector_status !== "ready" && <button className="retrieval-full-button" disabled={busy || paused || pending} onClick={() => onEnrich(selected.id)}>补全缺失向量</button>}
+      {!selected.lexical_ready && !pending && <Button variant="outline" className="retrieval-full-button" disabled={busy} onClick={() => onRetry(selected.id)}>恢复基础索引</Button>}
+      {selected.lexical_ready && selected.vector_status !== "ready" && <Button variant="outline" className="retrieval-full-button" disabled={busy || paused || pending} onClick={() => onEnrich(selected.id)}>补全缺失向量</Button>}
       {(selected.parse_error_files?.length ?? 0) > 0 && <DetailDialog><summary>查看解析提示</summary>{selected.parse_error_files?.map(file => <p className="retrieval-form-hint" key={file}>{file}</p>)}</DetailDialog>}
     </> : <div className="retrieval-empty"><span className="retrieval-empty-icon" aria-hidden="true">⌘</span><p>建立索引后即可检索对应提交的代码。</p></div>}
   </aside>;

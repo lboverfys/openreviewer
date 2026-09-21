@@ -1,3 +1,6 @@
+import { NativeSelect } from "./components/ui/native-select";
+import { Input } from "./components/ui/input";
+import { Button } from "./components/ui/button";
 import { DetailDialog, Notice } from "./Feedback";
 import ModelPriceReference from "./ModelPriceReference";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -563,27 +566,27 @@ export default function AgentSettingsPanel({
                     <small>{item.shared_connection_configured ? "沿用「模型服务」中已启用的提供商、地址、协议和密钥" : "公共连接未就绪，请先在「模型服务」保存、测试并启用"}</small>
                   </span>
                 </label>
-                <label><span>提供商</span><select value={draft.provider} disabled={sharedConnection} onChange={(event) => {
+                <label><span>提供商</span><NativeSelect value={draft.provider} disabled={sharedConnection} onChange={(event) => {
                   const provider = event.target.value as AiAgentSettings["provider"];
                   updateDraft(agent, "provider", provider);
                   updateDraft(agent, "apiProtocol", provider === "anthropic" ? "messages" : "chat_completions");
-                }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic 兼容</option></select></label>
+                }}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic 兼容</option></NativeSelect></label>
                 {sharedConnection
-                  ? <label><span>模型覆盖（可选）</span><input value={draft.modelOverride} maxLength={200} onChange={(event) => updateDraft(agent, "modelOverride", event.target.value)} placeholder="留空使用公共默认模型" /></label>
-                  : <label><span>模型 ID</span><input value={draft.model} maxLength={200} onChange={(event) => updateDraft(agent, "model", event.target.value)} placeholder="例如 gpt-4.1-mini" /></label>}
-                <label><span>Base URL（可选）</span><input value={draft.apiBaseUrl} maxLength={500} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "apiBaseUrl", event.target.value)} placeholder="留空使用官方地址" /></label>
-                <label><span>中转协议</span><select value={draft.apiProtocol} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "apiProtocol", event.target.value)}>{protocolOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                <label className="agent-settings-key"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(event) => updateDraft(agent, "apiKey", event.target.value)} placeholder={item.api_key_configured ? item.api_key_mask ?? "已保存密钥" : "粘贴 API Key"} autoComplete="new-password" disabled={sharedConnection || draft.clearApiKey} /><small>{sharedConnection ? "由公共连接统一提供；不会在此重复保存。" : "留空保留原密钥；只显示掩码。"}</small></label>
+                  ? <label><span>模型覆盖（可选）</span><Input value={draft.modelOverride} maxLength={200} onChange={(event) => updateDraft(agent, "modelOverride", event.target.value)} placeholder="留空使用公共默认模型" /></label>
+                  : <label><span>模型 ID</span><Input value={draft.model} maxLength={200} onChange={(event) => updateDraft(agent, "model", event.target.value)} placeholder="例如 gpt-4.1-mini" /></label>}
+                <label><span>Base URL（可选）</span><Input value={draft.apiBaseUrl} maxLength={500} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "apiBaseUrl", event.target.value)} placeholder="留空使用官方地址" /></label>
+                <label><span>中转协议</span><NativeSelect value={draft.apiProtocol} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "apiProtocol", event.target.value)}>{protocolOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></label>
+                <label className="agent-settings-key"><span>API Key</span><Input type="password" value={draft.apiKey} onChange={(event) => updateDraft(agent, "apiKey", event.target.value)} placeholder={item.api_key_configured ? item.api_key_mask ?? "已保存密钥" : "粘贴 API Key"} autoComplete="new-password" disabled={sharedConnection || draft.clearApiKey} /><small>{sharedConnection ? "由公共连接统一提供；不会在此重复保存。" : "留空保留原密钥；只显示掩码。"}</small></label>
                 {!sharedConnection && <label className="agent-settings-check"><input type="checkbox" checked={draft.clearApiKey} onChange={(event) => updateDraft(agent, "clearApiKey", event.target.checked)} disabled={!item.api_key_configured} /><span>保存时删除密钥</span></label>}
                 <DetailDialog className="agent-settings-advanced">
                   <summary>连接与重试</summary>
                   <div>
-                    <label><span>推理档位</span><select value={draft.reasoningEffort} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "reasoningEffort", event.target.value)}><option value="none">自动</option><option value="low">轻量</option><option value="medium">标准</option><option value="high">深入</option><option value="max">极致</option></select></label>
-                    <label><span>连接超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.connectTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "connectTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>回答超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.readTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "readTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>发送超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.writeTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "writeTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>连接排队超时（秒）</span><input type="number" min={0.1} max={3600} step={0.1} value={draft.poolTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "poolTimeoutSeconds", event.target.value)} /></label>
-                    <label><span>最多重试次数</span><input type="number" min={0} max={10} step={1} value={draft.maxRetries} onChange={(event) => updateDraft(agent, "maxRetries", event.target.value)} /></label>
+                    <label><span>推理档位</span><NativeSelect value={draft.reasoningEffort} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "reasoningEffort", event.target.value)}><option value="none">自动</option><option value="low">轻量</option><option value="medium">标准</option><option value="high">深入</option><option value="max">极致</option></NativeSelect></label>
+                    <label><span>连接超时（秒）</span><Input type="number" min={0.1} max={3600} step={0.1} value={draft.connectTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "connectTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>回答超时（秒）</span><Input type="number" min={0.1} max={3600} step={0.1} value={draft.readTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "readTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>发送超时（秒）</span><Input type="number" min={0.1} max={3600} step={0.1} value={draft.writeTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "writeTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>连接排队超时（秒）</span><Input type="number" min={0.1} max={3600} step={0.1} value={draft.poolTimeoutSeconds} disabled={sharedConnection} onChange={(event) => updateDraft(agent, "poolTimeoutSeconds", event.target.value)} /></label>
+                    <label><span>最多重试次数</span><Input type="number" min={0} max={10} step={1} value={draft.maxRetries} onChange={(event) => updateDraft(agent, "maxRetries", event.target.value)} /></label>
                   </div>
                 </DetailDialog>
               </div>
@@ -591,16 +594,16 @@ export default function AgentSettingsPanel({
                   <summary>费用估算价格</summary><ModelPriceReference model={draft.modelOverride || draft.model} disabled={Boolean(busy)} onApply={prices => {updateDraft(agent, "inputPrice", prices.inputPrice); updateDraft(agent, "outputPrice", prices.outputPrice); updateDraft(agent, "cacheReadPrice", prices.cacheReadPrice); updateDraft(agent, "cacheWritePrice", prices.cacheWritePrice);}} />
                   <p className="settings-field-note">单独覆盖时同时填写输入和输出价格。留空仅在模型名称一致时继承公共价格；仅改价格保留原连接验证。</p>
                   <div className="agent-settings-fields">
-                    <label><span>输入（美元 / 百万 Token）</span><input aria-label={`${agentLabels[agent].title}输入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.inputPrice} onChange={event => updateDraft(agent, "inputPrice", event.target.value)} /></label>
-                    <label><span>输出（美元 / 百万 Token）</span><input aria-label={`${agentLabels[agent].title}输出单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.outputPrice} onChange={event => updateDraft(agent, "outputPrice", event.target.value)} /></label>
-                    <label><span>缓存读取（可选）</span><input aria-label={`${agentLabels[agent].title}缓存读取单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheReadPrice} onChange={event => updateDraft(agent, "cacheReadPrice", event.target.value)} /></label>
-                    <label><span>缓存写入（可选）</span><input aria-label={`${agentLabels[agent].title}缓存写入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheWritePrice} onChange={event => updateDraft(agent, "cacheWritePrice", event.target.value)} /></label>
+                    <label><span>输入（美元 / 百万 Token）</span><Input aria-label={`${agentLabels[agent].title}输入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.inputPrice} onChange={event => updateDraft(agent, "inputPrice", event.target.value)} /></label>
+                    <label><span>输出（美元 / 百万 Token）</span><Input aria-label={`${agentLabels[agent].title}输出单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.outputPrice} onChange={event => updateDraft(agent, "outputPrice", event.target.value)} /></label>
+                    <label><span>缓存读取（可选）</span><Input aria-label={`${agentLabels[agent].title}缓存读取单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheReadPrice} onChange={event => updateDraft(agent, "cacheReadPrice", event.target.value)} /></label>
+                    <label><span>缓存写入（可选）</span><Input aria-label={`${agentLabels[agent].title}缓存写入单价`} type="number" min={0} max={1000000} step="any" disabled={Boolean(busy)} value={draft.cacheWritePrice} onChange={event => updateDraft(agent, "cacheWritePrice", event.target.value)} /></label>
                   </div>
               </DetailDialog>
               <div className="agent-settings-actions">
-                <button className="settings-primary-btn" type="button" onClick={() => void save(agent)} disabled={Boolean(busy) || !dirty}>{busy === "save-" + agent ? "保存中..." : "保存配置"}</button>
-                <button className="settings-secondary-btn" type="button" onClick={() => void test(agent)} disabled={Boolean(busy) || dirty || !item.configured || !item.api_key_configured} title={dirty ? "请先保存当前修改" : "测试已保存配置"}>{busy === "test-" + agent ? "测试中..." : "测试连接"}</button>
-                <button className={"settings-secondary-btn " + (item.enabled ? "" : "is-activate")} type="button" onClick={() => void setEnabled(agent, !item.enabled)} disabled={Boolean(busy) || (!item.enabled && (dirty || !item.configured || item.test_status !== "succeeded"))} title={!item.enabled && dirty ? "请先保存并重新测试当前修改" : undefined}>{busy === "enabled-" + agent ? "处理中..." : item.enabled ? "停用 Agent" : "启用 Agent"}</button>
+                <Button variant="default" className="settings-primary-btn" type="button" onClick={() => void save(agent)} disabled={Boolean(busy) || !dirty}>{busy === "save-" + agent ? "保存中..." : "保存配置"}</Button>
+                <Button variant="outline" className="settings-secondary-btn" type="button" onClick={() => void test(agent)} disabled={Boolean(busy) || dirty || !item.configured || !item.api_key_configured} title={dirty ? "请先保存当前修改" : "测试已保存配置"}>{busy === "test-" + agent ? "测试中..." : "测试连接"}</Button>
+                <Button variant="outline" className={"settings-secondary-btn " + (item.enabled ? "" : "is-activate")} type="button" onClick={() => void setEnabled(agent, !item.enabled)} disabled={Boolean(busy) || (!item.enabled && (dirty || !item.configured || item.test_status !== "succeeded"))} title={!item.enabled && dirty ? "请先保存并重新测试当前修改" : undefined}>{busy === "enabled-" + agent ? "处理中..." : item.enabled ? "停用 Agent" : "启用 Agent"}</Button>
                 {message && messageAgent === agent && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}</Notice>}
               </div>
             </article>

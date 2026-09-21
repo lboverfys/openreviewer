@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { api } from "./api";
@@ -6,7 +7,6 @@ import { hasPermission, roleLabels } from "./rbac";
 import { preloadPage } from "./page-loaders";
 import type { AuthUser } from "./types";
 import { WorkspaceIcon } from "./Workspace";
-import "./styles/enterprise.css";
 
 const UserManual = lazy(() => import("./UserManual"));
 type NavKey = "dashboard" | "work" | "settings" | "knowledge" | "team" | "evaluations" | "usage" | "diagnostics";
@@ -60,18 +60,18 @@ export default function AppShell({ user, view, onSignedOut, children }: {
   return <div className="app-shell enterprise-shell">
     <header className="enterprise-topbar">
       <div className="enterprise-brand">
-        <button type="button" className="enterprise-menu-toggle" aria-label="展开导航菜单" aria-expanded={menuOpen}
-          aria-controls="primary-navigation" onClick={() => setMenuOpen(value => !value)}>☰</button>
+        <Button variant="outline" type="button" className="enterprise-menu-toggle" aria-label="展开导航菜单" aria-expanded={menuOpen}
+          aria-controls="primary-navigation" onClick={() => setMenuOpen(value => !value)}>☰</Button>
         <a href="#" onClick={() => setMenuOpen(false)}><strong>OpenReviewer</strong><span>代码审查平台</span></a>
       </div>
       <div className="enterprise-account">
-        <button type="button" className="enterprise-help-button" onClick={() => { setMenuOpen(false); setManualOpen(true); }}>使用手册</button>
+        <Button variant="outline" type="button" className="enterprise-help-button" onClick={() => { setMenuOpen(false); setManualOpen(true); }}>使用手册</Button>
         <span className="enterprise-user"><strong>{user.username}</strong><small>{roleLabels[user.role]}</small></span>
-        <button type="button" className="enterprise-logout" onClick={() => void logout()}>退出登录</button>
+        <Button variant="outline" type="button" className="enterprise-logout" onClick={() => void logout()}>退出登录</Button>
       </div>
     </header>
     <div className="enterprise-body">
-      {menuOpen && <button className="enterprise-menu-backdrop" aria-label="关闭导航菜单" onClick={() => setMenuOpen(false)} />}
+      {menuOpen && <Button variant="outline" className="enterprise-menu-backdrop" aria-label="关闭导航菜单" onClick={() => setMenuOpen(false)} />}
       <aside id="primary-navigation" className={"enterprise-sidebar" + (menuOpen ? " is-open" : "")}>
         <nav aria-label="工作区导航">{NAV_GROUPS.map(group => {
           const items = group.items.filter(item => !item.permission || hasPermission(user, item.permission));
@@ -83,7 +83,7 @@ export default function AppShell({ user, view, onSignedOut, children }: {
               <WorkspaceIcon kind={item.icon} /><span>{item.label}</span>
             </a>)}
           </section>;
-        })}<div className="enterprise-sidebar-account"><strong>{user.username}</strong><small>{roleLabels[user.role]}</small><button type="button" onClick={() => void logout()}>退出当前账号</button></div></nav>
+        })}<div className="enterprise-sidebar-account"><strong>{user.username}</strong><small>{roleLabels[user.role]}</small><Button variant="outline" type="button" onClick={() => void logout()}>退出当前账号</Button></div></nav>
       </aside>
       <div className="enterprise-content">{children}</div>
     </div>

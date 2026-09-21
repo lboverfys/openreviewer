@@ -1,3 +1,7 @@
+import { Input } from "./components/ui/input";
+import { Textarea } from "./components/ui/textarea";
+import { Button } from "./components/ui/button";
+import { NativeSelect } from "./components/ui/native-select";
 import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "./api";
@@ -44,15 +48,15 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
   if (creating) return <><WorkspaceBack onClick={() => { if (!busy) setCreating(false); }}>返回方案历史</WorkspaceBack><section className="team-card ws-editor">
     <div className="ws-editor-heading"><div><h2>保存新的审查方案</h2><p>{repository || "请先选择仓库"}</p></div><WorkspaceBadge tone="accent">配置快照</WorkspaceBadge></div>
     <form onSubmit={event => void create(event)}><fieldset disabled={busy || !selected}>
-      <WorkspaceSection title="方案信息" description="保存当前模型、Prompt、知识和检索配置，后续可恢复此版本。"><label>方案名称<input required value={name} maxLength={120} onChange={event => setName(event.target.value)} placeholder="例如：Java 服务审查 · 第一版" /></label><label>变更说明<textarea value={note} rows={3} maxLength={1000} onChange={event => setNote(event.target.value)} placeholder="说明本次调整的目的" /></label></WorkspaceSection>
-      <WorkspaceSection title="配置来源" description="确认当前配置后保存，启用时再查看质量依据。"><div className="ws-note">当前 AI 配置版本：{aiRevision ?? "读取中"}</div><div className="ws-actions"><a className="ws-button-link" href="#settings">AI 配置</a><a className="ws-button-link" href="#knowledge">知识库</a><a className="ws-button-link" href="#retrieval">检索设置</a><button type="button" onClick={refreshAi}>刷新配置版本</button></div></WorkspaceSection>
-      <div className="ws-form-actions"><button className="ws-primary" type="submit" disabled={aiRevision == null}>保存当前配置为方案</button><button type="button" onClick={() => setCreating(false)}>取消</button></div>
+      <WorkspaceSection title="方案信息" description="保存当前模型、Prompt、知识和检索配置，后续可恢复此版本。"><label>方案名称<Input required value={name} maxLength={120} onChange={event => setName(event.target.value)} placeholder="例如：Java 服务审查 · 第一版" /></label><label>变更说明<Textarea value={note} rows={3} maxLength={1000} onChange={event => setNote(event.target.value)} placeholder="说明本次调整的目的" /></label></WorkspaceSection>
+      <WorkspaceSection title="配置来源" description="确认当前配置后保存，启用时再查看质量依据。"><div className="ws-note">当前 AI 配置版本：{aiRevision ?? "读取中"}</div><div className="ws-actions"><a className="ws-button-link" href="#settings">AI 配置</a><a className="ws-button-link" href="#knowledge">知识库</a><a className="ws-button-link" href="#retrieval">检索设置</a><Button variant="outline" type="button" onClick={refreshAi}>刷新配置版本</Button></div></WorkspaceSection>
+      <div className="ws-form-actions"><Button variant="default" className="ws-primary" type="submit" disabled={aiRevision == null}>保存当前配置为方案</Button><Button variant="outline" type="button" onClick={() => setCreating(false)}>取消</Button></div>
     </fieldset></form>
   </section></>;
   return <>
     {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
-    <section className="team-card"><div className="team-toolbar"><div><h2>审查方案</h2><p>为仓库保存、启用或恢复一套审查配置。</p></div><div className="ws-actions"><button disabled={busy || repositories.loading || profiles.loading} onClick={() => { void repositories.refresh(); if (selected) void profiles.refresh(); }}>刷新</button><button className="ws-primary" disabled={!selected} onClick={() => { setCreating(true); setMessage(""); }}>新建审查方案</button></div></div>
-      <div className="profile-repository-picker ws-filterbar"><label>选择仓库<select value={repositoryId} onChange={event => { setRepositoryId(event.target.value); setMessage(""); }}><option value="">请选择仓库</option>{repositories.data?.items.map(item => <option key={item.id} value={item.id}>{item.repository}</option>)}</select></label>{selected && <WorkspaceBadge tone={selected.policy.review_profile_id ? "accent" : "neutral"}>{selected.policy.review_profile_id ? "已绑定审查方案" : "使用当前配置"}</WorkspaceBadge>}
+    <section className="team-card"><div className="team-toolbar"><div><h2>审查方案</h2><p>为仓库保存、启用或恢复一套审查配置。</p></div><div className="ws-actions"><Button variant="outline" disabled={busy || repositories.loading || profiles.loading} onClick={() => { void repositories.refresh(); if (selected) void profiles.refresh(); }}>刷新</Button><Button variant="default" className="ws-primary" disabled={!selected} onClick={() => { setCreating(true); setMessage(""); }}>新建审查方案</Button></div></div>
+      <div className="profile-repository-picker ws-filterbar"><label>选择仓库<NativeSelect value={repositoryId} onChange={event => { setRepositoryId(event.target.value); setMessage(""); }}><option value="">请选择仓库</option>{repositories.data?.items.map(item => <option key={item.id} value={item.id}>{item.repository}</option>)}</NativeSelect></label>{selected && <WorkspaceBadge tone={selected.policy.review_profile_id ? "accent" : "neutral"}>{selected.policy.review_profile_id ? "已绑定审查方案" : "使用当前配置"}</WorkspaceBadge>}
         <Pagination label="仓库选择分页" page={repositories.page} count={repositories.data?.items.length ?? 0} hasNext={Boolean(repositories.data?.next_cursor)} busy={repositories.loading} onPrevious={repositories.previous} onNext={repositories.next} />
       </div>
     </section>
@@ -64,8 +68,8 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
           {item.base_profile_id && <p>基础方案：{item.base_profile_id}</p>}
           {Object.entries(item.role_instructions ?? {}).map(([key,value]) => <p key={key}>{agentLabels[key] ?? key}：{value}</p>)}
           {item.supplementary_instructions && <p>补充要求：{item.supplementary_instructions}</p>}</DetailDialog>
-      </div><div className="ws-actions"><button className="ws-link-button" disabled={busy} onClick={() => setCandidateBase(item)}>基于此方案创建候选</button>
-        <button className="ws-link-button" disabled={busy || selected.policy.review_profile_id === item.id} onClick={() => { setPendingProfile(item.id); setMessage(""); }}>启用 / 恢复此方案</button></div></article>)}</div>
+      </div><div className="ws-actions"><Button variant="outline" className="ws-link-button" disabled={busy} onClick={() => setCandidateBase(item)}>基于此方案创建候选</Button>
+        <Button variant="outline" className="ws-link-button" disabled={busy || selected.policy.review_profile_id === item.id} onClick={() => { setPendingProfile(item.id); setMessage(""); }}>启用 / 恢复此方案</Button></div></article>)}</div>
       {!repositories.loading && !selected && <WorkspaceEmpty title="先选择一个仓库" description="尚未添加仓库时，可先前往团队管理配置。" />}
       {selected && !profiles.loading && !profiles.data?.items.length && <WorkspaceEmpty title="尚未保存审查方案" description="保存当前配置，建立可追溯、可恢复的方案版本。" />}
       {selected && <Pagination page={profiles.page} count={profiles.data?.items.length ?? 0} hasNext={Boolean(profiles.data?.next_cursor)} busy={profiles.loading} onPrevious={profiles.previous} onNext={profiles.next} />}

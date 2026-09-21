@@ -3012,6 +3012,25 @@
       "EvaluationDecision": {
         "additionalProperties": false,
         "properties": {
+          "failure_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "context_missing",
+                  "reasoning_error",
+                  "evidence_mismatch",
+                  "location_error",
+                  "redundant_report",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
           "location_correct": {
             "anyOf": [
               {
@@ -3567,9 +3586,36 @@
       "EvaluationScore": {
         "additionalProperties": false,
         "properties": {
+          "clean_pr_count": {
+            "default": 0,
+            "title": "Clean Pr Count",
+            "type": "integer"
+          },
+          "clean_pr_false_alarm_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clean Pr False Alarm Rate"
+          },
           "configuration_count": {
             "title": "Configuration Count",
             "type": "integer"
+          },
+          "cost_per_confirmed_defect_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Per Confirmed Defect Usd"
           },
           "duplicate_count": {
             "title": "Duplicate Count",
@@ -3585,6 +3631,23 @@
               }
             ],
             "title": "Duplicate Rate"
+          },
+          "failure_reason_disagreements": {
+            "default": 0,
+            "title": "Failure Reason Disagreements",
+            "type": "integer"
+          },
+          "failure_reasons": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Failure Reasons",
+            "type": "object"
+          },
+          "false_alarm_pr_count": {
+            "default": 0,
+            "title": "False Alarm Pr Count",
+            "type": "integer"
           },
           "false_positive_count": {
             "title": "False Positive Count",
@@ -3678,6 +3741,11 @@
               }
             ],
             "title": "Precision Ci95"
+          },
+          "priced_reference_pairs": {
+            "default": 0,
+            "title": "Priced Reference Pairs",
+            "type": "integer"
           },
           "recall": {
             "anyOf": [

@@ -1,3 +1,6 @@
+import { Button } from "./components/ui/button";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
 import RetrievalReportDetails from "./RetrievalReportDetails";
 import RetrievalMetricsTable, { type RetrievalReportSplit } from "./RetrievalMetricsTable";
 import { DetailDialog, Notice } from "./Feedback";
@@ -115,10 +118,10 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
         <h1>代码检索</h1>
         <p>审查会自动准备当前提交的基础索引，并在开启外部调用时补齐预算内的缺失向量，然后查找关联代码。你也可以搜索并回看记录，核对 AI 的依据。</p><nav className="related-actions"><a href="#knowledge">知识文档</a><a href="#settings?section=retrieval">检索模型与开关</a></nav>
       </div>
-      <button type="button" className="btn-ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>
+      <Button variant="outline" type="button" className="btn-ghost" disabled={Boolean(busy)} onClick={() => void refresh()}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         刷新数据
-      </button>
+      </Button>
     </section>
     <div className="retrieval-overview" aria-label="检索运行概况">
       <div className="retrieval-overview-card">
@@ -139,9 +142,9 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
       </div>
     </div>
     <nav className="seg-tabs retrieval-tabs" aria-label="代码检索页面">
-      {([["search", "索引与检索"], ["history", "搜索记录"], ["evaluations", "检索方式对比"]] as const).map(([key, label]) => <button key={key} className={tab === key ? "is-active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}
+      {([["search", "索引与检索"], ["history", "搜索记录"], ["evaluations", "检索方式对比"]] as const).map(([key, label]) => <Button variant="outline" key={key} className={tab === key ? "is-active" : ""} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</Button>)}
     </nav>
-    {tab !== "search" && <section className="retrieval-card"><label>仓库与提交<select aria-label="仓库与提交" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{indexes.map(item => <option key={item.id} value={item.id}>{item.repository} · {item.head_sha.slice(0, 8)} · {item.parser_version === "java-mybatis-v2" ? "含方法注释" : "原始索引"}</option>)}</select></label><Pagination page={indexPage.page} count={indexes.length} hasNext={Boolean(indexPage.data?.next_cursor)} busy={indexPage.loading} onPrevious={indexPage.previous} onNext={indexPage.next}/></section>}
+    {tab !== "search" && <section className="retrieval-card"><label>仓库与提交<NativeSelect aria-label="仓库与提交" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{indexes.map(item => <option key={item.id} value={item.id}>{item.repository} · {item.head_sha.slice(0, 8)} · {item.parser_version === "java-mybatis-v2" ? "含方法注释" : "原始索引"}</option>)}</NativeSelect></label><Pagination page={indexPage.page} count={indexes.length} hasNext={Boolean(indexPage.data?.next_cursor)} busy={indexPage.loading} onPrevious={indexPage.previous} onNext={indexPage.next}/></section>}
     {tab === "history" && <RetrievalHistoryPanel key={selectedId} indexId={selectedId} onError={handleError}/>}
     {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
     {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>向量与精排调用已关闭</strong><p>关键词和代码关系检索仍可用于审查，GPT 审查不受影响。<a href="#settings?section=retrieval">到模型配置开启 →</a></p></div></div>}
@@ -169,25 +172,25 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
               if (!controller.signal.aborted) {setTrace(next); setMessage("搜索已保存，可在搜索记录中回看。");}
             });
           }}>
-            <label>需要查找的代码或问题<textarea rows={3} value={query} maxLength={4000} onChange={event => setQuery(event.target.value)} placeholder="例如：查找循环查询用户信息所调用的 Mapper 和 SQL，检查是否可改为批量查询。" /></label>
+            <label>需要查找的代码或问题<Textarea rows={3} value={query} maxLength={4000} onChange={event => setQuery(event.target.value)} placeholder="例如：查找循环查询用户信息所调用的 Mapper 和 SQL，检查是否可改为批量查询。" /></label>
             <div className="retrieval-form-grid">
-              <label>策略<select value={strategy} onChange={event => setStrategy(event.target.value as RetrievalStrategy)}>{Object.entries(retrievalStrategyLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-              <label>变更文件路径（每行一个，可选）<textarea rows={2} value={seedFiles} onChange={event => setSeedFiles(event.target.value)} placeholder="用于代码关系召回" /></label>
+              <label>策略<NativeSelect value={strategy} onChange={event => setStrategy(event.target.value as RetrievalStrategy)}>{Object.entries(retrievalStrategyLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</NativeSelect></label>
+              <label>变更文件路径（每行一个，可选）<Textarea rows={2} value={seedFiles} onChange={event => setSeedFiles(event.target.value)} placeholder="用于代码关系召回" /></label>
             </div>
-            <button className="primary" disabled={Boolean(busy) || !selected?.lexical_ready || !query.trim()}>{busy === "search" ? "正在召回与排序…" : "执行检索"}</button>
+            <Button variant="default" className="primary" disabled={Boolean(busy) || !selected?.lexical_ready || !query.trim()}>{busy === "search" ? "正在召回与排序…" : "执行检索"}</Button>
           </form>
           {trace?.index_id === selectedId && <RetrievalTracePanel traces={[trace]} />}
-          {!trace && <div className="retrieval-search-welcome"><span className="retrieval-empty-icon" aria-hidden="true">⌕</span><h3>从一个问题开始</h3><p>检索后，你可以展开源码、检查关联 SQL，并追溯到具体提交。</p><div className="retrieval-suggestions">{["查找用户权限校验及关联 SQL", "哪些方法包含事务与行锁？"].map(text => <button type="button" key={text} onClick={() => setQuery(text)}>{text} ↗</button>)}</div></div>}
+          {!trace && <div className="retrieval-search-welcome"><span className="retrieval-empty-icon" aria-hidden="true">⌕</span><h3>从一个问题开始</h3><p>检索后，你可以展开源码、检查关联 SQL，并追溯到具体提交。</p><div className="retrieval-suggestions">{["查找用户权限校验及关联 SQL", "哪些方法包含事务与行锁？"].map(text => <Button variant="outline" type="button" key={text} onClick={() => setQuery(text)}>{text} ↗</Button>)}</div></div>}
         </section>
       </div>}
       {tab === "evaluations" && <section className="retrieval-card">
         <RetrievalCompareForm indexId={selectedId} onSaved={() => {void reportPage.refresh(); setMessage("对比已保存，标注依据和结果可在报告中查看。");}} onError={handleError}/><h2>已保存的对比</h2><p className="retrieval-muted">对照相同样本、模型与 K 值，查看每一路召回和精排带来的变化。检索指标不等同于代码审查准确率。</p>
         {!reports.length && <div className="retrieval-empty">还没有对比报告。在上方填写应该找到的代码，即可完成一次网页对比。</div>}
-        <label>报告划分<select aria-label="报告划分" value={reportSplit} onChange={event => setReportSplit(event.target.value as RetrievalReportSplit)}>
-          <option value="validation">验收集</option><option value="development">调参集</option><option value="all">全部样本（兼容历史报告）</option></select></label>
+        <label>报告划分<NativeSelect aria-label="报告划分" value={reportSplit} onChange={event => setReportSplit(event.target.value as RetrievalReportSplit)}>
+          <option value="validation">验收集</option><option value="development">调参集</option><option value="all">全部样本（兼容历史报告）</option></NativeSelect></label>
         {reports.map(report => {
           return <article className="retrieval-report" key={report.id}>
-            <header><div><h3>{report.dataset_version}</h3><small>{annotationLabels[report.annotation_source]} · {formatDate(report.generated_at)}</small></div><button onClick={() => downloadReport(report)}>导出报告</button></header>
+            <header><div><h3>{report.dataset_version}</h3><small>{annotationLabels[report.annotation_source]} · {formatDate(report.generated_at)}</small></div><Button variant="outline" onClick={() => downloadReport(report)}>导出报告</Button></header>
             <p>{report.embedding_model} / {report.rerank_model}</p><p className="retrieval-muted">查询缓存：{report.query_cache_mode === "not_used" ? "未使用" : report.query_cache_mode === "shared_warm" ? "统一预热" : report.query_cache_mode} · 向量搜索：{vectorSearchLabel(report.vector_search_mode)}</p>
             <p className="retrieval-muted">词法缓存：{report.lexical_cache_mode === "shared_warm" ? "各策略统一预热" : "未记录"}</p>
             <p className="retrieval-muted">索引提交 {report.index_head_sha?.slice(0,12) ?? "历史未记录"} · 解析器 {report.parser_version ?? "历史未记录"} · 候选上限 {report.candidate_k ?? "未记录"} · 向量覆盖 {report.vector_count ?? "未记录"}/{report.indexed_chunks ?? "未记录"}</p>

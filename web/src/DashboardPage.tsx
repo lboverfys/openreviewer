@@ -1,3 +1,6 @@
+import { TableRow, TableCell, Table, TableHeader, TableHead, TableBody } from "./components/ui/table";
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
 import { Notice } from "./Feedback";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -43,8 +46,8 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
   const baseRepository = review.base_repository ?? review.repository;
 
   return (
-    <tr className="dash-table-row">
-      <td className="review-identity-column">
+    <TableRow className="dash-table-row">
+      <TableCell className="review-identity-column">
         <div className="table-review-identity">
           <div className="repo-avatar-icon">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -84,8 +87,8 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
             </div>
           </div>
         </div>
-      </td>
-      <td className="review-branch-column">
+      </TableCell>
+      <TableCell className="review-branch-column">
         {hasBranchRoute ? (
           <div className="review-branch-route" title={`${headRepository}:${review.head_ref ?? "?"} → ${baseRepository}:${review.base_ref ?? "?"}`}>
             <div className="review-branch-endpoint is-head">
@@ -101,27 +104,27 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
         ) : (
           <span className="review-branch-missing">历史任务未记录分支</span>
         )}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         <StatusBadge status={reviewDisplayStatus(review)} label={reviewDisplayLabel(review)} />
         {review.last_error && reviewDisplayStatus(review) === "failed" && (
           <small className="dash-row-error" title={review.last_error}>
             {review.last_error}
           </small>
         )}
-      </td>
-      <td className="review-result-column">
+      </TableCell>
+      <TableCell className="review-result-column">
         {review.model_review_completed_at ? <><strong>{review.finding_count} 条候选问题</strong>
           <small>{review.unreviewed_finding_count > 0 ? review.unreviewed_finding_count + " 条待核对" : "查看详情核对检查范围"}</small></>
           : <span className="is-muted">{review.execution_status === "cancelled" ? "已停止" : reviewDisplayStatus(review) === "completed" ? "旧记录未保存 AI 结果" : "尚未产出结果"}</span>}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         <span className="dash-time-badge">
           {formatDate(review.updated_at)}
         </span>
-      </td>
-      <td>
-        <button
+      </TableCell>
+      <TableCell>
+        <Button variant="outline"
           type="button"
           className="review-open-row-btn"
           onPointerEnter={() => preloadPage("review")}
@@ -130,9 +133,9 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
           title="查看任务详情、结果和日志"
         >
           查看详情 <span aria-hidden="true">→</span>
-        </button>
-      </td>
-    </tr>
+        </Button>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -357,7 +360,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
             <p>共 {snapshot?.total_reviews ?? 0} 条审查记录。打开任务查看进度、问题和处理结果。</p>
           </div>
           <div className="dash-hero-actions">
-            {canManageReviews && <button type="button" className="btn-aurora dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>管理员补录</button>}
+            {canManageReviews && <Button variant="outline" type="button" className="btn-aurora dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>管理员补录</Button>}
             <div className={`dash-stream-pill state-${streamState}`}>
               <span className="beacon-circle" />
               <span className="beacon-label">
@@ -375,7 +378,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
               </svg>
               <span>快照 {formatDate(snapshot?.generated_at ?? null)}</span>
             </div>
-            <button
+            <Button variant="outline"
               type="button"
               className="btn-ghost"
               onClick={() => { void reviewPage.refresh(); if (reviewPage.cursor || activeFilter !== "all" || debouncedSearch) void refresh({ force: true }); }}
@@ -386,14 +389,14 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
               </svg>
               <span>刷新数据</span>
-            </button>
+            </Button>
           </div>
         </section>
 
         <section className="dash-status-filters" aria-label="任务状态筛选">
           {([["all", "全部"], ["running", "执行中"], ["awaiting_approval", "待核对"], ["awaiting_publish", "待发布"],
             ["paused", "已暂停"], ["failed", "失败"], ["cancelled", "已取消"], ["completed", "AI 已结束"]] as const).map(([value, label]) =>
-              <button type="button" key={value} aria-pressed={activeFilter === value} onClick={() => setActiveFilter(value)}>{label}</button>)}
+              <Button variant="outline" type="button" key={value} aria-pressed={activeFilter === value} onClick={() => setActiveFilter(value)}>{label}</Button>)}
           {canInspectWorkers && <a href="#platform?tab=diagnostics">{loading ? "正在连接后台…" : onlineCount > 0 ? "后台可用" : "后台暂无在线节点"} →</a>}
         </section>
 
@@ -411,7 +414,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                     <circle cx="11" cy="11" r="8"/>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                   </svg>
-                  <input
+                  <Input
                     id="review-search"
                     name="review-search"
                     type="text"
@@ -420,36 +423,36 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                     onChange={(e) => setSearchKeyword(e.target.value)}
                   />
                   {searchKeyword && (
-                    <button
+                    <Button variant="outline"
                       type="button"
                       className="clear-x-btn"
                       onClick={() => setSearchKeyword("")}
                     >
                       ✕
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>
             </div>
 
             <div className="dash-table-wrap">
-              <table className="dash-data-table">
-                <thead>
-                  <tr>
-                    <th>Pull Request</th>
-                    <th>合并方向</th>
-                    <th>当前状态</th>
-                    <th>审查结果</th>
-                    <th>更新时间</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table className="dash-data-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Pull Request</TableHead>
+                    <TableHead>合并方向</TableHead>
+                    <TableHead>当前状态</TableHead>
+                    <TableHead>审查结果</TableHead>
+                    <TableHead>更新时间</TableHead>
+                    <TableHead>操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {filteredReviews.map((review) => (
                     <ReviewRow review={review} key={review.review_run_id} onOpen={onOpenReview} />
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
 
               {!loading && !reviewPage.loading && filteredReviews.length === 0 && (
                 <div className="empty-block">
@@ -468,7 +471,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                       : "在已接入的 GitHub 项目提交 PR 后，审查记录会自动出现在这里。"}
                   </p>
                   {(searchKeyword || activeFilter !== "all") && (
-                    <button
+                    <Button variant="outline"
                       type="button"
                       className="btn-ghost"
                       onClick={() => {
@@ -477,7 +480,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                       }}
                     >
                       重置所有筛选
-                    </button>
+                    </Button>
                   )}
                 </div>
               )}

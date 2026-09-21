@@ -123,6 +123,7 @@ class UsageQueries:
             dimensions = ("agent",) if group_by == "agent" else ("provider", "model", "purpose")
             rows = session.execute(request_statistics_statement(
                 and_(Request.month_id == month_id, _scope(Request, scope)), dimensions,
+                postgres=session.get_bind().dialect.name == "postgresql",
             ).limit(101)).mappings().all()
         return tuple(UsageBreakdown.model_validate({
             **({"model":"全部模型", "purpose":"all"} if group_by == "agent" else {}), **row,

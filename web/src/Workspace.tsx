@@ -1,3 +1,6 @@
+import { Button } from "./components/ui/button";
+import { Badge } from "./components/ui/badge";
+import { Card, CardContent } from "./components/ui/card";
 import type { ReactNode } from "react";
 
 export function WorkspaceIcon({ kind = "grid" }: { kind?: "grid" | "team" | "review" | "chart" | "file" | "check" }) {
@@ -19,7 +22,8 @@ export function WorkspaceHeader({ title, description, icon, actions }: {
 }
 
 export function WorkspaceBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "accent" | "success" | "warning" | "danger" }) {
-  return <span className={`ws-badge is-${tone}`}><span className="ws-badge-dot" />{children}</span>;
+  const colors = { neutral: "bg-slate-100 text-slate-700", accent: "bg-indigo-50 text-indigo-700", success: "bg-emerald-50 text-emerald-700", warning: "bg-amber-50 text-amber-800", danger: "bg-red-50 text-red-700" };
+  return <Badge variant="outline" className={`ws-badge is-${tone} ${colors[tone]}`}><span className="ws-badge-dot" />{children}</Badge>;
 }
 
 export function WorkspaceEmpty({ title, description, loading = false }: { title: string; description?: string; loading?: boolean }) {
@@ -27,9 +31,9 @@ export function WorkspaceEmpty({ title, description, loading = false }: { title:
 }
 
 export function WorkspaceSection({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
-  return <section className="ws-form-section"><div className="ws-section-copy"><h3>{title}</h3>{description && <p>{description}</p>}</div><div className="ws-section-fields">{children}</div></section>;
+  return <Card className="ws-form-section grid gap-5 p-5 shadow-none"><div className="ws-section-copy"><h3>{title}</h3>{description && <p>{description}</p>}</div><CardContent className="ws-section-fields min-w-0 p-0">{children}</CardContent></Card>;
 }
 
 export function WorkspaceBack({ onClick, children = "返回列表" }: { onClick: () => void; children?: ReactNode }) {
-  return <button type="button" className="ws-back" onClick={onClick}><span aria-hidden="true">←</span>{children}</button>;
+  return <Button variant="outline" type="button" className="ws-back" onClick={onClick}><span aria-hidden="true">←</span>{children}</Button>;
 }

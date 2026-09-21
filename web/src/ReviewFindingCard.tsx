@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { EvidenceSnippet } from "./RetrievalTracePanel";
 import type { ContextEvidence, FindingDecision, ReviewFinding } from "./types";
 import { formatDate } from "./utils";
@@ -114,7 +115,7 @@ export default function FindingCard({
       {editable && (
         <div className="finding-actions" role="group" aria-label="人工裁决">
           {findingDecisionOptions.map(([decision, label]) => (
-            <button
+            <Button variant="outline"
               type="button"
               className={`finding-decision-option ${finding.adjudication_status === decision ? "is-selected" : ""}`}
               aria-pressed={finding.adjudication_status === decision}
@@ -123,7 +124,7 @@ export default function FindingCard({
               key={decision}
             >
               {label}
-            </button>
+            </Button>
           ))}
         </div>
       )}

@@ -89,7 +89,7 @@ def collect_review_insights(session, scope, since, until) -> ReviewInsights:
         ReviewRunRecord, ReviewPlanRecord, ModelReviewBatchRecord, ModelUsageRequestRecord,
         ReviewFindingRecord, RetrievalTraceRecord, CodeIndexRecord,
     )
-    requests = session.execute(request_statistics_statement(and_(scoped(request, scope), request.created_at >= since, request.created_at < until))).mappings().one()
+    requests = session.execute(request_statistics_statement(and_(scoped(request, scope), request.created_at >= since, request.created_at < until), postgres=session.get_bind().dialect.name == "postgresql")).mappings().one()
     costs = session.execute(completed_cost_statement(scope, since, until, postgres=session.get_bind().dialect.name == "postgresql")).mappings().one()
     batches = session.execute(batch_health_statement(scope, since, until)).mappings().one()
     errors = session.execute(select(batch.error_code.label("code"), func.count().label("count"))

@@ -7,7 +7,6 @@ import PageBoundary from "./PageBoundary";
 import { pageLoaders } from "./page-loaders";
 import { hasPermission } from "./rbac";
 import type { AuthUser } from "./types";
-import "./styles/workspace-polish.css";
 
 const DashboardPage = lazy(pageLoaders.dashboard);
 const KnowledgePage = lazy(pageLoaders.knowledge);

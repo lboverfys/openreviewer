@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 type Topic = "dashboard" | "review" | "work" | "settings" | "knowledge" | "team" | "evaluations" | "usage" | "diagnostics";
@@ -84,9 +85,9 @@ export default function UserManual({ initialTopic, onClose }: { initialTopic: To
       <p>评测用于回答“AI 找的问题对不对、有没有漏掉、改配置后有没有进步”。它不会因为打开页面就重新调用模型。</p>
       <ol><li>点击“开始新评测”，选择一份已完成的审查，再点“开始核对问题”；评测名称可以不填。</li>
         <li>阅读问题，点击“有效问题”“误报”或“暂不确定”，每次点击都会保存。详细依据在弹窗中阅读。</li>
-        <li>点击“完成核对并查看统计”，一个账号就能完成。没核对和不确定的问题不会算作有效。</li>
+        <li>单人日常核对点击“完成核对并查看统计”；双人验收需要两位成员独立提交。未核对、分歧和不确定的问题不会算作有效。</li>
         <li>需要比较时，再点“比较另一份审查（可选）”，选择同一 PR、同一提交的另一份完整审查；分别核对后查看两份统计。</li></ol>
-      <p>已知漏报的参考清单可以另外补充；没有可靠参考时不计算找回率。这里只记录登录账号的单人判断，不声称双人独立审核。</p>
+      <p>已知漏报的参考清单可以另外补充；没有可靠参考时不计算找回率。失败归因用于分析上下文、推理与定位问题，双人模式只汇总一致归因。每个确认缺陷的成本仅使用已知费用与参考标签齐全的配对。</p>
       {link("#evaluations", "打开效果评测")}
     </>,
     usage: <>
@@ -107,9 +108,9 @@ export default function UserManual({ initialTopic, onClose }: { initialTopic: To
     </>,
   };
   return <dialog ref={dialog} className="user-manual" aria-labelledby="manual-title" onCancel={onClose}>
-    <header><div><h2 id="manual-title">使用手册</h2><p>按你正在做的事情查看步骤。</p></div><button type="button" onClick={onClose} autoFocus>关闭</button></header>
+    <header><div><h2 id="manual-title">使用手册</h2><p>按你正在做的事情查看步骤。</p></div><Button variant="outline" type="button" onClick={onClose} autoFocus>关闭</Button></header>
     <div className="manual-body"><nav aria-label="手册目录">{topics.map(item =>
-      <button type="button" key={item.key} aria-pressed={topic === item.key} onClick={() => setTopic(item.key)}>{item.title}</button>
+      <Button variant="outline" type="button" key={item.key} aria-pressed={topic === item.key} onClick={() => setTopic(item.key)}>{item.title}</Button>
     )}</nav><article><h3>{topics.find(item => item.key === topic)?.title}</h3>{content[topic]}</article></div>
   </dialog>;
 }

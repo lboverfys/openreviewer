@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { EvaluationOverview } from "./types";
@@ -16,7 +17,7 @@ export default function EvaluationOverviewPanel({datasetId, version, onError, ca
     }).catch(error => {if (!controller.signal.aborted) {setFailed(true); onError(error);}});
     return () => controller.abort();
   }, [datasetId, version, onError, caseId, variant, refresh]);
-  if (!overview) return <section className="evaluation-card" aria-label="评测概况状态"><p>{failed ? "评测概况读取失败" : "正在读取评测概况…"}</p>{failed && <button onClick={() => setRefresh(value => value + 1)}>重试读取概况</button>}</section>;
+  if (!overview) return <section className="evaluation-card" aria-label="评测概况状态"><p>{failed ? "评测概况读取失败" : "正在读取评测概况…"}</p>{failed && <Button variant="outline" onClick={() => setRefresh(value => value + 1)}>重试读取概况</Button>}</section>;
   return <section className="evaluation-card evaluation-progress-summary" aria-label="已完成的复核">
     <h3>评测结果 · {overview?.review_mode === "dual" ? "双人验收" : "单人核对"}</h3>
     <p>{caseId ? "以下只统计当前选择的这份审查。" : "以下统计这份评测记录中的全部审查。"}{overview?.review_mode === "dual" ? "有效和误报来自两人提交后的一致判断。" : "有效和误报来自你保存的判断。"}</p>

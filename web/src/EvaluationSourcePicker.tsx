@@ -1,3 +1,5 @@
+import { Button } from "./components/ui/button";
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "./components/ui/table";
 import { useCallback, useEffect, useRef } from "react";
 import { api } from "./api";
 import Pagination from "./Pagination";
@@ -33,19 +35,19 @@ export default function EvaluationSourcePicker({ datasetId, caseId, selected, on
   }
   return <section className="evaluation-picker" aria-label="选择审查运行">
     <div className="evaluation-toolbar"><strong>选择已完成的审查运行</strong><WorkspaceBadge tone="accent">已选择 {selected.length} 条</WorkspaceBadge>
-      <button type="button" disabled={disabled || !selected.length} onClick={() => onSelected([])}>清空选择</button></div>
+      <Button variant="outline" type="button" disabled={disabled || !selected.length} onClick={() => onSelected([])}>清空选择</Button></div>
     <p className="evaluation-hint">仅显示已完整完成的审查。比较第二份时，只列出同一 PR、同一提交的独立审查。</p>
-    <div className="evaluation-table-wrap"><table>
-      <thead><tr><th>选择</th><th>仓库 / PR</th><th>提交</th><th>模型 / 问题数</th><th>时间</th></tr></thead>
-      <tbody>{page.data?.items.map(item => <tr key={item.review_run_id} className={selected.includes(item.review_run_id) ? "is-selected" : undefined}>
-        <td><input type="checkbox" aria-label={"选择 PR #" + item.pull_request_number + " 运行 " + item.review_run_id}
-          checked={selected.includes(item.review_run_id)} disabled={disabled || item.review_run_id === excludeRunId} onChange={() => toggle(item)} /></td>
-        <td><strong>{item.repository} · PR #{item.pull_request_number}</strong><small>{item.title || "未记录标题"}</small></td>
-        <td><code title={item.head_sha}>{shortSha(item.head_sha)}</code><small title={item.review_run_id}>{item.review_run_id.slice(0, 8)}</small></td>
-        <td>{item.model}<small>{item.finding_count} 条问题</small></td>
-        <td>{formatDate(item.completed_at)}</td>
-      </tr>)}</tbody>
-    </table></div>
+    <div className="evaluation-table-wrap"><Table>
+      <TableHeader><TableRow><TableHead>选择</TableHead><TableHead>仓库 / PR</TableHead><TableHead>提交</TableHead><TableHead>模型 / 问题数</TableHead><TableHead>时间</TableHead></TableRow></TableHeader>
+      <TableBody>{page.data?.items.map(item => <TableRow key={item.review_run_id} className={selected.includes(item.review_run_id) ? "is-selected" : undefined}>
+        <TableCell><input type="checkbox" aria-label={"选择 PR #" + item.pull_request_number + " 运行 " + item.review_run_id}
+          checked={selected.includes(item.review_run_id)} disabled={disabled || item.review_run_id === excludeRunId} onChange={() => toggle(item)} /></TableCell>
+        <TableCell><strong>{item.repository} · PR #{item.pull_request_number}</strong><small>{item.title || "未记录标题"}</small></TableCell>
+        <TableCell><code title={item.head_sha}>{shortSha(item.head_sha)}</code><small title={item.review_run_id}>{item.review_run_id.slice(0, 8)}</small></TableCell>
+        <TableCell>{item.model}<small>{item.finding_count} 条问题</small></TableCell>
+        <TableCell>{formatDate(item.completed_at)}</TableCell>
+      </TableRow>)}</TableBody>
+    </Table></div>
     {!page.loading && page.data?.items.length === 0 && <WorkspaceEmpty title="暂无符合条件的运行" description="请先完成一次审查。比较另一份时，需要同一 PR、同一提交的第二次完整审查。" />}
     <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)}
       busy={disabled || page.loading} onPrevious={page.previous} onNext={page.next} label="审查运行分页" />

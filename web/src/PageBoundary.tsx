@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { Component, Suspense, type ReactNode } from "react";
 
 import { Brand, LoadingScreen } from "./Auth";
@@ -16,7 +17,7 @@ export default class PageBoundary extends Component<{ children: ReactNode }, { f
         <div className="loading-card" role="alert">
           <Brand />
           <p className="loading-hint">页面加载失败，请检查网络后刷新重试。</p>
-          <button type="button" onClick={() => window.location.reload()}>刷新页面</button>
+          <Button variant="outline" type="button" onClick={() => window.location.reload()}>刷新页面</Button>
         </div>
       </main>;
     }

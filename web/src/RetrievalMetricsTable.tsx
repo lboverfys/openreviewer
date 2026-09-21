@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "./components/ui/table";
 import { formatDuration } from "./review-details";
 import { retrievalStrategyLabels } from "./RetrievalTracePanel";
 import type { RetrievalEvaluationReport } from "./types";
@@ -9,13 +10,13 @@ export default function RetrievalMetricsTable({report, split}: {report: Retrieva
   const baseline = rows.find(row => row.item.strategy === "bm25")?.score;
   const percent = (value: number | null | undefined) => value == null ? "—" : (value * 100).toFixed(1) + "%";
   const duration = (value: number | null | undefined) => value == null ? "—" : formatDuration(Math.round(value));
-  return <div className="retrieval-table-scroll"><table><thead><tr><th>策略</th><th>样本数</th><th>Recall@K</th><th>MRR</th><th>中位耗时</th><th>P95 耗时</th><th>召回率较基线</th><th>全样本请求 / 估算费</th></tr></thead><tbody>
-    {rows.map(({item,score}) => <tr key={item.strategy}>
-      <td>{retrievalStrategyLabels[item.strategy]}</td><td>{score?.sample_count ?? "未记录分层"}</td>
-      <td>{percent(score?.recall_at_k)} <small>K={item.k}</small></td><td>{score?.mrr == null ? "—" : score.mrr.toFixed(3)}</td>
-      <td>{duration(score?.median_duration_ms)}</td><td>{duration(score?.p95_duration_ms)}</td>
-      <td>{score?.recall_at_k != null && baseline?.recall_at_k != null ? `${score.recall_at_k >= baseline.recall_at_k ? "+" : ""}${((score.recall_at_k - baseline.recall_at_k) * 100).toFixed(1)} 个百分点` : "—"}</td>
-      <td>{item.model_requests ?? "未记录"} / {item.estimated_cost_microusd == null ? "未知" : "$" + (item.estimated_cost_microusd / 1e6).toFixed(6)}</td>
-    </tr>)}
-  </tbody></table></div>;
+  return <div className="retrieval-table-scroll"><Table><TableHeader><TableRow><TableHead>策略</TableHead><TableHead>样本数</TableHead><TableHead>Recall@K</TableHead><TableHead>MRR</TableHead><TableHead>中位耗时</TableHead><TableHead>P95 耗时</TableHead><TableHead>召回率较基线</TableHead><TableHead>全样本请求 / 估算费</TableHead></TableRow></TableHeader><TableBody>
+    {rows.map(({item,score}) => <TableRow key={item.strategy}>
+      <TableCell>{retrievalStrategyLabels[item.strategy]}</TableCell><TableCell>{score?.sample_count ?? "未记录分层"}</TableCell>
+      <TableCell>{percent(score?.recall_at_k)} <small>K={item.k}</small></TableCell><TableCell>{score?.mrr == null ? "—" : score.mrr.toFixed(3)}</TableCell>
+      <TableCell>{duration(score?.median_duration_ms)}</TableCell><TableCell>{duration(score?.p95_duration_ms)}</TableCell>
+      <TableCell>{score?.recall_at_k != null && baseline?.recall_at_k != null ? `${score.recall_at_k >= baseline.recall_at_k ? "+" : ""}${((score.recall_at_k - baseline.recall_at_k) * 100).toFixed(1)} 个百分点` : "—"}</TableCell>
+      <TableCell>{item.model_requests ?? "未记录"} / {item.estimated_cost_microusd == null ? "未知" : "$" + (item.estimated_cost_microusd / 1e6).toFixed(6)}</TableCell>
+    </TableRow>)}
+  </TableBody></Table></div>;
 }

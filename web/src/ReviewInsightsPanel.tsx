@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "./components/ui/table";
 import { DetailDialog } from "./Feedback";
 import type { DiagnosticReport } from "./types";
 import { formatMoney } from "./UsagePanel";
@@ -27,7 +28,7 @@ export default function ReviewInsightsPanel({data}: {data: NonNullable<Diagnosti
     <section className="team-card"><h2>自动引用核验</h2>
       <p>核验覆盖率 {percent(evidence.automatic_coverage)}（可匹配 {evidence.matched + evidence.unmatched} / 全部 {evidence.total}）；可匹配样本通过率 {percent(evidence.eligible_pass_rate)}（{evidence.matched}/{evidence.matched + evidence.unmatched}）。</p>
       <p>来源异常 {evidence.infrastructure} · 未覆盖/缺信息 {evidence.not_covered} · 未分类 {evidence.unclassified}，均不进入通过率分母。引用匹配只说明与源码一致，业务正确性仍须人工判断。</p>
-      <DetailDialog><summary>引用核验原因</summary><table><thead><tr><th>分类</th><th>原因</th><th>数量</th></tr></thead><tbody>{data.evidence_reasons.map(item => <tr key={(item.reason ?? "none") + item.status}><td>{categories[item.category] ?? item.category}</td><td><code>{item.reason ?? "未记录原因"}</code></td><td>{item.count}</td></tr>)}</tbody></table>
+      <DetailDialog><summary>引用核验原因</summary><Table><TableHeader><TableRow><TableHead>分类</TableHead><TableHead>原因</TableHead><TableHead>数量</TableHead></TableRow></TableHeader><TableBody>{data.evidence_reasons.map(item => <TableRow key={(item.reason ?? "none") + item.status}><TableCell>{categories[item.category] ?? item.category}</TableCell><TableCell><code>{item.reason ?? "未记录原因"}</code></TableCell><TableCell>{item.count}</TableCell></TableRow>)}</TableBody></Table>
         {data.evidence_reasons_truncated && <p>只展示前 50 组原因，以上总计仍包含全部记录。</p>}</DetailDialog>
     </section>
     <section className="team-card"><h2>复用记录</h2>

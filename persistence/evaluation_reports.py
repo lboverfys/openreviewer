@@ -7,6 +7,7 @@ from sqlalchemy import and_, case, distinct, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from domain.evaluation_workbench import (
+    FAILURE_REASONS,
     EvaluationComparisonReport,
     EvaluationNotFoundError,
     EvaluationScore,
@@ -24,6 +25,7 @@ from services.rbac import ResourceScope
 _QUALITY_COUNTS = (
     "adjudicated_count", "valid_count", "false_positive_count", "duplicate_count",
     "out_of_scope_count", "known_issue_count", "location_assessed_count", "location_correct_count",
+    "failure_reason_disagreements", *(f"failure_{reason}" for reason in FAILURE_REASONS),
 )
 
 
@@ -50,6 +52,9 @@ def comparison_report(
     referenced = and_(quality, EvaluationCaseRecord.reference_status == "confirmed", reference_agreement)
     priced = and_(paired, baseline.estimated_cost_microusd.is_not(None),
                   candidate.estimated_cost_microusd.is_not(None))
+    priced_reference = and_(priced, referenced)
+    clean = and_(referenced, EvaluationCaseRecord.reference_count == 0,
+                 EvaluationCaseRecord.kind == "normal")
 
     def total(condition, expression=1):
         return func.coalesce(func.sum(case((condition, expression), else_=0)), 0)
@@ -62,6 +67,8 @@ def comparison_report(
         func.coalesce(func.sum(EvaluationCaseRecord.revision), 0).label("case_revisions"),
         total(paired).label("performance_pairs"), total(quality).label("quality_pairs"),
         total(referenced).label("reference_pairs"), total(priced).label("priced_pairs"),
+        total(priced_reference).label("priced_reference_pairs"),
+        total(clean).label("clean_pr_count"),
         total(and_(EvaluationCaseRecord.id.is_not(None), baseline.id.is_(None))).label("missing_baseline"),
         total(and_(EvaluationCaseRecord.id.is_not(None), candidate.id.is_(None))).label("missing_candidate"),
         total(and_(both, baseline.source_run_id == candidate.source_run_id)).label("identical_run_pairs"),
@@ -79,6 +86,11 @@ def comparison_report(
     for kind in ("normal", "known_defect", "cross_file"):
         columns.append(total(EvaluationCaseRecord.kind == kind).label(f"{kind}_count"))
     for prefix, observation in (("baseline", baseline), ("candidate", candidate)):
+        columns.extend((
+            total(and_(clean, observation.metrics["false_positive_count"].as_integer() > 0)).label(f"{prefix}_false_alarm_pr_count"),
+            total(priced_reference, observation.estimated_cost_microusd).label(f"{prefix}_reference_cost"),
+            total(priced_reference, func.coalesce(observation.metrics["reference_true_positive_count"].as_integer(), 0)).label(f"{prefix}_priced_defects"),
+        ))
         columns.append(total(quality, observation.finding_count).label(f"{prefix}_finding_count"))
         for key in _QUALITY_COUNTS:
             columns.append(total(quality, func.coalesce(observation.metrics[key].as_integer(), 0)).label(f"{prefix}_{key}"))
@@ -124,6 +136,13 @@ def comparison_report(
         calculated = summarize_evaluation_counts(counts)
         payload = {key: value for key, value in calculated.items() if key in EvaluationScore.model_fields}
         payload.update(
+            clean_pr_count=number("clean_pr_count"),
+            false_alarm_pr_count=number(f"{prefix}_false_alarm_pr_count"),
+            clean_pr_false_alarm_rate=(number(f"{prefix}_false_alarm_pr_count") / number("clean_pr_count") if number("clean_pr_count") else None),
+            priced_reference_pairs=number("priced_reference_pairs"),
+            cost_per_confirmed_defect_usd=(round(number(f"{prefix}_reference_cost") / number(f"{prefix}_priced_defects") / 1_000_000, 8) if number(f"{prefix}_priced_defects") else None),
+            failure_reasons={reason: number(f"{prefix}_failure_{reason}") for reason in FAILURE_REASONS},
+            failure_reason_disagreements=number(f"{prefix}_failure_reason_disagreements"),
             mean_turnaround_ms=mean(number(f"{prefix}_turnaround_ms"), number("performance_pairs")),
             mean_model_duration_ms=mean(number(f"{prefix}_model_duration_ms"), number("performance_pairs")),
             mean_estimated_cost_usd=(
@@ -138,6 +157,9 @@ def comparison_report(
     notices = [
         "有效问题比例为有效问题/已裁决问题，分母含重复、范围外与既有问题",
         "Wilson 区间为描述性区间；同 PR 的问题可能相关，点估计差异不证明显著改进",
+        "干净 PR 误报率仅统计已确认空参考标签的正常变更；未标注不等于无缺陷",
+        "每个确认缺陷的成本使用双方已知费用且参考确认的同一批配对，包含其中零检出的运行；未检出缺陷时不计算",
+        "失败归因由复核人填写，双人模式仅计一致归因；引用文本未匹配不自动认定为误报",
     ]
     if row["review_mode"] == "single":
         notices.append("当前为单人日常核对，不构成严格双人验收或方案验收依据")

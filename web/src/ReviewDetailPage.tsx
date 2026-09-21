@@ -1,3 +1,6 @@
+import { Button } from "./components/ui/button";
+import { NativeSelect } from "./components/ui/native-select";
+import { Input } from "./components/ui/input";
 import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -8,8 +11,7 @@ import Pagination from "./Pagination";
 import { useCursorPage } from "./useCursorPage";
 import RetrievalTracePanel from "./RetrievalTracePanel";
 import StaticAnalysisPanel from "./StaticAnalysisPanel";
-import SnapshotProfilePicker from "./SnapshotProfilePicker";
-import "./styles/retrieval.css";
+import SnapshotReviewDialog from "./SnapshotReviewDialog";
 import {
   DetailIcon,
   ModelBatchPanel,
@@ -210,6 +212,7 @@ function ReviewDetailPage({
   const [retrievalLoadError, setRetrievalLoadError] = useState("");
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [captureModelOutputs, setCaptureModelOutputs] = useState(false);
+  const [snapshotDialogOpen, setSnapshotDialogOpen] = useState(false);
   const [trialProfileId, setTrialProfileId] = useState("");
   useEffect(() => {setCaptureModelOutputs(false);setTrialProfileId("");}, [reviewRunId]);
   const retrievalEvidence = useMemo<Record<string, ContextEvidence>>(
@@ -370,7 +373,6 @@ function ReviewDetailPage({
   async function runAction(action: ReviewAction) {
     if (!details || !allowedReviewActions(user, [action]).length) return;
     if (action === "cancel" && !window.confirm("取消后停止后续执行并保留已有记录。已发出的模型请求无法撤回，可能仍会计费。确定取消吗？")) return;
-    if (action === "review_snapshot" && !window.confirm(`将使用已保存的代码和${trialProfileId ? "所选审查方案" : "当前审查配置"}真实调用模型，另存一条复查记录。不会重新运行 CI 或发布到 GitHub，继续吗？`)) return;
     if (action === "approve" && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
     if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
@@ -410,6 +412,7 @@ function ReviewDetailPage({
           reviewProfileId: action === "review_snapshot" ? trialProfileId : undefined,
         },
       );
+      if (action === "review_snapshot") setSnapshotDialogOpen(false);
       if ((action === "rerun" || action === "new_review" || action === "review_snapshot") && result.review_run_id !== details.review_run_id) {
         onOpenReview(result.review_run_id);
       } else {
@@ -500,7 +503,7 @@ function ReviewDetailPage({
         <div className="review-detail-error-state">
           <strong>暂时无法读取这条任务</strong>
           <p>{error || "任务可能已被删除或服务暂时不可用"}</p>
-          <div><button type="button" className="review-primary-btn" onClick={() => void loadDetails()}>重新读取</button><button type="button" className="review-quiet-btn" onClick={onBack}>返回列表</button></div>
+          <div><Button variant="default" type="button" className="review-primary-btn" onClick={() => void loadDetails()}>重新读取</Button><Button variant="outline" type="button" className="review-quiet-btn" onClick={onBack}>返回列表</Button></div>
         </div>
       </main>
     );
@@ -627,13 +630,13 @@ function ReviewDetailPage({
     <div className="review-detail-shell">
       <main className="review-detail-main">
         <div className="review-detail-toolbar">
-          <button type="button" className="review-back-link" onClick={onBack}>
+          <Button variant="outline" type="button" className="review-back-link" onClick={onBack}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
             返回审查任务
-          </button>
+          </Button>
           <div className="review-detail-toolbar-actions">
             {hasPermission(user, "findings:adjudicate") && details.model_status === "succeeded" && details.coverage_status === "complete" && (
-              <button type="button" className="btn-ghost" onClick={() => {window.location.hash="evaluations?review="+encodeURIComponent(reviewRunId);}}>加入评测</button>
+              <Button variant="outline" type="button" className="btn-ghost" onClick={() => {window.location.hash="evaluations?review="+encodeURIComponent(reviewRunId);}}>加入评测</Button>
             )}
             <label className="review-live-toggle">
               <input
@@ -645,11 +648,11 @@ function ReviewDetailPage({
               />
               <span className="review-live-dot" />自动刷新
             </label>
-            <button type="button" className="btn-ghost" onClick={() => void loadDetails().then(token => {
+            <Button variant="outline" type="button" className="btn-ghost" onClick={() => void loadDetails().then(token => {
               if (token !== details.change_token) return;
               if (activeTab === "findings") void findingPage.refresh();
               if (activeTab === "logs") void eventPage.refresh();
-            })} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></button>
+            })} disabled={loading} title="立即刷新详情">↻ <span>刷新</span></Button>
           </div>
         </div>
         {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
@@ -682,14 +685,14 @@ function ReviewDetailPage({
               {identityNeedsSync && canManageReviews && (
                 <div className="review-pr-identity-missing">
                   <span className="review-pr-branch-legacy">PR 身份信息不完整</span>
-                  <button
+                  <Button variant="outline"
                     type="button"
                     className="review-identity-sync-btn"
                     onClick={() => void syncIdentity()}
                     disabled={identitySyncBusy}
                   >
                     {identitySyncBusy ? "同步中…" : "从 GitHub 同步"}
-                  </button>
+                  </Button>
                 </div>
               )}
               {identitySyncError && <Notice kind="error" onDismiss={() => setIdentitySyncError("")}>{identitySyncError}</Notice>}
@@ -724,34 +727,35 @@ function ReviewDetailPage({
           <div className="review-control-actions">
             {hasActions ? availableActions.filter(action => action !== "retry_stage").map((action) => (
               <div className="review-action-with-hint" key={action}>
-                <button
+                <Button variant="outline"
                   type="button"
                   className={`review-action-btn action-${action}`}
                   disabled={actionBusy !== null}
-                  onClick={() => void runAction(action)}
+                  onClick={() => action === "review_snapshot" ? setSnapshotDialogOpen(true) : void runAction(action)}
                 >
                   <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : actionLabels[action]}
-                </button>
+                </Button>
                 {action === "retry_failed_node" && <small>不会重复调用已成功的模型请求</small>}
                 {action === "retry" && <small>{details.coverage_status === "partial" ? "保留已经成功的批次" : "重新执行 AI 阶段，可能再次产生费用"}</small>}
                 {(action === "new_review" || action === "rerun") && <small>创建新记录，不覆盖当前任务</small>}
                 {action === "review_snapshot" && <small>使用已保存代码，另存检查结果</small>}
-                {action === "review_snapshot" && hasPermission(user, "settings:manage") && <SnapshotProfilePicker repository={details.repository}
-                  selected={trialProfileId} onSelected={setTrialProfileId} disabled={actionBusy !== null} onError={handleTrialError}/>}
-                {action === "review_snapshot" && <label><input type="checkbox" checked={captureModelOutputs} disabled={actionBusy !== null}
-                  onChange={event => setCaptureModelOutputs(event.target.checked)} />留存本次评测输出（30 天，可能含业务代码）</label>}
               </div>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
           </div>
         </section>
 
+        <SnapshotReviewDialog open={snapshotDialogOpen} onOpenChange={setSnapshotDialogOpen} repository={details.repository}
+          canChooseProfile={hasPermission(user, "settings:manage")} profileId={trialProfileId} onProfileChange={setTrialProfileId}
+          capture={captureModelOutputs} onCaptureChange={setCaptureModelOutputs} busy={actionBusy !== null} onError={handleTrialError}
+          onConfirm={() => void runAction("review_snapshot")} />
+
         {availableActions.includes("retry_stage") && <DetailDialog className="review-advanced-actions">
           <summary>高级重试：从指定步骤重新执行</summary>
-          <label className="review-retry-target">重审起点<select value={retryTargetStage} disabled={actionBusy !== null}
+          <label className="review-retry-target">重审起点<NativeSelect value={retryTargetStage} disabled={actionBusy !== null}
             onChange={event => setRetryTargetStage(event.target.value as RetryTargetStage)}>
             {retryTargetOptions.filter(([value]) => !details.snapshot_review || value !== "ci").map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select></label>
-          <p>{retryStageNotice(retryTargetStage)}</p><button type="button" disabled={actionBusy !== null} onClick={() => void runAction("retry_stage")}>从所选步骤重试</button>
+          </NativeSelect></label>
+          <p>{retryStageNotice(retryTargetStage)}</p><Button variant="outline" type="button" disabled={actionBusy !== null} onClick={() => void runAction("retry_stage")}>从所选步骤重试</Button>
         </DetailDialog>}
         {details.snapshot_review && <section className="review-snapshot-banner"><strong>历史版本复查</strong>
           本次分析已保存的提交 {shortSha(details.head_sha)}，使用当前审查配置。不会重新运行 CI 或发布到 GitHub，原任务与结果保留。
@@ -776,9 +780,9 @@ function ReviewDetailPage({
 
         <nav className="review-detail-tabs" aria-label="详情视图">
           {tabs.map(([tab, label, count]) => (
-            <button key={tab} type="button" className={activeTab === tab ? "is-active" : ""} aria-current={activeTab === tab ? "page" : undefined} onClick={() => setActiveTab(tab)}>
+            <Button variant="outline" key={tab} type="button" className={activeTab === tab ? "is-active" : ""} aria-current={activeTab === tab ? "page" : undefined} onClick={() => setActiveTab(tab)}>
               <span>{label}</span><b>{tab === "overview" ? stageLabels[count] ?? count : count}</b>
-            </button>
+            </Button>
           ))}
         </nav>
 
@@ -792,13 +796,13 @@ function ReviewDetailPage({
                 ? details.finding_total_count > 0 ? `报告了 ${details.finding_total_count} 条候选问题，请结合代码证据核对。` : "本次未报告候选问题，可继续查看实际检查范围；这不代表代码绝对没有缺陷。"
                 : details.phase === "cancelled" ? "任务已经停止，本次没有生成最终 AI 结论。需要重新测试时可复查已保存的版本。" : "尚未产生最终审查结果，请查看当前步骤。"}</p>
               {details.model_name && <p>模型记录：<strong>{details.model_name}</strong>，各路检查的请求和用量可在“AI 检查过程”中查看。</p>}
-              {details.model_review_completed_at && <button type="button" onClick={() => setActiveTab("findings")}>查看问题与结论</button>}
+              {details.model_review_completed_at && <Button variant="outline" type="button" onClick={() => setActiveTab("findings")}>查看问题与结论</Button>}
             </section>
 
             <DetailDialog className="review-panel review-evidence-group" onToggle={event => setEvidenceOpen(event.currentTarget.open)}><summary>代码依据与辅助检查<span>需要核对上下文时展开</span></summary>
             <section className="review-panel review-retrieval-panel">
               <div className="review-panel-heading"><h2>检索上下文</h2>
-                {hasPermission(user, "knowledge:manage") && <button type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</button>}
+                {hasPermission(user, "knowledge:manage") && <Button variant="outline" type="button" onClick={() => {window.location.hash = `retrieval/${encodeURIComponent(reviewRunId)}`;}}>打开代码索引与检索</Button>}
               </div>
               {retrievalLoadError ? <p className="retrieval-warning">{retrievalLoadError}</p> : <RetrievalTracePanel traces={retrievalTraces} compact />}
             </section>
@@ -880,15 +884,15 @@ function ReviewDetailPage({
               </div>
               {details.finding_total_count > 0 && (
                 <div className="review-finding-toolbar">
-                  <label><span>严重程度</span><select id="review-finding-severity" name="review-finding-severity" value={findingSeverity} onChange={(event) => setFindingSeverity(event.target.value)}><option value="all">全部级别</option><option value="critical">严重</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></select></label>
-                  <label><span>人工裁决</span><select id="review-finding-status" name="review-finding-status" value={findingStatus} onChange={(event) => setFindingStatus(event.target.value)}><option value="all">全部状态</option><option value="unreviewed">待裁决</option><option value="valid">有效问题</option><option value="false_positive">误报</option><option value="duplicate">重复问题</option><option value="out_of_scope">超出范围</option><option value="known_issue">已知问题</option></select></label>
-                  <label className="review-finding-search"><span>搜索</span><input id="review-finding-query" name="review-finding-query" value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder="标题、文件或证据" /></label>
+                  <label><span>严重程度</span><NativeSelect id="review-finding-severity" name="review-finding-severity" value={findingSeverity} onChange={(event) => setFindingSeverity(event.target.value)}><option value="all">全部级别</option><option value="critical">严重</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></NativeSelect></label>
+                  <label><span>人工裁决</span><NativeSelect id="review-finding-status" name="review-finding-status" value={findingStatus} onChange={(event) => setFindingStatus(event.target.value)}><option value="all">全部状态</option><option value="unreviewed">待裁决</option><option value="valid">有效问题</option><option value="false_positive">误报</option><option value="duplicate">重复问题</option><option value="out_of_scope">超出范围</option><option value="known_issue">已知问题</option></NativeSelect></label>
+                  <label className="review-finding-search"><span>搜索</span><Input id="review-finding-query" name="review-finding-query" value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder="标题、文件或证据" /></label>
                   <strong>{filteredFindings.length}/{details.finding_total_count} 条结果</strong>
                 </div>
               )}
               {waitingForIndex && <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>正在准备关联代码</strong><p>基础索引和预算内的向量准备完成后自动继续。缺少向量不代表变更代码没有送给 GPT。</p></div></div>}
               {!details.model_review_completed_at && !waitingForIndex && !stopped && (currentModelFailure || retryPending) && (
-                <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small>{(availableActions.includes("retry_failed_node") || (availableActions.includes("retry") && details.coverage_status === "partial")) && <button type="button" className="review-inline-retry-btn" disabled={actionBusy !== null} onClick={() => void runAction(availableActions.includes("retry_failed_node") ? "retry_failed_node" : "retry")}>立即重试当前失败节点</button>}</div></div>
+                <div className="review-result-empty result-empty-error"><DetailIcon>!</DetailIcon><div><strong>{retryPending ? "AI 请求失败，已安排自动重试" : "AI 请求失败"}</strong><p>{payloadString(currentModelFailure, "error_message") ?? details.last_error ?? "模型服务未返回可用结果"}</p><small>HTTP {failureStatus ?? "—"} · {formatDuration(failureDuration)} · 错误码 {failureCode ?? "—"}{retryStatus ? ` · ${retryStatus}` : ""}</small>{(availableActions.includes("retry_failed_node") || (availableActions.includes("retry") && details.coverage_status === "partial")) && <Button variant="outline" type="button" className="review-inline-retry-btn" disabled={actionBusy !== null} onClick={() => void runAction(availableActions.includes("retry_failed_node") ? "retry_failed_node" : "retry")}>立即重试当前失败节点</Button>}</div></div>
               )}
               {!details.model_review_completed_at && ((!currentModelFailure && !retryPending) || stopped) && (
                 <div className="review-result-empty"><DetailIcon>◌</DetailIcon><div><strong>{stopped ? details.phase === "paused" ? "任务已暂停" : "任务已停止" : "AI 结果尚未生成"}</strong><p>{stopped ? "最终结果尚未保存。请在 AI 过程页查看已有候选和证据；需要完整报告时可复查此版本。" : "模型完成后，候选问题会显示在这里。"}</p></div></div>
@@ -922,7 +926,7 @@ function ReviewDetailPage({
               <div className="review-panel-heading">
                 <div><span className="review-eyebrow">EVENT LOG</span><h2>运行日志</h2></div>
                 <div className="review-log-filters" role="group" aria-label="日志筛选">
-                  {(["all", "model", "workflow", "errors"] as ReviewEventFilter[]).map((filter) => <button key={filter} type="button" className={eventFilter === filter ? "is-active" : ""} onClick={() => setEventFilter(filter)}>{filter === "all" ? "全部" : filter === "model" ? "模型" : filter === "workflow" ? "流程" : "异常"}</button>)}
+                  {(["all", "model", "workflow", "errors"] as ReviewEventFilter[]).map((filter) => <Button variant="outline" key={filter} type="button" className={eventFilter === filter ? "is-active" : ""} onClick={() => setEventFilter(filter)}>{filter === "all" ? "全部" : filter === "model" ? "模型" : filter === "workflow" ? "流程" : "异常"}</Button>)}
                   <span className="review-log-count">{filteredEvents.length} 条</span>
                 </div>
               </div>

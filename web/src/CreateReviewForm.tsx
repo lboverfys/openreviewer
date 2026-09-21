@@ -1,3 +1,5 @@
+import { Input } from "./components/ui/input";
+import { Button } from "./components/ui/button";
 import { Notice } from "./Feedback";
 import { useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "./api";
@@ -58,15 +60,15 @@ export default function CreateReviewForm({ onCreated, onUnauthorized, onCancel }
     {message && <Notice kind={(failed ? "error" : "success")} onDismiss={() => setMessage("")}>{message}</Notice>}
     <form onSubmit={submit}><fieldset disabled={submitting}>
       <WorkspaceSection title="审查目标" description="填写真实仓库、PR 编号和需要审查的精确提交。">
-        <label>目标仓库 (Owner/Repository)<input name="repository" value={repository} onChange={event => setRepository(event.target.value)} placeholder="owner/repository" pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} maxLength={255} required /></label>
-        <label>Pull Request 编号<input name="pull_request_number" type="number" min={1} step={1} value={pullRequest} onChange={event => setPullRequest(event.target.value)} required /></label>
-        <label>Head Commit SHA<input name="head_sha" className="code-font" value={headSha} onChange={event => setHeadSha(event.target.value)} minLength={40} maxLength={64} pattern="(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})" placeholder="PR 当前提交的完整 SHA" required /></label>
+        <label>目标仓库 (Owner/Repository)<Input name="repository" value={repository} onChange={event => setRepository(event.target.value)} placeholder="owner/repository" pattern={"[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+"} maxLength={255} required /></label>
+        <label>Pull Request 编号<Input name="pull_request_number" type="number" min={1} step={1} value={pullRequest} onChange={event => setPullRequest(event.target.value)} required /></label>
+        <label>Head Commit SHA<Input name="head_sha" className="code-font" value={headSha} onChange={event => setHeadSha(event.target.value)} minLength={40} maxLength={64} pattern="(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})" placeholder="PR 当前提交的完整 SHA" required /></label>
       </WorkspaceSection>
       <WorkspaceSection title="GitHub App 身份" description="使用已授权 App 的真实安装编号与仓库数字编号。">
-        <div className="ws-form-grid"><label>Installation ID<input name="installation_id" type="number" min={1} step={1} value={installationId} onChange={event => setInstallationId(event.target.value)} required /></label>
-          <label>Repository ID<input name="repository_id" type="number" min={1} step={1} value={repositoryId} onChange={event => setRepositoryId(event.target.value)} required /></label></div>
+        <div className="ws-form-grid"><label>Installation ID<Input name="installation_id" type="number" min={1} step={1} value={installationId} onChange={event => setInstallationId(event.target.value)} required /></label>
+          <label>Repository ID<Input name="repository_id" type="number" min={1} step={1} value={repositoryId} onChange={event => setRepositoryId(event.target.value)} required /></label></div>
       </WorkspaceSection>
-      <div className="ws-form-actions"><button type="submit" className="ws-primary">{submitting ? "正在提交…" : "提交审查任务"}</button>{onCancel && <button type="button" onClick={onCancel}>取消</button>}<span className="ws-hint">相同内容重试会复用请求标识</span></div>
+      <div className="ws-form-actions"><Button variant="default" type="submit" className="ws-primary">{submitting ? "正在提交…" : "提交审查任务"}</Button>{onCancel && <Button variant="outline" type="button" onClick={onCancel}>取消</Button>}<span className="ws-hint">相同内容重试会复用请求标识</span></div>
     </fieldset></form>
   </section>;
 }

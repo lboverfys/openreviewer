@@ -117,3 +117,18 @@ def test_stable_profile_fingerprint_does_not_change_with_executed_role_subset():
     assert _observation_values(changed)["configuration_fingerprint"] != baseline["configuration_fingerprint"]
     mixed = source.model_copy(update={"models":source.models + changed.models})
     assert _observation_values(mixed)["provenance_complete"] is False
+def test_failure_reason_requires_human_agreement():
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    finding = EvaluationFinding(id="one", fingerprint="one", title="问题", severity="high", category="authorization",
+        file=None, start_line=None, end_line=None, evidence="未匹配", impact="影响", suggestion="建议",
+        confidence=1, location_status="unverified", evidence_status="unverified", evidence_reason="evidence_text_not_found")
+    first = EvaluationDecision(verdict="false_positive", failure_reason="context_missing")
+    def ballot(who, decision):
+        return EvaluationBallot(reviewer=who, decisions={"one": decision}, submitted_at=now, updated_at=now)
+    for other, context_count, disagreement in ((first, 1, 0), (first.model_copy(update={"failure_reason":"reasoning_error"}), 0, 1)):
+        _, counts = assessment_metrics((finding,), (ballot("alice", first), ballot("bob", other)), None, "dual")
+        assert counts["failure_context_missing"] == context_count
+        assert counts["failure_reason_disagreements"] == disagreement
+        assert counts["failure_evidence_mismatch"] == 0

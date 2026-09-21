@@ -1,3 +1,5 @@
+import { Input } from "./components/ui/input";
+import { Button } from "./components/ui/button";
 import { Notice } from "./Feedback";
 import { FormEvent, useEffect, useState } from "react";
 
@@ -94,17 +96,17 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
       <h1>登录代码审查平台</h1>
       <p>使用团队账号查看审查、核对问题和跟进修复。</p>
       <form className="auth-card" onSubmit={submit} autoComplete="on">
-        <label className="simple-login-field">账号<input name="username" value={username}
+        <label className="simple-login-field">账号<Input name="username" value={username}
           onChange={event => setUsername(event.target.value)} autoComplete="username" maxLength={100}
           placeholder="输入你的账号" required autoFocus disabled={submitting} /></label>
-        <label className="simple-login-field">密码<input name="password" type="password" value={password}
+        <label className="simple-login-field">密码<Input name="password" type="password" value={password}
           onChange={event => setPassword(event.target.value)} autoComplete="current-password"
           maxLength={512} required disabled={submitting} /></label>
         <label className="simple-login-remember"><input type="checkbox" checked={rememberCredentials}
           onChange={event => setRememberCredentials(event.target.checked)} />在这台设备保存登录信息</label>
         <small>公共电脑请勿保存登录信息。</small>
         {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
-        <button type="submit" className="auth-submit-btn" disabled={submitting}>{submitting ? "正在登录…" : "登录平台"}</button>
+        <Button variant="default" type="submit" className="auth-submit-btn" disabled={submitting}>{submitting ? "正在登录…" : "登录平台"}</Button>
       </form>
       <p className="simple-login-note">账号由管理员创建。登录后可在右上角打开使用手册。</p>
     </section>

@@ -9,7 +9,6 @@ import WorkItemsPanel from "./WorkItemsPanel";
 import ReviewProfilesPanel from "./ReviewProfilesPanel";
 import DiagnosticsPanel from "./DiagnosticsPanel";
 import { WorkspaceHeader } from "./Workspace";
-import "./styles/platform.css";
 
 export type PlatformTab = "work" | "usage" | "profiles" | "diagnostics";
 export interface PlatformPanelProps { onError: (error: unknown) => void; }

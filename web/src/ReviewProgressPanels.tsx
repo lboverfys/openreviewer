@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { DetailDialog } from "./Feedback";
 import { useMemo } from "react";
 import ReviewBatchList from "./ReviewBatchList";
@@ -176,7 +177,7 @@ export function ModelBatchPanel({
               {progress.status === "failed"
                 && onRetry
                 && (key === "summary" || progress.batchCount === 0 || failedCount > 1) && (
-                  <button
+                  <Button variant="outline"
                     type="button"
                     className="review-agent-retry-btn"
                     disabled={retryBusy}
@@ -189,7 +190,7 @@ export function ModelBatchPanel({
                         : failedCount > 1
                           ? `重试失败批次（${failedCount}）`
                           : `重试${label}`}
-                  </button>
+                  </Button>
                 )}
               {progress.references.length > 0 && (
                 <DetailDialog className="review-agent-references">

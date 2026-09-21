@@ -1,3 +1,5 @@
+import { Button } from "./components/ui/button";
+import { NativeSelect } from "./components/ui/native-select";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { TeamRepository } from "./types";
@@ -85,28 +87,28 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
             </label>
             {(appPage > 1 || installations?.has_more) && (
               <div className="repo-page-nav" aria-label="账号翻页">
-                <button
+                <Button variant="outline"
                   type="button"
                   className="repo-page-btn"
                   disabled={appPage === 1}
                   onClick={() => setAppPage(value => value - 1)}
                 >
                   上一页账号
-                </button>
+                </Button>
                 <span className="repo-page-indicator">第 {appPage} 页</span>
-                <button
+                <Button variant="outline"
                   type="button"
                   className="repo-page-btn"
                   disabled={!installations?.has_more}
                   onClick={() => setAppPage(value => value + 1)}
                 >
                   下一页账号
-                </button>
+                </Button>
               </div>
             )}
           </div>
           <div className="repo-select-wrapper">
-            <select
+            <NativeSelect
               id="repo-account-select"
               aria-label="GitHub 账号"
               value={installation}
@@ -121,7 +123,7 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
                   {item.account} · {item.selection === "all" ? "全部仓库已授权" : "部分仓库已授权"}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
         </div>
 
@@ -133,28 +135,28 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
             </label>
             {(page > 1 || repositories?.has_more) && (
               <div className="repo-page-nav" aria-label="仓库翻页">
-                <button
+                <Button variant="outline"
                   type="button"
                   className="repo-page-btn"
                   disabled={page === 1 || busy}
                   onClick={() => setPage(value => value - 1)}
                 >
                   上一页仓库
-                </button>
+                </Button>
                 <span className="repo-page-indicator">第 {page} 页</span>
-                <button
+                <Button variant="outline"
                   type="button"
                   className="repo-page-btn"
                   disabled={!repositories?.has_more || busy}
                   onClick={() => setPage(value => value + 1)}
                 >
                   下一页仓库
-                </button>
+                </Button>
               </div>
             )}
           </div>
           <div className="repo-select-wrapper">
-            <select
+            <NativeSelect
               id="repo-repository-select"
               aria-label="已授权的仓库"
               value={repository}
@@ -168,7 +170,7 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
                     {item.repository}
                   </option>
                 ))}
-            </select>
+            </NativeSelect>
           </div>
         </div>
       </div>
@@ -178,14 +180,14 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
           <div className="repo-status-icon">✓</div>
           <div className="repo-status-content">
             <p className="repo-status-text">该账号的所有仓库已经授权，直接选择即可。</p>
-            <button
+            <Button variant="outline"
               type="button"
               className="repo-callout-btn"
               disabled={busy}
               onClick={() => setRefresh(value => value + 1)}
             >
               已返回平台，刷新授权列表
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
@@ -210,14 +212,14 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
                   到 GitHub 补充仓库授权
                 </a>
               )}
-              <button
+              <Button variant="outline"
                 type="button"
                 className="repo-callout-btn"
                 disabled={busy}
                 onClick={() => setRefresh(value => value + 1)}
               >
                 已返回平台，刷新授权列表
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -234,7 +236,7 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
       </div>
 
       <div className="ws-form-actions repo-actions">
-        <button
+        <Button variant="default"
           type="button"
           className="team-primary repo-primary-btn"
           disabled={busy || !installation || !repository || !repositories?.items.some(item => item.repository === repository)}
@@ -259,10 +261,10 @@ export default function RepositoryConnectPanel({existing, onSaved, onCancel, onE
           }}
         >
           {busy ? "正在检查…" : "检查并启用审查"}
-        </button>
-        <button type="button" className="repo-cancel-btn" disabled={busy} onClick={onCancel}>
+        </Button>
+        <Button variant="outline" type="button" className="repo-cancel-btn" disabled={busy} onClick={onCancel}>
           取消
-        </button>
+        </Button>
         <span className="ws-hint repo-action-hint">检查通过后将允许该仓库接入并按项目设置触发审查</span>
       </div>
     </section>

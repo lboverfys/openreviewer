@@ -124,7 +124,7 @@ def test_request_ledger_at_100k_rows(postgres_database):
             ).scalar_one()[0]
             assert "Index" in json.dumps(plan)
             aggregation = request_statistics_statement(
-                ModelUsageRequestRecord.month_id == "scale-month", ("agent",)
+                ModelUsageRequestRecord.month_id == "scale-month", ("agent",), postgres=True,
             )
             group = connection.execute(aggregation).mappings().one()
             assert group["request_count"] == group["total_request_count"] == count
@@ -136,6 +136,19 @@ def test_request_ledger_at_100k_rows(postgres_database):
             aggregate_plan = connection.execute(text(
                 "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + aggregate_sql
             )).scalar_one()[0]
+            baseline = request_statistics_statement(
+                ModelUsageRequestRecord.month_id == "scale-month", ("agent",),
+            )
+            assert dict(connection.execute(baseline).mappings().one()) == dict(group)
+            baseline_sql = str(baseline.compile(dialect=connection.dialect, compile_kwargs={"literal_binds": True}))
+            comparison = {"window_baseline": [], "ordered_set": []}
+            # 交替顺序重复测量，保留全部执行计划，不设跨硬件的耗时门槛。
+            for trial in range(6):
+                order = (("window_baseline", baseline_sql), ("ordered_set", aggregate_sql))
+                for label, sql in order[::1 if trial % 2 == 0 else -1]:
+                    comparison[label].append(connection.execute(text(
+                        "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql
+                    )).scalar_one()[0])
             insight_queries = []
 
             def capture_insight(_conn, _cursor, sql, parameters, *_args):
@@ -164,6 +177,7 @@ def test_request_ledger_at_100k_rows(postgres_database):
                         "list_queries": len(statements),
                         "plan": plan,
                         "agent_aggregation_plan": aggregate_plan,
+                        "aggregation_comparison": comparison,
                         "insights_query_count": len(insight_queries),
                         "insights_fixture": "one completed run; 100k requests; other fact tables empty",
                         "insights_plans": insight_plans,

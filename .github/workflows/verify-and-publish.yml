@@ -96,7 +96,14 @@ jobs:
           mkdir -p reports/performance
           python -m pytest tests/performance/diagnostics_scale.py -q -s -W error | tee reports/performance/diagnostics.log
 
+      - name: Measure queue capacity at 1 2 4 and 8 workers
+        shell: bash
+        run: |
+          mkdir -p reports/performance
+          python -m pytest tests/performance/worker_scale.py -q -s -W error | tee reports/performance/worker.log
+
       - name: Upload isolated query plans
+        # 日志一并保留相同环境的旧/新聚合对照和领取容量，避免跨版本硬件比较。
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

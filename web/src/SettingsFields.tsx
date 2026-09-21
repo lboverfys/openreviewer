@@ -1,3 +1,5 @@
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
 interface NumberFieldProps {
   name: string;
   label: string;
@@ -25,7 +27,7 @@ export function NumberField({
     <label>
       <span>{label}</span>
       <span className="settings-input-with-suffix">
-        <input
+        <Input
           id={`settings-${name}`}
           name={`settings-${name}`}
           type="number"
@@ -63,7 +65,7 @@ export function SelectField({
   return (
     <label>
       <span>{label}</span>
-      <select
+      <NativeSelect
         id={`settings-${name}`}
         name={`settings-${name}`}
         value={value}
@@ -73,7 +75,7 @@ export function SelectField({
         {options.map(([option, text]) => (
           <option key={option} value={option}>{text}</option>
         ))}
-      </select>
+      </NativeSelect>
       {help && <small>{help}</small>}
     </label>
   );

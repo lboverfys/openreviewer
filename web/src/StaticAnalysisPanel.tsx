@@ -1,3 +1,5 @@
+import { Input } from "./components/ui/input";
+import { Button } from "./components/ui/button";
 import { DetailDialog } from "./Feedback";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { platformApi } from "./platform-api";
@@ -43,10 +45,10 @@ export default function StaticAnalysisPanel({ runId, headSha, editable, onError 
         <DetailDialog className="profile-version"><summary>来源与版本</summary><p>导入人 {report.imported_by} · 报告指纹 <code>{report.report_hash.slice(0, 12)}</code></p><p>报告提交 <code>{report.head_sha}</code></p></DetailDialog>
       </>}
       {loaded && !report && editable && <form onSubmit={event => void submit(event)}><fieldset disabled={busy}>
-        <div className="static-upload-grid"><label className="static-file-field">当前提交报告<small>Semgrep SARIF · 最大 1 MB</small><input aria-label="当前提交报告（Semgrep SARIF，最大 1 MB）" type="file" accept=".sarif,.json" required onChange={event => void readFile(event.target.files?.[0], setHead)} /></label>
-          <label className="static-file-field">基线提交报告<small>可选 · 同一扫描器版本</small><input aria-label="基线提交报告（可选，同一扫描器版本）" type="file" accept=".sarif,.json" onChange={event => void readFile(event.target.files?.[0], setBase)} /></label></div>
-        {base && <div className="ws-filterbar"><label>基线 SHA<input value={baseSha} required pattern="[0-9a-f]{40,64}" maxLength={64} onChange={event => setBaseSha(event.target.value)} /></label></div>}
-        <div className="ws-form-actions"><button className="ws-primary" type="submit" disabled={!head}>导入静态报告</button><span className="ws-hint">当前提交 <code>{headSha.slice(0, 12)}</code></span></div>
+        <div className="static-upload-grid"><label className="static-file-field">当前提交报告<small>Semgrep SARIF · 最大 1 MB</small><Input aria-label="当前提交报告（Semgrep SARIF，最大 1 MB）" type="file" accept=".sarif,.json" required onChange={event => void readFile(event.target.files?.[0], setHead)} /></label>
+          <label className="static-file-field">基线提交报告<small>可选 · 同一扫描器版本</small><Input aria-label="基线提交报告（可选，同一扫描器版本）" type="file" accept=".sarif,.json" onChange={event => void readFile(event.target.files?.[0], setBase)} /></label></div>
+        {base && <div className="ws-filterbar"><label>基线 SHA<Input value={baseSha} required pattern="[0-9a-f]{40,64}" maxLength={64} onChange={event => setBaseSha(event.target.value)} /></label></div>}
+        <div className="ws-form-actions"><Button variant="default" className="ws-primary" type="submit" disabled={!head}>导入静态报告</Button><span className="ws-hint">当前提交 <code>{headSha.slice(0, 12)}</code></span></div>
         <p className="ws-hint">没有基线或稳定标识时保留“待判断”。导入不会自动发布评论，保存后不可覆盖。</p>
       </fieldset></form>}
       {loaded && !report && !editable && <WorkspaceEmpty title="尚未导入静态报告。" />}

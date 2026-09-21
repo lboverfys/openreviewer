@@ -5,7 +5,7 @@ import json
 import os
 import time
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -14,13 +14,13 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from apps.maintenance.export_workflow_evidence import controlled_path
-from domain.enums import ReviewAgent
+from domain.enums import ModelCallStatus, ReviewAgent
 from domain.model_review import ModelReviewInput
 from domain.security import SafeError
 from persistence.database import Database
 from persistence.experiment_inputs import frozen_experiment_inputs
 from persistence.review_profiles import ReviewProfileRepository
-from services.agent_workflow import FixedAgentWorkflow
+from services.agent_workflow import FixedAgentWorkflow, WorkflowExecution
 from services.ai_settings import AiSecretCipher
 from services.experiment_accounting import ExperimentBudget
 from services.model_budget import model_budget_scope
@@ -34,11 +34,52 @@ from services.review_profiles import ReviewProfileRuntimeLoader
 
 VARIANTS = {
     "full": frozenset(),
+    "single_generalist": frozenset(),
+    "without_context": frozenset(),
     **{
         "without_" + a.value: frozenset({a})
         for a in (ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC)
     },
 }
+
+
+def run_generalist(review_input, reviewer, references, versions):
+    """同一逻辑模型审查完整输入，取消角色筛选与汇总调用，作为独立单路基线。"""
+    started = datetime.now(UTC)
+    result = reviewer.review(review_input.model_copy(update={
+        "review_agent": None,
+        "knowledge_references": tuple(dict.fromkeys(item for group in references.values() for item in group)),
+        "knowledge_versions": {key: value for group in versions.values() for key, value in group.items()},
+    }))
+    succeeded = result.status is ModelCallStatus.SUCCEEDED
+    return WorkflowExecution(
+        status="completed" if succeeded else "failed", agents=(),
+        findings=result.output.findings, summary=result.output.summary or "",
+        started_at=started, completed_at=datetime.now(UTC),
+        coverage_status="complete" if succeeded else "partial",
+        partial_result=not succeeded, aggregation_status="single_generalist",
+    )
+
+
+def experiment_summary(results):
+    summaries = []
+    for variant in dict.fromkeys(row["variant"] for row in results):
+        rows = [row for row in results if row["variant"] == variant]
+        known = [row for row in rows if not row["unknown_cost_requests"]]
+        summaries.append({
+            "variant": variant, "runs": len(rows),
+            "completed": sum(row["status"] == "completed" for row in rows),
+            "requests": sum(row["request_count"] for row in rows),
+            "candidate_count": sum(row["candidate_count"] for row in rows),
+            "input_tokens": sum(row["recorded_input_tokens"] for row in rows),
+            "output_tokens": sum(row["recorded_output_tokens"] for row in rows),
+            "mean_model_stage_ms": round(sum(row["elapsed_ms"] for row in rows) / len(rows)),
+            "known_cost_usd": sum(row["known_cost_microusd"] for row in rows) / 1_000_000,
+            "fully_priced_runs": len(known),
+            "mean_cost_usd": sum(row["known_cost_microusd"] for row in known) / len(known) / 1_000_000 if known else None,
+            "valid_findings": None,
+        })
+    return summaries
 
 
 def encoded(value):
@@ -196,7 +237,7 @@ def execute(
         raise ValueError("实验计划哈希不一致")
     variants = body["variants"]
     if (
-        not 1 <= len(variants) <= 4
+        not 1 <= len(variants) <= len(VARIANTS)
         or len(set(variants)) != len(variants)
         or any(item not in VARIANTS for item in variants)
     ):
@@ -229,6 +270,9 @@ def execute(
     base = runtime.agent_workflow
     if base is None:
         raise ValueError("方案缺少固定 Agent 工作流")
+    if "single_generalist" in variants and ReviewAgent.LOGIC not in base.reviewers:
+        base.close()
+        raise ValueError("单路综合对照需要方案中启用逻辑模型")
     results = []
     review_items = []
     try:
@@ -254,6 +298,8 @@ def execute(
                         },
                     }
                 )
+                if variant == "without_context":
+                    active = active.model_copy(update={"context_evidence": ()})
                 wrapped = {
                     agent: ExperimentReviewer(
                         reviewer,
@@ -278,10 +324,13 @@ def execute(
                     "head_sha": sample.head_sha,
                     "variant": variant,
                     "input_sha256": sha256(encoded(dump_input(sample))).hexdigest(),
+                    "context_count": len(active.context_evidence),
+                    "execution_mode": "single_generalist" if variant == "single_generalist" else "fixed_roles",
+                    "generalist_model_source": "logic" if variant == "single_generalist" else None,
                 }
                 started = time.monotonic()
                 try:
-                    value = workflow.run(
+                    value = run_generalist(active, wrapped[ReviewAgent.LOGIC], references, versions) if variant == "single_generalist" else workflow.run(
                         active,
                         references=references,
                         reference_versions=versions,
@@ -373,6 +422,8 @@ def execute(
                             "recorded_input_tokens",
                             "recorded_output_tokens",
                             "unknown_usage_requests",
+                            "context_count",
+                            "execution_mode",
                         )
                     }
                 )
@@ -385,6 +436,8 @@ def execute(
             "scope": body["cost_scope"],
             "split": body["split"],
             "results": results,
+            "variant_summaries": experiment_summary(results),
+            "measurement_scope": "sequential_model_stage_with_frozen_retrieval",
             "planned_runs": len(samples) * len(variants),
             "finished_runs": len(results),
             "requests": len(budget.requests),

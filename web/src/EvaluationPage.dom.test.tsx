@@ -80,7 +80,7 @@ it("未复核指标和未知费用不显示为零分或满分",async()=>{
   render(<EvaluationReportPanel datasetId="set-1" onError={vi.fn()}/>);
   fireEvent.click(await screen.findByRole("button", {name:/数据完整性与统计口径/}));
   await screen.findByText("两份审查尚未完成核对");
-  expect(screen.getAllByText("未知")).toHaveLength(2);
+  expect(screen.getAllByText("未知")).toHaveLength(4);
   expect(screen.queryByText("100.0%")).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("报告样本集"),{target:{value:"tuning"}});
   await waitFor(()=>expect(requests.some(item=>item.path.endsWith("split=tuning"))).toBe(true));

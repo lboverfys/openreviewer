@@ -2685,6 +2685,8 @@ export interface components {
         };
         /** EvaluationDecision */
         EvaluationDecision: {
+            /** Failure Reason */
+            failure_reason?: ("context_missing" | "reasoning_error" | "evidence_mismatch" | "location_error" | "redundant_report" | "other") | null;
             /** Location Correct */
             location_correct?: boolean | null;
             /**
@@ -2900,12 +2902,35 @@ export interface components {
         };
         /** EvaluationScore */
         EvaluationScore: {
+            /**
+             * Clean Pr Count
+             * @default 0
+             */
+            clean_pr_count: number;
+            /** Clean Pr False Alarm Rate */
+            clean_pr_false_alarm_rate?: number | null;
             /** Configuration Count */
             configuration_count: number;
+            /** Cost Per Confirmed Defect Usd */
+            cost_per_confirmed_defect_usd?: number | null;
             /** Duplicate Count */
             duplicate_count: number;
             /** Duplicate Rate */
             duplicate_rate: number | null;
+            /**
+             * Failure Reason Disagreements
+             * @default 0
+             */
+            failure_reason_disagreements: number;
+            /** Failure Reasons */
+            failure_reasons?: {
+                [key: string]: number;
+            };
+            /**
+             * False Alarm Pr Count
+             * @default 0
+             */
+            false_alarm_pr_count: number;
             /** False Positive Count */
             false_positive_count: number;
             /** Finding Count */
@@ -2932,6 +2957,11 @@ export interface components {
             precision_ci95: {
                 [key: string]: number;
             } | null;
+            /**
+             * Priced Reference Pairs
+             * @default 0
+             */
+            priced_reference_pairs: number;
             /** Recall */
             recall: number | null;
             /** Recall Ci95 */

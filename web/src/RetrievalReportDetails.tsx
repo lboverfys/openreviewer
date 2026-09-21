@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useState } from "react";
 import { api } from "./api";
 import { Notice } from "./Feedback";
@@ -28,7 +29,7 @@ function CaseDetails({entry}: {entry: Record<string, unknown>}) {
       const item = route as {route: string; candidate_count: number; duration_ms: number};
       return <div key={index}><span>{({bm25:"关键词",vector:"语义",relation:"代码关系"} as Record<string,string>)[item.route] ?? item.route}</span><strong>{item.candidate_count} 条候选</strong><small>{item.duration_ms} 毫秒{item.candidate_count === 0 ? " · 没有参与最终结果" : ""}</small></div>;
     })}</div>}
-    {typeof entry.trace_id === "string" ? <section><button type="button" disabled={busy || Boolean(trace)} onClick={() => void load()}>{trace ? "已载入保存的代码" : "查看返回代码和完整检索过程"}</button>
+    {typeof entry.trace_id === "string" ? <section><Button variant="outline" type="button" disabled={busy || Boolean(trace)} onClick={() => void load()}>{trace ? "已载入保存的代码" : "查看返回代码和完整检索过程"}</Button>
       {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}{busy && <p role="status">正在读取保存的代码…</p>}
       {trace && <RetrievalTracePanel traces={[trace]}/>}
     </section> : <p className="ws-note">这份历史报告未保存代码正文和各路过程，不能事后补写。新对比会保存完整检索过程。</p>}
@@ -38,7 +39,7 @@ function CaseDetails({entry}: {entry: Record<string, unknown>}) {
 export default function RetrievalReportDetails({report, split = "all"}: {report: RetrievalEvaluationReport; split?: RetrievalReportSplit}) {
   const [strategy, setStrategy] = useState(report.strategies[0]?.strategy);
   const selected = report.strategies.find(item => item.strategy === strategy);
-  return <><nav className="ws-tabs" aria-label="查看检索方式">{report.strategies.map(item => <button type="button" key={item.strategy} aria-pressed={strategy === item.strategy} onClick={() => setStrategy(item.strategy)}>{retrievalStrategyLabels[item.strategy]}</button>)}</nav>
+  return <><nav className="ws-tabs" aria-label="查看检索方式">{report.strategies.map(item => <Button variant="outline" type="button" key={item.strategy} aria-pressed={strategy === item.strategy} onClick={() => setStrategy(item.strategy)}>{retrievalStrategyLabels[item.strategy]}</Button>)}</nav>
     {selected?.cases.filter(entry => split === "all" || entry.split === split).map((entry, index) => <CaseDetails key={strategy + ":" + index} entry={entry}/>)}
   </>;
 }

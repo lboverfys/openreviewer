@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useState } from "react";
 import { api } from "./api";
@@ -28,8 +29,8 @@ export default function ReviewBatchList({ runId, agent, total, changeToken, onRe
         <span>第 {batch.batch_number}/{total} 批</span><b>{stopped && batch.status !== "succeeded" ? paused ? "已暂停" : "已停止" : labels[batch.status] ?? batch.status}</b>
         <small>{batch.error_message ?? (batch.duration_ms === null ? "" : `${batch.duration_ms} ms`)}</small>
         {Boolean(batch.candidates?.length) && <DetailDialog><summary>查看已保存的候选问题（{batch.candidates.length}）</summary><p>这是 AI 批次的过程结果，尚需汇总和核对；最终列表为空不代表没有发现问题。</p>{batch.candidates.map((item, index) => <article key={index}><h4>{item.title}</h4><p>{item.evidence}</p><p>{item.impact}</p><p>{item.suggestion}</p></article>)}</DetailDialog>}
-        {batch.status === "failed" && onRetry && !stopped && <button type="button" disabled={busy}
-          onClick={() => onRetry(agent, batch.batch_number)}>重试第 {batch.batch_number} 批</button>}
+        {batch.status === "failed" && onRetry && !stopped && <Button variant="outline" type="button" disabled={busy}
+          onClick={() => onRetry(agent, batch.batch_number)}>重试第 {batch.batch_number} 批</Button>}
       </div>)}
       <Pagination page={page.page} count={page.data?.items.length ?? 0} total={total}
         hasNext={Boolean(page.data?.next_cursor)} busy={page.loading}

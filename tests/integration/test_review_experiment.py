@@ -136,10 +136,12 @@ def test_ablation_makes_fresh_calls_keeps_production_unchanged_and_has_no_human_
         report = execute(
             database.sessions, plan, tmp_path / "results", 1_000_000, 100, cipher
         )
-    assert len(requests) == report["requests"] == 9
-    assert len({row["run_id"] for row in report["results"]}) == 4
+    assert len(requests) == report["requests"] == 13
+    assert len({row["run_id"] for row in report["results"]}) == 6
     assert {row["variant"]: row["request_count"] for row in report["results"]} == {
         "full": 3,
+        "single_generalist": 1,
+        "without_context": 3,
         "without_security": 2,
         "without_convention": 2,
         "without_logic": 2,
@@ -161,7 +163,7 @@ def test_ablation_makes_fresh_calls_keeps_production_unchanged_and_has_no_human_
         )
     metadata = json.loads((tmp_path / "results" / "manifest.json").read_text())
     assert (
-        len([name for name in metadata["files"] if name.endswith(".output.json")]) == 9
+        len([name for name in metadata["files"] if name.endswith(".output.json")]) == 13
     )
     for path in (tmp_path / "results").iterdir():
         assert "fixture-private-key" not in path.read_text(encoding="utf-8")
@@ -171,6 +173,10 @@ def test_ablation_makes_fresh_calls_keeps_production_unchanged_and_has_no_human_
     ]
     value = next(item for item in values if item["variant"] == "full")
     assert isinstance(value["agents"][0]["result"]["output"], dict)
+    single = next(item for item in values if item["variant"] == "single_generalist")
+    assert single["agents"] == [] and single["generalist_model_source"] == "logic"
+    assert len(report["variant_summaries"]) == 6
+    assert all(row["valid_findings"] is None for row in report["variant_summaries"])
 
 
 def test_tampered_plan_and_cross_repo_profile_stop_before_calls(database, tmp_path):

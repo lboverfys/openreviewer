@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 export const PAGE_SIZE = 10;
 
 interface PaginationProps {
@@ -15,8 +16,8 @@ export default function Pagination({ page, hasNext, busy = false, count, total, 
   return <nav className="list-pagination" aria-label={label}>
     <span>第 {page} 页 · 本页 {count} 条{total !== undefined ? ` · 共 ${total} 条` : ""}</span>
     <div>
-      <button type="button" disabled={busy || page <= 1} onClick={onPrevious}>上一页</button>
-      <button type="button" disabled={busy || !hasNext} onClick={onNext}>下一页</button>
+      <Button variant="outline" type="button" disabled={busy || page <= 1} onClick={onPrevious}>上一页</Button>
+      <Button variant="outline" type="button" disabled={busy || !hasNext} onClick={onNext}>下一页</Button>
     </div>
     {busy && <span role="status">正在加载…</span>}
   </nav>;

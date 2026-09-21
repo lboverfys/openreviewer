@@ -1,3 +1,6 @@
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "./components/ui/table";
 import { DetailDialog, Notice } from "./Feedback";
 import Pagination from "./Pagination";
 import {
@@ -686,9 +689,9 @@ export default function SettingsPage({
                 {refreshNotice === "loading" ? "正在刷新设置…" : "已刷新到最新配置"}
               </Notice>
             )}
-            <button type="button" className={`console-icon-btn settings-refresh-btn${refreshing ? " is-spinning" : ""}`} onClick={() => void refreshAllSettings()} disabled={loading || refreshing || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置" aria-busy={refreshing}>
+            <Button variant="outline" type="button" className={`console-icon-btn settings-refresh-btn${refreshing ? " is-spinning" : ""}`} onClick={() => void refreshAllSettings()} disabled={loading || refreshing || Boolean(busyAction)} title="刷新设置" aria-label="刷新设置" aria-busy={refreshing}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 6v6h-6" /><path d="M4 18v-6h6" /><path d="M18.5 9A7 7 0 0 0 6 5.5L4 8" /><path d="M5.5 15A7 7 0 0 0 18 18.5l2-2.5" /></svg>
-            </button>
+            </Button>
           </div>
         </section>
 
@@ -696,19 +699,19 @@ export default function SettingsPage({
 
         <div className="settings-layout">
           <nav className="settings-tab-nav" aria-label="设置分区">
-            <button type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => {setActiveTab("provider"); window.location.hash="settings";}}>
+            <Button variant="outline" type="button" className={activeTab === "provider" ? "is-active" : ""} aria-pressed={activeTab === "provider"} onClick={() => {setActiveTab("provider"); window.location.hash="settings";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
               <span className="settings-tab-copy"><strong>AI 模型</strong><small>连接、价格与启用</small></span>
-            </button>
-            <button type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => {setActiveTab("agents"); window.location.hash="settings?section=agents";}}>
+            </Button>
+            <Button variant="outline" type="button" className={activeTab === "agents" ? "is-active" : ""} aria-pressed={activeTab === "agents"} onClick={() => {setActiveTab("agents"); window.location.hash="settings?section=agents";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
               <span className="settings-tab-copy"><strong>审查分工</strong><small>三路检查与按需汇总</small></span>
-            </button>
-            <button type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => {setActiveTab("policy"); window.location.hash="settings?section=policy";}}>
+            </Button>
+            <Button variant="outline" type="button" className={activeTab === "policy" ? "is-active" : ""} aria-pressed={activeTab === "policy"} onClick={() => {setActiveTab("policy"); window.location.hash="settings?section=policy";}}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               <span className="settings-tab-copy"><strong>处理上限</strong><small>高级设置，通常保留默认值</small></span>
-            </button>
-            <button type="button" className={activeTab === "retrieval" ? "is-active" : ""} aria-pressed={activeTab === "retrieval"} onClick={() => {setActiveTab("retrieval"); window.location.hash="settings?section=retrieval";}}><span className="settings-tab-copy"><strong>关联代码</strong><small>补充上下文与检索开关</small></span></button>
+            </Button>
+            <Button variant="outline" type="button" className={activeTab === "retrieval" ? "is-active" : ""} aria-pressed={activeTab === "retrieval"} onClick={() => {setActiveTab("retrieval"); window.location.hash="settings?section=retrieval";}}><span className="settings-tab-copy"><strong>关联代码</strong><small>补充上下文与检索开关</small></span></Button>
             <DetailDialog className="settings-advanced-links"><summary>配置版本（高级）</summary><p>保存固定的一套模型和规则，便于复查或比较。</p><a href="#platform?tab=profiles">管理配置版本 →</a></DetailDialog>
           </nav>
 
@@ -719,11 +722,11 @@ export default function SettingsPage({
               <div className="settings-tab-panel" hidden={activeTab !== "provider"}>
                 <section className="settings-provider-switch" aria-label="接口类型">
               {settings.providers.map((provider) => (
-                <button key={provider.provider} type="button" className={`settings-provider-card ${selectedProvider === provider.provider ? "is-selected" : ""}`} onClick={() => setSelectedProvider(provider.provider)}>
+                <Button variant="outline" key={provider.provider} type="button" className={`settings-provider-card ${selectedProvider === provider.provider ? "is-selected" : ""}`} onClick={() => setSelectedProvider(provider.provider)}>
                   <span className={`provider-mark is-${provider.provider}`}>{provider.provider === "openai" ? "O" : "A"}</span>
                   <span className="provider-card-copy"><strong>{providerShortLabels[provider.provider]}</strong><small>{provider.active ? "正在使用" : testStatusLabels[provider.test_status]}</small></span>
                   {provider.active && <i className="provider-active-dot" />}
-                </button>
+                </Button>
               ))}
               <div className="settings-provider-tip">选择中转站使用的兼容格式，不代表必须向对应官方购买。</div>
             </section>
@@ -748,17 +751,17 @@ export default function SettingsPage({
                         <div><strong>选择服务地址</strong><small>中转站会给你一个以 https:// 开头的 API 地址</small></div>
                       </div>
                       <div className="settings-source-control" role="group" aria-label="服务地址类型">
-                        <button type="button" className={!draft.useCustomEndpoint ? "is-selected" : ""} aria-pressed={!draft.useCustomEndpoint} onClick={() => updateDraft("useCustomEndpoint", false)}>
+                        <Button variant="outline" type="button" className={!draft.useCustomEndpoint ? "is-selected" : ""} aria-pressed={!draft.useCustomEndpoint} onClick={() => updateDraft("useCustomEndpoint", false)}>
                           <span>官方直连</span><small>{providerShortLabels[selectedProvider]} 官方地址</small>
-                        </button>
-                        <button type="button" className={draft.useCustomEndpoint ? "is-selected" : ""} aria-pressed={draft.useCustomEndpoint} onClick={() => updateDraft("useCustomEndpoint", true)}>
+                        </Button>
+                        <Button variant="outline" type="button" className={draft.useCustomEndpoint ? "is-selected" : ""} aria-pressed={draft.useCustomEndpoint} onClick={() => updateDraft("useCustomEndpoint", true)}>
                           <span>中转站 / 自定义</span><small>兼容接口，通常更灵活</small>
-                        </button>
+                        </Button>
                       </div>
                       {draft.useCustomEndpoint ? (
                         <label className="settings-wide-field">
                           <span>API 地址</span>
-                          <input id={`settings-${selectedProvider}-api-base-url`} name={`settings-${selectedProvider}-api-base-url`} type="url" inputMode="url" required maxLength={500} value={draft.apiBaseUrl} onChange={(event) => updateDraft("apiBaseUrl", event.target.value)} placeholder="https://你的中转站地址/v1" autoComplete="url" />
+                          <Input id={`settings-${selectedProvider}-api-base-url`} name={`settings-${selectedProvider}-api-base-url`} type="url" inputMode="url" required maxLength={500} value={draft.apiBaseUrl} onChange={(event) => updateDraft("apiBaseUrl", event.target.value)} placeholder="https://你的中转站地址/v1" autoComplete="url" />
                           <small>直接粘贴中转站文档里的 Base URL；结尾带不带 /v1 都可以。</small>
                         </label>
                       ) : (
@@ -777,9 +780,9 @@ export default function SettingsPage({
                         </div>
                         <div className="settings-protocol-options" role="group" aria-label="OpenAI 接口格式">
                           {(Object.keys(openAiProtocolLabels) as Array<keyof typeof openAiProtocolLabels>).map((protocol) => (
-                            <button key={protocol} type="button" className={draft.apiProtocol === protocol ? "is-selected" : ""} aria-pressed={draft.apiProtocol === protocol} onClick={() => updateDraft("apiProtocol", protocol)}>
+                            <Button variant="outline" key={protocol} type="button" className={draft.apiProtocol === protocol ? "is-selected" : ""} aria-pressed={draft.apiProtocol === protocol} onClick={() => updateDraft("apiProtocol", protocol)}>
                               <span>{openAiProtocolLabels[protocol].title}</span><small>{openAiProtocolLabels[protocol].note}</small>
-                            </button>
+                            </Button>
                           ))}
                         </div>
                       </div>
@@ -793,20 +796,20 @@ export default function SettingsPage({
                       <div className="settings-form-grid settings-form-grid-primary">
                         <label>
                           <span>模型 ID</span>
-                          <input id={`settings-${selectedProvider}-model`} name={`settings-${selectedProvider}-model`} required maxLength={200} value={draft.model} onChange={(event) => updateDraft("model", event.target.value)} placeholder={modelPlaceholders[selectedProvider]} autoComplete="off" />
+                          <Input id={`settings-${selectedProvider}-model`} name={`settings-${selectedProvider}-model`} required maxLength={200} value={draft.model} onChange={(event) => updateDraft("model", event.target.value)} placeholder={modelPlaceholders[selectedProvider]} autoComplete="off" />
                           <small>请从官方或中转站的模型列表复制，不要凭感觉填写。</small>
                         </label>
                         <label>
                           <span>API Key</span>
                           <div className="settings-secret-input">
-                            <input id={`settings-${selectedProvider}-api-key`} name={`settings-${selectedProvider}-api-key`} type={showApiKey[selectedProvider] ? "text" : "password"} value={draft.apiKey} onChange={(event) => updateDraft("apiKey", event.target.value)} placeholder={selectedSettings.api_key_configured ? `已安全保存 ${selectedSettings.api_key_mask}` : "粘贴服务商提供的 API Key"} autoComplete="new-password" disabled={draft.clearApiKey} />
-                            <button type="button" onClick={() => setShowApiKey((current) => ({ ...current, [selectedProvider]: !current[selectedProvider] }))} title={showApiKey[selectedProvider] ? "隐藏 API Key" : "显示 API Key"} aria-label={showApiKey[selectedProvider] ? "隐藏 API Key" : "显示 API Key"}>
+                            <Input id={`settings-${selectedProvider}-api-key`} name={`settings-${selectedProvider}-api-key`} type={showApiKey[selectedProvider] ? "text" : "password"} value={draft.apiKey} onChange={(event) => updateDraft("apiKey", event.target.value)} placeholder={selectedSettings.api_key_configured ? `已安全保存 ${selectedSettings.api_key_mask}` : "粘贴服务商提供的 API Key"} autoComplete="new-password" disabled={draft.clearApiKey} />
+                            <Button variant="outline" type="button" onClick={() => setShowApiKey((current) => ({ ...current, [selectedProvider]: !current[selectedProvider] }))} title={showApiKey[selectedProvider] ? "隐藏 API Key" : "显示 API Key"} aria-label={showApiKey[selectedProvider] ? "隐藏 API Key" : "显示 API Key"}>
                               {showApiKey[selectedProvider] ? (
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3l18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.4 10.4 0 0 1 12 4c5 0 9 5 9 8a9.6 9.6 0 0 1-2 3.5"/><path d="M6.6 6.6C4.4 8 3 10.2 3 12c0 3 4 8 9 8 1.2 0 2.3-.3 3.3-.8"/></svg>
                               ) : (
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
                               )}
-                            </button>
+                            </Button>
                           </div>
                           <small>{selectedSettings.api_key_configured ? "留空会保留原密钥；填入新值才会替换。" : "密钥只会加密保存，之后不再显示完整内容。"}</small>
                         </label>
@@ -834,10 +837,10 @@ export default function SettingsPage({
                         </div>
                         <div className="settings-preset-control settings-reasoning-options" role="group" aria-label="模型推理档位">
                           {(Object.keys(reasoningEffortLabels) as AiReasoningEffort[]).map((effort) => (
-                            <button key={effort} type="button" className={draft.reasoningEffort === effort ? "is-selected" : ""} aria-pressed={draft.reasoningEffort === effort} onClick={() => updateDraft("reasoningEffort", effort)}>
+                            <Button variant="outline" key={effort} type="button" className={draft.reasoningEffort === effort ? "is-selected" : ""} aria-pressed={draft.reasoningEffort === effort} onClick={() => updateDraft("reasoningEffort", effort)}>
                               <strong>{reasoningEffortLabels[effort].title}</strong>
                               <small>{reasoningEffortLabels[effort].note}</small>
-                            </button>
+                            </Button>
                           ))}
                         </div>
                       </div>
@@ -879,9 +882,9 @@ export default function SettingsPage({
                   </div>
 
                   <div className="settings-action-bar">
-                    <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || (!providerDirty && selectedSettings.configured)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>{busyAction === `save-${selectedProvider}` ? "保存中..." : "保存配置"}</button>
-                    <button className="settings-secondary-btn" type="button" onClick={() => void testProvider()} disabled={!selectedSettings.configured || !selectedSettings.api_key_configured || providerDirty || Boolean(busyAction)} title={providerDirty ? "请先保存当前修改" : "测试当前已保存配置"}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>{busyAction === `test-${selectedProvider}` ? "测试中..." : "测试连接"}</button>
-                    <button className="settings-secondary-btn is-activate" type="button" onClick={() => void activateProvider()} disabled={selectedSettings.test_status !== "succeeded" || selectedSettings.active || providerDirty || Boolean(busyAction)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m5 12 4 4L19 6"/></svg>{selectedSettings.active ? "已启用" : "启用这套配置"}</button>
+                    <Button variant="default" className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || (!providerDirty && selectedSettings.configured)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>{busyAction === `save-${selectedProvider}` ? "保存中..." : "保存配置"}</Button>
+                    <Button variant="outline" className="settings-secondary-btn" type="button" onClick={() => void testProvider()} disabled={!selectedSettings.configured || !selectedSettings.api_key_configured || providerDirty || Boolean(busyAction)} title={providerDirty ? "请先保存当前修改" : "测试当前已保存配置"}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m13 2-9 12h7l-1 8 9-12h-7l1-8Z"/></svg>{busyAction === `test-${selectedProvider}` ? "测试中..." : "测试连接"}</Button>
+                    <Button variant="outline" className="settings-secondary-btn is-activate" type="button" onClick={() => void activateProvider()} disabled={selectedSettings.test_status !== "succeeded" || selectedSettings.active || providerDirty || Boolean(busyAction)}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m5 12 4 4L19 6"/></svg>{selectedSettings.active ? "已启用" : "启用这套配置"}</Button>
                     {message && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}</Notice>}
                   </div>
                 </form>
@@ -905,10 +908,10 @@ export default function SettingsPage({
               </summary>
               <div className="settings-audit-table-wrap">
                 {auditError && <Notice kind="error" onDismiss={() => setAuditError("")}>{auditError}</Notice>}
-                <table className="settings-audit-table">
-                  <thead><tr><th>版本</th><th>操作</th><th>变更内容</th><th>管理员</th><th>时间</th></tr></thead>
-                  <tbody>{audits.map((audit) => <tr key={audit.revision}><td className="code-font">r{audit.revision}</td><td>{auditActionLabels[audit.action] ?? audit.action}</td><td>{audit.changed_fields.map((field) => fieldLabels[field] ?? field).join("、")}</td><td>{audit.actor}</td><td>{formatDate(audit.created_at)}</td></tr>)}</tbody>
-                </table>
+                <Table className="settings-audit-table">
+                  <TableHeader><TableRow><TableHead>版本</TableHead><TableHead>操作</TableHead><TableHead>变更内容</TableHead><TableHead>管理员</TableHead><TableHead>时间</TableHead></TableRow></TableHeader>
+                  <TableBody>{audits.map((audit) => <TableRow key={audit.revision}><TableCell className="code-font">r{audit.revision}</TableCell><TableCell>{auditActionLabels[audit.action] ?? audit.action}</TableCell><TableCell>{audit.changed_fields.map((field) => fieldLabels[field] ?? field).join("、")}</TableCell><TableCell>{audit.actor}</TableCell><TableCell>{formatDate(audit.created_at)}</TableCell></TableRow>)}</TableBody>
+                </Table>
                 {auditsLoading && <div className="settings-loading">正在读取配置变更...</div>}
                 {!auditsLoading && auditsLoaded && audits.length === 0 && <div className="settings-empty-audit">暂无配置变更</div>}
                 <Pagination page={auditCursors.length} count={audits.length} hasNext={Boolean(auditNextCursor)} busy={auditsLoading} onPrevious={() => setAuditCursors(items => items.slice(0, -1))} onNext={() => {if (auditNextCursor) setAuditCursors(items => [...items, auditNextCursor]);}} label="配置变更分页" />
@@ -943,9 +946,9 @@ export default function SettingsPage({
                       </div>
                     </fieldset>
                     <div className="settings-action-bar settings-policy-action">
-                      <button className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || !policyDirty}>
+                      <Button variant="default" className="settings-primary-btn" type="submit" disabled={Boolean(busyAction) || !policyDirty}>
                         {busyAction === "save-policy" ? "保存中..." : "保存审查策略"}
-                      </button>
+                      </Button>
                       {policyMessage && <Notice kind={policyMessageKind} onDismiss={() => setPolicyMessage("")}>{policyMessage}</Notice>}
                     </div>
                   </form>

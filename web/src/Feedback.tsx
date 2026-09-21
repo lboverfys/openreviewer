@@ -1,6 +1,6 @@
+import { Button } from "./components/ui/button";
 import { Children, isValidElement, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import "./styles/feedback.css";
 
 function textOf(node: ReactNode): string {
   return Children.toArray(node).map(child => isValidElement<{children?: ReactNode}>(child) ? textOf(child.props.children) : String(child)).join(" ");
@@ -32,7 +32,7 @@ export function Notice({ children, kind = "error", onDismiss }: {children: React
     catch { setCopyStatus("复制失败，请选择提示中的请求 ID 复制"); }
   };
   return visible ? createPortal(<div ref={element} className={"app-notice is-" + kind} role={kind === "error" ? "alert" : "status"}>
-    <span>{children}{requestId && <><button type="button" onClick={() => void copyRequestId()}>复制请求 ID</button><small role="status">{copyStatus}</small></>}</span><button type="button" aria-label="关闭通知" onClick={close}>×</button>
+    <span>{children}{requestId && <><Button variant="outline" type="button" onClick={() => void copyRequestId()}>复制请求 ID</Button><small role="status">{copyStatus}</small></>}</span><Button variant="outline" type="button" aria-label="关闭通知" onClick={close}>×</Button>
   </div>, document.body) : null;
 }
 
@@ -77,11 +77,11 @@ export function DetailDialog({children, className = "", open, onToggle, hideTrig
     };
   }, [visible]);
   return <div className={"detail-disclosure " + (hideTrigger ? "is-imperative " : "") + className}>
-    {!hideTrigger && <button ref={trigger} type="button" className="detail-trigger" aria-haspopup="dialog" aria-expanded={visible} onClick={() => change(true)}>{title}<span aria-hidden="true">↗</span></button>}
+    {!hideTrigger && <Button variant="outline" ref={trigger} type="button" className="detail-trigger" aria-haspopup="dialog" aria-expanded={visible} onClick={() => change(true)}>{title}<span aria-hidden="true">↗</span></Button>}
     {visible && <dialog ref={dialog} className="detail-dialog workspace-surface" aria-labelledby={id}
       onCancel={event => {event.preventDefault(); change(false);}}
       onClick={event => {if (event.target === event.currentTarget) change(false);}}>
-      <div className="detail-dialog-frame"><header className="detail-dialog-header"><h2 id={id}>{title}</h2><button type="button" aria-label="关闭详情" onClick={() => change(false)}>关闭 ×</button></header>
+      <div className="detail-dialog-frame"><header className="detail-dialog-header"><h2 id={id}>{title}</h2><Button variant="outline" type="button" aria-label="关闭详情" onClick={() => change(false)}>关闭 ×</Button></header>
         <div className="detail-dialog-body">{body}</div></div>
     </dialog>}
   </div>;
