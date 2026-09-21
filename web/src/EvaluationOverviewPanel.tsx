@@ -6,13 +6,17 @@ export default function EvaluationOverviewPanel({datasetId, version, onError, ca
   datasetId: string; version: number; onError: (error: unknown) => void; caseId?: string; variant?: import("./types").EvaluationVariant;
 }) {
   const [overview, setOverview] = useState<EvaluationOverview | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
+    setOverview(null); setFailed(false);
     api.evaluationOverview(datasetId, controller.signal, caseId, variant).then(result => {
       if (!controller.signal.aborted) setOverview(result);
-    }).catch(error => {if (!controller.signal.aborted) onError(error);});
+    }).catch(error => {if (!controller.signal.aborted) {setFailed(true); onError(error);}});
     return () => controller.abort();
-  }, [datasetId, version, onError, caseId, variant]);
+  }, [datasetId, version, onError, caseId, variant, refresh]);
+  if (!overview) return <section className="evaluation-card" aria-label="评测概况状态"><p>{failed ? "评测概况读取失败" : "正在读取评测概况…"}</p>{failed && <button onClick={() => setRefresh(value => value + 1)}>重试读取概况</button>}</section>;
   return <section className="evaluation-card evaluation-progress-summary" aria-label="已完成的复核">
     <h3>评测结果 · {overview?.review_mode === "dual" ? "双人验收" : "单人核对"}</h3>
     <p>{caseId ? "以下只统计当前选择的这份审查。" : "以下统计这份评测记录中的全部审查。"}{overview?.review_mode === "dual" ? "有效和误报来自两人提交后的一致判断。" : "有效和误报来自你保存的判断。"}</p>

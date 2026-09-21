@@ -20,7 +20,7 @@ export default function ProfileActivationPanel({ id, repository, revision, onDon
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const controller = new AbortController(); setQuality(null);
-    void platformApi.profileQuality(id, dataset || undefined, controller.signal).then(setQuality).catch(error => { if (!controller.signal.aborted) onError(error); });
+    void platformApi.profileQuality(id, dataset || undefined, controller.signal).then(value => {if (!controller.signal.aborted) setQuality(value);}).catch(error => { if (!controller.signal.aborted) onError(error); });
     return () => controller.abort();
   }, [id, dataset, revision, onError, refresh]);
   const submit = async (event: FormEvent) => {

@@ -29,7 +29,7 @@ export default function ReviewProfilesPanel({ onError }: PlatformPanelProps) {
   const load = useCallback((cursor?: string, signal?: AbortSignal, force?: boolean) => platformApi.profiles(repository, cursor, signal, force), [repository]);
   const profiles = useCursorPage({ cacheKey: `profiles:${repository}`, load, onError, enabled: Boolean(selected) });
   useEffect(() => { if (repositories.data?.items.length && !repositories.data.items.some(item => item.id === repositoryId)) setRepositoryId(repositories.data.items[0].id); }, [repositories.data, repositoryId]);
-  useEffect(() => { if (!creating) return; const controller = new AbortController(); void api.aiSettings(controller.signal).then(value => setAiRevision(value.revision)).catch(error => { if (!controller.signal.aborted) onError(error); }); return () => controller.abort(); }, [creating, onError]);
+  useEffect(() => { if (!creating) return; setAiRevision(null); const controller = new AbortController(); void api.aiSettings(controller.signal).then(value => {if (!controller.signal.aborted) setAiRevision(value.revision);}).catch(error => { if (!controller.signal.aborted) onError(error); }); return () => controller.abort(); }, [creating, onError]);
   const refreshAi = () => void api.aiSettings(undefined, true).then(value => setAiRevision(value.revision)).catch(onError);
   const create = async (event: FormEvent) => {
     event.preventDefault(); if (!selected || aiRevision == null) return; setBusy(true); setMessage("");

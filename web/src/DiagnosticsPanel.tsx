@@ -17,15 +17,21 @@ export default function DiagnosticsPanel({ onError }: PlatformPanelProps) {
   const [days, setDays] = useState(7);
   const [version, setVersion] = useState(0);
   const [report, setReport] = useState<DiagnosticReport | null>(null);
+  const [failed, setFailed] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const loadAudits = useCallback((cursor?: string, signal?: AbortSignal, force?: boolean) => platformApi.audits(undefined, cursor, signal, force), []);
   const audits = useCursorPage({ cacheKey: "platform-audits:all", load: loadAudits, onError, enabled: auditOpen });
-  useEffect(() => { const controller = new AbortController(); setReport(null); void platformApi.diagnostics(days, controller.signal).then(setReport).catch(error => { if (!controller.signal.aborted) onError(error); }); return () => controller.abort(); }, [days, version, onError]);
+  useEffect(() => {
+    const controller = new AbortController(); setReport(null); setFailed(false);
+    void platformApi.diagnostics(days, controller.signal).then(value => {if (!controller.signal.aborted) setReport(value);})
+      .catch(error => {if (!controller.signal.aborted) {setFailed(true); onError(error);}});
+    return () => controller.abort();
+  }, [days, version, onError]);
   const total = (key: "queued" | "running" | "paused" | "failed") => report?.repositories.reduce((value, item) => value + item[key], 0);
   return <>
     <section className="team-card"><div className="team-toolbar"><div><h2>后台运行概况</h2><p>后台节点负责执行审查。任务不动时，先确认节点在线，再查看失败原因。</p></div><div className="ws-actions"><label>统计范围<select value={days} onChange={event => setDays(Number(event.target.value))}><option value={7}>最近 7 天</option><option value={30}>最近 30 天</option></select></label><button onClick={() => { setVersion(value => value + 1); if (auditOpen) void audits.refresh(); }}>刷新</button></div></div></section>
     <WorkerNodesPanel onError={onError} refreshVersion={version} />
-    {!report ? <section className="team-card"><WorkspaceEmpty loading title="正在读取运行统计…" /></section> : <>
+    {!report ? <section className="team-card"><WorkspaceEmpty loading={!failed} title={failed ? "运行统计读取失败，请点击刷新重试" : "正在读取运行统计…"} /></section> : <>
       <div className="ws-metrics">{([['queued', '当前排队'], ['running', '当前运行'], ['paused', '当前暂停'], ['failed', '区间失败']] as const).map(([key, label]) => <div className={`ws-metric${key === "running" ? " is-accent" : ""}`} key={key}><span>{label}</span><strong>{total(key)}</strong><small>{report.truncated ? "当前展示的仓库" : "可见仓库合计"}</small></div>)}</div>
       <section className="team-card"><div className="team-toolbar"><h2>仓库运行情况</h2><span className="ws-hint">{report.repositories.length} 个仓库{report.truncated ? " · 已达到展示上限" : ""}</span></div>
         <div className="team-table-wrap diagnostic-table"><table><thead><tr><th>仓库</th><th>排队 / 运行 / 暂停</th><th>产出 / 失败</th><th>最早积压</th><th>平均 / P95 排队</th><th>平均模型耗时</th><th>并发上限</th></tr></thead><tbody>{report.repositories.map(item => <tr key={item.repository}><td><strong>{item.repository}</strong></td><td className="ws-numeric">{item.queued} / {item.running} / {item.paused}</td><td className="ws-numeric">{item.completed} / {item.failed}</td><td>{item.oldest_queued_at ? formatDate(item.oldest_queued_at) : "无"}</td><td>{duration(item.mean_queue_ms)} / {duration(item.p95_queue_ms)}</td><td>{duration(item.mean_model_ms)}</td><td>{item.max_concurrent_reviews ?? "未限制"}</td></tr>)}</tbody></table></div>
