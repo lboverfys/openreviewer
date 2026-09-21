@@ -49,6 +49,11 @@
 `D:\rubbish\zhongjian\artifacts\openreviewer\optimization-20260921`。
 原有 `tests/performance/workspace_preview.py` 保持不动且不提交。
 
+本轮本地最终验证：后端 745 项通过、17 项因未配置隔离 PostgreSQL 跳过，覆盖率 79.93%；
+跳过项和新增关联规模测试由 CI 的独立 `openreviewer_test` 数据库执行。Ruff、Mypy（187 模块）、
+OpenAPI 与真实评测 schema 快照、24 个录制输出回归均通过；前端 272 项、TypeScript 和
+Vite 构建通过。前端构建实测 22 文件、914711 字节，位于本轮产物目录的 `web` 子目录。
+
 2026-09-21 05:44 UTC 在 niuma-2 使用现有 Prometheus v3.5.0、Alertmanager v0.28.1 测试
 WorkerMissing 规则，只缩短 for 与采集/分组间隔，保留原表达式；05:44:11 收到 firing，
 05:44:12 收到 resolved。两个专用容器与 36091/32981/60951 端口均已关闭；生产容器健康。
