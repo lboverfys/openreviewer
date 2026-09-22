@@ -43,6 +43,9 @@ def _run_fixed_agent_workflow(
     request_guard = self._repository_request_guard(
         cursor, model_input, budget_exhausted
     )
+    base_workflow = ai_runtime.agent_workflow
+    if base_workflow is None:
+        raise TaskQueueError("固定 Agent 工作流未配置")
     if self._retrieval_service is not None:
         self._queue.record_model_progress(
             cursor.lease, "retrieval_started", {"agent": "workflow"}, agent="workflow"
@@ -59,11 +62,13 @@ def _run_fixed_agent_workflow(
                     model_input,
                     lambda: cursor.renew(self._settings.model_review_lease_duration),
                     frozen_runtime=ai_runtime.retrieval_settings,
+                    model_settings=base_workflow.agent_settings,
                 )
             else:
                 model_input = self._retrieval_service.review_context(
                     model_input,
                     lambda: cursor.renew(self._settings.model_review_lease_duration),
+                    model_settings=base_workflow.agent_settings,
                 )
         self._queue.record_model_progress(
             cursor.lease,
@@ -82,9 +87,6 @@ def _run_fixed_agent_workflow(
             },
             agent="workflow",
         )
-    base_workflow = ai_runtime.agent_workflow
-    if base_workflow is None:
-        raise TaskQueueError("固定 Agent 工作流未配置")
     reviewers = base_workflow.reviewers
     settings_by_agent = base_workflow.agent_settings
     wrapped = {

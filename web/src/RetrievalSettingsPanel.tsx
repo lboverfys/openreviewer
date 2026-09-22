@@ -61,6 +61,7 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
         <div className="ws-form-grid">
           <label>每轮最多新增向量数<Input type="number" required min="0" max="20000" step="1" value={draft.max_new_vectors_per_index} onChange={e => update("max_new_vectors_per_index", Number(e.target.value))} /><small>0 表示不新增向量；未补齐且额度仍有剩余时自动继续下一轮。</small></label>
           <label>单次任务模型请求上限<Input type="number" required min="0" max="300" step="1" value={draft.max_requests_per_operation} onChange={e => update("max_requests_per_operation", Number(e.target.value))} /><small>补全任务跨轮累计，不因自动续补或错误重试而重置；检索操作单独计数。</small></label>
+          <label>单次向量请求文本上限（KB）<Input type="number" required min="32" max="512" step="1" value={(draft.embedding_batch_max_bytes ?? 64000) / 1000} onChange={e => update("embedding_batch_max_bytes", Number(e.target.value) * 1000)} /><small>32–512 KB，1 KB = 1000 字节。每次最多 20 段；按数量或文本上限分批。调整不会重算已有向量。</small></label>
         </div>
         {draft.max_new_vectors_per_index > draft.max_requests_per_operation * 20 && <p className="retrieval-warning" role="status">新增 {draft.max_new_vectors_per_index} 个向量至少需要 {Math.ceil(draft.max_new_vectors_per_index / 20)} 次请求，当前上限为 {draft.max_requests_per_operation} 次，可能提前停止。文本大小也会影响实际请求数。</p>}
       </section>
@@ -74,6 +75,7 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
           <label>精排单价（美元 / 百万 Token）<Input type="number" min="0" max="1000000" step="any" value={draft.rerank_usd_per_million ?? ""} onChange={e => update("rerank_usd_per_million", e.target.value || null)} /></label>
           <label>每路候选上限<Input type="number" min="1" max="50" value={draft.candidate_k} onChange={e => update("candidate_k", Number(e.target.value))} /></label>
           <label>送入审查的片段上限<Input type="number" min="1" max="20" value={draft.context_k} onChange={e => update("context_k", Number(e.target.value))} /></label>
+          <label>关联代码正文上限（KB）<Input type="number" required min="4" max="256" step="1" value={(draft.context_max_bytes ?? 24000) / 1000} onChange={e => update("context_max_bytes", Number(e.target.value) * 1000)} /><small>4–256 KB，每个 Agent 的额外参考正文总量。与片段数同时限制；模型容量不足时自动少选片段，保留变更代码。</small></label>
           <label>接口超时（秒）<Input type="number" min="5" max="180" value={draft.timeout_seconds} onChange={e => update("timeout_seconds", Number(e.target.value))} /></label>
         </div>
       </div>}

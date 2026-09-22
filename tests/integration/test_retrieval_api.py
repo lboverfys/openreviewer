@@ -28,6 +28,17 @@ def test_retrieval_api_auth_configuration_and_scoped_index(retrieval, monkeypatc
                 "settings": current.json()["settings"], "expected_revision": 999,
             })
             assert changed.status_code == 409
+            settings = {**current.json()["settings"], "embedding_batch_max_bytes": 128_000, "context_max_bytes": 48_000}
+            changed = await client.put("/api/v1/retrieval/settings", json={
+                "settings": settings, "expected_revision": current.json()["revision"],
+            })
+            assert changed.status_code == 200, changed.text
+            assert changed.json()["settings"]["embedding_batch_max_bytes"] == 128_000
+            assert (await client.get("/api/v1/retrieval/settings")).json()["settings"]["context_max_bytes"] == 48_000
+            invalid = await client.put("/api/v1/retrieval/settings", json={
+                "settings": {**settings, "context_max_bytes": 256_001}, "expected_revision": changed.json()["revision"],
+            })
+            assert invalid.status_code == 422
             queued = await client.post("/api/v1/retrieval/indexes", json={"review_run_id": review.review_run_id})
             assert queued.status_code == 202
             index_id = queued.json()["id"]
@@ -36,6 +47,7 @@ def test_retrieval_api_auth_configuration_and_scoped_index(retrieval, monkeypatc
             searched = await client.post(f"/api/v1/retrieval/indexes/{index_id}/search", json={"query": "find user SQL", "strategy": "reranked"})
             assert searched.status_code == 200, searched.text
             assert searched.json()["candidates"]
+            assert searched.json()["context_budget"]["byte_limit"] == 48_000
             history = await client.get(f"/api/v1/retrieval/indexes/{index_id}/history")
             assert history.status_code == 200 and history.json()["items"][0]["id"] == searched.json()["id"]
             saved = await client.get("/api/v1/retrieval/history/" + searched.json()["id"])

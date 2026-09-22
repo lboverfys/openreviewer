@@ -2133,6 +2133,25 @@ export interface components {
             /** Revision */
             revision: number;
         };
+        /** ContextBudget */
+        ContextBudget: {
+            /** Byte Limit */
+            byte_limit: number;
+            /**
+             * Excluded By Model
+             * @default 0
+             */
+            excluded_by_model: number;
+            /**
+             * Excluded By Size
+             * @default 0
+             */
+            excluded_by_size: number;
+            /** Selected Bytes */
+            selected_bytes: number;
+            /** Snippet Limit */
+            snippet_limit: number;
+        };
         /** ContextEvidence */
         ContextEvidence: {
             agent?: components["schemas"]["ReviewAgent"] | null;
@@ -4334,11 +4353,21 @@ export interface components {
              */
             context_k: number;
             /**
+             * Context Max Bytes
+             * @default 24000
+             */
+            context_max_bytes: number;
+            /**
              * Dimensions
              * @default 1024
              * @constant
              */
             dimensions: 1024;
+            /**
+             * Embedding Batch Max Bytes
+             * @default 64000
+             */
+            embedding_batch_max_bytes: number;
             /**
              * Embedding Model
              * @default qwen3.7-text-embedding
@@ -4400,11 +4429,21 @@ export interface components {
              */
             context_k: number;
             /**
+             * Context Max Bytes
+             * @default 24000
+             */
+            context_max_bytes: number;
+            /**
              * Dimensions
              * @default 1024
              * @constant
              */
             dimensions: 1024;
+            /**
+             * Embedding Batch Max Bytes
+             * @default 64000
+             */
+            embedding_batch_max_bytes: number;
             /**
              * Embedding Model
              * @default qwen3.7-text-embedding
@@ -4499,6 +4538,7 @@ export interface components {
             agent?: components["schemas"]["ReviewAgent"] | null;
             /** Candidates */
             candidates: components["schemas"]["ContextEvidence"][];
+            context_budget?: components["schemas"]["ContextBudget"] | null;
             /**
              * Covered Units
              * @default 0

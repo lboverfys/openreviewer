@@ -259,9 +259,12 @@ def test_review_retries_reuse_frozen_context_after_configuration_changes(retriev
     first = service.review_context(review_input, lambda: None)
     assert first.context_evidence
     view = service.settings.get()
-    service.settings.update(view.settings.model_copy(update={"embedding_model": "changed", "enabled": False}), view.revision, "tester")
+    original_budget = service.repository.traces(review.review_run_id, None)[0].context_budget
+    service.settings.update(view.settings.model_copy(update={"embedding_model": "changed", "enabled": False,
+        "embedding_batch_max_bytes": 128_000, "context_max_bytes": 48_000}), view.revision, "tester")
     second = service.review_context(review_input, lambda: None)
     assert second.context_evidence == first.context_evidence
+    assert service.repository.traces(review.review_run_id, None)[0].context_budget == original_budget
 
 
 def test_identical_agent_queries_share_search_and_batch_vectors(retrieval, monkeypatch):
@@ -290,6 +293,41 @@ def test_identical_agent_queries_share_search_and_batch_vectors(retrieval, monke
     assert result.context_evidence
     assert len(searches) == 1
     assert {item.agent for item in result.context_evidence} == {ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC}
+
+
+def test_agent_context_records_model_capacity_filtering(retrieval):
+    from domain.enums import ModelProvider, ReviewAgent
+    from domain.models import ReviewRequest
+    from persistence.repositories import SqlAlchemyReviewRepository
+    from services.model_review import ModelServiceSettings
+    from services.reviews import ReviewService
+    from tests.unit.test_model_review import make_model_input
+
+    service, sessions, _ = retrieval
+    original = make_model_input()
+    target = {"installation_id": 10, "repository_id": original.repository_id,
+              "repository": original.repository, "head_sha": original.head_sha}
+    run = ReviewService(SqlAlchemyReviewRepository(sessions)).submit(
+        ReviewRequest(**target, pull_request_number=original.pull_request_number), "context-capacity")
+    view = service.settings.get()
+    service.settings.update(view.settings.model_copy(update={"context_k": 20, "context_max_bytes": 128_000}), view.revision, "tester")
+    docs = []
+    for n in range(20):
+        content = f"authorize context {n} " + "authorization " * 420
+        docs.append(SourceFile(file=f"Auth{n}.md", content=content, blob_sha=git_blob_sha(content)))
+    service.index_sources(target, tuple(docs))
+    unit = original.units[0].model_copy(update={"review_domains": (ReviewAgent.SECURITY,)})
+    review_input = original.model_copy(update={"review_run_id": run.review_run_id, "units": (unit,)})
+    model = ModelServiceSettings(provider=ModelProvider.OPENAI, model="test-model", api_key="test-key",
+        context_window_tokens=32_768, max_batch_input_tokens=12_000, max_output_tokens=4096)
+    result = service.review_context(review_input, lambda: None, model_settings={ReviewAgent.SECURITY: model})
+    trace = service.repository.traces(run.review_run_id, None)[0]
+    assert 0 < len(result.context_evidence) < 20
+    assert trace.context_budget.byte_limit == 128_000
+    assert trace.context_budget.excluded_by_model > 0
+    assert trace.context_budget.selected_bytes == sum(len(item.content.encode()) for item in result.context_evidence)
+    assert {item.reference_id for item in trace.selected} == {item.reference_id for item in result.context_evidence}
+    assert service.review_context(review_input, lambda: None, model_settings={ReviewAgent.SECURITY: model}) == result
 
 
 def test_pause_allows_basic_index_but_blocks_explicit_vector_enrichment(retrieval, monkeypatch):

@@ -15,6 +15,7 @@ vi.mock("./api", async (importOriginal) => {
 const settings: RetrievalSettingsView = {revision: 1, key_configured: true, tested: true, external_calls_paused: false, settings: {
   enabled: true, api_host: "https://sample.cn-beijing.maas.aliyuncs.com", embedding_model: "qwen3.7-text-embedding",
   rerank_model: "qwen3.7-text-rerank", dimensions: 1024, strategy: "reranked", candidate_k: 20, context_k: 8, timeout_seconds: 60, max_new_vectors_per_index: 100, max_requests_per_operation: 12,
+  embedding_batch_max_bytes: 64000, context_max_bytes: 24000,
 }};
 beforeEach(() => {
   vi.mocked(api.retrievalTargets).mockResolvedValue({items: [], next_cursor: null});
@@ -36,6 +37,46 @@ it("补全限额直接可见，展开按钮明确且提示请求额度不足", a
   expect(screen.getByLabelText("接口超时（秒）")).toBeInTheDocument();
   fireEvent.change(count, {target: {value: "500"}});
   expect(screen.getByText(/至少需要 25 次请求/)).toBeInTheDocument();
+});
+
+it("文本限额以 KB 编辑，保存字节值并在重新读取后保留", async () => {
+  const updated = {...settings, revision: 2, settings: {...settings.settings,
+    embedding_batch_max_bytes: 128000, context_max_bytes: 48000}};
+  vi.mocked(api.updateRetrievalSettings).mockResolvedValue(updated);
+  render(<RetrievalSettingsPanel onError={vi.fn()} />);
+  const embedding = await screen.findByLabelText(/^单次向量请求文本上限/);
+  expect(embedding).toHaveValue(64);
+  fireEvent.click(screen.getByRole("button", {name: /展开设置/}));
+  const context = screen.getByLabelText(/^关联代码正文上限/);
+  expect(context).toHaveValue(24);
+  fireEvent.change(embedding, {target: {value: "128"}});
+  fireEvent.change(context, {target: {value: "48"}});
+  fireEvent.click(screen.getByRole("button", {name: "保存检索配置"}));
+  await waitFor(() => expect(api.updateRetrievalSettings).toHaveBeenCalledWith(
+    expect.objectContaining({embedding_batch_max_bytes: 128000, context_max_bytes: 48000}), 1, undefined));
+  await screen.findByText("已保存，下一次检索操作使用新配置。");
+  cleanup();
+  vi.mocked(api.retrievalSettings).mockResolvedValue(updated);
+  render(<RetrievalSettingsPanel onError={vi.fn()} />);
+  expect(await screen.findByLabelText(/^单次向量请求文本上限/)).toHaveValue(128);
+  fireEvent.click(screen.getByRole("button", {name: /展开设置/}));
+  expect(screen.getByLabelText(/^关联代码正文上限/)).toHaveValue(48);
+});
+
+it("检索展示实际正文用量和两种容量筛选原因，旧记录不伪造统计", () => {
+  const trace = {id: "trace", index_id: "index", query: "query", strategy: "bm25" as const,
+    strategies_used: [], queries: [], covered_units: 0, total_units: 0, model_requests: 0,
+    rerank_cache_hit: false, vector_search_mode: "unused", embedding_ms: 0, rerank_ms: 0,
+    query_cache_hit: false, warnings: [],
+    candidates: [], routes: [], duration_ms: 0, context_budget: {
+      snippet_limit: 20, byte_limit: 48000, selected_bytes: 0, excluded_by_size: 3, excluded_by_model: 2,
+    }};
+  const {rerender} = render(<RetrievalTracePanel traces={[trace]} />);
+  expect(screen.getByText("正文 0.0 / 48 KB")).toBeInTheDocument();
+  expect(screen.getByText("因正文容量未选入 3 个候选")).toBeInTheDocument();
+  expect(screen.getByText("因审查模型容量未选入 2 个片段")).toBeInTheDocument();
+  rerender(<RetrievalTracePanel traces={[{...trace, context_budget: null}]} />);
+  expect(screen.queryByText(/正文 .* KB/)).not.toBeInTheDocument();
 });
 
 describe("代码检索页面", () => {

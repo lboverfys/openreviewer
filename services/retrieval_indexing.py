@@ -14,12 +14,14 @@ from services.egress import check_paths
 from services.retrieval_providers import RequestBudget, RetrievalError
 
 
-def embedding_batches(chunks: Sequence[CodeChunk]) -> Iterator[tuple[CodeChunk, ...]]:
+def embedding_batches(chunks: Sequence[CodeChunk], max_bytes: int = 64_000) -> Iterator[tuple[CodeChunk, ...]]:
     batch: list[CodeChunk] = []
     size = 0
     for chunk in chunks:
         amount = len(chunk.embedding_text.encode())
-        if batch and (len(batch) >= 20 or size + amount > 64_000):
+        if amount > max_bytes:
+            raise RetrievalError(f"单个代码块超过单次向量请求文本上限 {max_bytes / 1000:g} KB，请调整配置")
+        if batch and (len(batch) >= 20 or size + amount > max_bytes):
             yield tuple(batch)
             batch, size = [], 0
         batch.append(chunk)
@@ -94,7 +96,7 @@ def build_index(repository: RetrievalRepository, settings_service: Any, client_f
                     for page in repository.missing_chunk_pages(index_id, priority_files):
                         if remaining <= 0:
                             break
-                        for batch in embedding_batches(page[:remaining]):
+                        for batch in embedding_batches(page[:remaining], view.settings.embedding_batch_max_bytes):
                             heartbeat()
                             if time.monotonic() - started > 180:
                                 remaining = 0

@@ -76,12 +76,21 @@ class RetrievalGateway:
             return result
 
     def prefetch_queries(self, texts: tuple[str, ...]) -> tuple[int, int | None]:
-        # 复用现有向量缓存与请求额度；四条一批兼容查询的UTF-8字节上限。
+        # 查询同样遵守可配置的文本上限，缓存命中不重复计费。
         unique = tuple(dict.fromkeys(texts))
         duration = 0
         tokens: int | None = None
-        for offset in range(0, len(unique), 4):
-            result = self.embed(unique[offset:offset + 4], purpose="query")
+        batches: list[list[str]] = []
+        size = 0
+        for text in unique:
+            amount = len(text.encode())
+            if not batches or len(batches[-1]) >= 4 or size + amount > self.settings.embedding_batch_max_bytes:
+                batches.append([])
+                size = 0
+            batches[-1].append(text)
+            size += amount
+        for batch in batches:
+            result = self.embed(tuple(batch), purpose="query")
             duration += result.duration_ms
             if result.input_tokens is not None:
                 tokens = (tokens or 0) + result.input_tokens

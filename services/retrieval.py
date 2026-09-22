@@ -6,7 +6,7 @@ import math
 import statistics
 import time
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, cast
@@ -43,8 +43,14 @@ from persistence.retrieval import RetrievalRepository
 from persistence.retrieval_runtime import RetrievalRuntimeRepository
 from services.ai_settings import AiSecretCipher
 from services.egress import check_paths
+from services.model_review import ModelServiceSettings, fit_model_context
 from services.rbac import ResourceScope
-from services.retrieval_context import changed_symbols, merge_contexts, review_queries
+from services.retrieval_context import (
+    changed_symbols,
+    merge_contexts,
+    review_queries,
+    select_contexts,
+)
 from services.retrieval_gateway import RetrievalGateway
 from services.retrieval_indexing import build_index
 from services.retrieval_indexing import embedding_batches as _embedding_batches
@@ -307,14 +313,9 @@ class HybridRetrievalService:
                 warnings.append("精排输入超过本批上限，本次使用 RRF 排名")
         route_details = {route: {chunk_id: (rank, score) for rank, (chunk_id, score) in enumerate(hits, 1)} for route, hits in routes.items()}
         candidates = []
-        selected_bytes = selected_count = 0
         for rank, position in enumerate(order, 1):
             chunk_id, score, origins = fused[position]
             chunk = chunks[chunk_id]
-            selected = selected_count < query.limit and selected_bytes + len(chunk.content.encode()) <= 24_000
-            if selected:
-                selected_count += 1
-                selected_bytes += len(chunk.content.encode())
             candidates.append(ContextEvidence(
                 reference_id=stable_key(index.id, chunk.id), chunk_id=chunk.id,
                 index_id=index.id, head_sha=index.head_sha, file=chunk.file,
@@ -323,8 +324,9 @@ class HybridRetrievalService:
                 routes=cast(tuple[RetrievalRoute, ...], origins),
                 route_scores={route: route_details[route][chunk_id][1] for route in origins},
                 route_ranks={route: route_details[route][chunk_id][0] for route in origins}, rank=rank, fused_rank=position + 1, fusion_score=score,
-                rerank_score=scores.get(position), selected=selected,
+                rerank_score=scores.get(position),
             ))
+        selected_candidates, context_budget = select_contexts(candidates, query.limit, settings.context_max_bytes)
         if index.parse_error_files:
             warnings.append("部分文件存在语法解析错误，请结合原始代码核对")
         actual: RetrievalStrategy = "reranked" if scores else "hybrid_relations" if routes.get("vector") and routes.get("relation") else "hybrid" if routes.get("vector") else "lexical_relations" if routes.get("relation") else "bm25"
@@ -332,7 +334,7 @@ class HybridRetrievalService:
             id=str(uuid4()), index_id=index.id, query=query.query, strategy=actual, requested_strategy=query.strategy,
             rerank_cache_hit=rerank_cache_hit,
             vector_search_mode=vector_search_mode,
-            candidates=tuple(candidates), routes=tuple(metrics),
+            candidates=selected_candidates, context_budget=context_budget, routes=tuple(metrics),
             duration_ms=round((time.monotonic() - started) * 1000),
             embedding_ms=embedding_ms, rerank_ms=rerank_ms, input_tokens=input_tokens,
             rerank_tokens=rerank_tokens, query_cache_hit=cache_hit, warnings=tuple(warnings),
@@ -340,7 +342,8 @@ class HybridRetrievalService:
 
 
     def review_context(self, model_input, on_progress: Callable[[], None], *,
-                       frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None):
+                       frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None,
+                       model_settings: Mapping[ReviewAgent, ModelServiceSettings] | None = None):
         if frozen_runtime is not None:
             # 开关属于当前运营控制，不冻结在历史审查方案里；模型及索引参数仍用方案快照。
             current = self.settings.get()
@@ -350,10 +353,11 @@ class HybridRetrievalService:
                 "external_calls_paused": current.external_calls_paused}), key)
         with repository_egress(self.repository.sessions, model_input.repository, model_input.review_run_id):
             check_paths(tuple(unit.file for unit in model_input.units))
-            return self._review_context(model_input, on_progress, frozen_runtime=frozen_runtime)
+            return self._review_context(model_input, on_progress, frozen_runtime=frozen_runtime, model_settings=model_settings)
 
     def _review_context(self, model_input, on_progress: Callable[[], None], *,
-                        frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None):
+                        frozen_runtime: tuple[RetrievalSettingsView, str | None] | None = None,
+                        model_settings: Mapping[ReviewAgent, ModelServiceSettings] | None = None):
         view = frozen_runtime[0] if frozen_runtime is not None else self.settings.get()
         if not model_input.units:
             return model_input
@@ -453,11 +457,25 @@ class HybridRetrievalService:
                     grouped = grouped_by_agent[agent]
                     traces = traces_by_agent[agent]
                     first = traces[0][0]
-                    candidates = merge_contexts(traces, view.settings.context_k)
+                    candidates, context_budget = merge_contexts(traces, view.settings.context_k, view.settings.context_max_bytes)
+                    if model_settings is not None and agent in model_settings:
+                        from services.agent_workflow import scope_model_review_input
+
+                        agent_input = scope_model_review_input(model_input, agent).model_copy(update={
+                            "context_evidence": tuple(item.model_copy(update={"agent": agent}) for item in candidates if item.selected),
+                        })
+                        fitted = fit_model_context(agent_input, model_settings[agent])
+                        kept = {item.reference_id for item in fitted.context_evidence}
+                        removed = len(agent_input.context_evidence) - len(kept)
+                        candidates = tuple(item.model_copy(update={"selected": item.reference_id in kept}) for item in candidates)
+                        context_budget = context_budget.model_copy(update={
+                            "selected_bytes": sum(len(item.content.encode()) for item in fitted.context_evidence),
+                            "excluded_by_model": removed,
+                        })
                     trace = first.model_copy(update={
                         "id": str(uuid4()), "agent": agent, "plan_fingerprint": model_input.plan_fingerprint,
                         "queries": tuple(query.query for query, _ in grouped), "query": f"{len(grouped)} 组变更上下文检索",
-                        "candidates": candidates, "total_units": len(units),
+                        "candidates": candidates, "context_budget": context_budget, "total_units": len(units),
                         "strategies_used": tuple(dict.fromkeys(item.strategy for item, _ in traces)),
                         "vector_search_mode": ",".join(sorted({item.vector_search_mode for item, _ in traces} - {"unused"})) or "unused",
                         "query_cache_hit": all(item.query_cache_hit for item, _ in traces),

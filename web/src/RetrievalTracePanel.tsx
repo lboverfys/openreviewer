@@ -61,8 +61,15 @@ export default function RetrievalTracePanel({ traces, compact = false }: { trace
       {trace.requested_strategy && trace.requested_strategy !== trace.strategy && <p className="retrieval-fallback">已保留可用结果 · 原策略：{retrievalStrategyLabels[trace.requested_strategy]}</p>}
       <div className="retrieval-route-metrics">
         {trace.routes.map(metric => <div key={metric.route}><span>{routeLabels[metric.route]}</span><strong>{metric.candidate_count} 条</strong><small>{formatDuration(metric.duration_ms)}</small></div>)}
-        <div><span>最终上下文</span><strong>{trace.candidates.filter(item => item.selected).length} 条</strong><small>{trace.candidates.length} 条融合候选</small></div>
+        <div><span>检索选中片段</span><strong>{trace.candidates.filter(item => item.selected).length} 条</strong><small>{trace.candidates.length} 条融合候选</small></div>
       </div>
+      {trace.context_budget && <div className="retrieval-measurements">
+        <span>已选 {trace.candidates.filter(item => item.selected).length} / {trace.context_budget.snippet_limit} 个片段</span>
+        <span>正文 {(trace.context_budget.selected_bytes / 1000).toFixed(1)} / {trace.context_budget.byte_limit / 1000} KB</span>
+        {trace.context_budget.excluded_by_size > 0 && <span>因正文容量未选入 {trace.context_budget.excluded_by_size} 个候选</span>}
+        {trace.context_budget.excluded_by_model > 0 && <span>因审查模型容量未选入 {trace.context_budget.excluded_by_model} 个片段</span>}
+      </div>}
+      {trace.agent && <p className="retrieval-form-hint">各批次只接收适用片段，并按实际模型输入容量再次校验。</p>}
       <div className="retrieval-measurements">
         <span>本次检索模型请求：{trace.model_requests ?? 0}</span>
         <span>向量搜索：{vectorSearchLabel(trace.vector_search_mode)}</span>

@@ -173,6 +173,8 @@ class _PersistentBatchedReviewer:
                 "agent": self._agent.value,
                 "batch_count": len(batches),
                 "file_count": len(review_input.units),
+                "context_selected_count": len({item.reference_id for batch in batches for item in batch.review_input.context_evidence}),
+                "context_candidate_count": len(review_input.context_evidence),
                 "context_window_tokens": self._settings.context_window_tokens,
                 "input_budget_tokens": self._settings.batch_input_budget_tokens,
                 "context_input_budget_tokens": self._settings.input_budget_tokens,

@@ -97,6 +97,8 @@ class RetrievalSettings(RetrievalContract):
     timeout_seconds: int = Field(default=60, ge=5, le=180)
     max_new_vectors_per_index: int = Field(default=100, ge=0, le=20_000)
     max_requests_per_operation: int = Field(default=12, ge=0, le=300)
+    embedding_batch_max_bytes: int = Field(default=64_000, ge=32_000, le=512_000)
+    context_max_bytes: int = Field(default=24_000, ge=4_000, le=256_000)
     embedding_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
     rerank_usd_per_million: Decimal | None = Field(default=None, ge=0, le=1_000_000)
 
@@ -168,6 +170,14 @@ class RouteMetric(RetrievalContract):
     duration_ms: int
 
 
+class ContextBudget(RetrievalContract):
+    snippet_limit: int
+    byte_limit: int
+    selected_bytes: int
+    excluded_by_size: int = 0
+    excluded_by_model: int = 0
+
+
 class RetrievalTrace(RetrievalContract):
     agent: ReviewAgent | None = None
     plan_fingerprint: str | None = None
@@ -192,6 +202,7 @@ class RetrievalTrace(RetrievalContract):
     input_tokens: int | None = None
     rerank_tokens: int | None = None
     warnings: tuple[str, ...] = ()
+    context_budget: ContextBudget | None = None
 
     @property
     def selected(self) -> tuple[ContextEvidence, ...]:

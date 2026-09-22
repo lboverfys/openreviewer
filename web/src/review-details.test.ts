@@ -125,6 +125,12 @@ function event(
 }
 
 describe("审查详情事件解释", () => {
+  it("展示批次实际使用的参考片段并解释筛选", () => {
+    expect(eventDetail(event("plan", "review.model.batches_planned", {
+      batch_count: 2, file_count: 3, context_selected_count: 4, context_candidate_count: 12,
+    }))).toContain("参考片段 4/12（按批次适用范围与模型容量筛选）");
+    expect(eventDetail(event("old", "review.model.batches_planned", {}))).not.toContain("参考片段");
+  });
   it.each([1, 3])("人工重试归零后忽略上一轮的第 %i 次失败", (oldAttempt) => {
     const oldPlan = event("old-plan", "review.model.batches_planned", {
       agent: "security", model_attempt_count: oldAttempt, model: "old-model", batch_count: 2,

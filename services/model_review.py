@@ -39,6 +39,7 @@ from domain.model_review import (
     finding_identity_fingerprint,
     model_review_output_schema,
 )
+from domain.retrieval import ContextEvidence
 from domain.review_planning import RepositoryRule, ReviewUnit, ordered_review_units
 from services.token_estimation import (
     estimate_prompt_input_tokens,
@@ -772,6 +773,42 @@ class FragmentLineMap:
         )
 
 
+def _model_batch_byte_budget(settings: ModelServiceSettings) -> int:
+    request_reserve = max(16 * 1024, settings.max_request_bytes // 10)
+    bytes_per_token = estimated_utf8_bytes_per_token(
+        settings.provider, settings.resolved_api_protocol, settings.model,
+    )
+    return min(settings.batch_input_budget_tokens * bytes_per_token,
+               settings.max_request_bytes - request_reserve)
+
+
+def fit_model_context(
+    review_input: ModelReviewInput,
+    settings: ModelServiceSettings,
+    *,
+    prompt_builder: StructuredReviewPromptBuilder | None = None,
+) -> ModelReviewInput:
+    """保留优先参考片段，为规则、变更片段及协议开销预留输入空间。"""
+    if not review_input.context_evidence or not review_input.units:
+        return review_input
+    builder = prompt_builder or StructuredReviewPromptBuilder(settings.prompt_snapshot)
+    rule_bytes = {rule.path: _rule_prompt_bytes(rule) for rule in review_input.rules}
+    fixed_bytes = max(
+        sum(rule_bytes[path] for path in unit.rule_paths) + _unit_prompt_bytes(unit, "")
+        for unit in review_input.units
+    )
+    patch_reserve = max(4 * 1024, fixed_bytes + _FRAGMENT_PROMPT_OVERHEAD_BYTES + 1024)
+    ceiling = _model_batch_byte_budget(settings) - 4 * 1024 - patch_reserve
+    empty = _copy_model_input(review_input, (), ()).model_copy(update={"context_evidence": ()})
+    selected: list[ContextEvidence] = []
+    for item in review_input.context_evidence:
+        candidate = empty.model_copy(update={"context_evidence": (*selected, item)})
+        prompt = builder.build(candidate, settings.provider, settings.model, settings.resolved_api_protocol)
+        if len(prompt.system.encode()) + len(prompt.user.encode()) <= ceiling:
+            selected.append(item)
+    return review_input.model_copy(update={"context_evidence": tuple(selected)})
+
+
 def plan_model_review_batches(
     review_input: ModelReviewInput,
     settings: ModelServiceSettings,
@@ -783,6 +820,7 @@ def plan_model_review_batches(
     if not review_input.units:
         return ()
     builder = prompt_builder or StructuredReviewPromptBuilder(settings.prompt_snapshot)
+    review_input = fit_model_context(review_input, settings, prompt_builder=builder)
     empty_input = _copy_model_input(review_input, (), ())
     # 空批次会过滤带 unit_keys 的证据，但真实批次仍会带回它们。
     # 先为当前 Agent 的有界证据预留空间，分批时继续只发送对应单元的证据。
@@ -796,16 +834,7 @@ def plan_model_review_batches(
     base_bytes = len(empty_prompt.system.encode("utf-8")) + len(
         empty_prompt.user.encode("utf-8")
     )
-    request_reserve = max(16 * 1024, settings.max_request_bytes // 10)
-    bytes_per_estimated_token = estimated_utf8_bytes_per_token(
-        settings.provider,
-        settings.resolved_api_protocol,
-        settings.model,
-    )
-    batch_byte_budget = min(
-        settings.batch_input_budget_tokens * bytes_per_estimated_token,
-        settings.max_request_bytes - request_reserve,
-    )
+    batch_byte_budget = _model_batch_byte_budget(settings)
     usable_byte_budget = batch_byte_budget - base_bytes - 4 * 1024
     if usable_byte_budget < 4 * 1024:
         raise ValueError("model input budget is too small for the review prompt")

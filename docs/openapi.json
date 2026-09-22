@@ -1446,6 +1446,40 @@
         "title": "ConfigurationAuditResponse",
         "type": "object"
       },
+      "ContextBudget": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_limit": {
+            "title": "Byte Limit",
+            "type": "integer"
+          },
+          "excluded_by_model": {
+            "default": 0,
+            "title": "Excluded By Model",
+            "type": "integer"
+          },
+          "excluded_by_size": {
+            "default": 0,
+            "title": "Excluded By Size",
+            "type": "integer"
+          },
+          "selected_bytes": {
+            "title": "Selected Bytes",
+            "type": "integer"
+          },
+          "snippet_limit": {
+            "title": "Snippet Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "snippet_limit",
+          "byte_limit",
+          "selected_bytes"
+        ],
+        "title": "ContextBudget",
+        "type": "object"
+      },
       "ContextEvidence": {
         "additionalProperties": false,
         "properties": {
@@ -7285,10 +7319,24 @@
             "title": "Context K",
             "type": "integer"
           },
+          "context_max_bytes": {
+            "default": 24000,
+            "maximum": 256000.0,
+            "minimum": 4000.0,
+            "title": "Context Max Bytes",
+            "type": "integer"
+          },
           "dimensions": {
             "const": 1024,
             "default": 1024,
             "title": "Dimensions",
+            "type": "integer"
+          },
+          "embedding_batch_max_bytes": {
+            "default": 64000,
+            "maximum": 512000.0,
+            "minimum": 32000.0,
+            "title": "Embedding Batch Max Bytes",
             "type": "integer"
           },
           "embedding_model": {
@@ -7414,10 +7462,24 @@
             "title": "Context K",
             "type": "integer"
           },
+          "context_max_bytes": {
+            "default": 24000,
+            "maximum": 256000.0,
+            "minimum": 4000.0,
+            "title": "Context Max Bytes",
+            "type": "integer"
+          },
           "dimensions": {
             "const": 1024,
             "default": 1024,
             "title": "Dimensions",
+            "type": "integer"
+          },
+          "embedding_batch_max_bytes": {
+            "default": 64000,
+            "maximum": 512000.0,
+            "minimum": 32000.0,
+            "title": "Embedding Batch Max Bytes",
             "type": "integer"
           },
           "embedding_model": {
@@ -7670,6 +7732,16 @@
             },
             "title": "Candidates",
             "type": "array"
+          },
+          "context_budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextBudget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "covered_units": {
             "default": 0,

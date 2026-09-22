@@ -5,7 +5,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 
-from domain.retrieval import ContextEvidence, RetrievalTrace, SearchQuery
+from domain.retrieval import ContextBudget, ContextEvidence, RetrievalTrace, SearchQuery
 from domain.review_planning import ReviewUnit
 from services.code_indexing import code_tokens
 from services.retrieval_lexical import Document
@@ -42,7 +42,30 @@ def changed_symbols(documents: Iterable[Document], units: Sequence[ReviewUnit]) 
         if file in ranges and any(first <= end and last >= begin for begin, end in ranges[file])))[:100]
 
 
-def merge_contexts(traces: Sequence[tuple[RetrievalTrace, tuple[str, ...]]], limit: int) -> tuple[ContextEvidence, ...]:
+def select_contexts(candidates: Sequence[ContextEvidence], limit: int, max_bytes: int, *,
+                    distinct_symbols: bool = False) -> tuple[tuple[ContextEvidence, ...], ContextBudget]:
+    selected = size = excluded = 0
+    symbols: set[tuple[str, str]] = set()
+    result = []
+    for item in candidates:
+        identity = (item.file, item.symbol)
+        include = False
+        if selected < limit and (not distinct_symbols or identity not in symbols):
+            amount = len(item.content.encode())
+            if size + amount <= max_bytes:
+                include = True
+                selected += 1
+                size += amount
+                symbols.add(identity)
+            else:
+                excluded += 1
+        result.append(item.model_copy(update={"selected": include}))
+    return tuple(result), ContextBudget(snippet_limit=limit, byte_limit=max_bytes,
+        selected_bytes=size, excluded_by_size=excluded)
+
+
+def merge_contexts(traces: Sequence[tuple[RetrievalTrace, tuple[str, ...]]], limit: int,
+                   max_bytes: int = 24_000) -> tuple[tuple[ContextEvidence, ...], ContextBudget]:
     """多查询轮流选证据，合并重复片段，限制同一符号的碎片和正文总量。"""
     by_id: dict[str, ContextEvidence] = {}
     order = []
@@ -57,16 +80,5 @@ def merge_contexts(traces: Sequence[tuple[RetrievalTrace, tuple[str, ...]]], lim
                 by_id[item.reference_id] = item.model_copy(update={"unit_keys": keys})
             else:
                 by_id[item.reference_id] = previous.model_copy(update={"unit_keys": tuple(dict.fromkeys((*previous.unit_keys, *keys)))})
-    selected = size = 0
-    symbols: set[tuple[str, str]] = set()
-    candidates = []
-    for rank, key in enumerate(order[:30], 1):
-        item = by_id[key]
-        identity = (item.file, item.symbol)
-        include = selected < limit and identity not in symbols and size + len(item.content.encode()) <= 24_000
-        if include:
-            symbols.add(identity)
-            selected += 1
-            size += len(item.content.encode())
-        candidates.append(item.model_copy(update={"rank": rank, "selected": include}))
-    return tuple(candidates)
+    candidates = tuple(by_id[key].model_copy(update={"rank": rank}) for rank, key in enumerate(order[:30], 1))
+    return select_contexts(candidates, limit, max_bytes, distinct_symbols=True)

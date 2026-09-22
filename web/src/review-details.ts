@@ -178,7 +178,11 @@ export function eventDetail(event: ReviewEvent): string | null {
     const batches = payloadNumber(event, "batch_count");
     const files = payloadNumber(event, "file_count");
     const reasoning = payloadString(event, "reasoning_effort");
-    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 系统将自动管理上下文与分批 · 推理 ${reasoningEffortLabels[reasoning ?? ""] ?? reasoning ?? "—"}`;
+    const selected = payloadNumber(event, "context_selected_count");
+    const candidates = payloadNumber(event, "context_candidate_count");
+    const context = selected !== null && candidates !== null
+      ? ` · 参考片段 ${selected}/${candidates}${selected < candidates ? "（按批次适用范围与模型容量筛选）" : ""}` : "";
+    return `${batches ?? "—"} 批 · ${files ?? "—"} 个文件 · 系统将自动管理上下文与分批 · 推理 ${reasoningEffortLabels[reasoning ?? ""] ?? reasoning ?? "—"}${context}`;
   }
   if (event.event_type === "review.model.batch_started") {
     const number = payloadNumber(event, "batch_number");

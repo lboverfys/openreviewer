@@ -162,7 +162,7 @@ def main() -> None:
                 keys = {digest: stable_key(settings.embedding_fingerprint, digest) for digest in unique}
                 existing = service.repository.existing_embeddings(tuple(keys.values()))
                 missing = [chunk for digest, chunk in unique.items() if keys[digest] not in existing]
-                batches = list(_embedding_batches(missing))
+                batches = list(_embedding_batches(missing, settings.embedding_batch_max_bytes))
                 print(json.dumps({
                     "dry_run": True, "files": len(sources), "chunks": len(parsed.chunks),
                     "unique_vectors": len(unique), "cached_vectors": len(existing),

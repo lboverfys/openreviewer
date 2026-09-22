@@ -314,8 +314,8 @@ class AliyunRetrievalClient:
         # The indexer packs bounded batches before calling this method.
         if not 1 <= len(texts) <= 20 or any(not value.strip() for value in texts):
             raise ValueError("向量请求需要 1 到 20 段非空文本")
-        if sum(len(value.encode()) for value in texts) > 64_000:
-            raise ValueError("单批向量输入超过 64 KB")
+        if sum(len(value.encode()) for value in texts) > self.settings.embedding_batch_max_bytes:
+            raise ValueError(f"单批向量输入超过配置上限 {self.settings.embedding_batch_max_bytes / 1000:g} KB")
         started = time.monotonic()
         body = self._post(
             "/compatible-mode/v1/embeddings",
