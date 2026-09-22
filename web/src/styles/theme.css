@@ -92,6 +92,7 @@
   .snapshot-profile-picker .list-pagination { font-size: 12px; }
   .ws-form-section, .ws-section-fields, .evaluation-form-grid > *, .review-detail-primary { min-width: 0; }
   .ws-form-section + .ws-form-section { margin-top: 16px; }
+  .ws-form-actions.is-sticky { position: static; margin-top: 20px; padding-top: 16px; }
   .ws-form-grid, .evaluation-form-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
   .ws-toolbar, .ws-actions, .evaluation-toolbar { flex-wrap: wrap; gap: 8px; }
   .ws-note, .evaluation-hint, .review-control-hint { color: #64748b; line-height: 1.65; }
