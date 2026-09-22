@@ -32,6 +32,7 @@ def record_model_progress(
     if not agent or len(agent) > 32:
         raise ValueError("model progress agent name is invalid")
     allowed_phases = {
+        "agent_started",
         "retrieval_started",
         "retrieval_completed",
         "incremental_reused",

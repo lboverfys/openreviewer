@@ -289,15 +289,18 @@ class HybridRetrievalService:
         if query.strategy == "reranked" and fused and client is not None:
             check_paths(tuple(chunks[item[0]].file for item in fused))
             # Keep query repetition and document bodies below the provider limit.
-            per_document = min(6000, max(0, 110_000 // len(fused) - len(query.query.encode())))
-            texts = tuple(chunks[item[0]].embedding_text.encode()[:per_document].decode("utf-8", errors="ignore") for item in fused)
+            rerank_count = min(len(fused), 30, 110_000 // (len(query.query.encode()) + 200))
+            per_document = min(6000, max(0, 110_000 // max(1, rerank_count) - len(query.query.encode())))
+            texts = tuple(chunks[item[0]].embedding_text.encode()[:per_document].decode("utf-8", errors="ignore") for item in fused[:rerank_count])
             total_bytes = sum(len(text.encode()) for text in texts) + len(query.query.encode()) * len(texts)
-            if total_bytes <= 110_000 and per_document >= 200:
+            if texts and total_bytes <= 110_000 and per_document >= 200:
                 try:
                     result = client.rerank(query.query, texts)
-                    order = [number for number, _ in result.ranking]
+                    order = [number for number, _ in result.ranking] + list(range(rerank_count, len(fused)))
                     scores = dict(result.ranking)
                     rerank_ms, rerank_tokens, rerank_cache_hit = result.duration_ms, result.input_tokens, result.cache_hit
+                    if rerank_count < len(fused):
+                        warnings.append(f"按输入容量精排前 {rerank_count} 个候选，其余保留基础融合顺序")
                 except RetrievalError as exc:
                     warnings.append("精排未完成，使用 RRF 结果：" + str(exc))
             else:

@@ -6,6 +6,7 @@ import {
   agentDefinitions,
   agentProgress,
   formatDuration,
+  payloadNumber,
   verdictLabels,
 } from "./review-details";
 import type { ReviewDetails } from "./types";
@@ -74,12 +75,14 @@ export function ModelBatchPanel({
   const hasModelEvents = activeAgents.some((item) => item.progress.events.length > 0);
   if (!hasModelEvents && !details.model_review_completed_at) return null;
   const stopped = ["cancelled", "superseded", "rejected", "paused"].includes(details.phase);
+  const canRetry = !stopped && details.available_actions.includes("retry_failed_node");
+  const concurrency = payloadNumber([...details.events].reverse().find(event => event.event_type === "review.model.agent_started"), "max_concurrency");
 
   return (
     <section className="review-panel review-batch-panel">
       <div className="review-panel-heading">
         <div><span className="review-eyebrow">LIVE MODEL PROGRESS</span><h2>各项 AI 检查结果</h2></div>
-        <span className="review-batch-readout">安全 · 规范 · 逻辑 · 汇总</span>
+        <span className="review-batch-readout">安全 · 规范 · 逻辑 · 汇总{concurrency ? concurrency === 1 ? " · 串行执行" : ` · 最多 ${concurrency} 路并行` : ""}</span>
       </div>
       <div className="review-agent-grid">
         {activeAgents.map(({ key, label, description, progress }) => {
@@ -104,6 +107,7 @@ export function ModelBatchPanel({
                   ? "进行中"
                   : progress.status === "planned"
                     ? "已规划"
+                    : progress.status === "preparing" ? "准备输入"
                     : "等待开始";
           const displayStatusLabel = stopped && progress.status !== "completed" && !programSummary ? details.phase === "paused" ? "已暂停" : "已停止" : progress.status === "failed"
             && completeCount > 0
@@ -176,6 +180,7 @@ export function ModelBatchPanel({
               )}
               {progress.status === "failed"
                 && onRetry
+                && canRetry
                 && (key === "summary" || progress.batchCount === 0 || failedCount > 1) && (
                   <Button variant="outline"
                     type="button"
@@ -203,7 +208,7 @@ export function ModelBatchPanel({
                 </DetailDialog>
               )}
               {progress.batchCount > 0 && <ReviewBatchList runId={details.review_run_id} agent={key}
-                total={progress.batchCount} changeToken={details.change_token} onRetry={onRetry} busy={retryBusy} stopped={stopped} paused={details.phase === "paused"} />}
+                total={progress.batchCount} changeToken={details.change_token} onRetry={canRetry ? onRetry : undefined} busy={retryBusy} stopped={stopped} paused={details.phase === "paused"} />}
             </article>
           );
         })}

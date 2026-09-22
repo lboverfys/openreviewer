@@ -290,6 +290,9 @@ jobs:
           mapfile -t workers < <("${compose[@]}" ps --all --quiet worker)
           test "${#workers[@]}" -eq 1
           test "$(docker inspect --format '{{.State.Health.Status}}' "${workers[0]}")" = healthy
+          mapfile -t index_workers < <("${compose[@]}" ps --all --quiet index-worker)
+          test "${#index_workers[@]}" -eq 1
+          test "$(docker inspect --format '{{.State.Health.Status}}' "${index_workers[0]}")" = healthy
           curl --fail --silent --show-error http://127.0.0.1:18090/healthz >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:18090/readyz >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:18090/metrics >/dev/null

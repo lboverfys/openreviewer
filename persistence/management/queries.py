@@ -33,6 +33,7 @@ from persistence.models import (
     ReviewPlanRecord,
     ReviewRunRecord,
     ReviewTaskRecord,
+    ReviewUnitRecord,
 )
 from persistence.resource_scope import resource_predicate
 from persistence.review_progress import load_batch_progress, load_progress_events
@@ -72,6 +73,9 @@ def batch_page(
                     batch.duration_ms,
                     batch.error_code,
                     batch.error_message,
+                    batch.review_plan_id,
+                    batch.unit_keys,
+                    batch.estimated_input_tokens,
                     batch.result["output"]["findings"].label("candidates"),
                 )
                 .join(ReviewPlanRecord, ReviewPlanRecord.id == batch.review_plan_id)
@@ -86,9 +90,15 @@ def batch_page(
             .mappings()
             .all()
         )
+        unit_keys = {key for row in rows[:limit] for key in row["unit_keys"]}
+        files: dict[str, str] = dict(session.execute(select(ReviewUnitRecord.unit_key, ReviewUnitRecord.file).where(
+            ReviewUnitRecord.review_plan_id == rows[0]["review_plan_id"],
+            ReviewUnitRecord.unit_key.in_(unit_keys),
+        )).tuples().all()) if rows and unit_keys else {}
     return CursorPage(
         items=tuple(
-            BatchSnapshot.model_validate(redact_sensitive({**row, "candidates": row["candidates"] or []}))
+            BatchSnapshot.model_validate(redact_sensitive({**row, "candidates": row["candidates"] or [],
+                "files": [files[key] for key in row["unit_keys"] if key in files]}))
             for row in rows[:limit]
         ),
         next_cursor=str(rows[limit - 1]["batch_number"]) if len(rows) > limit else None,

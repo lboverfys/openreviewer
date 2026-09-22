@@ -179,7 +179,10 @@ def _project_agent_progress(
             continue
         if agent is None or agent == "summary":
             continue
-        if event.event_type.endswith("agent_completed"):
+        if event.event_type.endswith("agent_started"):
+            statuses[agent] = "preparing"
+            failed_agents.discard(agent)
+        elif event.event_type.endswith("agent_completed"):
             statuses[agent] = (
                 "not_applicable"
                 if payload.get("status") == "not_applicable"

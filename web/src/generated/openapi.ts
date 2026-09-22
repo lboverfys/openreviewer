@@ -2077,6 +2077,16 @@ export interface components {
             error_code: string | null;
             /** Error Message */
             error_message: string | null;
+            /**
+             * Estimated Input Tokens
+             * @default 0
+             */
+            estimated_input_tokens: number;
+            /**
+             * Files
+             * @default []
+             */
+            files: string[];
             /** Status */
             status: string;
         };

@@ -1685,11 +1685,11 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(
     assert runtime.run_once() is True
     assert runtime.run_once() is False
     assert len(rule_loader.calls) == 1
-    assert len(model_reviewer.calls) == (2 if with_retrieval else 1)
+    assert len(model_reviewer.calls) == (3 if with_retrieval else 1)
     if retrieval is not None:
         retrieval.review_context.assert_called_once()
         assert {call.review_agent for call in model_reviewer.calls} == {
-            ReviewAgent.CONVENTION, ReviewAgent.LOGIC,
+            ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC,
         }
     with database.sessions() as session:
         task = session.get(ReviewTaskRecord, task_id)

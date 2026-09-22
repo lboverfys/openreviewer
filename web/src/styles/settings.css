@@ -1471,3 +1471,13 @@
 .agent-price-settings input { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-card); }
 .agent-price-settings .settings-field-note { margin: 0; padding: 0 12px 12px; color: var(--text-muted); font-size: 11px; line-height: 1.7; }
 @media (max-width: 560px) { .agent-price-settings .agent-settings-fields { grid-template-columns: minmax(0, 1fr); } }
+
+.retrieval-index-settings { margin: 20px 0; padding: 20px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg-card); }
+.retrieval-index-settings h3 { margin: 0 0 8px; }
+.retrieval-index-settings p, .retrieval-index-settings small { color: var(--text-secondary); line-height: 1.6; }
+.retrieval-index-settings small { display: block; margin-top: 6px; }
+.retrieval-settings-toggle { display: flex; width: 100%; gap: 12px; padding: 16px 20px; height: auto; margin: 16px 0; border: 2px solid #6366f1; border-radius: 12px; background: #eef2ff; color: #3730a3; cursor: pointer; }
+.retrieval-settings-toggle span { flex: 1; text-align: left; }
+.retrieval-settings-toggle strong { white-space: nowrap; }
+.retrieval-settings-toggle .is-expanded { transform: rotate(180deg); }
+.retrieval-settings-toggle:hover { background: #e0e7ff; }

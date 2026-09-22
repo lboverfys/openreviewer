@@ -252,6 +252,7 @@ def test_planner_marks_review_domains_deterministically() -> None:
 
     assert domains["docs/README.md"] == (ReviewAgent.CONVENTION,)
     assert domains["src/orders.py"] == (
+        ReviewAgent.SECURITY,
         ReviewAgent.CONVENTION,
         ReviewAgent.LOGIC,
     )

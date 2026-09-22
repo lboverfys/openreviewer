@@ -25,7 +25,7 @@ from domain.models import FindingLocation, ReviewFinding
 from domain.paths import normalize_repository_path
 from domain.repository_policy import RepositoryPolicySnapshot
 from domain.retrieval import ContextEvidence
-from domain.review_planning import RepositoryRule, ReviewUnit
+from domain.review_planning import RepositoryRule, ReviewUnit, ordered_review_units
 
 PROMPT_VERSION = "structured-review-v5"
 MAX_MODEL_FINDINGS = 200
@@ -260,16 +260,7 @@ class ModelReviewInput(ModelContract):
         ):
             raise ValueError("model review units must have unique keys and files")
         if self.planner_version == "review-planner-v3":
-            group_first_file: dict[str | None, str] = {}
-            for unit in self.units:
-                current = group_first_file.get(unit.group_key)
-                if current is None or unit.file < current:
-                    group_first_file[unit.group_key] = unit.file
-            expected_units = sorted(
-                self.units,
-                key=lambda unit: (group_first_file[unit.group_key], unit.file),
-            )
-            if list(self.units) != expected_units:
+            if self.units != ordered_review_units(self.units, self.planner_version):
                 raise ValueError("model review units must keep related files adjacent")
         elif unit_files != sorted(unit_files):
             raise ValueError("model review units must be ordered by file")

@@ -40,6 +40,12 @@ class RetrievalRuntimeRepository:
             ).values(used=RetrievalRequestBudgetRecord.used + 1).returning(RetrievalRequestBudgetRecord.id)).scalar_one_or_none()
             return row is not None
 
+    def request_usage(self, key: str) -> int:
+        with self.sessions() as session:
+            return session.scalar(select(RetrievalRequestBudgetRecord.used).where(
+                RetrievalRequestBudgetRecord.id == key,
+            )) or 0
+
     @contextmanager
     def model_lane(self, key: str) -> Iterator[None]:
         """同一凭据的 API/Worker 共用单请求通道；租约释放前完成缓存写入。"""

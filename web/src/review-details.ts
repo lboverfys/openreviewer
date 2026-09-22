@@ -394,7 +394,8 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey, summ
               ? "running"
               : planned
                 ? "planned"
-                : "waiting";
+                : scoped.some(event => event.event_type === "review.model.agent_started")
+                  ? "preparing" : "waiting";
   const terminal = terminalIsSuccess || terminalIsFailure ? lastTerminal : undefined;
   const findingCount = payloadNumber(terminal, "finding_count")
     ?? (agent === "summary" ? payloadNumber(summaryEvent, "finding_count") : null)

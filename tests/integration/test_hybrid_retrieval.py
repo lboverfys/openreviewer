@@ -332,7 +332,7 @@ def test_provider_failure_keeps_base_index_and_requests_are_bounded(retrieval):
     service.settings.update(current.settings.model_copy(update={"max_requests_per_operation": 0}), current.revision, "tester")
     count = FakeModels.embeddings
     index = service.index_sources(TARGET, sources())
-    assert index.lexical_ready and index.vector_status == "failed"
+    assert index.lexical_ready and index.vector_status == "limited"
     assert "请求上限" in index.vector_error
     assert service.search(index.id, SearchQuery(query="user", strategy="bm25")).candidates
     assert FakeModels.embeddings == count

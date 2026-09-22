@@ -1286,6 +1286,19 @@
             ],
             "title": "Error Message"
           },
+          "estimated_input_tokens": {
+            "default": 0,
+            "title": "Estimated Input Tokens",
+            "type": "integer"
+          },
+          "files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
           "status": {
             "title": "Status",
             "type": "string"

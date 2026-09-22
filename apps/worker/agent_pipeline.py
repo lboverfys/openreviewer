@@ -116,7 +116,7 @@ def _run_fixed_agent_workflow(
         )
     else:
         wrapped_summary = None
-    from services.agent_workflow import FixedAgentWorkflow
+    from services.agent_workflow import AgentExecution, FixedAgentWorkflow
 
     workflow = FixedAgentWorkflow(
         wrapped,
@@ -185,33 +185,7 @@ def _run_fixed_agent_workflow(
     model_input = model_input.model_copy(update={"knowledge_versions": {
         source: version for versions in reference_versions.values() for source, version in versions.items()
     }})
-    execution = workflow.run(
-        model_input,
-        references=reference_map,
-        reference_versions=reference_versions,
-        on_aggregating=lambda: self._queue.mark_model_aggregating(cursor.lease),
-        allow_partial_aggregation=True,
-        local_aggregation=True,
-        force_summary=getattr(cursor.lease, "force_summary", False),
-    )
-    if budget_exhausted.is_set():
-        # 已完成批次保留；额度耗尽不能以部分结果进入批准或发布。
-        raise RepositoryRequestLimitError()
-    for agent_result in (*execution.agents, execution.summary_execution):
-        if agent_result is not None and agent_result.safe_error is not None:
-            if agent_result.safe_error.details.get("egress_reason"):
-                raise SafeApplicationError(agent_result.safe_error)
-            if (
-                agent_result.safe_error.details.get("budget_reason")
-                == "repository_monthly_budget"
-            ):
-                raise SafeApplicationError(agent_result.safe_error)
-            if agent_result.safe_error.details.get("provider_channel"):
-                raise SafeApplicationError(agent_result.safe_error)
-    # 心跳线程可能在最后一个模型请求期间发现租约已被接管；即使编排器
-    # 返回了完整结果，也不能让旧 Worker 覆盖新 Worker 的持久化结果。
-    _raise_if_lease_lost(cursor)
-    for item in execution.agents:
+    def record_agent(item: AgentExecution) -> None:
         _raise_if_lease_lost(cursor)
         phase = (
             "agent_completed"
@@ -235,6 +209,38 @@ def _run_fixed_agent_workflow(
             },
             agent=item.agent.value,
         )
+
+    execution = workflow.run(
+        model_input,
+        references=reference_map,
+        reference_versions=reference_versions,
+        on_aggregating=lambda: self._queue.mark_model_aggregating(cursor.lease),
+        on_agent_started=lambda agent: self._queue.record_model_progress(
+            cursor.lease, "agent_started", {"agent": agent.value, "max_concurrency": workflow.max_concurrency},
+            agent=agent.value,
+        ),
+        on_agent_completed=record_agent,
+        allow_partial_aggregation=True,
+        local_aggregation=True,
+        force_summary=getattr(cursor.lease, "force_summary", False),
+    )
+    if budget_exhausted.is_set():
+        # 已完成批次保留；额度耗尽不能以部分结果进入批准或发布。
+        raise RepositoryRequestLimitError()
+    for agent_result in (*execution.agents, execution.summary_execution):
+        if agent_result is not None and agent_result.safe_error is not None:
+            if agent_result.safe_error.details.get("egress_reason"):
+                raise SafeApplicationError(agent_result.safe_error)
+            if (
+                agent_result.safe_error.details.get("budget_reason")
+                == "repository_monthly_budget"
+            ):
+                raise SafeApplicationError(agent_result.safe_error)
+            if agent_result.safe_error.details.get("provider_channel"):
+                raise SafeApplicationError(agent_result.safe_error)
+    # 心跳线程可能在最后一个模型请求期间发现租约已被接管；即使编排器
+    # 返回了完整结果，也不能让旧 Worker 覆盖新 Worker 的持久化结果。
+    _raise_if_lease_lost(cursor)
     if execution.summary_execution is not None:
         item = execution.summary_execution
         _raise_if_lease_lost(cursor)

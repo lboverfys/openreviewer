@@ -39,7 +39,7 @@ from domain.model_review import (
     finding_identity_fingerprint,
     model_review_output_schema,
 )
-from domain.review_planning import RepositoryRule, ReviewUnit
+from domain.review_planning import RepositoryRule, ReviewUnit, ordered_review_units
 from services.token_estimation import (
     estimate_prompt_input_tokens,
     estimated_utf8_bytes_per_token,
@@ -1217,6 +1217,7 @@ def _copy_model_input(
     rules: tuple[RepositoryRule, ...],
     units: tuple[ReviewUnit, ...],
 ) -> ModelReviewInput:
+    units = ordered_review_units(units, source.planner_version)
     total_bytes = sum(unit.estimated_input_bytes for unit in units)
     selected_unit_keys = {unit.unit_key for unit in units}
     if source.planner_version in {"review-planner-v2", "review-planner-v3"}:

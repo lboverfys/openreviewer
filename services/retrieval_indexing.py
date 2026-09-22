@@ -74,6 +74,9 @@ def build_index(repository: RetrievalRepository, settings_service: Any, client_f
         index = repository.get(index_id)
         embedded = 0
         reused = vector_count
+        continue_vectors = False
+        retry_delay = 0.0
+        failures = int(target.get("vector_failures", 0))
         vector_status, vector_error = "ready", None
         if vector_count < index.chunk_count:
             vector_status = "paused" if view.external_calls_paused else "pending"
@@ -81,33 +84,47 @@ def build_index(repository: RetrievalRepository, settings_service: Any, client_f
                 try:
                     runtime = RetrievalRuntimeRepository(repository.sessions)
                     operation = stable_key(index_id, target.get("vector_operation_id", index_id))
-                    budget = RequestBudget(view.settings.max_requests_per_operation, charge=lambda: runtime.charge_request(operation, view.settings.max_requests_per_operation))
+                    budget = RequestBudget(view.settings.max_requests_per_operation,
+                        used=runtime.request_usage(operation),
+                        charge=lambda: runtime.charge_request(operation, view.settings.max_requests_per_operation))
                     client = client_factory(view, key, budget)
                     remaining = view.settings.max_new_vectors_per_index
                     # 分页取缺失片段，按服务商批量接口补全；缓存命中不重复调用。
-                    for page in repository.missing_chunk_pages(index_id):
+                    priority_files = repository.vector_priority_files(index_id, tuple(target.get("priority_files", ())))
+                    for page in repository.missing_chunk_pages(index_id, priority_files):
                         if remaining <= 0:
                             break
                         for batch in embedding_batches(page[:remaining]):
                             heartbeat()
                             if time.monotonic() - started > 180:
-                                raise RetrievalError("向量准备超过 3 分钟，保留已完成部分并使用基础检索")
+                                remaining = 0
+                                break
                             check_paths(tuple(chunk.file for chunk in batch))
                             client.embed(tuple(chunk.embedding_text for chunk in batch))
                             embedded += len(batch)
                             remaining -= len(batch)
+                            vector_count = repository.link_vectors(index_id, owner, configuration_key, tuple(chunk.id for chunk in batch))
                             repository.progress(index_id, owner, index.file_count, index.chunk_count, embedded, reused)
-                    vector_count = repository.link_vectors(index_id, owner, configuration_key)
-                    vector_status = "ready" if vector_count == index.chunk_count else "limited"
-                    if vector_status == "limited":
-                        vector_error = f"达到本次新增向量上限 {view.settings.max_new_vectors_per_index}，已覆盖 {vector_count}/{index.chunk_count}；其余使用基础检索"
+                    failures = 0
+                    if vector_count == index.chunk_count:
+                        vector_status = "ready"
+                    elif view.settings.max_new_vectors_per_index == 0:
+                        vector_status, vector_error = "limited", "每轮新增向量上限 0，请在模型与审查设置中调整"
+                    elif budget.used >= budget.limit:
+                        vector_status, vector_error = "limited", f"达到本次补全累计请求上限 {budget.limit}，已覆盖 {vector_count}/{index.chunk_count}；调整额度后可继续补全"
+                    else:
+                        vector_status, continue_vectors = "pending", True
+                        vector_error = f"本轮新增 {embedded} 个向量，等待索引 Worker 继续；已覆盖 {vector_count}/{index.chunk_count}"
                 except RetrievalError as exc:
-                    vector_status, vector_error = "failed", str(exc)
-            if embedded:
-                vector_count = repository.link_vectors(index_id, owner, configuration_key)
+                    failures += 1
+                    continue_vectors = exc.retryable and failures < 3
+                    retry_delay = max(30.0, exc.retry_after) if continue_vectors else 0
+                    vector_status = "pending" if continue_vectors else "limited" if budget.exhausted else "failed"
+                    vector_error = str(exc)
         repository.complete(index_id, owner, vector_count=vector_count, vector_status=vector_status,
             vector_error=vector_error, embedded=embedded, reused=reused,
-            duration_ms=round((time.monotonic() - started) * 1000))
+            duration_ms=round((time.monotonic() - started) * 1000),
+            continue_vectors=continue_vectors, retry_delay=retry_delay, vector_failures=failures)
         return repository.get(index_id)
     except Exception as exc:
         repository.fail(index_id, owner, SafeError.from_exception(exc).safe_message)

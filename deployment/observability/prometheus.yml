@@ -28,6 +28,7 @@ scrape_configs:
     dns_sd_configs:
       - names:
           - worker
+          - index-worker
         type: A
         port: 18091
         refresh_interval: 15s

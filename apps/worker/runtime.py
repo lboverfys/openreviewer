@@ -367,6 +367,10 @@ class WorkerRuntime:
         self._ensure_heartbeat_started()
         if not self._drain_lingering_heartbeats():
             return False
+        if self._settings.role == "index":
+            if self._stop_event.is_set():
+                return False
+            return self._process_retrieval_index()
         recovered = self._queue.recover_expired_leases()
         if recovered:
             LOGGER.warning("已恢复 %s 个租约超时任务", recovered)
@@ -382,7 +386,7 @@ class WorkerRuntime:
         if self._stop_event.is_set():
             return False
         # 每四次审查领取给索引一次机会，避免持续排队的审查饿死其依赖索引。
-        if self._retrieval_service is not None and self._reviews_since_index >= 4:
+        if self._settings.role == "mixed" and self._retrieval_service is not None and self._reviews_since_index >= 4:
             self._reviews_since_index = 0
             if self._process_retrieval_index():
                 return True
@@ -405,7 +409,7 @@ class WorkerRuntime:
             ),
         )
         if lease is None:
-            if self._retrieval_service is not None:
+            if self._settings.role == "mixed" and self._retrieval_service is not None:
                 self._reviews_since_index = 0
                 return self._process_retrieval_index()
             return False

@@ -1,6 +1,6 @@
 """仓库规则快照与模型调用前 Review Plan 的严格领域契约。"""
 
-import re
+from collections.abc import Sequence
 from hashlib import sha256
 from typing import Literal, Self
 
@@ -26,63 +26,7 @@ REVIEW_AGENTS: tuple[ReviewAgent, ...] = (
 )
 DEFAULT_REVIEW_DOMAINS: tuple[ReviewAgent, ...] = REVIEW_AGENTS
 
-# 这些词只用于规划阶段的确定性范围缩小，不代表模型结论。命中安全词时
-# 追加 security；普通源代码默认交给 convention + logic，文档类变更只交给
-# convention。模糊文件仍保留至少一个 Agent，避免启发式误删审查范围。
-_SECURITY_RESPONSIBILITY_MARKERS = (
-    "auth",
-    "authorize",
-    "authorization",
-    "authentication",
-    "permission",
-    "privilege",
-    "acl",
-    "access_token",
-    "token",
-    "jwt",
-    "oauth",
-    "csrf",
-    "secret",
-    "password",
-    "credential",
-    "sensitive",
-    "pii",
-    "encrypt",
-    "decrypt",
-    "crypto",
-    "injection",
-    "xss",
-    "sandbox",
-    "webhook",
-    "signature",
-    "cookie",
-    "session",
-)
-_CONVENTION_RESPONSIBILITY_MARKERS = (
-    "api",
-    "endpoint",
-    "route",
-    "controller",
-    "handler",
-    "dto",
-    "schema",
-    "interface",
-    "protocol",
-    "public",
-    "export",
-    "config",
-    "settings",
-    "migration",
-    "readme",
-    "test",
-    "spec",
-    "lint",
-    "format",
-    "style",
-    "naming",
-)
 _DOCUMENT_SUFFIXES = {".md", ".mdx", ".rst", ".txt"}
-_MARKER_SPLIT = re.compile(r"[^a-z0-9_]+")
 
 
 def infer_review_domains(
@@ -90,19 +34,9 @@ def infer_review_domains(
     patch: str,
     rule_paths: tuple[str, ...] = (),
 ) -> tuple[ReviewAgent, ...]:
-    """根据稳定的路径和补丁词法推断一个 Unit 的审查职责。
-
-    这是减少重复输入的保守启发式：普通代码至少保留规范和逻辑审查，
-    命中安全相关词时再加入安全审查；无法判断的文件不会被全部丢弃。
-    返回顺序固定，便于计划指纹和批次复用保持稳定。
-    """
+    """可审查代码固定经过三路，纯文档只检查规范；历史计划保留原职责。"""
 
     normalized_path = normalize_repository_path(file_path)
-    haystack = " ".join((normalized_path, patch, *rule_paths)).casefold()
-    tokens = {token for token in _MARKER_SPLIT.split(haystack) if token}
-
-    def marker_hit(markers: tuple[str, ...]) -> bool:
-        return any(marker in haystack or marker in tokens for marker in markers)
     suffix = normalized_path.casefold().rsplit(".", 1)
     is_document = (
         len(suffix) == 2 and f".{suffix[-1]}" in _DOCUMENT_SUFFIXES
@@ -110,16 +44,7 @@ def infer_review_domains(
     if is_document:
         return (ReviewAgent.CONVENTION,)
 
-    domains: list[ReviewAgent] = []
-    if marker_hit(_SECURITY_RESPONSIBILITY_MARKERS):
-        domains.append(ReviewAgent.SECURITY)
-    # Convention and logic are intentionally broad. A file whose name does not
-    # contain an explicit convention marker still needs maintainability and
-    # behavior checks; narrowing it further would make the planner brittle.
-    domains.extend((ReviewAgent.CONVENTION, ReviewAgent.LOGIC))
-    # De-duplicate while retaining the fixed enum order if a future marker list
-    # overlaps with the defaults.
-    return tuple(agent for agent in REVIEW_AGENTS if agent in domains)
+    return REVIEW_AGENTS
 
 
 def repository_rule_candidate_paths(
@@ -359,6 +284,18 @@ class ReviewUnit(PlanningContractModel):
         """兼容旧客户端的职责别名。"""
 
         return self.review_domains
+
+
+def ordered_review_units(
+    units: Sequence[ReviewUnit], planner_version: str,
+) -> tuple[ReviewUnit, ...]:
+    """职责筛选和分片后重新规范组顺序，保留单元身份与内容。"""
+    if planner_version != "review-planner-v3":
+        return tuple(sorted(units, key=lambda unit: unit.file))
+    first: dict[str | None, str] = {}
+    for unit in units:
+        first[unit.group_key] = min(first.get(unit.group_key, unit.file), unit.file)
+    return tuple(sorted(units, key=lambda unit: (first[unit.group_key], unit.file)))
 
 
 class ReviewFilePlan(PlanningContractModel):

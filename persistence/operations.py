@@ -103,6 +103,7 @@ class SqlAlchemyOperationsRepository:
                             >= now - worker_max_age,
                             WorkerHeartbeatRecord.status
                             != WorkerStatus.STOPPING.value,
+                            ~WorkerHeartbeatRecord.worker_id.startswith("index:"),
                         )
                         .limit(1)
                     )

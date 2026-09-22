@@ -23,7 +23,7 @@ from domain.model_review import (
     ModelReviewInput,
     ModelReviewResult,
 )
-from domain.review_planning import REVIEW_AGENTS
+from domain.review_planning import REVIEW_AGENTS, ordered_review_units
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_review import ModelReviewer, ModelServiceSettings
 from services.task_queue import TaskLeaseLostError
@@ -117,8 +117,9 @@ def scope_model_review_input(
     review_input = review_input.model_copy(update={"context_evidence": tuple(item for item in review_input.context_evidence if item.agent is None or item.agent == agent)})
     if agent not in REVIEW_AGENTS or not review_input.units:
         return review_input.model_copy(update={"review_agent": agent})
-    units = tuple(
-        unit for unit in review_input.units if agent in unit.review_domains
+    units = ordered_review_units(
+        tuple(unit for unit in review_input.units if agent in unit.review_domains),
+        review_input.planner_version,
     )
     if not units:
         return review_input.model_copy(
@@ -193,6 +194,8 @@ class FixedAgentWorkflow:
         references: Mapping[ReviewAgent, tuple[str, ...]] | None = None,
         reference_versions: Mapping[ReviewAgent, dict[str, str]] | None = None,
         on_aggregating: Callable[[], None] | None = None,
+        on_agent_started: Callable[[ReviewAgent], None] | None = None,
+        on_agent_completed: Callable[[AgentExecution], None] | None = None,
         # 生产 Worker 开启增强模式；默认关闭是为了让升级过程中的旧调用方
         # 继续得到原有的 failed/不调用汇总行为。
         allow_partial_aggregation: bool = False,
@@ -314,16 +317,26 @@ class FixedAgentWorkflow:
                     applicable_unit_count=len(agent_input.units),
                 )
 
+        def execute(agent: ReviewAgent) -> AgentExecution:
+            if lease_lost.is_set():
+                raise TaskLeaseLostError()
+            if on_agent_started:
+                on_agent_started(agent)
+            execution = invoke(agent)
+            if on_agent_completed:
+                on_agent_completed(execution)
+            return execution
+
         if self._max_concurrency == 1:
             # 生产环境的保守配置不需要创建线程池。更重要的是，租约丢失时
             # 能在首个 Agent 抛错的瞬间停止，不让已经排队的后续 Agent 继续
             # 发起模型请求。
             for agent in PARALLEL_AGENTS:
-                executions[agent] = invoke(agent)
+                executions[agent] = execute(agent)
         else:
             with ThreadPoolExecutor(max_workers=self._max_concurrency) as pool:
                 futures = {
-                    pool.submit(copy_context().run, invoke, agent): agent
+                    pool.submit(copy_context().run, execute, agent): agent
                     for agent in PARALLEL_AGENTS
                 }
                 for future in as_completed(futures):

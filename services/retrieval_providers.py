@@ -98,11 +98,14 @@ class RequestBudget:
     limit: int
     used: int = 0
     charge: Callable[[], bool] | None = None
+    exhausted: bool = field(default=False, init=False)
 
     def consume(self) -> None:
         if self.used >= self.limit:
+            self.exhausted = True
             raise RetrievalError("本次操作已达到模型请求上限，已停止额外调用")
         if self.charge is not None and not self.charge():
+            self.exhausted = True
             raise RetrievalError("本次任务累计已达到模型请求上限，重试不会重置额度")
         self.used += 1
 

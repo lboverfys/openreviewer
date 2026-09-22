@@ -45,7 +45,7 @@ export default function CodeIndexPanel({indexPagination, targetPagination,  inde
       <div className="retrieval-source-counts"><div><strong>{selected.file_count.toLocaleString()}</strong><span>文件</span></div><div><strong>{selected.chunk_count.toLocaleString()}</strong><span>代码块</span></div><div><strong>{selected.relation_count.toLocaleString()}</strong><span>关系</span></div></div>
       <p className="retrieval-form-hint">解析 {selected.parsed_files ?? 0} · 复用 {selected.reused_files ?? 0} · {formatDate(selected.created_at)}</p>
       {selected.parser_version !== "java-mybatis-v2" && <p className="ws-note">这是旧解析的索引。选择上方相同提交并建立基础索引，可使用包含方法注释的新解析；原报告和参考代码保留。</p>}
-      {!pending && (selected.error || selected.vector_error) && <div className="retrieval-warning">{selected.error || selected.vector_error}</div>}
+      {(selected.error || selected.vector_error) && <div className="retrieval-warning">{selected.error || selected.vector_error}</div>}
       {!selected.lexical_ready && !pending && <Button variant="outline" className="retrieval-full-button" disabled={busy} onClick={() => onRetry(selected.id)}>恢复基础索引</Button>}
       {selected.lexical_ready && selected.vector_status !== "ready" && <Button variant="outline" className="retrieval-full-button" disabled={busy || paused || pending} onClick={() => onEnrich(selected.id)}>补全缺失向量</Button>}
       {(selected.parse_error_files?.length ?? 0) > 0 && <DetailDialog><summary>查看解析提示</summary>{selected.parse_error_files?.map(file => <p className="retrieval-form-hint" key={file}>{file}</p>)}</DetailDialog>}

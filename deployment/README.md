@@ -150,3 +150,7 @@ v0.28.1 镜像和仓库 webhook 配置（只缩短等待/分组间隔），在�
 环境使用 `tests/operations/alertmanager_smoke.py --config deployment/observability/alertmanager.yml
 --output <已有专用目录中的新文件>` 复验，工具只使用现有镜像，不自动拉取。
 外部渠道应另行确定收件方；飞书/钉钉需要格式适配，不能将普通 webhook URL 直接替换。
+
+## 审查与索引 Worker
+
+Compose 的 worker 使用 review 角色，只领取审查任务；index-worker 使用 index 角色，只领取索引与向量补全任务，默认各一个副本。两者复用现有数据库及供应商调用治理。索引进程心跳以 index: 标记，就绪检查仍要求活跃审查 Worker。停止、部署健康检查和恢复流程同时覆盖两种角色，旧版本恢复按实际服务列表兼容。首次发布本变更前，需受控更新服务器已有 deploy 与 restore 入口并核对 digest；应用镜像切换仍由 main 的 GitHub Actions 完成。

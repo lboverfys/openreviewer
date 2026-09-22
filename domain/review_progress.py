@@ -23,3 +23,5 @@ class BatchSnapshot(BaseModel):
     error_code: str | None
     error_message: str | None
     candidates: tuple[ModelFindingCandidate, ...] = ()
+    files: tuple[str, ...] = ()
+    estimated_input_tokens: int = 0

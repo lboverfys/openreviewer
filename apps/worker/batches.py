@@ -151,8 +151,14 @@ class _PersistentBatchedReviewer:
         try:
             batches = plan_model_review_batches(review_input, self._settings)
         except ValueError as exc:
+            capacity_error = str(exc).startswith((
+                "model input budget", "repository rules leave",
+                "planned model batch exceeds", "model review batch count exceeds",
+            ))
             raise ModelReviewInputError(
                 "审查输入无法按当前容量分批，请检查模型的上下文和单批输入上限"
+                if capacity_error else
+                "审查输入准备失败，请检查关联文件顺序、输入结构与配置快照"
             ) from exc
         if not batches:
             _raise_if_lease_lost(self._lease_cursor)

@@ -4,6 +4,7 @@ import os
 import socket
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Literal, cast
 
 
 def _positive_float(value: str, name: str) -> float:
@@ -43,8 +44,13 @@ class WorkerSettings:
     model_review_lease_duration: timedelta = timedelta(minutes=10)
     telemetry_host: str = "127.0.0.1"
     telemetry_port: int = 18091
+    role: Literal["mixed", "review", "index"] = "mixed"
 
     def __post_init__(self) -> None:
+        if self.role not in {"mixed", "review", "index"}:
+            raise ValueError("worker role must be mixed, review or index")
+        if self.role == "index" and not self.worker_id.startswith("index:"):
+            object.__setattr__(self, "worker_id", "index:" + self.worker_id)
         if not self.worker_id or len(self.worker_id) > 200:
             raise ValueError("worker ID must contain 1 to 200 characters")
         if self.poll_interval.total_seconds() <= 0:
@@ -136,4 +142,5 @@ class WorkerSettings:
             model_review_lease_duration=timedelta(seconds=model_lease_seconds),
             telemetry_host=telemetry_host,
             telemetry_port=telemetry_port,
+            role=cast(Literal["mixed", "review", "index"], os.environ.get("OPENREVIEWER_WORKER_ROLE", "mixed")),
         )

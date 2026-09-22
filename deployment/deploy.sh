@@ -412,7 +412,10 @@ wait_compose_service_stopped() {
 
   while (( SECONDS - started_at < timeout_seconds )); do
     all_stopped=1
-    for service in api worker web; do
+    for service in api worker web index-worker; do
+      if [[ "$service" == "index-worker" ]] && ! "${release_compose[@]}" config --services | grep -Fxq index-worker; then
+        continue
+      fi
       mapfile -t container_ids < <(
         "${release_compose[@]}" ps --all --quiet "$service"
       )
@@ -443,7 +446,11 @@ stop_application_services() {
     --env-file "$release_dir/.env"
     --file "$release_dir/compose.yml"
   )
-  "${release_compose[@]}" stop --timeout "$timeout_seconds" api worker web
+  local -a application_services=(api worker web)
+  if "${release_compose[@]}" config --services | grep -Fxq index-worker; then
+    application_services+=(index-worker)
+  fi
+  "${release_compose[@]}" stop --timeout "$timeout_seconds" "${application_services[@]}"
   wait_compose_service_stopped "$release_dir" "$timeout_seconds"
 }
 
@@ -717,9 +724,10 @@ if [[ "$previous_release" == "$release_dir" ]]; then
   assert_image_digest "$api_image" "$api_repository" "$api_digest"
   assert_image_digest "$web_image" "$web_repository" "$web_digest"
   "${compose_cmd[@]}" up -d --no-deps --scale "worker=$worker_replicas" \
-    api worker web prometheus alertmanager grafana
+    api worker index-worker web prometheus alertmanager grafana
   wait_healthy openreviewer-api 60
   wait_compose_service_healthy worker 60
+  wait_compose_service_healthy index-worker 60
   wait_healthy openreviewer-web 60
   wait_internal_http http://prometheus:9090/-/ready 60
   wait_internal_http http://alertmanager:9093/-/ready 60
@@ -730,7 +738,7 @@ fi
 
 "${compose_cmd[@]}" config --quiet
 services="$("${compose_cmd[@]}" config --services | LC_ALL=C sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-[[ "$services" == "alertmanager api grafana migrate postgres prometheus web worker" ]] || \
+[[ "$services" == "alertmanager api grafana index-worker migrate postgres prometheus web worker" ]] || \
   die "unexpected compose services"
 "${compose_cmd[@]}" pull postgres migrate prometheus alertmanager grafana
 docker pull "${api_repository}@${api_digest}"
@@ -753,7 +761,7 @@ on_error() {
       # 交给管理员核对数据库版本和迁移日志后再决定启动哪个版本。
       printf 'database migration did not complete; application services remain stopped for manual recovery\n' >&2
       set +e
-      "${failed_compose[@]}" stop api worker web prometheus alertmanager grafana \
+      "${failed_compose[@]}" stop api worker index-worker web prometheus alertmanager grafana \
         >/dev/null 2>&1
       set -e
       exit "$status"
@@ -766,7 +774,7 @@ on_error() {
     local previous_services optional_service
     set +e
     previous_services="$("${previous_compose[@]}" config --services 2>/dev/null)"
-    for optional_service in prometheus alertmanager grafana; do
+    for optional_service in index-worker prometheus alertmanager grafana; do
       if grep -Fxq "$optional_service" <<< "$previous_services"; then
         rollback_services+=("$optional_service")
       else
@@ -779,6 +787,9 @@ on_error() {
     wait_healthy openreviewer-api 120 >/dev/null 2>&1
     compose_cmd=("${previous_compose[@]}")
     wait_compose_service_healthy worker 120 >/dev/null 2>&1
+    if grep -Fxq index-worker <<< "$previous_services"; then
+      wait_compose_service_healthy index-worker 120 >/dev/null 2>&1
+    fi
     wait_healthy openreviewer-web 120 >/dev/null 2>&1
     if grep -Fxq prometheus <<< "$previous_services"; then
       wait_internal_http http://prometheus:9090/-/ready 60 >/dev/null 2>&1
@@ -812,9 +823,10 @@ migration_started=1
 migration_completed=1
 
 "${compose_cmd[@]}" up -d --no-deps --scale "worker=$worker_replicas" \
-  api worker web prometheus alertmanager grafana
+  api worker index-worker web prometheus alertmanager grafana
 wait_healthy openreviewer-api 180
 wait_compose_service_healthy worker 180
+wait_compose_service_healthy index-worker 180
 wait_healthy openreviewer-web 180
 wait_internal_http http://prometheus:9090/-/ready 180
 wait_internal_http http://alertmanager:9093/-/ready 180
@@ -830,6 +842,7 @@ curl --fail --silent --show-error --insecure --max-time 15 \
 
 [[ "$(docker inspect --format '{{.Config.Image}}' openreviewer-api)" == "$api_image" ]] || die "API container image mismatch"
 assert_compose_service_image worker "$api_image"
+assert_compose_service_image index-worker "$api_image"
 [[ "$(docker inspect --format '{{.Config.Image}}' openreviewer-web)" == "$web_image" ]] || die "Web container image mismatch"
 
 migration_version="$(docker exec openreviewer-api python -m alembic current | tail -n 1 | tr -d '\r')"

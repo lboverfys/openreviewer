@@ -10,6 +10,7 @@ from persistence.management.common import _as_utc, _latest_summary_failed
 from persistence.models import (
     ModelCallRecord,
     ModelReviewBatchRecord,
+    OutboxEventRecord,
     ReviewFilePlanRecord,
     ReviewFindingRecord,
     ReviewPlanRecord,
@@ -160,7 +161,18 @@ def _prepare_failed_node_retry(
         and (agent is None or agent == ReviewAgent.SUMMARY.value)
         and not selected
     )
-    if not selected and rows and not summary_only_retry:
+    unplanned_failure = False
+    if agent in {"security", "convention", "logic"} and batch_number is None and not any(row.agent == agent for row in rows):
+        last = session.execute(select(OutboxEventRecord.event_type, OutboxEventRecord.payload).where(
+            OutboxEventRecord.aggregate_type == "review_run",
+            OutboxEventRecord.aggregate_id == run.id,
+            OutboxEventRecord.payload["agent"].as_string() == agent,
+            OutboxEventRecord.event_type.in_(("review.model.agent_failed", "review.model.agent_completed", "review.model.agent_not_applicable", "review.model.agent_started")),
+        ).order_by(OutboxEventRecord.occurred_at.desc(), OutboxEventRecord.id.desc()).limit(1)).one_or_none()
+        unplanned_failure = bool(last and last.event_type == "review.model.agent_failed"
+            and last.payload.get("status") == "failed"
+            and last.payload.get("model_attempt_count") == task.model_attempt_count)
+    if not selected and rows and not summary_only_retry and not unplanned_failure:
         raise ReviewActionConflictError("指定节点没有可重试的失败批次")
     live_running = []
     now_utc = _as_utc(now)

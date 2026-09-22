@@ -1,7 +1,8 @@
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
 import { Button } from "./components/ui/button";
-import { DetailDialog, Notice } from "./Feedback";
+import { Notice } from "./Feedback";
+import { ChevronDown, Settings2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { RetrievalSettings, RetrievalSettingsView, RetrievalStrategy } from "./types";
@@ -14,6 +15,7 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
+  const [limitsOpen, setLimitsOpen] = useState(false);
   const normalize = (value: RetrievalSettingsView) => ({...value.settings,
     external_calls_enabled: value.settings.external_calls_enabled ?? !value.external_calls_paused});
   useEffect(() => {
@@ -44,7 +46,7 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
     <form onSubmit={save}><fieldset disabled={Boolean(busy)} className="settings-fieldset">
       <div className="feature-switches">
         <label><input type="checkbox" checked={Boolean(draft.enabled)} onChange={e => update("enabled", e.target.checked)} /><span><strong>审查时自动补充关联代码</strong><small>开启后，Worker 自动准备索引并把相关片段送给审查 Agent。</small></span></label>
-        <label><input type="checkbox" role="switch" checked={Boolean(draft.external_calls_enabled)} onChange={e => update("external_calls_enabled", e.target.checked)} /><span><strong>允许向量与精排模型调用</strong><small>开启后允许发送代码片段到下方百炼服务并产生费用；关闭时继续使用关键词和代码关系检索，GPT 审查不受影响。</small></span></label>
+        <label><input type="checkbox" role="switch" checked={Boolean(draft.external_calls_enabled)} onChange={e => update("external_calls_enabled", e.target.checked)} /><span><strong>允许向量与精排模型调用</strong><small>开启后允许发送代码片段到下方百炼服务并产生费用；关闭时继续使用关键词和代码关系检索，审查仍可继续，关联代码检索可能降级。</small></span></label>
       </div>
       <div className="ws-form-grid">
         <label>百炼服务地址<Input value={draft.api_host} onChange={e => update("api_host", e.target.value)} placeholder="https://dashscope.aliyuncs.com" /></label>
@@ -53,20 +55,28 @@ export default function RetrievalSettingsPanel({ onError }: { onError: (error: u
         <label>精排模型<Input value={draft.rerank_model} onChange={e => update("rerank_model", e.target.value)} /></label>
         <label>检索方式<NativeSelect value={draft.strategy} onChange={e => update("strategy", e.target.value as RetrievalStrategy)}>{Object.entries(retrievalStrategyLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</NativeSelect></label>
       </div>
-      <DetailDialog className="ws-disclosure"><summary>请求限额、索引与费用</summary><div className="ws-disclosure-body">
+      <section className="retrieval-index-settings" aria-label="索引与向量补全">
+        <h3>索引与向量补全</h3>
+        <p>独立索引 Worker 分轮补全，已有向量直接复用。每轮读取已保存配置；达到累计请求上限后停止，保留已完成部分。</p>
+        <div className="ws-form-grid">
+          <label>每轮最多新增向量数<Input type="number" required min="0" max="20000" step="1" value={draft.max_new_vectors_per_index} onChange={e => update("max_new_vectors_per_index", Number(e.target.value))} /><small>0 表示不新增向量；未补齐且额度仍有剩余时自动继续下一轮。</small></label>
+          <label>单次任务模型请求上限<Input type="number" required min="0" max="300" step="1" value={draft.max_requests_per_operation} onChange={e => update("max_requests_per_operation", Number(e.target.value))} /><small>补全任务跨轮累计，不因自动续补或错误重试而重置；检索操作单独计数。</small></label>
+        </div>
+        {draft.max_new_vectors_per_index > draft.max_requests_per_operation * 20 && <p className="retrieval-warning" role="status">新增 {draft.max_new_vectors_per_index} 个向量至少需要 {Math.ceil(draft.max_new_vectors_per_index / 20)} 次请求，当前上限为 {draft.max_requests_per_operation} 次，可能提前停止。文本大小也会影响实际请求数。</p>}
+      </section>
+      <Button variant="outline" type="button" className="retrieval-settings-toggle" aria-expanded={limitsOpen} aria-controls="retrieval-extra-settings" onClick={() => setLimitsOpen(value => !value)}><Settings2 aria-hidden="true" size={20}/><span>请求限额、索引与费用</span><strong>{limitsOpen ? "收起设置" : "展开设置"}</strong><ChevronDown aria-hidden="true" size={20} className={limitsOpen ? "is-expanded" : ""}/></Button>
+      {limitsOpen && <div id="retrieval-extra-settings" className="ws-disclosure-body">
         <p>关键词和代码关系无需额外模型调用；向量负责找语义相近代码，精排负责从候选里挑更相关的内容。已有向量缓存会复用。</p>
         <p>百炼公开参考价（2026-09-13，北京地域）：qwen3.7-text-embedding / qwen3.7-text-rerank 均为 ¥0.50 / 百万输入 Token。按 2026-09-11 参考汇率 1 美元 = 6.7082 元折算为 $0.074536；这是估算，不是服务商账单。<a href="https://help.aliyun.com/zh/model-studio/model-pricing" target="_blank" rel="noreferrer">原始报价</a> · <a href="https://api.frankfurter.dev/v1/2026-09-11?base=USD&symbols=CNY" target="_blank" rel="noreferrer">汇率来源</a></p>
         <Button variant="outline" type="button" disabled={draft.embedding_model !== "qwen3.7-text-embedding" || draft.rerank_model !== "qwen3.7-text-rerank"} onClick={() => setDraft({...draft, embedding_usd_per_million: "0.074536", rerank_usd_per_million: "0.074536"})}>填入百炼参考折算价</Button>
         <div className="ws-form-grid">
           <label>向量单价（美元 / 百万 Token）<Input type="number" min="0" max="1000000" step="any" value={draft.embedding_usd_per_million ?? ""} onChange={e => update("embedding_usd_per_million", e.target.value || null)} /></label>
           <label>精排单价（美元 / 百万 Token）<Input type="number" min="0" max="1000000" step="any" value={draft.rerank_usd_per_million ?? ""} onChange={e => update("rerank_usd_per_million", e.target.value || null)} /></label>
-          <label>单索引新增向量上限<Input type="number" min="0" max="20000" value={draft.max_new_vectors_per_index} onChange={e => update("max_new_vectors_per_index", Number(e.target.value))} /></label>
-          <label>单次操作请求上限<Input type="number" min="0" max="300" value={draft.max_requests_per_operation} onChange={e => update("max_requests_per_operation", Number(e.target.value))} /></label>
           <label>每路候选上限<Input type="number" min="1" max="50" value={draft.candidate_k} onChange={e => update("candidate_k", Number(e.target.value))} /></label>
           <label>送入审查的片段上限<Input type="number" min="1" max="20" value={draft.context_k} onChange={e => update("context_k", Number(e.target.value))} /></label>
           <label>接口超时（秒）<Input type="number" min="5" max="180" value={draft.timeout_seconds} onChange={e => update("timeout_seconds", Number(e.target.value))} /></label>
         </div>
-      </div></DetailDialog>
+      </div>}
       <div className="ws-form-actions"><Button variant="default" className="settings-primary-btn" type="submit" disabled={!dirty}>{busy === "save" ? "保存中…" : "保存检索配置"}</Button><Button variant="outline" type="button" disabled={dirty || !view.key_configured || view.external_calls_paused} onClick={() => void test()}>{busy === "test" ? "测试中…" : "测试已保存的连接"}</Button><span>{view.external_calls_paused ? "向量与精排：已关闭" : "向量与精排：允许调用"} · {view.tested ? "连接已验证" : "连接待验证"}</span></div>
       {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     </fieldset></form>

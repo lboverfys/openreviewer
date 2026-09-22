@@ -36,7 +36,9 @@ from persistence.models import (
     CodeRelationRecord,
     RetrievalEvaluationRecord,
     RetrievalTraceRecord,
+    ReviewPlanRecord,
     ReviewRunRecord,
+    ReviewUnitRecord,
 )
 from persistence.resource_scope import resource_predicate
 from persistence.vector_search import VectorSearchResult, search_vectors
@@ -117,7 +119,11 @@ class RetrievalRepository:
             )).mappings().one_or_none()
             if row is None:
                 raise LookupError("审查记录不存在")
-            return dict(row)
+            target = dict(row)
+            target["priority_files"] = list(session.scalars(select(ReviewUnitRecord.file).join(
+                ReviewPlanRecord, ReviewPlanRecord.id == ReviewUnitRecord.review_plan_id,
+            ).where(ReviewPlanRecord.review_run_id == review_run_id).order_by(ReviewUnitRecord.ordinal).limit(3000)))
+            return target
 
     def targets(self, scope: ResourceScope | None) -> tuple[IndexTarget, ...]:
         return self.target_page(scope, 50).items
@@ -179,9 +185,9 @@ class RetrievalRepository:
         now = datetime.now(UTC)
         with self.sessions() as session, session.begin():
             statement = select(CodeIndexRecord).where(or_(
-                CodeIndexRecord.status == "queued",
+                (CodeIndexRecord.status == "queued") & or_(CodeIndexRecord.lease_until.is_(None), CodeIndexRecord.lease_until < now),
                 (CodeIndexRecord.status == "building") & (CodeIndexRecord.lease_until < now),
-            )).order_by(CodeIndexRecord.created_at).limit(1).with_for_update(skip_locked=True)
+            )).order_by(func.coalesce(CodeIndexRecord.completed_at, CodeIndexRecord.created_at)).limit(1).with_for_update(skip_locked=True)
             if index_id is not None:
                 statement = statement.where(CodeIndexRecord.id == index_id)
             row = session.scalar(statement)
@@ -200,7 +206,7 @@ class RetrievalRepository:
                 return
             if row is None or row.status not in {"ready", "failed"}:
                 raise RetrievalError("索引正在构建或排队")
-            row.source_target = {**row.source_target, "include_vectors": include_vectors, "vector_operation_id": str(uuid4())}
+            row.source_target = {**row.source_target, "include_vectors": include_vectors, "vector_operation_id": str(uuid4()), "vector_failures": 0}
             row.status, row.error = "queued", None
             row.preparation_started_at = datetime.now(UTC)
             if include_vectors:
@@ -316,23 +322,30 @@ class RetrievalRepository:
                 row.status, row.completed_at = "ready", datetime.now(UTC)
                 row.lease_owner = row.lease_until = None
 
-    def link_vectors(self, index_id: str, owner: str, configuration_key: str) -> int:
+    def link_vectors(self, index_id: str, owner: str, configuration_key: str, chunk_ids: Sequence[str] | None = None) -> int:
         # 只更新实际找到向量的空关联；完整快照不可变，已有指针不重复写入。
         with self.sessions() as session, session.begin():
-            self._owned(session, index_id, owner)
-            session.execute(update(CodeIndexChunkRecord).where(
+            row = self._owned(session, index_id, owner)
+            statement = update(CodeIndexChunkRecord).where(
                 CodeIndexChunkRecord.index_id == index_id,
                 CodeIndexChunkRecord.embedding_id.is_(None),
                 CodeChunkRecord.id == CodeIndexChunkRecord.chunk_id,
                 CodeEmbeddingRecord.input_hash == CodeChunkRecord.embedding_hash,
                 CodeEmbeddingRecord.configuration_key == configuration_key,
-            ).values(embedding_id=CodeEmbeddingRecord.id).execution_options(synchronize_session=False))
-            return int(session.scalar(select(func.count()).select_from(CodeIndexChunkRecord).where(
-                CodeIndexChunkRecord.index_id == index_id, CodeIndexChunkRecord.embedding_id.is_not(None),
-            )) or 0)
+            ).values(embedding_id=CodeEmbeddingRecord.id).execution_options(synchronize_session=False)
+            if chunk_ids is not None:
+                linked = session.scalars(statement.where(CodeIndexChunkRecord.chunk_id.in_(chunk_ids)).returning(CodeIndexChunkRecord.chunk_id)).all()
+                row.vector_count += len(linked)
+            else:
+                session.execute(statement)
+                row.vector_count = int(session.scalar(select(func.count()).select_from(CodeIndexChunkRecord).where(
+                    CodeIndexChunkRecord.index_id == index_id, CodeIndexChunkRecord.embedding_id.is_not(None),
+                )) or 0)
+            return row.vector_count
 
     def complete(self, index_id: str, owner: str, *, vector_count: int, vector_status: str,
-                 vector_error: str | None, embedded: int, reused: int, duration_ms: int) -> None:
+                 vector_error: str | None, embedded: int, reused: int, duration_ms: int,
+                 continue_vectors: bool = False, retry_delay: float = 0, vector_failures: int = 0) -> None:
         with self.sessions() as session, session.begin():
             row = self._owned(session, index_id, owner)
             row.vector_count, row.vector_status, row.vector_error = vector_count, vector_status, vector_error
@@ -340,6 +353,10 @@ class RetrievalRepository:
             row.duration_ms, row.status, row.completed_at = duration_ms, "ready", datetime.now(UTC)
             row.error = None
             row.lease_owner = row.lease_until = None
+            row.source_target = {**row.source_target, "vector_failures": vector_failures}
+            if continue_vectors:
+                row.status = "queued"
+                row.lease_until = datetime.now(UTC) + timedelta(seconds=retry_delay)
 
     def missing_vector_count(self, index_id: str) -> int:
         with self.sessions() as session:
@@ -347,20 +364,37 @@ class RetrievalRepository:
                 CodeIndexChunkRecord.index_id == index_id, CodeIndexChunkRecord.embedding_id.is_(None),
             )) or 0)
 
-    def missing_chunk_pages(self, index_id: str) -> Iterator[tuple[CodeChunk, ...]]:
-        cursor = ""
+    def missing_chunk_pages(self, index_id: str, priority_files: Sequence[str] = ()) -> Iterator[tuple[CodeChunk, ...]]:
         columns = [getattr(CodeChunkRecord, name) for name in CodeChunk.model_fields]
-        while True:
-            with self.sessions() as session:
-                rows = session.execute(select(*columns).join(CodeIndexChunkRecord,
+        passes = (True, False) if priority_files else (False,)
+        for priority in passes:
+            cursor = ""
+            while True:
+                statement = select(*columns).join(CodeIndexChunkRecord,
                     CodeIndexChunkRecord.chunk_id == CodeChunkRecord.id,
-                ).where(CodeIndexChunkRecord.index_id == index_id, CodeIndexChunkRecord.embedding_id.is_(None),
-                    CodeChunkRecord.id > cursor,
-                ).order_by(CodeChunkRecord.id).limit(200)).mappings().all()
-            if not rows:
-                return
-            yield tuple(CodeChunk.model_validate(dict(row)) for row in rows)
-            cursor = rows[-1]["id"]
+                ).where(CodeIndexChunkRecord.index_id == index_id, CodeIndexChunkRecord.embedding_id.is_(None), CodeChunkRecord.id > cursor)
+                if priority_files:
+                    predicate = CodeChunkRecord.file.in_(priority_files)
+                    statement = statement.where(predicate if priority else ~predicate)
+                with self.sessions() as session:
+                    rows = session.execute(statement.order_by(CodeChunkRecord.id).limit(200)).mappings().all()
+                if not rows:
+                    break
+                yield tuple(CodeChunk.model_validate(dict(row)) for row in rows)
+                cursor = rows[-1]["id"]
+
+    def vector_priority_files(self, index_id: str, changed_files: Sequence[str]) -> tuple[str, ...]:
+        if not changed_files:
+            return ()
+        source, target = aliased(CodeChunkRecord), aliased(CodeChunkRecord)
+        with self.sessions() as session:
+            pairs = session.execute(select(source.file, target.file).join(
+                CodeRelationRecord, CodeRelationRecord.source_id == source.id,
+            ).join(target, target.id == CodeRelationRecord.target_id).where(
+                CodeRelationRecord.index_id == index_id,
+                or_(source.file.in_(changed_files), target.file.in_(changed_files)),
+            ).distinct().order_by(source.file, target.file).limit(1000)).all()
+        return tuple(dict.fromkeys((*changed_files, *(file for pair in pairs for file in pair))))
 
     def lexical_documents(self, index_id: str) -> Iterator[tuple[str, str, str, dict[str, int], int, int]]:
         statement = select(CodeChunkRecord.id, CodeChunkRecord.file, CodeChunkRecord.symbol, CodeChunkRecord.tokens, CodeChunkRecord.start_line, CodeChunkRecord.end_line).join(

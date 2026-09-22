@@ -233,6 +233,6 @@ def test_vector_budget_builds_only_the_allowed_missing_part(retrieval):
     service.settings.update(view.settings.model_copy(update={"max_new_vectors_per_index": 2}), view.revision, "tester")
     FakeModels.embeddings = 0
     index = service.index_sources(TARGET, sources())
-    assert index.vector_status == "limited" and index.vector_count == 2
+    assert index.status == "queued" and index.vector_status == "pending" and index.vector_count == 2
     assert FakeModels.embeddings == 2 and index.lexical_ready
     assert "2/5" in index.vector_error

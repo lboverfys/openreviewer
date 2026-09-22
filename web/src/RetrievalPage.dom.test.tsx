@@ -25,6 +25,19 @@ beforeEach(() => {
 });
 afterEach(() => {cleanup(); vi.clearAllMocks();});
 
+it("补全限额直接可见，展开按钮明确且提示请求额度不足", async () => {
+  render(<RetrievalSettingsPanel onError={vi.fn()} />);
+  const count = await screen.findByLabelText(/^每轮最多新增向量数/);
+  expect(count).toHaveValue(100);
+  const toggle = screen.getByRole("button", {name: /展开设置/});
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(toggle);
+  expect(screen.getByRole("button", {name: /收起设置/})).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByLabelText("接口超时（秒）")).toBeInTheDocument();
+  fireEvent.change(count, {target: {value: "500"}});
+  expect(screen.getByText(/至少需要 25 次请求/)).toBeInTheDocument();
+});
+
 describe("代码检索页面", () => {
   it("慢配置和未打开的评测不阻塞索引区域，评测只在点击标签时读取", async () => {
     vi.mocked(api.retrievalSettings).mockReturnValue(new Promise(() => undefined));

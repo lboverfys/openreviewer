@@ -147,7 +147,7 @@ export default function RetrievalPage({ onSignedOut, initialReviewRunId }: {
     {tab !== "search" && <section className="retrieval-card"><label>仓库与提交<NativeSelect aria-label="仓库与提交" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{indexes.map(item => <option key={item.id} value={item.id}>{item.repository} · {item.head_sha.slice(0, 8)} · {item.parser_version === "java-mybatis-v2" ? "含方法注释" : "原始索引"}</option>)}</NativeSelect></label><Pagination page={indexPage.page} count={indexes.length} hasNext={Boolean(indexPage.data?.next_cursor)} busy={indexPage.loading} onPrevious={indexPage.previous} onNext={indexPage.next}/></section>}
     {tab === "history" && <RetrievalHistoryPanel key={selectedId} indexId={selectedId} onError={handleError}/>}
     {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
-    {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>向量与精排调用已关闭</strong><p>关键词和代码关系检索仍可用于审查，GPT 审查不受影响。<a href="#settings?section=retrieval">到模型配置开启 →</a></p></div></div>}
+    {view?.external_calls_paused && <div className="retrieval-pause-note"><span aria-hidden="true">Ⅱ</span><div><strong>向量与精排调用已关闭</strong><p>关键词和代码关系检索仍可用于审查，审查仍可继续，关联代码检索可能降级。<a href="#settings?section=retrieval">到模型配置开启 →</a></p></div></div>}
     {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
     {<>
       {tab === "search" && <div className="retrieval-workspace">

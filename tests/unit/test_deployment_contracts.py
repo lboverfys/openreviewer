@@ -128,7 +128,9 @@ def test_deploy_drains_old_application_before_running_migrations() -> None:
 
     assert "read_deploy_stop_timeout" in deploy
     assert "stop_application_services" in deploy
-    assert 'stop --timeout "$timeout_seconds" api worker web' in deploy
+    assert 'application_services=(api worker web)' in deploy
+    assert 'application_services+=(index-worker)' in deploy
+    assert 'stop --timeout "$timeout_seconds" "${application_services[@]}"' in deploy
     stop_position = deploy.index('stop_application_services "$previous_release"')
     migration_position = deploy.index('run --rm --no-deps migrate')
     assert stop_position < migration_position
@@ -171,13 +173,15 @@ def test_failed_migration_keeps_services_stopped_for_manual_recovery() -> None:
     assert "migration_started=1" in deploy
     assert "migration_completed=1" in deploy
     assert "database migration did not complete; application services remain stopped" in deploy
-    assert 'stop api worker web prometheus alertmanager grafana' in deploy
+    assert 'stop api worker index-worker web prometheus alertmanager grafana' in deploy
 
 
 def test_restore_drains_web_before_switching_databases() -> None:
     restore = deployment_text("restore.sh")
 
-    assert 'stop api worker web' in restore
+    assert 'application_services=(api worker web)' in restore
+    assert 'application_services+=(index-worker)' in restore
+    assert 'stop "${application_services[@]}"' in restore
 
 
 def test_restore_checksum_is_bound_to_the_requested_backup() -> None:
@@ -289,7 +293,7 @@ def test_failed_rollout_restores_or_stops_observability_services() -> None:
     deploy = deployment_text("deploy.sh")
 
     assert "rollback_services=(api worker web)" in deploy
-    assert "for optional_service in prometheus alertmanager grafana" in deploy
+    assert "for optional_service in index-worker prometheus alertmanager grafana" in deploy
     assert '"${failed_compose[@]}" stop "$optional_service"' in deploy
     assert '"${previous_compose[@]}" up -d --no-deps' in deploy
     assert '--scale "worker=$previous_worker_replicas"' in deploy

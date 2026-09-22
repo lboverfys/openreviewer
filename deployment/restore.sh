@@ -239,12 +239,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+application_services=(api worker web)
+if "${compose_cmd[@]}" config --services | grep -Fxq index-worker; then
+  application_services+=(index-worker)
+fi
+
 rollback_restore() {
   local status="$1"
   trap - ERR
   set +e
   if (( production_renamed == 1 )); then
-    "${compose_cmd[@]}" stop api worker web >/dev/null 2>&1
+    "${compose_cmd[@]}" stop "${application_services[@]}" >/dev/null 2>&1
     if (( replacement_activated == 1 )); then
       terminate_database_connections openreviewer
       docker exec openreviewer-postgres dropdb --username openreviewer --if-exists \
@@ -255,7 +260,7 @@ rollback_restore() {
       --command "ALTER DATABASE \"${rollback_database}\" RENAME TO openreviewer;" \
       >/dev/null 2>&1
     "${compose_cmd[@]}" up -d --no-deps --scale "worker=$worker_replicas" \
-      api worker web >/dev/null 2>&1
+      "${application_services[@]}" >/dev/null 2>&1
   fi
   printf 'restore failed; the original database was restored when possible\n' >&2
   exit "$status"
@@ -305,7 +310,7 @@ mv -- "$emergency_checksum_tmp" "${emergency_file}.sha256"
 incomplete_emergency_file=""
 incomplete_emergency_checksum=""
 
-"${compose_cmd[@]}" stop api worker web
+"${compose_cmd[@]}" stop "${application_services[@]}"
 terminate_database_connections openreviewer
 docker exec openreviewer-postgres psql --username openreviewer --dbname postgres \
   --set=ON_ERROR_STOP=1 \
@@ -319,9 +324,12 @@ staging_exists=0
 
 remove_stale_migration_container
 "${compose_cmd[@]}" run --rm --no-deps migrate
-"${compose_cmd[@]}" up -d --no-deps --scale "worker=$worker_replicas" api worker web
+"${compose_cmd[@]}" up -d --no-deps --scale "worker=$worker_replicas" "${application_services[@]}"
 wait_healthy openreviewer-api 180
 wait_compose_service_healthy worker 180
+if [[ " ${application_services[*]} " == *" index-worker "* ]]; then
+  wait_compose_service_healthy index-worker 180
+fi
 wait_healthy openreviewer-web 180
 api_host_port="$(env_value "$current_release/.env" OPENREVIEWER_API_HOST_PORT 2>/dev/null || printf '18090')"
 [[ "$api_host_port" =~ ^[0-9]+$ ]] || die "invalid API host port"
