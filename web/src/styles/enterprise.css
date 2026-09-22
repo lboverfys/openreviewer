@@ -63,7 +63,7 @@
 .knowledge-workspace { grid-template-columns: 300px minmax(0, 1fr); }
 .knowledge-document-list { padding: 8px; }
 .settings-layout { grid-template-columns: 196px minmax(0, 1fr); gap: 24px; animation: none; }
-.settings-tab-nav { top: 88px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.settings-tab-nav { top: 88px; flex-direction: column; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .settings-tab-copy { min-width: 0; }
 .settings-tab-copy strong { font-size: 13px; font-weight: 600; }
 .settings-tab-copy small { font-size: 11px; font-weight: 400; line-height: 1.7; }
