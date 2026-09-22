@@ -418,7 +418,7 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
                   <small>文件名以 .md 结尾；仓库填写 owner/repository，留空表示所有仓库通用。</small>
                 </div>
                 <label className="knowledge-body-label">规则正文
-                  <Textarea className="knowledge-editor" value={draft.content} spellCheck={false} disabled={Boolean(busy)}
+                  <Textarea className="knowledge-editor field-sizing-fixed min-h-[340px] md:min-h-[420px]" value={draft.content} spellCheck={false} disabled={Boolean(busy)}
                     onChange={event => setDraft(current => ({ ...current, content: event.target.value }))} />
                 </label>
                 <div className="knowledge-editor-actions">
