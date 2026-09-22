@@ -80,16 +80,20 @@ def test_current_switch_controls_frozen_profile_retrieval(database, monkeypatch)
     settings.update(RetrievalSettings(api_host="https://dashscope.aliyuncs.com", external_calls_enabled=False), 0, "tester")
     service = HybridRetrievalService(RetrievalRepository(database.sessions), settings)
     captured = []
-    def capture(model_input, _progress, *, frozen_runtime):
+    def capture(model_input, _progress, *, frozen_runtime, model_settings):
+        assert model_settings is None
         captured.append(frozen_runtime[0])
         return model_input
     monkeypatch.setattr(service, "_review_context", capture)
     frozen = RetrievalSettingsView(revision=1, key_configured=True, external_calls_paused=False,
-        settings=RetrievalSettings(api_host="https://dashscope.aliyuncs.com", external_calls_enabled=True, context_k=3))
+        settings=RetrievalSettings(api_host="https://dashscope.aliyuncs.com", external_calls_enabled=True, context_k=3,
+            embedding_batch_max_bytes=128_000, context_max_bytes=48_000))
     source = make_model_input()
     assert service.review_context(source, lambda: None, frozen_runtime=(frozen, "fixture-key")) is source
     assert captured[0].external_calls_paused and captured[0].settings.external_calls_enabled is False
     assert captured[0].settings.context_k == 3
+    assert captured[0].settings.embedding_batch_max_bytes == 128_000
+    assert captured[0].settings.context_max_bytes == 48_000
 
 
 def test_single_baseline_review_progress_does_not_require_candidate(database):

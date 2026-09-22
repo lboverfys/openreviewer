@@ -1656,7 +1656,7 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(
     ) if with_retrieval else None
     retrieval = Mock(spec=HybridRetrievalService) if with_retrieval else None
     if retrieval is not None:
-        retrieval.review_context.side_effect = lambda model_input, _renew: model_input
+        retrieval.review_context.side_effect = lambda model_input, _renew, *, model_settings: model_input
         retrieval.process_next.return_value = False
     runtime_provider = StaticAiRuntimeProvider(
         ActiveAiRuntime(
@@ -1688,6 +1688,7 @@ def test_worker_prepares_plan_runs_model_batches_and_completes(
     assert len(model_reviewer.calls) == (3 if with_retrieval else 1)
     if retrieval is not None:
         retrieval.review_context.assert_called_once()
+        assert retrieval.review_context.call_args.kwargs["model_settings"] == {agent: model_settings for agent in agents}
         assert {call.review_agent for call in model_reviewer.calls} == {
             ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC,
         }
