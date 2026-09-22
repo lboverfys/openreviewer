@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { peekReadCache, subscribeReadCache } from "./api";
+import { isRequestAborted, peekReadCache, subscribeReadCache } from "./api";
 
 export interface CursorPage<T> {
   items: T[];
@@ -24,17 +24,19 @@ export function useCursorPage<T>({ cacheKey, load, onError, enabled = true }: {
   const key = pageCacheKey(cacheKey, cursor);
   const [result, setResult] = useState<{ key: string; data: CursorPage<T> } | null>(null);
   const [pending, setPending] = useState<string | null>(null);
+  const requestSequence = useRef(0);
   const data = result?.key === key ? result.data : peekReadCache<CursorPage<T>>(key);
 
   const refresh = useCallback(async (force = true, signal?: AbortSignal) => {
+    const sequence = ++requestSequence.current;
     setPending(key);
     try {
       const next = await load(cursor, signal, force);
-      if (!signal?.aborted) setResult({ key, data: next });
+      if (!signal?.aborted && sequence === requestSequence.current) setResult({ key, data: next });
     } catch (error) {
-      if (!signal?.aborted) onError(error);
+      if (!signal?.aborted && sequence === requestSequence.current && !isRequestAborted(error)) onError(error);
     } finally {
-      if (!signal?.aborted) setPending((current) => current === key ? null : current);
+      if (sequence === requestSequence.current) setPending((current) => current === key ? null : current);
     }
   }, [cursor, key, load, onError]);
 
@@ -45,7 +47,7 @@ export function useCursorPage<T>({ cacheKey, load, onError, enabled = true }: {
       if (!controller.signal.aborted) setResult({ key, data: next });
     });
     void refresh(false, controller.signal);
-    return () => { controller.abort(); unsubscribe(); };
+    return () => { requestSequence.current += 1; controller.abort(); unsubscribe(); };
   }, [enabled, key, refresh]);
 
   return {

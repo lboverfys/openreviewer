@@ -25,7 +25,7 @@ import type {
 } from "./types";
 
 import { cachedGet, request, mutation, SETTINGS_CACHE_TTL_MS, DASHBOARD_CACHE_TTL_MS, CONNECTION_TEST_TIMEOUT_MS, reviewListKey, clearSettingsCache } from "./http";
-export { ApiError, ApiTimeoutError, DASHBOARD_CACHE_TTL_MS, reviewListKey, peekReadCache, subscribeReadCache, primeReadCache, clearReadCache, clearSettingsCache } from "./http";
+export { ApiError, ApiTimeoutError, isRequestAborted, DASHBOARD_CACHE_TTL_MS, reviewListKey, peekReadCache, subscribeReadCache, primeReadCache, clearReadCache, clearSettingsCache } from "./http";
 
 export const api = {
   evaluationOverview: (id: string, signal?: AbortSignal, caseId?: string, variant?: import("./types").EvaluationVariant) => request<import("./types").EvaluationOverview>(`/api/v1/evaluations/datasets/${encodeURIComponent(id)}/overview?` + new URLSearchParams({...caseId ? {case_id:caseId} : {}, ...variant ? {variant} : {}}), {signal}),

@@ -4,7 +4,7 @@ import { Input } from "./components/ui/input";
 import { DetailDialog, Notice } from "./Feedback";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, ApiError, peekReadCache, subscribeReadCache } from "./api";
+import { api, ApiError, isRequestAborted, peekReadCache, primeReadCache, subscribeReadCache } from "./api";
 import { allowedReviewActions, hasPermission } from "./rbac";
 import FindingCard from "./ReviewFindingCard";
 import Pagination from "./Pagination";
@@ -285,7 +285,7 @@ function ReviewDetailPage({
       setError("");
       return next.change_token;
     } catch (reason) {
-      if (signal?.aborted) return null;
+      if (signal?.aborted || sequence !== detailsRequestSequence.current || isRequestAborted(reason)) return null;
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");
         return null;
@@ -306,7 +306,7 @@ function ReviewDetailPage({
     setLoading(!cached);
     const unsubscribe = subscribeReadCache<ReviewDetails>(detailsKey, setDetails);
     void loadDetails(controller.signal, false);
-    return () => {controller.abort(); unsubscribe();};
+    return () => {detailsRequestSequence.current += 1; controller.abort(); unsubscribe();};
   }, [loadDetails]);
 
   useReviewAutoRefresh({
@@ -475,8 +475,10 @@ function ReviewDetailPage({
         decision,
         actionKey(),
       );
+      detailsRequestSequence.current += 1;
+      primeReadCache(detailsKey, next);
       setDetails(next);
-      await findingPage.refresh();
+      setLoading(false);
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         onSignedOut("登录状态已失效，请重新登录");

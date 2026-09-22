@@ -23,6 +23,10 @@ export class ApiTimeoutError extends Error {
   }
 }
 
+export function isRequestAborted(error: unknown): boolean {
+  return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
+}
+
 const DEFAULT_API_TIMEOUT_MS = 30_000;
 export const CONNECTION_TEST_TIMEOUT_MS = 210_000;
 export const DASHBOARD_CACHE_TTL_MS = 3_000;
@@ -380,15 +384,15 @@ export function subscribeReadCache<T>(
 }
 
 /**
- * 把已经由实时通道取得的快照放入同一缓存。
- * 仅用于避免路由切换时丢掉刚收到的实时数据，不会发起网络请求。
+ * 把实时通道或写入响应取得的快照放入同一缓存。
+ * 避免路由切换时丢掉刚确认的数据，不会发起网络请求。
  */
 export function primeReadCache<T>(
   key: string,
   value: T,
   ttlMs = SETTINGS_CACHE_TTL_MS,
 ): void {
-  // 实时快照优先于同键尚未结束的 HTTP 兜底请求；推进代次可阻止旧响应
+  // 新快照优先于同键尚未结束的 HTTP 请求；推进代次可阻止旧响应
   // 在稍后完成时覆盖这次写入。
   readKeyGenerations.set(key, (readKeyGenerations.get(key) ?? 0) + 1);
   storeReadCacheEntry(key, value, ttlMs);
