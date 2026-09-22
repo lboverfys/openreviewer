@@ -94,7 +94,8 @@
 .settings-advanced-links { padding: 8px 0; }
 .review-list-title { white-space: normal; line-height: 1.6; }
 .review-result-column small { display: block; color: #64748b; margin-top: 4px; }
-.review-overview-result h2 { margin-bottom: 10px; }
+.review-overview-result { padding: 20px; }
+.review-overview-result h2 { margin-bottom: 10px; font-size: 16px; font-weight: 650; }
 .review-overview-result p { margin-bottom: 14px; line-height: 1.8; }
 .review-panel-heading, .review-stage-title-line { flex-wrap: wrap; gap: 8px; }
 .review-stage-timeline { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-flow: row; gap: 16px; }
