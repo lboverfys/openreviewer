@@ -1,4 +1,5 @@
 import { Button } from "./components/ui/button";
+import { BookOpen, GitPullRequest, LogOut, Menu } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { api } from "./api";
@@ -60,14 +61,14 @@ export default function AppShell({ user, view, onSignedOut, children }: {
   return <div className="app-shell enterprise-shell">
     <header className="enterprise-topbar">
       <div className="enterprise-brand">
-        <Button variant="outline" type="button" className="enterprise-menu-toggle" aria-label="展开导航菜单" aria-expanded={menuOpen}
-          aria-controls="primary-navigation" onClick={() => setMenuOpen(value => !value)}>☰</Button>
-        <a href="#" onClick={() => setMenuOpen(false)}><strong>OpenReviewer</strong><span>代码审查平台</span></a>
+        <Button variant="ghost" size="icon" type="button" className="enterprise-menu-toggle" aria-label="展开导航菜单" aria-expanded={menuOpen}
+          aria-controls="primary-navigation" onClick={() => setMenuOpen(value => !value)}><Menu aria-hidden="true" /></Button>
+        <a href="#" onClick={() => setMenuOpen(false)}><GitPullRequest className="enterprise-brand-mark" aria-hidden="true" /><strong>OpenReviewer</strong><span>代码审查平台</span></a>
       </div>
       <div className="enterprise-account">
-        <Button variant="outline" type="button" className="enterprise-help-button" onClick={() => { setMenuOpen(false); setManualOpen(true); }}>使用手册</Button>
+        <Button variant="ghost" type="button" className="enterprise-help-button" onClick={() => { setMenuOpen(false); setManualOpen(true); }}><BookOpen aria-hidden="true" />使用手册</Button>
         <span className="enterprise-user"><strong>{user.username}</strong><small>{roleLabels[user.role]}</small></span>
-        <Button variant="outline" type="button" className="enterprise-logout" onClick={() => void logout()}>退出登录</Button>
+        <Button variant="ghost" type="button" className="enterprise-logout" onClick={() => void logout()}><LogOut aria-hidden="true" />退出登录</Button>
       </div>
     </header>
     <div className="enterprise-body">

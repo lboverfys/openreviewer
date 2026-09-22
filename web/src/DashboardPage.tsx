@@ -353,14 +353,13 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
           <Notice onDismiss={() => setPageMessage("")}>{pageMessage}</Notice>
         )}
 
-        {/* 概览条：问候 + 任务概况 + 同步状态与刷新，单行紧凑 */}
         <section className="dash-hero">
           <div className="dash-hero-copy">
             <h1>审查任务</h1>
             <p>共 {snapshot?.total_reviews ?? 0} 条审查记录。打开任务查看进度、问题和处理结果。</p>
           </div>
           <div className="dash-hero-actions">
-            {canManageReviews && <Button variant="outline" type="button" className="btn-aurora dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>管理员补录</Button>}
+            {canManageReviews && <Button type="button" className="dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>管理员补录</Button>}
             <div className={`dash-stream-pill state-${streamState}`}>
               <span className="beacon-circle" />
               <span className="beacon-label">
@@ -418,7 +417,9 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                     id="review-search"
                     name="review-search"
                     type="text"
-                    placeholder="标题、作者、分支（至少3字）或 PR 编号"
+                    aria-label="搜索审查任务"
+                    placeholder="关键词至少3字或 PR 编号"
+                    title="标题、作者和分支至少输入 3 个字，也可按 PR 编号搜索"
                     value={searchKeyword}
                     onChange={(e) => setSearchKeyword(e.target.value)}
                   />
@@ -426,6 +427,7 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                     <Button variant="outline"
                       type="button"
                       className="clear-x-btn"
+                      aria-label="清空搜索"
                       onClick={() => setSearchKeyword("")}
                     >
                       ✕

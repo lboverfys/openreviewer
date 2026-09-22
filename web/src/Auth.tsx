@@ -1,7 +1,7 @@
 import { Input } from "./components/ui/input";
 import { Button } from "./components/ui/button";
-import { Notice } from "./Feedback";
 import { FormEvent, useEffect, useState } from "react";
+import { ArrowRight, FileCode2, GitPullRequest, ShieldCheck, AlertCircle, LockKeyhole } from "lucide-react";
 
 import { api, ApiError } from "./api";
 import { loadSavedCredentials, saveCredentials } from "./credentials";
@@ -91,24 +91,39 @@ export function Login({ initialMessage, onAuthenticated }: LoginProps) {
   }
 
   return <main className="auth-page simple-login">
-    <header className="simple-login-brand"><Brand /></header>
-    <section className="simple-login-content">
-      <h1>登录代码审查平台</h1>
-      <p>使用团队账号查看审查、核对问题和跟进修复。</p>
-      <form className="auth-card" onSubmit={submit} autoComplete="on">
-        <label className="simple-login-field">账号<Input name="username" value={username}
+    <div className="login-layout">
+      <section className="login-intro" aria-label="平台简介">
+        <Brand />
+        <div className="login-intro-copy"><span className="login-eyebrow">团队代码审查工作台</span>
+          <h2>从代码变更，<br />到有据可循的判断。</h2>
+          <p>把 AI 审查、代码证据与团队处理放在一起，让每个问题都有清晰的来路和下一步。</p>
+        </div>
+        <ol className="login-capabilities">
+          <li><GitPullRequest aria-hidden="true" /><div><strong>围绕提交开展审查</strong><span>固定代码版本，保留完整审查记录。</span></div></li>
+          <li><FileCode2 aria-hidden="true" /><div><strong>结合证据核对问题</strong><span>关联代码上下文，追溯每一条发现。</span></div></li>
+          <li><ShieldCheck aria-hidden="true" /><div><strong>由团队决定下一步</strong><span>人工确认、批准，再发布和跟进修复。</span></div></li>
+        </ol>
+        <div className="login-intro-footer"><span className="login-status-dot" />OpenReviewer · 团队工作空间</div>
+      </section>
+      <section className="simple-login-content" aria-labelledby="login-title">
+        <div className="login-mobile-brand"><Brand /></div>
+        <div className="login-heading"><span className="login-welcome">欢迎回来</span><h1 id="login-title">登录代码审查平台</h1>
+          <p>使用团队账号，继续你的审查工作。</p></div>
+        <form className="auth-card" onSubmit={submit} autoComplete="on">
+        <label className="simple-login-field">账号<Input className="h-11" name="username" value={username}
           onChange={event => setUsername(event.target.value)} autoComplete="username" maxLength={100}
           placeholder="输入你的账号" required autoFocus disabled={submitting} /></label>
-        <label className="simple-login-field">密码<Input name="password" type="password" value={password}
+        <label className="simple-login-field">密码<Input className="h-11" name="password" type="password" value={password}
           onChange={event => setPassword(event.target.value)} autoComplete="current-password"
           maxLength={512} required disabled={submitting} /></label>
-        <label className="simple-login-remember"><input type="checkbox" checked={rememberCredentials}
+        <div className="login-remember-group"><label className="simple-login-remember"><input type="checkbox" checked={rememberCredentials} disabled={submitting}
           onChange={event => setRememberCredentials(event.target.checked)} />在这台设备保存登录信息</label>
-        <small>公共电脑请勿保存登录信息。</small>
-        {message && <Notice kind="success" onDismiss={() => setMessage("")}>{message}</Notice>}
-        <Button variant="default" type="submit" className="auth-submit-btn" disabled={submitting}>{submitting ? "正在登录…" : "登录平台"}</Button>
-      </form>
-      <p className="simple-login-note">账号由管理员创建。登录后可在右上角打开使用手册。</p>
-    </section>
+          <small>公共电脑请勿保存登录信息。</small></div>
+        {message && <div className="login-message" role="alert"><AlertCircle aria-hidden="true" /><span>{message}</span></div>}
+        <Button variant="default" type="submit" className="auth-submit-btn h-11 justify-between" disabled={submitting}>{submitting ? "正在登录…" : "登录平台"}<ArrowRight aria-hidden="true" /></Button>
+        </form>
+        <p className="simple-login-note"><LockKeyhole aria-hidden="true" /><span>账号由管理员创建。<br />登录后可在右上角查看使用手册。</span></p>
+      </section>
+    </div>
   </main>;
 }

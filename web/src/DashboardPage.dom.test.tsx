@@ -2,11 +2,11 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { Login } from "./Auth";
 
 vi.mock("./credentials", () => ({
@@ -26,6 +26,7 @@ vi.mock("./api", async (importOriginal) => {
 });
 
 describe("登录组件", () => {
+  afterEach(cleanup);
   beforeEach(() => {
     vi.mocked(api.login).mockReset();
   });
@@ -52,5 +53,23 @@ describe("登录组件", () => {
     expect(onAuthenticated).toHaveBeenCalledWith(
       expect.objectContaining({ username: "reviewer" }),
     );
+  });
+
+  it("密码错误时在表单内保留可读的错误提示并允许重新提交", async () => {
+    const user = userEvent.setup();
+    const onAuthenticated = vi.fn();
+    vi.mocked(api.login).mockRejectedValue(new ApiError("未登录", 401));
+    render(<Login onAuthenticated={onAuthenticated} />);
+    await user.type(screen.getByLabelText("账号"), "reviewer");
+    await user.type(screen.getByLabelText("密码"), "incorrect-password");
+    await user.click(screen.getByRole("button", { name: "登录平台" }));
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("账号或密码不正确，请重新输入");
+    expect(error.closest("form")).not.toBeNull();
+    expect(screen.getByLabelText("账号")).toHaveValue("reviewer");
+    expect(screen.getByLabelText("密码")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "登录平台" })).toBeEnabled();
+    expect(onAuthenticated).not.toHaveBeenCalled();
   });
 });
