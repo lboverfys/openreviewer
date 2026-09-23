@@ -10,12 +10,12 @@ import type { AuthUser } from "./types";
 import { WorkspaceIcon } from "./Workspace";
 
 const UserManual = lazy(() => import("./UserManual"));
-type NavKey = "dashboard" | "work" | "settings" | "knowledge" | "team" | "evaluations" | "usage" | "diagnostics";
+type NavKey = "dashboard" | "work" | "settings" | "knowledge" | "retrieval" | "team" | "evaluations" | "usage" | "diagnostics";
 interface NavItem {
   key: NavKey; label: string; hash: string;
-  page: "dashboard" | "platform" | "settings" | "knowledge" | "team" | "evaluations";
+  page: "dashboard" | "platform" | "settings" | "knowledge" | "retrieval" | "team" | "evaluations";
   permission?: "knowledge:manage" | "settings:manage";
-  icon: "grid" | "team" | "review" | "chart" | "file" | "check";
+  icon: "grid" | "team" | "review" | "chart" | "file" | "check" | "search";
 }
 const NAV_GROUPS: ReadonlyArray<{ label: string; items: NavItem[] }> = [
   { label: "审查工作", items: [
@@ -28,6 +28,7 @@ const NAV_GROUPS: ReadonlyArray<{ label: string; items: NavItem[] }> = [
     { key: "team", label: "项目与成员", hash: "team", page: "team", permission: "settings:manage", icon: "team" },
   ] },
   { label: "分析与维护", items: [
+    { key: "retrieval", label: "代码检索", hash: "retrieval", page: "retrieval", permission: "knowledge:manage", icon: "search" },
     { key: "evaluations", label: "效果评测", hash: "evaluations", page: "evaluations", icon: "chart" },
     { key: "usage", label: "用量与费用", hash: "platform?tab=usage", page: "platform", permission: "settings:manage", icon: "chart" },
     { key: "diagnostics", label: "运行状态", hash: "platform?tab=diagnostics", page: "platform", permission: "settings:manage", icon: "grid" },
@@ -36,7 +37,7 @@ const NAV_GROUPS: ReadonlyArray<{ label: string; items: NavItem[] }> = [
 
 function activeKey(view: AppView): NavKey {
   if (view.kind === "platform") return view.tab === "profiles" ? "settings" : view.tab === "usage" || view.tab === "diagnostics" ? view.tab : "work";
-  if (view.kind === "retrieval" || view.kind === "knowledge") return "knowledge";
+  if (view.kind === "retrieval" || view.kind === "knowledge") return view.kind;
   if (view.kind === "team" || view.kind === "settings" || view.kind === "evaluations") return view.kind;
   return "dashboard";
 }

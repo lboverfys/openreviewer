@@ -351,7 +351,6 @@ export default function KnowledgePage({ onSignedOut }: KnowledgePageProps) {
             <h1>规则文档</h1>
             <p>保存 AI 审查时可以参考的规则。按仓库和相关性选取，不会每次把全部文档都发给 AI。</p>
           </div>
-          <nav className="related-actions"><a href="#retrieval">搜索代码</a></nav>
         </header>
         {message && <Notice kind={messageKind} onDismiss={() => setMessage("")}>{message}{lastRemoved && messageKind === "success" && <Button variant="outline" type="button" disabled={Boolean(busy) || dirty} onClick={() => void restoreDocument(lastRemoved, lastRemoved.enabled)}>撤销删除</Button>}</Notice>}
         <div className="knowledge-workspace">

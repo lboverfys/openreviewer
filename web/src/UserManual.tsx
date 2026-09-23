@@ -1,11 +1,12 @@
 import { Button } from "./components/ui/button";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-type Topic = "dashboard" | "review" | "work" | "settings" | "knowledge" | "team" | "evaluations" | "usage" | "diagnostics";
+type Topic = "dashboard" | "review" | "work" | "settings" | "knowledge" | "retrieval" | "team" | "evaluations" | "usage" | "diagnostics";
 const topics: ReadonlyArray<{ key: Topic; title: string }> = [
   { key: "dashboard", title: "第一次使用" }, { key: "review", title: "审查、取消与重新测试" },
   { key: "work", title: "核对问题与发布结果" }, { key: "settings", title: "设置模型与审查方式" },
   { key: "knowledge", title: "维护规则文档" }, { key: "team", title: "管理项目与成员" },
+  { key: "retrieval", title: "检索代码与查看记录" },
   { key: "evaluations", title: "检查审查效果" }, { key: "usage", title: "查看费用" },
   { key: "diagnostics", title: "任务不动时怎么办" },
 ];
@@ -66,13 +67,21 @@ export default function UserManual({ initialTopic, onClose }: { initialTopic: To
       {link("#settings", "打开模型与审查设置")}
     </>,
     knowledge: <>
-      <p>规则文档是 AI 可参考的业务约束，代码检索则寻找实际实现。两者用途不同。</p>
+      <p>规则文档保存 AI 审查时可以参考的业务约束。</p>
       <ol><li>选择文档阅读，点击“编辑文档”修改正文，再“保存修改”。</li>
         <li>“开启使用／暂停使用”点击后直接保存。暂停只是不再参与当前知识库检索，文档仍留在列表。</li>
         <li>不常用的文档可“移出列表”。误操作可立即“撤销移出”，也可以随时打开“已移出文档”，选择后“恢复并使用”。</li>
         <li>需要回到旧正文时，展开“历史版本”。旧内容始终保留，不用重新上传文件。</li></ol>
       <p>规则只在仓库范围和内容相关时被选中。已有审查和固定配置版本保留原快照，不会在任务中途被新文档替换。</p>
       {link("#knowledge", "打开规则文档")}
+    </>,
+    retrieval: <>
+      <p>从左侧“分析与维护”进入“代码检索”，查找实际实现并核对审查依据。</p>
+      <ol><li>在“索引与检索”选择仓库和提交，使用已有索引，或选择最近审查的提交建立基础索引。</li>
+        <li>输入方法名、业务问题或代码片段，执行检索并展开结果查看源码和关联代码。</li>
+        <li>在“搜索记录”回看历史检索；需要比较检索策略时，打开“检索方式对比”。</li></ol>
+      <p>向量与精排模型的配置和调用开关在“模型与审查设置”中维护，也可以通过检索页顶部的“检索模型与开关”进入。</p>
+      {link("#retrieval", "打开代码检索")}
     </>,
     team: <>
       <ol><li>“项目设置”控制哪些仓库和分支接受审查、谁负责审批，以及请求和费用上限。仓库需要先授权给 GitHub App。</li>
