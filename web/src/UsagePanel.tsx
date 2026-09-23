@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import Pagination from "./Pagination";
 import { platformApi } from "./platform-api";
 import type { PlatformPanelProps } from "./PlatformPage";
-import type { UsageBreakdown, UsageMonth } from "./types";
+import type { UsageBreakdown, UsageMonth, UsageRequest } from "./types";
 import { useCursorPage } from "./useCursorPage";
 import { formatDate } from "./utils";
 import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty } from "./Workspace";
@@ -15,6 +15,37 @@ import { WorkspaceBack, WorkspaceBadge, WorkspaceEmpty } from "./Workspace";
 export const formatMoney = (value: number | null | undefined) => value == null ? "未记录" : `$${(value / 1_000_000).toFixed(6)}`;
 const purposeLabels: Record<string, string> = { review: "代码审查", embedding: "向量检索", rerank: "精排", all: "全部用途" };
 const agentLabels: Record<string, string> = { security: "安全", convention: "规范", logic: "逻辑", summary: "汇总", retrieval: "检索" };
+const costReasonLabels: Record<NonNullable<UsageRequest["cost_reason"]>, string> = {
+  pending: "等待请求返回", usage_missing: "未返回完整用量", pricing_missing: "调用时未配置单价",
+  cache_price_missing: "调用时未配置缓存单价", incomplete_response: "响应未完整确认，费用依据不完整",
+  legacy_unknown: "历史记录未保存费用缺失原因",
+};
+const usageStatusLabels: Record<UsageRequest["usage_status"], string> = {
+  pending: "用量待返回", recorded: "用量已记录", missing: "用量缺失", partial: "仅有部分用量", unverified: "用量完整性待核对",
+};
+
+export function UsageUnknownReasons({ statistics }: { statistics: Pick<UsageBreakdown, "reserved_count" | "missing_usage_count" | "missing_price_count" | "legacy_unknown_count" | "partial_cost_count"> }) {
+  const reasons = [["等待响应", statistics.reserved_count], ["缺少完整用量", statistics.missing_usage_count],
+    ["缺少单价", statistics.missing_price_count], ["历史原因未记录", statistics.legacy_unknown_count]] as const;
+  const unknown = reasons.filter(([, count]) => count != null && count > 0).map(([label, count]) => `${label} ${count} 次`);
+  return <>{unknown.length > 0 && <span>费用待确认原因：{unknown.join("；")}</span>}
+    {(statistics.partial_cost_count ?? 0) > 0 && <span>另有 {statistics.partial_cost_count} 次仅记录部分估算费用，完整金额待核对。</span>}</>;
+}
+
+function UsageAccountingDetails({ item }: { item: UsageRequest }) {
+  const prices = item.pricing_snapshot, usage = item.usage_details;
+  if (!prices && !usage) return null;
+  const priceLabels = { input_usd_per_million: "普通输入", output_usd_per_million: "输出",
+    cache_read_usd_per_million: "缓存读取", cache_write_usd_per_million: "缓存写入" };
+  return <DetailDialog><summary>计费依据</summary>
+    <h3>{item.model} · 本次请求</h3>
+    <p>使用请求发生时保存的单价，单位为美元 / 百万 Token。估算金额需以服务商账单核对。</p>
+    {prices ? <ul>{Object.entries(priceLabels).filter(([key]) => key in prices).map(([key, label]) =>
+      <li key={key}>{label}单价：{prices[key] ?? "未配置"}</li>)}</ul> : <p>本次请求未保存可用的单价配置。</p>}
+    {usage ? <p>普通输入 {usage.input_tokens} Token；缓存读取 {usage.cache_read_input_tokens ?? 0} Token；缓存写入 {usage.cache_write_input_tokens ?? 0} Token；输出 {usage.output_tokens} Token。推理输出 {usage.reasoning_output_tokens ?? 0} Token 已包含在输出中。</p> : <p>未取得完整 Token 明细。</p>}
+    {item.cost_reason && <p>{costReasonLabels[item.cost_reason]}</p>}
+  </DetailDialog>;
+}
 
 export default function UsagePanel({ onError }: PlatformPanelProps) {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
@@ -45,13 +76,17 @@ function UsageDetails({ month, onError, onRefreshSummary }: PlatformPanelProps &
     <section className="team-card"><div className="team-toolbar"><div><h2>{month.repository} · 请求账本</h2><p>{month.month} · UTC 自然月 · 安装 {month.installation_id}</p></div><Button variant="outline" disabled={page.loading} onClick={() => { void page.refresh(); setVersion(value => value + 1); onRefreshSummary(); }}>刷新明细</Button></div></section>
     <div className="ws-metrics">
       <div className="ws-metric is-accent"><span>已估算费用</span><strong>{formatMoney(month.estimated_cost_microusd)}</strong><small>按配置价格统计</small></div>
-      <div className="ws-metric"><span>待确认预占</span><strong>{formatMoney(month.reserved_cost_microusd)}</strong><small>请求结果确认后结算</small></div>
+      <div className="ws-metric"><span>待确认预占</span><strong>{formatMoney(month.reserved_cost_microusd)}</strong><small>完整费用确认前保留预占</small></div>
       <div className="ws-metric"><span>模型请求</span><strong>{month.request_count}</strong><small>包含重试请求</small></div>
       <div className="ws-metric"><span>月度预算</span><strong>{month.budget_microusd == null ? "未限制" : formatMoney(month.budget_microusd)}</strong><small>费用未知 {month.unknown_count} 次</small></div>
     </div>
     <section className="team-card"><div className="team-toolbar"><h2>请求明细</h2><WorkspaceBadge>{month.month}</WorkspaceBadge></div>
-      <div className="team-table-wrap"><Table><TableHeader><TableRow><TableHead>时间</TableHead><TableHead>模型 / 用途</TableHead><TableHead>状态</TableHead><TableHead>输入 / 输出 Token</TableHead><TableHead>估算费用</TableHead><TableHead>耗时</TableHead><TableHead>来源</TableHead></TableRow></TableHeader><TableBody>{page.data?.items.map(item => <TableRow key={item.id}>
-        <TableCell>{formatDate(item.created_at)}</TableCell><TableCell><strong>{item.model}</strong><small>{agentLabels[item.agent] ?? item.agent} · {purposeLabels[item.purpose] ?? item.purpose}</small></TableCell><TableCell><WorkspaceBadge tone={item.status === "settled" ? "success" : "warning"}>{({ reserved: "待确认", settled: "已记录", uncertain: "结果不确定" } as Record<string, string>)[item.status] ?? item.status}</WorkspaceBadge></TableCell><TableCell className="ws-numeric">{item.input_tokens ?? "未知"} / {item.output_tokens ?? "未知"}</TableCell><TableCell className="ws-numeric">{formatMoney(item.estimated_cost_microusd)}</TableCell><TableCell className="ws-numeric">{item.duration_ms == null ? "未知" : `${(item.duration_ms / 1000).toFixed(1)} 秒`}</TableCell><TableCell><a href={`#review/${encodeURIComponent(item.review_run_id)}`}>审查任务 →</a></TableCell>
+      <div className="team-table-wrap"><Table><TableHeader><TableRow><TableHead>时间</TableHead><TableHead>模型 / 用途</TableHead><TableHead>请求 / 用量</TableHead><TableHead>输入 / 输出 Token</TableHead><TableHead>估算费用</TableHead><TableHead>耗时</TableHead><TableHead>来源</TableHead></TableRow></TableHeader><TableBody>{page.data?.items.map(item => <TableRow key={item.id}>
+        <TableCell>{formatDate(item.created_at)}</TableCell><TableCell><strong>{item.model}</strong><small>{agentLabels[item.agent] ?? item.agent} · {purposeLabels[item.purpose] ?? item.purpose}</small></TableCell>
+        <TableCell><WorkspaceBadge tone={item.status === "settled" ? "success" : "warning"}>{item.status === "reserved" ? "等待响应" : "请求已结束"}</WorkspaceBadge><small>{item.response_status == null ? "未记录响应状态" : `HTTP ${item.response_status}`}</small><small>{usageStatusLabels[item.usage_status]}</small></TableCell>
+        <TableCell className="ws-numeric">{item.input_tokens ?? "未知"} / {item.output_tokens ?? "未知"}</TableCell>
+        <TableCell><strong>{item.estimated_cost_microusd == null ? "待确认" : formatMoney(item.estimated_cost_microusd)}</strong>{item.cost_status === "partial" && <small>部分估算</small>}{item.cost_reason && <small>{costReasonLabels[item.cost_reason]}</small>}<UsageAccountingDetails item={item} /></TableCell>
+        <TableCell className="ws-numeric">{item.duration_ms == null ? "未知" : `${(item.duration_ms / 1000).toFixed(1)} 秒`}</TableCell><TableCell><a href={`#review/${encodeURIComponent(item.review_run_id)}`}>审查任务 →</a></TableCell>
       </TableRow>)}</TableBody></Table></div>
       {!page.loading && !page.data?.items.length && <WorkspaceEmpty title="暂无请求明细" />}
       <Pagination page={page.page} count={page.data?.items.length ?? 0} hasNext={Boolean(page.data?.next_cursor)} busy={page.loading} onPrevious={page.previous} onNext={page.next} />
@@ -62,11 +97,12 @@ function UsageDetails({ month, onError, onRefreshSummary }: PlatformPanelProps &
           <strong>{item.agent ? agentLabels[item.agent] ?? item.agent : item.model}</strong><span>{item.provider ? item.provider + " · " : ""}{purposeLabels[item.purpose] ?? item.purpose} · {item.request_count} 次</span>
           <span>已知估算费用 {formatMoney(item.estimated_cost_microusd)} · 已知 {item.known_count ?? "未记录"} 次 / 未知 {item.unknown_count} 次</span>
           <span>占全部已知费用 {item.known_cost_share == null ? "—" : (item.known_cost_share * 100).toFixed(1) + "%"}</span>
-          <span>待确认 {item.reserved_count ?? "未记录"} · 用量不确定 {item.uncertain_count ?? "未记录"} · 已结算 {item.settled_count ?? "未记录"}</span>
+          <span>等待响应 {item.reserved_count ?? "未记录"} · 待核对 {item.uncertain_count ?? "未记录"} · 已记录 {item.settled_count ?? "未记录"}</span>
+          <UsageUnknownReasons statistics={item} />
           <span>请求 P50 / P95：{item.p50_duration_ms == null ? "未记录" : item.p50_duration_ms + " ms"} / {item.p95_duration_ms == null ? "未记录" : item.p95_duration_ms + " ms"}（{item.duration_sample_count ?? "未记录"} 次，含失败请求）</span>
-          <span>同批已结算且费用已知请求 {item.settled_priced_count ?? "未记录"} 次：预占 {formatMoney(item.settled_reservation_microusd)} / 估算 {formatMoney(item.settled_cost_microusd)}</span>
+          <span>同批已记录且费用已知请求 {item.settled_priced_count ?? "未记录"} 次：预占 {formatMoney(item.settled_reservation_microusd)} / 估算 {formatMoney(item.settled_cost_microusd)}</span>
         </div>)}</div>
-        <p>请求耗时采用离散 P50/P95，不是 PR 总耗时。已结算不等于审查成功；用量不确定不等于 HTTP 失败。未知费用包含仍在途请求。</p>
+        <p>费用按每次调用时的价格与实际用量估算，尚未与服务商账单核对。请求结束后仍可能缺少用量或单价；历史记录缺少的依据不会用当前价格补填。请求耗时采用离散 P50/P95，包含失败请求。</p>
       </DetailDialog>
     </section>
   </>;

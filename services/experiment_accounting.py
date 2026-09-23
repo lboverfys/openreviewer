@@ -14,6 +14,8 @@ from domain.evaluation_outputs import (
     MAX_RUN_OUTPUT_BYTES,
     CapturedModelOutput,
 )
+from domain.model_review import ModelTokenUsage
+from domain.platform import UsageCostReason
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_budget import ModelBudgetRequest, ModelBudgetReservation
 
@@ -100,6 +102,8 @@ class ExperimentAccountant:
                 else None,
                 "reserved_cost_microusd": cost,
                 "estimated_cost_microusd": None,
+                "cost_reason": "pending",
+                "pricing_snapshot": request.pricing_snapshot,
                 "duration_ms": None,
             }
             budget._journal({"event": "reserved", **row})
@@ -155,6 +159,8 @@ class ExperimentAccountant:
         response_status: int | None,
         duration_ms: int,
         uncertain: bool = False,
+        cost_reason: UsageCostReason | None = None,
+        usage_details: ModelTokenUsage | None = None,
     ) -> None:
         budget = self.budget
         with budget.lock:
@@ -166,6 +172,8 @@ class ExperimentAccountant:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 estimated_cost_microusd=estimated_cost_microusd,
+                cost_reason=cost_reason,
+                usage_details=usage_details.model_dump(mode="json") if usage_details is not None else None,
                 response_status=response_status,
                 duration_ms=duration_ms,
             )

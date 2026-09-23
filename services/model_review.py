@@ -244,6 +244,13 @@ class ModelPricing:
             )
         return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
+    def snapshot(self) -> dict[str, str | None]:
+        return {
+            name: str(rate) if (rate := getattr(self, name)) is not None else None
+            for name in ("input_usd_per_million", "output_usd_per_million",
+                         "cache_read_usd_per_million", "cache_write_usd_per_million")
+        }
+
     def upper_bound_microusd(
         self,
         input_tokens: int,

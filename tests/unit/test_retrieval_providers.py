@@ -1,3 +1,5 @@
+from decimal import ROUND_CEILING, Decimal
+
 import httpx
 import pytest
 
@@ -232,3 +234,42 @@ def test_retrieval_attempt_is_settled_before_backoff(monkeypatch):
         ("reserve", "embedding"),
         ("settle", 200),
     ]
+
+
+@pytest.mark.parametrize("purpose", ["embedding", "rerank"])
+@pytest.mark.parametrize("tokens,price,uncertain,reason", [
+    (None, Decimal("0.25"), True, "usage_missing"),
+    (7, None, False, "pricing_missing"),
+    (7, Decimal("0.25"), False, None),
+    (0, Decimal("0"), False, None),
+])
+def test_retrieval_accounting_distinguishes_missing_usage_and_price(purpose, tokens, price, uncertain, reason):
+    from services.model_budget import model_budget_scope
+    from tests.unit.test_model_providers import RecordingBudgetAccountant
+
+    body = {"data": [{"index": 0, "embedding": [1.0] * 1024}],
+            "output": {"results": [{"index": 0, "relevance_score": 0.9}]}}
+    if tokens is not None:
+        body["usage"] = {"input_tokens": tokens}
+    accountant = RecordingBudgetAccountant()
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))) as http:
+        client = AliyunRetrievalClient(RetrievalSettings(
+            api_host="https://example.cn-beijing.maas.aliyuncs.com",
+            embedding_usd_per_million=price, rerank_usd_per_million=price,
+        ), "test-key", http)
+        with model_budget_scope(accountant):
+            if purpose == "embedding":
+                client.embed(("text",))
+            else:
+                client.rerank("query", ("text",))
+    settlement = accountant.settlements[0]
+    assert settlement["response_status"] == 200
+    assert settlement["uncertain"] is uncertain
+    assert accountant.accounting_details[0]["cost_reason"] == reason
+    assert settlement["input_tokens"] == tokens
+    assert settlement["estimated_cost_microusd"] == (
+        int((price * tokens).to_integral_value(rounding=ROUND_CEILING)) if price is not None and tokens is not None else None
+    )
+    assert accountant.requests[0].pricing_snapshot == (
+        {"input_usd_per_million": str(price), "output_usd_per_million": "0"} if price is not None else None
+    )

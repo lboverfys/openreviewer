@@ -34,6 +34,7 @@ from domain.model_review import (
     model_review_output_schema,
     normalize_model_references,
 )
+from domain.platform import UsageCostReason
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_budget import (
     ModelBudgetRequest,
@@ -1518,6 +1519,7 @@ class _StructuredModelReviewer(ModelReviewer):
                 input_token_upper_bound=input_limit,
                 output_token_upper_bound=output_limit,
                 cost_upper_bound_microusd=cost_limit,
+                pricing_snapshot=self._settings.pricing.snapshot() if self._settings.pricing is not None else None,
                 output_source=current_output_source(), request_sha256=sha256(request_content).hexdigest(),
                 attempt_kind=attempt_kind,
                 connection_key=sha256((self._settings.resolved_api_base_url + "\0" + self._settings.api_key).encode()).hexdigest(),
@@ -1554,12 +1556,16 @@ class _StructuredModelReviewer(ModelReviewer):
             if usage is not None and self._settings.pricing is not None
             else None
         )
-        if (
-            usage is not None
-            and self._settings.pricing is not None
-            and estimated_cost is None
-        ):
-            uncertain = True
+        uncertain = uncertain or usage is None
+        cost_reason: UsageCostReason | None = None
+        if usage is None:
+            cost_reason = "usage_missing"
+        elif uncertain:
+            cost_reason = "incomplete_response"
+        elif self._settings.pricing is None:
+            cost_reason = "pricing_missing"
+        elif estimated_cost is None:
+            cost_reason = "cache_price_missing"
         accountant.settle(
             audit.budget_reservation,
             input_tokens=usage.total_input_tokens if usage is not None else None,
@@ -1568,6 +1574,8 @@ class _StructuredModelReviewer(ModelReviewer):
             response_status=audit.response_status,
             duration_ms=audit.duration_ms,
             uncertain=uncertain,
+            cost_reason=cost_reason,
+            usage_details=usage,
         )
 
     def _classify_response(

@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from domain.enums import ReviewAgent
 from domain.evaluation_workbench import EvaluationComparisonReport
+from domain.model_review import ModelTokenUsage
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 
 
@@ -79,6 +80,9 @@ class UsageMonth(PlatformModel):
     created_at: datetime
 
 
+UsageCostReason = Literal["pending", "usage_missing", "pricing_missing", "cache_price_missing", "incomplete_response", "legacy_unknown"]
+
+
 class UsageRequest(PlatformModel):
     id: str
     review_run_id: str
@@ -94,6 +98,37 @@ class UsageRequest(PlatformModel):
     duration_ms: int | None
     response_status: int | None
     created_at: datetime
+    cost_reason: UsageCostReason | None = None
+    pricing_snapshot: dict[str, str | None] | None = None
+    usage_details: ModelTokenUsage | None = None
+
+    @model_validator(mode="after")
+    def explain_unpriced_request(self) -> UsageRequest:
+        if self.status == "reserved":
+            self.cost_reason = "pending"
+        elif self.estimated_cost_microusd is None and self.cost_reason is None:
+            self.cost_reason = "legacy_unknown"
+        return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def usage_status(self) -> Literal["pending", "recorded", "missing", "partial", "unverified"]:
+        if self.status == "reserved":
+            return "pending"
+        if self.input_tokens is None or self.output_tokens is None:
+            return "missing"
+        if self.status == "uncertain":
+            return "partial" if self.cost_reason == "incomplete_response" else "unverified"
+        return "recorded"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cost_status(self) -> Literal["pending", "estimated", "partial", "unknown"]:
+        if self.status == "reserved":
+            return "pending"
+        if self.estimated_cost_microusd is None:
+            return "unknown"
+        return "partial" if self.status == "uncertain" else "estimated"
 
 
 class RequestStatistics(PlatformModel):
@@ -113,6 +148,10 @@ class RequestStatistics(PlatformModel):
     settled_priced_count: int = 0
     settled_reservation_microusd: int = 0
     settled_cost_microusd: int = 0
+    missing_usage_count: int = 0
+    missing_price_count: int = 0
+    legacy_unknown_count: int = 0
+    partial_cost_count: int = 0
 
 
 class UsageBreakdown(RequestStatistics):

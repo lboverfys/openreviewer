@@ -1,19 +1,20 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { clearReadCache } from "./api";
 import PlatformPage from "./PlatformPage";
-import type { AuthUser } from "./types";
+import type { AuthUser, UsageRequest } from "./types";
 
 const now = "2026-09-13T01:00:00Z";
 const admin = { username: "admin", role: "administrator", permissions: ["reviews:view", "settings:manage", "findings:adjudicate", "reviews:approve", "knowledge:manage"], expires_at: now } as AuthUser;
 const item = { id: "work-1", source_run_id: "run-1", source_finding_id: "finding-1", repository: "example/project", pull_request_number: 10, title: "资源归属校验缺失", severity: "high", status: "open", assignee: "admin", due_at: null, note: "", fix_pull_request_number: null, revision: 1, created_at: now, updated_at: now };
 let calls: { path: string; method: string; body: Record<string, unknown> | null }[];
 let conflict: boolean;
+let usageRequests: UsageRequest[];
 
 beforeEach(() => {
-  clearReadCache(); calls = []; conflict = false;
+  clearReadCache(); calls = []; conflict = false; usageRequests = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input), method = init?.method ?? "GET";
     calls.push({ path, method, body: init?.body ? JSON.parse(String(init.body)) : null });
@@ -21,7 +22,8 @@ beforeEach(() => {
     if (method === "POST") return new Response(JSON.stringify(item));
     if (path.includes("/work-items")) return new Response(JSON.stringify({ items: [item] }));
     if (path.includes("/approvals")) return new Response(JSON.stringify({ items: [] }));
-    if (path.includes("/breakdown")) return new Response(JSON.stringify([{agent:path.includes("group_by=agent") ? "logic" : null, model:"fixture-model", purpose:"review", request_count:2, estimated_cost_microusd:100, unknown_count:1, known_count:1, known_cost_share:1, settled_priced_count:1, settled_reservation_microusd:150, settled_cost_microusd:100}]));
+    if (path.includes("/breakdown")) return new Response(JSON.stringify([{agent:path.includes("group_by=agent") ? "logic" : null, model:"fixture-model", purpose:"review", request_count:2, estimated_cost_microusd:100, unknown_count:1, known_count:1, known_cost_share:1, settled_priced_count:1, settled_reservation_microusd:150, settled_cost_microusd:100, missing_price_count:1}]));
+    if (path.includes("/requests")) return new Response(JSON.stringify({ items: usageRequests }));
     if (path.includes("/usage?")) return new Response(JSON.stringify({ items: [{ id: "month-1", repository: "example/project", installation_id: 1, month: "2026-09", request_count: 2, estimated_cost_microusd: 100, reserved_cost_microusd: 60, input_tokens: 10, output_tokens: 5, unknown_count: 1, uncertain_count: 1, budget_microusd: 200, warning_percent: 80, warning: true, created_at: now }] }));
     if (path.includes("/diagnostics")) return new Response(JSON.stringify({ repositories: [], failures: [], provider_channels: [], since: now, until: now }));
     return new Response(JSON.stringify({ items: [] }));
@@ -74,6 +76,51 @@ it("请求汇总可以切到角色并保留未知费用与同批预占口径", a
   expect(calls.some(call => call.path.includes("group_by=agent"))).toBe(true);
   expect(screen.getByText(/已知 1 次 \/ 未知 1 次/)).toBeInTheDocument();
   expect(screen.getByText(/预占 \$0.000150 \/ 估算 \$0.000100/)).toBeInTheDocument();
+  expect(screen.getByText("费用待确认原因：缺少单价 1 次")).toBeInTheDocument();
+  expect(screen.queryByText(/已结算/)).not.toBeInTheDocument();
+});
+
+const usageRequest: UsageRequest = {
+  id: "request-1", review_run_id: "run-1", repository: "example/project", agent: "logic", purpose: "review",
+  model: "same-model", status: "settled", estimated_cost_microusd: null, reserved_cost_microusd: 150,
+  input_tokens: 100, output_tokens: 20, duration_ms: 100, response_status: 200, created_at: now,
+  cost_reason: "cache_price_missing", usage_status: "recorded", cost_status: "unknown",
+  pricing_snapshot: {input_usd_per_million: "2", output_usd_per_million: "10", cache_read_usd_per_million: null},
+  usage_details: {input_tokens: 80, output_tokens: 20, cache_read_input_tokens: 20, cache_write_input_tokens: 0, reasoning_output_tokens: 0},
+};
+
+it("缺少单价和缺少用量分别展示，HTTP 成功不会冒充费用已确认", async () => {
+  usageRequests = [usageRequest, {...usageRequest, id: "request-2", status: "uncertain", usage_status: "missing",
+    input_tokens: null, output_tokens: null, usage_details: null, cost_reason: "usage_missing"}];
+  render(<PlatformPage user={admin} initialTab="usage" onSignedOut={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", {name: "查看请求"}));
+  const missingPrice = await screen.findByText("调用时未配置缓存单价");
+  const row = within(missingPrice.closest("tr")!);
+  expect(row.getByText("用量已记录")).toBeInTheDocument();
+  expect(row.getByText("待确认")).toBeInTheDocument();
+  const missingUsage = within(screen.getByText("未返回完整用量").closest("tr")!);
+  expect(missingUsage.getByText("HTTP 200")).toBeInTheDocument();
+  expect(missingUsage.getByText("用量缺失")).toBeInTheDocument();
+  expect(screen.queryByText(/已结算/)).not.toBeInTheDocument();
+  fireEvent.click(row.getByRole("button", {name: "计费依据"}));
+  const details = within(screen.getByRole("dialog", {name: "计费依据"}));
+  expect(details.getByText("普通输入单价：2")).toBeInTheDocument();
+  expect(details.getByText("缓存读取单价：未配置")).toBeInTheDocument();
+  expect(details.getByText(/普通输入 80 Token；缓存读取 20 Token/)).toBeInTheDocument();
+});
+
+it("历史记录保留未知原因，部分估算不会标为完整金额", async () => {
+  usageRequests = [{...usageRequest, pricing_snapshot: null, usage_details: null, cost_reason: "legacy_unknown"},
+    {...usageRequest, id: "request-2", status: "uncertain", usage_status: "partial", cost_status: "partial",
+      estimated_cost_microusd: 100, cost_reason: "incomplete_response"}];
+  render(<PlatformPage user={admin} initialTab="usage" onSignedOut={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", {name: "查看请求"}));
+  const historical = within((await screen.findByText("历史记录未保存费用缺失原因")).closest("tr")!);
+  expect(historical.getByText("待确认")).toBeInTheDocument();
+  expect(historical.queryByRole("button", {name: "计费依据"})).not.toBeInTheDocument();
+  const partial = within(screen.getByText("部分估算").closest("tr")!);
+  expect(partial.getByText("$0.000100")).toBeInTheDocument();
+  expect(partial.getByText("仅有部分用量")).toBeInTheDocument();
 });
 
 it("审批筛选只发出对应待办请求", async () => {

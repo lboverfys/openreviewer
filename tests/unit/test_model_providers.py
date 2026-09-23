@@ -13,6 +13,8 @@ from domain.enums import (
     ModelReasoningEffort,
     ReviewAgent,
 )
+from domain.model_review import ModelTokenUsage
+from domain.platform import UsageCostReason
 from domain.security import ErrorCode, SafeApplicationError
 from services.model_budget import (
     ModelBudgetRequest,
@@ -39,6 +41,7 @@ class RecordingBudgetAccountant:
     def __init__(self) -> None:
         self.requests: list[ModelBudgetRequest] = []
         self.settlements: list[dict[str, object]] = []
+        self.accounting_details: list[dict[str, object]] = []
         self._settled_ids: set[str] = set()
 
     def reserve(self, request: ModelBudgetRequest) -> ModelBudgetReservation:
@@ -64,9 +67,12 @@ class RecordingBudgetAccountant:
         response_status: int | None,
         duration_ms: int,
         uncertain: bool = False,
+        cost_reason: UsageCostReason | None = None,
+        usage_details: ModelTokenUsage | None = None,
     ) -> None:
         assert reservation.id not in self._settled_ids
         self._settled_ids.add(reservation.id)
+        self.accounting_details.append({"cost_reason": cost_reason, "usage_details": usage_details})
         self.settlements.append(
             {
                 "reservation_id": reservation.id,
@@ -2592,7 +2598,12 @@ def test_invalid_json_keeps_the_full_budget_reservation_once() -> None:
     client.close()
 
 
-def test_unknown_cache_price_keeps_cost_reservation_conservatively() -> None:
+@pytest.mark.parametrize("pricing,expected_cost,reason", [
+    (None, None, "pricing_missing"),
+    (ModelPricing(Decimal("3"), Decimal("15")), None, "cache_price_missing"),
+    (ModelPricing(Decimal("3"), Decimal("15"), Decimal("0.5")), 615, None),
+])
+def test_price_gaps_do_not_make_recorded_usage_uncertain(pricing, expected_cost, reason) -> None:
     accountant = RecordingBudgetAccountant()
     client = httpx.Client(
         base_url="https://api.anthropic.test",
@@ -2617,10 +2628,7 @@ def test_unknown_cache_price_keeps_cost_reservation_conservatively() -> None:
     reviewer = create_model_reviewer(
         _settings(
             ModelProvider.ANTHROPIC,
-            ModelPricing(
-                input_usd_per_million=Decimal("3"),
-                output_usd_per_million=Decimal("15"),
-            ),
+            pricing,
         ),
         client=client,
     )
@@ -2628,8 +2636,14 @@ def test_unknown_cache_price_keeps_cost_reservation_conservatively() -> None:
     with model_budget_scope(accountant):
         result = reviewer.review(make_model_input())
 
-    assert result.estimated_cost_microusd is None
+    assert result.estimated_cost_microusd == expected_cost
     assert len(accountant.settlements) == 1
-    assert accountant.settlements[0]["uncertain"] is True
-    assert accountant.settlements[0]["estimated_cost_microusd"] is None
+    assert accountant.settlements[0]["uncertain"] is False
+    assert accountant.accounting_details[0]["cost_reason"] == reason
+    assert accountant.accounting_details[0]["usage_details"] == result.usage
+    assert accountant.requests[0].pricing_snapshot == ({
+        "input_usd_per_million": "3", "output_usd_per_million": "15",
+        "cache_read_usd_per_million": "0.5" if expected_cost is not None else None, "cache_write_usd_per_million": None,
+    } if pricing is not None else None)
+    assert accountant.settlements[0]["estimated_cost_microusd"] == expected_cost
     client.close()

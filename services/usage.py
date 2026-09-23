@@ -4,6 +4,8 @@ from collections.abc import Callable
 from typing import Protocol
 
 from domain.evaluation_outputs import CapturedModelOutput
+from domain.model_review import ModelTokenUsage
+from domain.platform import UsageCostReason
 from services.model_budget import ModelBudgetRequest, ModelBudgetReservation
 from services.task_queue import ReviewTaskLease
 
@@ -25,6 +27,8 @@ class UsageLedger(Protocol):
         response_status: int | None,
         duration_ms: int,
         uncertain: bool = False,
+        cost_reason: UsageCostReason | None = None,
+        usage_details: ModelTokenUsage | None = None,
     ) -> None: ...
 
 
@@ -50,6 +54,8 @@ class MonthlyModelAccountant:
         response_status: int | None,
         duration_ms: int,
         uncertain: bool = False,
+        cost_reason: UsageCostReason | None = None,
+        usage_details: ModelTokenUsage | None = None,
     ) -> None:
         self.ledger.settle(
             reservation,
@@ -59,4 +65,6 @@ class MonthlyModelAccountant:
             response_status=response_status,
             duration_ms=duration_ms,
             uncertain=uncertain,
+            cost_reason=cost_reason,
+            usage_details=usage_details,
         )

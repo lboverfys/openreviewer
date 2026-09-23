@@ -11,6 +11,41 @@ from services.operations import EXPECTED_DATABASE_REVISION
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_usage_accounting_migration_preserves_historical_unknown_costs(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'usage-evidence.sqlite3').as_posix()}"
+    configuration = Config(str(PROJECT_ROOT / "alembic.ini"))
+    configuration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(configuration, "20260921_0065")
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("""
+                INSERT INTO model_usage_requests
+                    (id, month_id, review_run_id, installation_id, repository, repository_key,
+                     agent, purpose, provider, model, status, reserved_cost_microusd,
+                     input_tokens, output_tokens, created_at)
+                VALUES ('legacy', 'month', 'run', 1, 'owner/repo', 'owner/repo',
+                        'logic', 'review', 'openai', 'same-model', 'settled', 100, 10, 2,
+                        '2026-09-01 00:00:00')
+            """))
+        command.upgrade(configuration, "20260923_0066")
+        with engine.connect() as connection:
+            row = connection.execute(text("""
+                SELECT status, estimated_cost_microusd, reserved_cost_microusd,
+                       cost_reason, pricing_snapshot, usage_details
+                FROM model_usage_requests WHERE id = 'legacy'
+            """)).one()
+        assert tuple(row) == ("settled", None, 100, None, None, None)
+        command.downgrade(configuration, "20260921_0065")
+        assert not {"cost_reason", "pricing_snapshot", "usage_details"} & {
+            column["name"] for column in inspect(engine).get_columns("model_usage_requests")
+        }
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT reserved_cost_microusd FROM model_usage_requests WHERE id = 'legacy'")) == 100
+    finally:
+        engine.dispose()
+
+
 def test_initial_migration_creates_durable_review_task_schema(
     tmp_path: Path,
 ) -> None:

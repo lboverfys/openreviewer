@@ -5488,6 +5488,51 @@
         "title": "ModelReasoningEffort",
         "type": "string"
       },
+      "ModelTokenUsage": {
+        "additionalProperties": false,
+        "description": "\u6309\u8ba1\u8d39\u7c7b\u522b\u5f52\u4e00\u5316\u7684 Token \u7528\u91cf\u3002",
+        "properties": {
+          "cache_read_input_tokens": {
+            "default": 0,
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Cache Read Input Tokens",
+            "type": "integer"
+          },
+          "cache_write_input_tokens": {
+            "default": 0,
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Cache Write Input Tokens",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "reasoning_output_tokens": {
+            "default": 0,
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Reasoning Output Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input_tokens",
+          "output_tokens"
+        ],
+        "title": "ModelTokenUsage",
+        "type": "object"
+      },
       "ModelVersion": {
         "additionalProperties": false,
         "properties": {
@@ -6934,6 +6979,21 @@
             "title": "Known Count",
             "type": "integer"
           },
+          "legacy_unknown_count": {
+            "default": 0,
+            "title": "Legacy Unknown Count",
+            "type": "integer"
+          },
+          "missing_price_count": {
+            "default": 0,
+            "title": "Missing Price Count",
+            "type": "integer"
+          },
+          "missing_usage_count": {
+            "default": 0,
+            "title": "Missing Usage Count",
+            "type": "integer"
+          },
           "p50_duration_ms": {
             "anyOf": [
               {
@@ -6955,6 +7015,11 @@
               }
             ],
             "title": "P95 Duration Ms"
+          },
+          "partial_cost_count": {
+            "default": 0,
+            "title": "Partial Cost Count",
+            "type": "integer"
           },
           "request_count": {
             "title": "Request Count",
@@ -10608,6 +10673,21 @@
             "title": "Known Count",
             "type": "integer"
           },
+          "legacy_unknown_count": {
+            "default": 0,
+            "title": "Legacy Unknown Count",
+            "type": "integer"
+          },
+          "missing_price_count": {
+            "default": 0,
+            "title": "Missing Price Count",
+            "type": "integer"
+          },
+          "missing_usage_count": {
+            "default": 0,
+            "title": "Missing Usage Count",
+            "type": "integer"
+          },
           "model": {
             "title": "Model",
             "type": "string"
@@ -10633,6 +10713,11 @@
               }
             ],
             "title": "P95 Duration Ms"
+          },
+          "partial_cost_count": {
+            "default": 0,
+            "title": "Partial Cost Count",
+            "type": "integer"
           },
           "provider": {
             "anyOf": [
@@ -10812,6 +10897,36 @@
             "title": "Agent",
             "type": "string"
           },
+          "cost_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "usage_missing",
+                  "pricing_missing",
+                  "cache_price_missing",
+                  "incomplete_response",
+                  "legacy_unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Reason"
+          },
+          "cost_status": {
+            "enum": [
+              "pending",
+              "estimated",
+              "partial",
+              "unknown"
+            ],
+            "readOnly": true,
+            "title": "Cost Status",
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -10869,6 +10984,27 @@
             ],
             "title": "Output Tokens"
           },
+          "pricing_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Snapshot"
+          },
           "purpose": {
             "title": "Purpose",
             "type": "string"
@@ -10899,6 +11035,28 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "usage_details": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelTokenUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage_status": {
+            "enum": [
+              "pending",
+              "recorded",
+              "missing",
+              "partial",
+              "unverified"
+            ],
+            "readOnly": true,
+            "title": "Usage Status",
+            "type": "string"
           }
         },
         "required": [
@@ -10915,7 +11073,9 @@
           "output_tokens",
           "duration_ms",
           "response_status",
-          "created_at"
+          "created_at",
+          "usage_status",
+          "cost_status"
         ],
         "title": "UsageRequest",
         "type": "object"

@@ -1,7 +1,7 @@
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "./components/ui/table";
 import { DetailDialog } from "./Feedback";
 import type { DiagnosticReport } from "./types";
-import { formatMoney } from "./UsagePanel";
+import { formatMoney, UsageUnknownReasons } from "./UsagePanel";
 
 const percent = (value: number | null) => value == null ? "—" : (value * 100).toFixed(1) + "%";
 const duration = (value: number | null) => value == null ? "未记录" : (value / 1000).toFixed(2) + " 秒";
@@ -13,9 +13,10 @@ export default function ReviewInsightsPanel({data}: {data: NonNullable<Diagnosti
     <section className="team-card"><h2>实际请求与完成运行成本</h2>
       <p>区间创建的 HTTP 请求 {request.request_count} 次 · 2xx {request.http_2xx_count} / 非 2xx {request.http_non_2xx_count} / 尚无状态 {request.http_unknown_count}。</p>
       <p>请求 P50 / P95：{duration(request.p50_duration_ms ?? null)} / {duration(request.p95_duration_ms ?? null)}，有耗时的样本 {request.duration_sample_count} 次，含失败请求。</p>
-      <p>费用已知 {request.known_count} 次 / 未知 {request.unknown_count} 次 · 待确认 {request.reserved_count} / 用量不确定 {request.uncertain_count} / 已结算 {request.settled_count}。</p>
-      <p>同批已结算且费用已知的 {request.settled_priced_count} 次请求：预占 {formatMoney(request.settled_reservation_microusd)}，估算费用 {formatMoney(request.settled_cost_microusd)}。</p>
-      <p>区间内完整完成 AI 审查 {cost.completed_runs} 次，其中费用全知且请求已结算 {cost.priced_runs} 次，平均估算费用 {formatMoney(cost.mean_estimated_cost_microusd)}；费用未完整确认 {cost.incomplete_cost_runs} 次，缺请求账本 {cost.missing_ledger_runs} 次。</p>
+      <p>费用已知 {request.known_count} 次 / 未知 {request.unknown_count} 次 · 等待响应 {request.reserved_count} / 待核对 {request.uncertain_count} / 已记录 {request.settled_count}。</p>
+      <p><UsageUnknownReasons statistics={request} /></p>
+      <p>同批已记录且费用已知的 {request.settled_priced_count} 次请求：预占 {formatMoney(request.settled_reservation_microusd)}，估算费用 {formatMoney(request.settled_cost_microusd)}。</p>
+      <p>区间内完整完成 AI 审查 {cost.completed_runs} 次，其中费用完整且请求已记录 {cost.priced_runs} 次，平均估算费用 {formatMoney(cost.mean_estimated_cost_microusd)}；费用未完整确认 {cost.incomplete_cost_runs} 次，缺请求账本 {cost.missing_ledger_runs} 次。</p>
       <p>这批完成运行从创建至 AI 结果的平均耗时：{duration(cost.mean_turnaround_ms)}。</p>
       <small>均价归集同一批运行的全部关联请求，包含跨月调用。HTTP 成功、用量结算和业务审查成功分别统计。</small>
     </section>

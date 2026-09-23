@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from domain.model_review import ModelTokenUsage
+from domain.platform import UsageCostReason
 from domain.retrieval import VECTOR_DIMENSIONS, RetrievalSettings
 from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.model_budget import ModelBudgetRequest, current_model_budget_accountant
@@ -178,6 +180,7 @@ class AliyunRetrievalClient:
                         )
                         if price is not None
                         else None,
+                        pricing_snapshot={"input_usd_per_million": str(price), "output_usd_per_million": "0"} if price is not None else None,
                     )
                 )
                 if accountant is not None
@@ -207,6 +210,9 @@ class AliyunRetrievalClient:
                         if response_body is not None
                         else None
                     )
+                    cost_reason: UsageCostReason | None = (
+                        "usage_missing" if tokens is None else "pricing_missing" if price is None else None
+                    )
                     accountant.settle(
                         reservation,
                         input_tokens=tokens,
@@ -220,7 +226,9 @@ class AliyunRetrievalClient:
                         else None,
                         response_status=response_status,
                         duration_ms=round((time.monotonic() - request_started) * 1000),
-                        uncertain=response_body is None,
+                        uncertain=tokens is None,
+                        cost_reason=cost_reason,
+                        usage_details=ModelTokenUsage(input_tokens=tokens, output_tokens=0) if tokens is not None else None,
                     )
                 GLOBAL_TELEMETRY.observe_external(
                     "retrieval_embedding"

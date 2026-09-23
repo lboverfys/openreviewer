@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from domain.enums import ExecutionStatus
 from domain.evaluation_outputs import MAX_RUN_OUTPUT_BYTES, CapturedModelOutput
 from domain.logging import log_event
-from domain.platform import MonthlyBudgetExceededError, month_start
+from domain.model_review import ModelTokenUsage
+from domain.platform import MonthlyBudgetExceededError, UsageCostReason, month_start
 from domain.repository_policy import RepositoryPolicy
 from persistence.models import (
     EvaluationModelOutputRecord,
@@ -162,6 +163,8 @@ class SqlAlchemyUsageLedger:
                     provider=request.provider,
                     model=request.model,
                     status="reserved",
+                    cost_reason="pending",
+                    pricing_snapshot=request.pricing_snapshot,
                     reserved_cost_microusd=cost,
                     created_at=now,
                     connection_key=request.connection_key,
@@ -265,11 +268,15 @@ class SqlAlchemyUsageLedger:
         response_status: int | None,
         duration_ms: int,
         uncertain: bool = False,
+        cost_reason: UsageCostReason | None = None,
+        usage_details: ModelTokenUsage | None = None,
     ) -> None:
         values = (input_tokens, output_tokens, estimated_cost_microusd, duration_ms)
         if any(value is not None and value < 0 for value in values):
             raise ValueError("模型用量不能为负数")
         unknown = estimated_cost_microusd is None
+        if cost_reason is None and unknown:
+            cost_reason = "usage_missing" if input_tokens is None or output_tokens is None else "legacy_unknown"
         now = self.clock()
         with self.sessions() as session, session.begin():
             # 状态比较更新保证重复结算只影响一条记录；迟到结算仍计入原请求月份。
@@ -288,6 +295,8 @@ class SqlAlchemyUsageLedger:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     estimated_cost_microusd=estimated_cost_microusd,
+                    cost_reason=cost_reason,
+                    usage_details=usage_details.model_dump(mode="json") if usage_details is not None else None,
                     response_status=response_status,
                     duration_ms=duration_ms,
                     completed_at=now,

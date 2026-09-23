@@ -3641,6 +3641,31 @@ export interface components {
          * @enum {string}
          */
         ModelReasoningEffort: "none" | "low" | "medium" | "high" | "max";
+        /**
+         * ModelTokenUsage
+         * @description 按计费类别归一化的 Token 用量。
+         */
+        ModelTokenUsage: {
+            /**
+             * Cache Read Input Tokens
+             * @default 0
+             */
+            cache_read_input_tokens: number;
+            /**
+             * Cache Write Input Tokens
+             * @default 0
+             */
+            cache_write_input_tokens: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /**
+             * Reasoning Output Tokens
+             * @default 0
+             */
+            reasoning_output_tokens: number;
+        };
         /** ModelVersion */
         ModelVersion: {
             /** Agent */
@@ -4175,10 +4200,30 @@ export interface components {
              * @default 0
              */
             known_count: number;
+            /**
+             * Legacy Unknown Count
+             * @default 0
+             */
+            legacy_unknown_count: number;
+            /**
+             * Missing Price Count
+             * @default 0
+             */
+            missing_price_count: number;
+            /**
+             * Missing Usage Count
+             * @default 0
+             */
+            missing_usage_count: number;
             /** P50 Duration Ms */
             p50_duration_ms?: number | null;
             /** P95 Duration Ms */
             p95_duration_ms?: number | null;
+            /**
+             * Partial Cost Count
+             * @default 0
+             */
+            partial_cost_count: number;
             /** Request Count */
             request_count: number;
             /**
@@ -5494,12 +5539,32 @@ export interface components {
              * @default 0
              */
             known_count: number;
+            /**
+             * Legacy Unknown Count
+             * @default 0
+             */
+            legacy_unknown_count: number;
+            /**
+             * Missing Price Count
+             * @default 0
+             */
+            missing_price_count: number;
+            /**
+             * Missing Usage Count
+             * @default 0
+             */
+            missing_usage_count: number;
             /** Model */
             model: string;
             /** P50 Duration Ms */
             p50_duration_ms?: number | null;
             /** P95 Duration Ms */
             p95_duration_ms?: number | null;
+            /**
+             * Partial Cost Count
+             * @default 0
+             */
+            partial_cost_count: number;
             /** Provider */
             provider?: string | null;
             /** Purpose */
@@ -5594,6 +5659,13 @@ export interface components {
         UsageRequest: {
             /** Agent */
             agent: string;
+            /** Cost Reason */
+            cost_reason?: ("pending" | "usage_missing" | "pricing_missing" | "cache_price_missing" | "incomplete_response" | "legacy_unknown") | null;
+            /**
+             * Cost Status
+             * @enum {string}
+             */
+            readonly cost_status: "pending" | "estimated" | "partial" | "unknown";
             /**
              * Created At
              * Format: date-time
@@ -5611,6 +5683,10 @@ export interface components {
             model: string;
             /** Output Tokens */
             output_tokens: number | null;
+            /** Pricing Snapshot */
+            pricing_snapshot?: {
+                [key: string]: string | null;
+            } | null;
             /** Purpose */
             purpose: string;
             /** Repository */
@@ -5623,6 +5699,12 @@ export interface components {
             review_run_id: string;
             /** Status */
             status: string;
+            usage_details?: components["schemas"]["ModelTokenUsage"] | null;
+            /**
+             * Usage Status
+             * @enum {string}
+             */
+            readonly usage_status: "pending" | "recorded" | "missing" | "partial" | "unverified";
         };
         /** ValidationError */
         ValidationError: {

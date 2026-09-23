@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from domain.evaluation_outputs import CapturedModelOutput, ModelOutputSource
+from domain.model_review import ModelTokenUsage
+from domain.platform import UsageCostReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +28,7 @@ class ModelBudgetRequest:
     output_source: ModelOutputSource | None = None
     request_sha256: str | None = None
     attempt_kind: str = "initial"
+    pricing_snapshot: dict[str, str | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,8 @@ class ModelBudgetAccountant(Protocol):
         response_status: int | None,
         duration_ms: int,
         uncertain: bool = False,
+        cost_reason: UsageCostReason | None = None,
+        usage_details: ModelTokenUsage | None = None,
     ) -> None: ...
 
 

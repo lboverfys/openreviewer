@@ -7,7 +7,7 @@ from persistence.models import ModelUsageRequestRecord as Request
 
 def request_statistics_statement(predicate, dimensions: tuple[str, ...] = (), *, postgres: bool = False):
     groups = [getattr(Request, name) for name in dimensions]
-    fields = ("status", "response_status", "duration_ms", "estimated_cost_microusd", "reserved_cost_microusd")
+    fields = ("status", "response_status", "duration_ms", "estimated_cost_microusd", "reserved_cost_microusd", "cost_reason")
     ranked = select(
         *groups, *(getattr(Request, name) for name in fields),
         func.row_number().over(partition_by=groups or None,
@@ -18,12 +18,18 @@ def request_statistics_statement(predicate, dimensions: tuple[str, ...] = (), *,
     # SQLite 的隔离测试继续使用等价的最近秩算法；两条路径都忽略未知耗时。
     row = Request if postgres else ranked.c
     priced = and_(row.status == "settled", row.estimated_cost_microusd.is_not(None))
+    unpriced = row.estimated_cost_microusd.is_(None)
     statement = select(
         *(getattr(row, name) for name in dimensions),
         func.count().label("request_count"),
         func.coalesce(func.sum(row.estimated_cost_microusd), 0).label("estimated_cost_microusd"),
         func.count().filter(row.estimated_cost_microusd.is_(None)).label("unknown_count"),
         func.count(row.estimated_cost_microusd).label("known_count"),
+        func.count().filter(and_(unpriced, row.cost_reason.in_(("usage_missing", "incomplete_response")))).label("missing_usage_count"),
+        func.count().filter(and_(unpriced, row.cost_reason.in_(("pricing_missing", "cache_price_missing")))).label("missing_price_count"),
+        func.count().filter(and_(unpriced, row.status != "reserved",
+            or_(row.cost_reason.is_(None), row.cost_reason == "legacy_unknown"))).label("legacy_unknown_count"),
+        func.count().filter(and_(row.status == "uncertain", row.estimated_cost_microusd.is_not(None))).label("partial_cost_count"),
         *(func.count().filter(row.status == status).label(f"{status}_count") for status in ("reserved", "uncertain", "settled")),
         func.count().filter(row.response_status.between(200, 299)).label("http_2xx_count"),
         func.count().filter(or_(row.response_status < 200, row.response_status >= 300)).label("http_non_2xx_count"),
