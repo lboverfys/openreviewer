@@ -12,6 +12,7 @@ import { useCursorPage } from "./useCursorPage";
 import RetrievalTracePanel from "./RetrievalTracePanel";
 import StaticAnalysisPanel from "./StaticAnalysisPanel";
 import SnapshotReviewDialog from "./SnapshotReviewDialog";
+import CoverageFilesDialog from "./CoverageFilesDialog";
 import {
   DetailIcon,
   ModelBatchPanel,
@@ -173,6 +174,7 @@ const eventLabels: Record<string, string> = {
   "review.model.completed": "AI 分析完成",
   "review.model.batches_persisted": "批次已保存",
   "review.workflow.approve": "审查已批准，等待发布",
+  "review.coverage.exclusions_acknowledged": "已人工确认未文本审查的文件范围",
   "review.workflow.advance": "批准状态已记录，开放人工发布",
   "review.workflow.reject": "审查已驳回",
   "review.workflow.retry_stage": "从指定阶段重新审查",
@@ -213,6 +215,7 @@ function ReviewDetailPage({
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [captureModelOutputs, setCaptureModelOutputs] = useState(false);
   const [snapshotDialogOpen, setSnapshotDialogOpen] = useState(false);
+  const [coverageDialogOpen, setCoverageDialogOpen] = useState(false);
   const [trialProfileId, setTrialProfileId] = useState("");
   useEffect(() => {setCaptureModelOutputs(false);setTrialProfileId("");}, [reviewRunId]);
   const retrievalEvidence = useMemo<Record<string, ContextEvidence>>(
@@ -370,10 +373,13 @@ function ReviewDetailPage({
     [details],
   );
 
-  async function runAction(action: ReviewAction) {
+  async function runAction(action: ReviewAction, acknowledgeExclusions = false) {
     if (!details || !allowedReviewActions(user, [action]).length) return;
     if (action === "cancel" && !window.confirm("取消后停止后续执行并保留已有记录。已发出的模型请求无法撤回，可能仍会计费。确定取消吗？")) return;
-    if (action === "approve" && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
+    if (action === "approve" && details.coverage_requires_acknowledgement && !acknowledgeExclusions) {
+      setActionError(""); setCoverageDialogOpen(true); return;
+    }
+    if (action === "approve" && !acknowledgeExclusions && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
     if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
     if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
@@ -408,11 +414,13 @@ function ReviewDetailPage({
           batchNumber: undefined,
           stateVersion: details.change_token,
           headSha: details.head_sha,
+          acknowledgeExclusions,
           captureModelOutputs: action === "review_snapshot" && captureModelOutputs,
           reviewProfileId: action === "review_snapshot" ? trialProfileId : undefined,
         },
       );
       if (action === "review_snapshot") setSnapshotDialogOpen(false);
+      if (action === "approve") setCoverageDialogOpen(false);
       if ((action === "rerun" || action === "new_review" || action === "review_snapshot") && result.review_run_id !== details.review_run_id) {
         onOpenReview(result.review_run_id);
       } else {
@@ -543,6 +551,8 @@ function ReviewDetailPage({
   );
   const waitingForIndex = retryPending && payloadString(currentRetryEvent, "error_code") === "retrieval_index_pending";
   const taskStateLabel = waitingForIndex ? "准备代码索引" : workflowReadout(details, retryPending);
+  const nonTextReviewFiles = (details.plan_file_decisions.binary ?? 0) + (details.plan_file_decisions.generated ?? 0);
+  const reviewableFileCount = Math.max(0, (details.plan_file_count ?? details.changed_files_count ?? 0) - nonTextReviewFiles);
   const retryStatus = retryDetail(currentRetryEvent);
   const requestInFlight = latestRequestLifecycleEvent?.event_type
     === "review.model.request_started";
@@ -763,13 +773,18 @@ function ReviewDetailPage({
           本次分析已保存的提交 {shortSha(details.head_sha)}，使用当前审查配置。不会重新运行 CI 或发布到 GitHub，原任务与结果保留。
         </section>}
 
+        {details.review_plan_id && <CoverageFilesDialog open={coverageDialogOpen} onOpenChange={setCoverageDialogOpen} details={details}
+          canApprove={Boolean(details.coverage_requires_acknowledgement && availableActions.includes("approve"))}
+          busy={actionBusy !== null} submitError={actionError} onConfirm={() => void runAction("approve", true)} />}
+
         {(details.coverage_status === "partial" || details.coverage_status === "stale") && (
           <section className="review-coverage-warning" role="status">
             <DetailIcon>!</DetailIcon>
-            <div><strong>{details.coverage_status === "stale" ? "审查版本已过期" : details.model_review_completed_at ? "审查覆盖待补齐" : "部分覆盖"}</strong><p>{details.coverage_block_reason ?? (details.model_review_completed_at
+            <div><strong>{details.coverage_exclusions_acknowledged ? "已人工确认审查范围" : details.coverage_requires_acknowledgement ? "未文本审查的文件待确认" : details.coverage_status === "stale" ? "审查版本已过期" : details.model_review_completed_at ? "审查覆盖待补齐" : "部分覆盖"}</strong><p>{details.coverage_exclusions_acknowledged ? "已批准可审查文本范围，二进制或生成文件由人工接管，未计为 AI 已审查。" : details.coverage_block_reason ?? (details.model_review_completed_at
               ? "AI 已完成当前范围。有文件因格式不支持或上下文不完整被排除，请在运行信息的文件覆盖中查看原因。"
               : "已有结果可以查看，但仍有 Agent 或批次待重试；完成前不能批准或发布。")}</p>
               <ExcludedFileExamples details={details} />
+              {details.review_plan_id && Object.entries(details.plan_file_decisions).some(([decision, count]) => decision !== "planned" && count > 0) && <Button variant="outline" type="button" onClick={() => setCoverageDialogOpen(true)}>查看全部未审查文件</Button>}
             </div>
           </section>
         )}
@@ -777,7 +792,7 @@ function ReviewDetailPage({
         <section className="review-summary-strip" aria-label="任务关键指标">
           <div><span className="review-metric-icon is-state" aria-hidden="true">◈</span><div><span>当前状态</span><strong>{taskStateLabel}</strong><small>{stageLabels[details.current_stage] ?? details.current_stage}</small></div></div>
           <div><span className="review-metric-icon is-ci" aria-hidden="true">🛠</span><div><span>CI 检查</span><strong>{ciDisplayStatus(details)}</strong><small>{details.snapshot_review ? "采用保存的代码快照" : `${details.ci_checks.length} 项已保存检查`}</small></div></div>
-          <div><span className="review-metric-icon is-cover" aria-hidden="true">▦</span><div><span>文件覆盖</span><strong>{details.plan_unit_count ?? 0}/{details.changed_files_count ?? 0}</strong><small>送入 AI / 变更文件</small></div></div>
+          <div><span className="review-metric-icon is-cover" aria-hidden="true">▦</span><div><span>文本文件覆盖</span><strong>{details.review_plan_id && reviewableFileCount === 0 ? "无需文本审查" : `${details.plan_unit_count ?? 0}/${reviewableFileCount}`}</strong><small>送入 AI / 应审文本{nonTextReviewFiles > 0 ? `；另 ${nonTextReviewFiles} 个文件由人工核对` : ""}</small></div></div>
           <div><span className="review-metric-icon is-agent" aria-hidden="true">🤖</span><div><span>Agent</span><strong className={failedAgentCount > 0 ? "is-negative" : ""}>{completedAgentCount}/{requiredAgentCount}</strong><small>{failedAgentCount > 0 ? `${failedAgentCount} 路失败` : "完成进度"}</small></div></div>
           <div><span className="review-metric-icon is-finding" aria-hidden="true">⚑</span><div><span>候选问题</span><strong>{details.finding_total_count}</strong><small>{details.unreviewed_finding_count} 条待裁决</small></div></div>
         </section>

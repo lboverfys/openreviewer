@@ -836,6 +836,9 @@ class GitHubReviewPublisher:
             f"- 评测准入：{admitted_gate_count}/{len(gates)} 个风险域",
             "",
         ]
+        if getattr(details, "coverage_exclusions_acknowledged", False):
+            count = sum(value for decision, value in details.plan_file_decisions.items() if decision != "planned")
+            lines.extend([f"> 本次仅完成可审查文本范围，另有 {count} 个二进制或生成文件由人工确认接管，未经 AI 文本审查。", ""])
         if inline_degraded:
             lines.extend(
                 [

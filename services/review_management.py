@@ -13,7 +13,7 @@ from domain.enums import ExecutionStatus, VerificationStatus
 from domain.github import PullRequestSnapshot
 from domain.pagination import CursorPage
 from domain.repository_policy import RepositoryPolicySnapshot
-from domain.review_coverage import coverage_block_reason
+from domain.review_coverage import ReviewCoverage
 from domain.review_planning import ReviewFilePlan
 from domain.review_progress import BatchProgress, BatchSnapshot
 from services.rbac import ResourceScope
@@ -331,15 +331,25 @@ class StoredReviewDetails:
     snapshot_review: bool = False
 
     excluded_file_examples: tuple[ReviewFilePlan, ...] = ()
+    coverage_exclusions_acknowledged: bool = False
+
+    @property
+    def coverage(self) -> ReviewCoverage:
+        return ReviewCoverage(
+            self.coverage_status,
+            model_completed=self.model_review_completed_at is not None,
+            rules_complete=self.plan_rules_complete,
+            file_decisions=self.plan_file_decisions,
+            exclusions_acknowledged=self.coverage_exclusions_acknowledged,
+        )
+
+    @property
+    def coverage_requires_acknowledgement(self) -> bool:
+        return self.coverage.can_acknowledge and not self.coverage_exclusions_acknowledged
 
     @property
     def coverage_block_reason(self) -> str | None:
-        return coverage_block_reason(
-            self.coverage_status,
-            model_completed=self.model_review_completed_at is not None,
-            excluded_file_count=sum(count for decision, count in self.plan_file_decisions.items() if decision != "planned"),
-            rules_complete=self.plan_rules_complete,
-        )
+        return self.coverage.block_reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,6 +396,10 @@ class PullRequestIdentityLoader(Protocol):
 
 
 class ReviewManagementRepository(Protocol):
+    def excluded_file_page(self, review_run_id: str, *, plan_id: str, limit: int = 10,
+                           cursor: str | None = None, scope: ResourceScope | None = None) -> CursorPage[ReviewFilePlan]:
+        ...
+
     def batch_page(self, review_run_id: str, agent: str, *, after: int = 0,
                    limit: int = 10, scope: ResourceScope | None = None) -> CursorPage[BatchSnapshot]:
         ...
@@ -452,6 +466,7 @@ class ReviewManagementRepository(Protocol):
         state_version: str | None = None,
         head_sha: str | None = None,
         capture_model_outputs: bool = False,
+        acknowledge_exclusions: bool = False,
         review_profile_id: str | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
@@ -491,6 +506,11 @@ class ReviewManagementService:
     ) -> None:
         self._repository = repository
         self._identity_loader = identity_loader
+
+    def excluded_file_page(self, review_run_id: str, *, plan_id: str, limit: int = 10,
+                           cursor: str | None = None, scope: ResourceScope | None = None) -> CursorPage[ReviewFilePlan]:
+        return self._repository.excluded_file_page(review_run_id, plan_id=plan_id,
+            limit=limit, cursor=cursor, scope=_effective_scope(scope))
 
     def batch_page(self, review_run_id: str, agent: str, *, after: int = 0,
                    limit: int = 10, scope: ResourceScope | None = None) -> CursorPage[BatchSnapshot]:
@@ -649,10 +669,13 @@ class ReviewManagementService:
         state_version: str | None = None,
         head_sha: str | None = None,
         capture_model_outputs: bool = False,
+        acknowledge_exclusions: bool = False,
         review_profile_id: str | None = None,
         scope: ResourceScope | None = None,
     ) -> tuple[str, str, ExecutionStatus]:
         effective_scope = _effective_scope(scope)
+        if acknowledge_exclusions and action is not ReviewAction.APPROVE:
+            raise ReviewActionConflictError("未审查文件的人工确认只适用于批准操作")
         if capture_model_outputs and action is not ReviewAction.REVIEW_SNAPSHOT:
             raise ReviewActionConflictError("输出证据留存只适用于显式历史版本评测试跑")
         if review_profile_id is not None and action is not ReviewAction.REVIEW_SNAPSHOT:
@@ -699,6 +722,7 @@ class ReviewManagementService:
                 state_version=state_version,
                 head_sha=head_sha,
                 capture_model_outputs=capture_model_outputs,
+                acknowledge_exclusions=acknowledge_exclusions,
                 review_profile_id=review_profile_id,
             )
         return self._repository.apply_action(
@@ -713,6 +737,7 @@ class ReviewManagementService:
             state_version=state_version,
             head_sha=head_sha,
             capture_model_outputs=capture_model_outputs,
+            acknowledge_exclusions=acknowledge_exclusions,
             review_profile_id=review_profile_id,
             scope=effective_scope,
         )
@@ -793,7 +818,9 @@ class ReviewManagementService:
         if status is ExecutionStatus.PUBLISHING:
             return "publish", "publishing"
         if status is ExecutionStatus.AWAITING_APPROVAL:
-            if item.coverage_block_reason:
+            if item.coverage_requires_acknowledgement and not unreviewed_findings:
+                return "approval", "awaiting_coverage_confirmation"
+            if item.coverage_block_reason and not item.coverage_requires_acknowledgement:
                 return "approval", "coverage_incomplete"
             return (
                 "approval",
@@ -896,7 +923,7 @@ class ReviewManagementService:
         if status is ExecutionStatus.TIMED_OUT:
             return (ReviewAction.RETRY, ReviewAction.RERUN)
         if status is ExecutionStatus.AWAITING_APPROVAL:
-            if item.coverage_block_reason:
+            if item.coverage_block_reason and not item.coverage_requires_acknowledgement:
                 return (ReviewAction.NEW_REVIEW, ReviewAction.REJECT, ReviewAction.PAUSE)
             if unreviewed_findings:
                 approval_actions: tuple[ReviewAction, ...] = (

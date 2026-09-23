@@ -323,8 +323,6 @@ class DeterministicReviewPlanner:
             return ReviewFileDecision.BINARY
         if _is_generated(item.path):
             return ReviewFileDecision.GENERATED
-        if _language_for(item.path) is None:
-            return ReviewFileDecision.UNSUPPORTED
         if item.patch_state is PatchState.MISSING:
             return ReviewFileDecision.PATCH_MISSING
         if item.patch_state is PatchState.TOO_LARGE:
@@ -363,8 +361,6 @@ class DeterministicReviewPlanner:
         }
         unit_key = sha256(_canonical_json(identity)).hexdigest()
         language = _language_for(item.path)
-        if language is None:
-            raise AssertionError("review units require a supported language")
         return ReviewUnit(
             unit_key=unit_key,
             group_key=group_key,
@@ -437,13 +433,15 @@ def _is_generated(path: str) -> bool:
     )
 
 
-def _language_for(path: str) -> str | None:
+def _language_for(path: str) -> str:
     name = path.rsplit("/", 1)[-1].casefold()
     if name in _LANGUAGE_BY_NAME:
         return _LANGUAGE_BY_NAME[name]
     if name.startswith("dockerfile."):
         return "dockerfile"
-    return _LANGUAGE_BY_SUFFIX.get(PurePosixPath(name).suffix)
+    if name.endswith(".template"):
+        name = name.removesuffix(".template")
+    return _LANGUAGE_BY_SUFFIX.get(PurePosixPath(name).suffix, "text")
 
 
 def _related_group_keys(

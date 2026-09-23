@@ -73,6 +73,7 @@ export const phaseLabels: Record<string, string> = {
   completed: "审查流程已完成",
   awaiting_approval: "三路审查已完成，等待人工批准",
   coverage_incomplete: "审查覆盖不完整，暂不能批准或发布",
+  awaiting_coverage_confirmation: "文本审查已完成，批准前需确认未文本审查的文件范围",
   awaiting_finding_adjudication: "AI 检查已完成，请先核对候选问题",
   awaiting_publish: "结果已批准，等待人工点击发布",
   publishing: "正在人工发布到 GitHub",
@@ -95,8 +96,9 @@ export function reviewDisplayStatus(review: Pick<ReviewItem, "execution_status" 
 
 export function reviewDisplayLabel(review: Pick<ReviewItem, "execution_status" | "model_review_completed_at"> & Partial<Pick<ReviewItem, "workflow_status" | "coverage_status">>): string {
   const state = reviewDisplayStatus(review);
-  if ((state === "awaiting_approval" || state === "awaiting_publish")
-    && (review.coverage_status === "partial" || review.coverage_status === "stale")) return "覆盖待补齐";
+  if ((state === "awaiting_approval" || state === "awaiting_publish") && review.coverage_status === "stale") return "覆盖待补齐";
+  if (review.coverage_status === "partial" && state === "awaiting_publish") return "待发布（部分覆盖）";
+  if (review.coverage_status === "partial" && state === "awaiting_approval") return "待核对审查范围";
   return state === "awaiting_approval" ? "待核对结果" : state === "awaiting_publish" ? "待发布" : statusLabels[state];
 }
 

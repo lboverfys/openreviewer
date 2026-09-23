@@ -1268,6 +1268,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reviews/{review_run_id}/excluded-files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Excluded Files */
+        get: operations["excluded_files_api_v1_reviews__review_run_id__excluded_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{review_run_id}/findings": {
         parameters: {
             query?: never;
@@ -2315,6 +2332,13 @@ export interface components {
         CursorPage_ReviewEventResponse_: {
             /** Items */
             items: components["schemas"]["ReviewEventResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CursorPage[ReviewFilePlan] */
+        CursorPage_ReviewFilePlan_: {
+            /** Items */
+            items: components["schemas"]["ReviewFilePlan"][];
             /** Next Cursor */
             next_cursor?: string | null;
         };
@@ -4703,6 +4727,11 @@ export interface components {
         ReviewAction: "start" | "pause" | "resume" | "retry_stage" | "approve" | "reject" | "publish" | "expedite" | "retry" | "cancel" | "review_snapshot" | "rerun" | "retry_failed_node" | "new_review";
         /** ReviewActionRequest */
         ReviewActionRequest: {
+            /**
+             * Acknowledge Exclusions
+             * @default false
+             */
+            acknowledge_exclusions: boolean;
             action: components["schemas"]["ReviewAction"];
             agent?: components["schemas"]["ReviewAgent"] | null;
             /** Batch Number */
@@ -4813,6 +4842,16 @@ export interface components {
             context_fetched_at: string | null;
             /** Coverage Block Reason */
             coverage_block_reason?: string | null;
+            /**
+             * Coverage Exclusions Acknowledged
+             * @default false
+             */
+            coverage_exclusions_acknowledged: boolean;
+            /**
+             * Coverage Requires Acknowledgement
+             * @default false
+             */
+            coverage_requires_acknowledgement: boolean;
             /** Coverage Status */
             coverage_status: string;
             /**
@@ -8354,6 +8393,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CursorPage_ReviewEventResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    excluded_files_api_v1_reviews__review_run_id__excluded_files_get: {
+        parameters: {
+            query: {
+                plan_id: string;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                review_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CursorPage_ReviewFilePlan_"];
                 };
             };
             /** @description Validation Error */

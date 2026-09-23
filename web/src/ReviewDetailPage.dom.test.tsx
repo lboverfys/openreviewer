@@ -10,7 +10,7 @@ import type { AuthUser, ReviewDetails } from "./types";
 
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
-  return {...actual, api: {...actual.api, reviewDetails: vi.fn(), reviewRetrieval: vi.fn(), findingPage: vi.fn(), eventPage: vi.fn()}};
+  return {...actual, api: {...actual.api, reviewDetails: vi.fn(), reviewRetrieval: vi.fn(), findingPage: vi.fn(), eventPage: vi.fn(), excludedFilePage:vi.fn()}};
 });
 const details = fixture as unknown as ReviewDetails;
 const user = {username: "preview", role: "viewer", permissions: ["reviews:view"]} as AuthUser;
@@ -146,4 +146,46 @@ it("覆盖缺口显示具体文件和恢复入口，不再提供批准或发布�
   expect(screen.queryByText(/仍有 Agent 或批次待重试/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button",{name:"运行信息（高级）"}));
   expect(within(await screen.findByRole("dialog")).getByText(".gitignore")).toBeInTheDocument();
+});
+
+it("二进制文件需要显式确认后才能批准，并携带当前版本", async () => {
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details, phase:"awaiting_coverage_confirmation",
+    coverage_status:"partial", coverage_requires_acknowledgement:true, coverage_exclusions_acknowledged:false,
+    coverage_block_reason:"AI 已完成可审查文本，另有 1 个二进制文件未做文本审查。",
+    plan_file_count:21, plan_unit_count:20, plan_file_decisions:{planned:20,binary:1},
+    excluded_file_examples:[{file:"assets/image.webp",decision:"binary"}], available_actions:["approve"],
+  });
+  vi.mocked(api.excludedFilePage).mockResolvedValue({items:[{file:"assets/image.webp",decision:"binary"}],next_cursor:null});
+  const action = vi.spyOn(api,"reviewAction").mockRejectedValue(new ApiError("状态已变化，请刷新后重试",409));
+  render(<ReviewDetailPage user={{...user,permissions:["reviews:view","reviews:approve"]}} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button",{name:"批准审查"}));
+  const dialog = within(await screen.findByRole("dialog"));
+  expect(await dialog.findByRole("link",{name:"assets/image.webp"})).toHaveAttribute("href", expect.stringContaining(details.head_sha));
+  expect(dialog.getByRole("button",{name:"确认范围并批准"})).toBeDisabled();
+  expect(action).not.toHaveBeenCalled();
+  const checkbox = dialog.getByRole("checkbox");
+  expect(checkbox).not.toBeChecked();
+  fireEvent.click(checkbox);
+  fireEvent.click(dialog.getByRole("button",{name:"确认范围并批准"}));
+  await waitFor(()=>expect(action).toHaveBeenCalledTimes(1));
+  expect(action.mock.calls[0][4]).toMatchObject({acknowledgeExclusions:true,stateVersion:details.change_token,headSha:details.head_sha});
+  expect(await dialog.findByText("状态已变化，请刷新后重试")).toBeInTheDocument();
+  action.mockRestore();
+});
+
+it("未审查文件支持完整分页，读取失败时不能确认批准", async () => {
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details,phase:"awaiting_coverage_confirmation",coverage_status:"partial",
+    coverage_requires_acknowledgement:true,plan_file_decisions:{planned:20,binary:11},available_actions:["approve"]});
+  vi.mocked(api.excludedFilePage).mockImplementation(async (_run,_plan,cursor) => {
+    if (cursor) throw new ApiError("读取文件失败",503);
+    return {items:Array.from({length:10},(_,i)=>({file:`images/${i}.webp`,decision:"binary" as const})),next_cursor:"10"};
+  });
+  render(<ReviewDetailPage user={{...user,permissions:["reviews:view","reviews:approve"]}} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button",{name:"批准审查"}));
+  const dialog = within(await screen.findByRole("dialog"));
+  await dialog.findByRole("link",{name:"images/0.webp"});
+  fireEvent.click(dialog.getByRole("button",{name:"下一页"}));
+  await dialog.findByText("读取文件失败");
+  expect(dialog.getByRole("button",{name:"确认范围并批准"})).toBeDisabled();
+  expect(api.excludedFilePage).toHaveBeenLastCalledWith(details.review_run_id,details.review_plan_id,"10",expect.any(AbortSignal));
 });

@@ -18,6 +18,7 @@ from persistence.management.common import (
     _safe_payload,
 )
 from persistence.management.context import ManagementStorage
+from persistence.management.coverage import exclusions_acknowledged
 from persistence.management.findings import (
     _load_evaluation_gates,
     _load_finding_counts,
@@ -52,6 +53,28 @@ from services.review_management import (
     encode_finding_cursor,
 )
 from services.task_queue import ReviewTarget
+
+
+def excluded_file_page(
+    self: ManagementStorage, review_run_id: str, *, plan_id: str,
+    limit: int = 10, cursor: str | None = None, scope: ResourceScope | None = None,
+) -> CursorPage[ReviewFilePlan]:
+    after = int(cursor) if cursor is not None else -1
+    if not 1 <= limit <= 100 or after < -1 or (cursor is not None and after < 0):
+        raise ValueError("excluded file page is invalid")
+    with self._sessions() as session:
+        current_plan = session.scalar(select(ReviewPlanRecord.id).join(
+            ReviewRunRecord, ReviewRunRecord.id == ReviewPlanRecord.review_run_id,
+        ).where(ReviewRunRecord.id == review_run_id, ReviewPlanRecord.id == plan_id,
+            resource_predicate(scope, installation_column=ReviewRunRecord.installation_id,
+                repository_column=ReviewRunRecord.repository, repository_key_column=ReviewRunRecord.repository_key)))
+        if current_plan is None:
+            raise ReviewNotFoundError("审查计划不存在或已变化，请刷新")
+        rows = session.execute(select(ReviewFilePlanRecord.file, ReviewFilePlanRecord.decision, ReviewFilePlanRecord.ordinal)
+            .where(ReviewFilePlanRecord.review_plan_id == current_plan, ReviewFilePlanRecord.decision != "planned",
+                   ReviewFilePlanRecord.ordinal > after).order_by(ReviewFilePlanRecord.ordinal).limit(limit + 1)).all()
+    return CursorPage(items=tuple(ReviewFilePlan(file=row.file, decision=row.decision) for row in rows[:limit]),
+        next_cursor=str(rows[limit - 1].ordinal) if len(rows) > limit else None)
 
 
 def batch_page(
@@ -471,6 +494,10 @@ def get(
                 model_completed=row["model_review_completed_at"] is not None,
             )
             return StoredReviewDetails(
+                coverage_exclusions_acknowledged=(
+                    exclusions_acknowledged(session, row["review_plan_id"], row["model_review_completed_at"])
+                    if row["coverage_status"] == "partial" else False
+                ),
                 excluded_file_examples=excluded_file_examples,
                 snapshot_review=row["snapshot_review"],
                 repository_policy=(

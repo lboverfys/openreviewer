@@ -18,6 +18,7 @@ from apps.api.schemas import (
 from domain.models import ReviewRequest
 from domain.pagination import CursorPage
 from domain.repository_policy import RepositoryPolicyDeniedError
+from domain.review_planning import ReviewFilePlan
 from domain.review_progress import BatchSnapshot
 from services.auth import SessionPrincipal
 from services.github_access import GitHubAccessPolicy
@@ -88,6 +89,19 @@ def register_review_routes(
                 detail="review details are temporarily unavailable",
             ) from exc
         return ReviewDetailsResponse.from_details(details)
+
+    @application.get("/api/v1/reviews/{review_run_id}/excluded-files", response_model=CursorPage[ReviewFilePlan])
+    def excluded_files(review_run_id: str, plan_id: str,
+                       principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
+                       limit: Annotated[int, Query(ge=1, le=100)] = 10,
+                       cursor: Annotated[str | None, Query(max_length=10)] = None) -> CursorPage[ReviewFilePlan]:
+        try:
+            return get_review_management_service().excluded_file_page(review_run_id, plan_id=plan_id,
+                limit=limit, cursor=cursor, scope=principal.resource_scope)
+        except ReviewNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, "excluded file cursor is invalid") from exc
 
     @application.get("/api/v1/reviews/{review_run_id}/findings", response_model=CursorPage[ReviewFindingResponse])
     def list_findings(review_run_id: str, principal: Annotated[SessionPrincipal, Depends(require_review_viewer)],
@@ -283,6 +297,7 @@ def register_review_routes(
                 state_version=request_body.state_version,
                 head_sha=request_body.head_sha,
                 capture_model_outputs=request_body.capture_model_outputs,
+                acknowledge_exclusions=request_body.acknowledge_exclusions,
                 review_profile_id=request_body.review_profile_id,
                 scope=principal.resource_scope,
             )

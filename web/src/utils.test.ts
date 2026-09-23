@@ -24,7 +24,7 @@ describe("dashboard formatting", () => {
 
   it("人工节点的覆盖缺口与详情使用相同状态，暂停和失败不被覆盖", () => {
     const base = {execution_status:"completed" as const, model_review_completed_at:"2026-09-23T04:00:00Z"};
-    expect(reviewDisplayLabel({...base, workflow_status:"awaiting_approval", coverage_status:"partial"})).toBe("覆盖待补齐");
+    expect(reviewDisplayLabel({...base, workflow_status:"awaiting_approval", coverage_status:"partial"})).toBe("待核对审查范围");
     expect(reviewDisplayLabel({...base, workflow_status:"awaiting_publish", coverage_status:"stale"})).toBe("覆盖待补齐");
     expect(reviewDisplayLabel({...base, workflow_status:"awaiting_approval", coverage_status:"complete"})).toBe("待核对结果");
     expect(reviewDisplayLabel({...base, workflow_status:"paused", coverage_status:"partial"})).toBe("已暂停");

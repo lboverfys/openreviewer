@@ -19,7 +19,11 @@ from domain.workflow import (
 )
 from persistence.management.common import _review_change_token
 from persistence.management.context import ManagementStorage
-from persistence.management.coverage import load_coverage_block_reason
+from persistence.management.coverage import (
+    acknowledgement_key,
+    exclusions_acknowledged,
+    load_coverage,
+)
 from persistence.management.retry import (
     _paused_execution_status,
     _prepare_failed_node_retry,
@@ -60,12 +64,15 @@ def apply_action(
     state_version: str | None = None,
     head_sha: str | None = None,
     capture_model_outputs: bool = False,
+    acknowledge_exclusions: bool = False,
     review_profile_id: str | None = None,
     scope: ResourceScope | None = None,
 ) -> tuple[str, str, ExecutionStatus]:
     """在一个短事务内执行加速、重试、取消或重新审查。"""
 
     normalized_request_id = request_id.strip()
+    if acknowledge_exclusions and (action is not ReviewAction.APPROVE or state_version is None or head_sha is None):
+        raise ReviewActionConflictError("确认未审查文件必须通过批准操作，并提供当前状态版本和提交 SHA")
     if capture_model_outputs and action is not ReviewAction.REVIEW_SNAPSHOT:
         raise ReviewActionConflictError("输出证据留存只适用于显式历史版本评测试跑")
     if review_profile_id is not None and action is not ReviewAction.REVIEW_SNAPSHOT:
@@ -130,6 +137,7 @@ def apply_action(
                 agent=agent,
                 batch_number=batch_number,
                 capture_model_outputs=capture_model_outputs,
+                acknowledge_exclusions=acknowledge_exclusions,
                 review_profile_id=review_profile_id,
                 scope=scope,
             )
@@ -177,6 +185,7 @@ def apply_action(
                 agent=agent,
                 batch_number=batch_number,
                 capture_model_outputs=capture_model_outputs,
+                acknowledge_exclusions=acknowledge_exclusions,
                 review_profile_id=review_profile_id,
                 scope=scope,
             )
@@ -343,7 +352,8 @@ def apply_action(
                 final_workflow_status = result.after
                 automatic_occurred_at: datetime | None = None
                 if action is ReviewAction.APPROVE:
-                    coverage_reason = load_coverage_block_reason(session, run.id, run.coverage_status)
+                    coverage = load_coverage(session, run.id, run.coverage_status, acknowledge_exclusions=acknowledge_exclusions)
+                    coverage_reason = coverage.block_reason
                     if coverage_reason:
                         raise ReviewActionConflictError(coverage_reason)
                     unreviewed_count = int(
@@ -362,6 +372,17 @@ def apply_action(
                         raise ReviewActionConflictError(
                             f"仍有 {unreviewed_count} 个候选问题未完成人工裁决"
                         )
+                    if acknowledge_exclusions and coverage.can_acknowledge and plan is not None and plan.model_review_completed_at is not None:
+                        if not exclusions_acknowledged(session, plan.id, plan.model_review_completed_at):
+                            session.add(OutboxEventRecord(
+                                id=str(self._uuid_factory()),
+                                event_key=acknowledgement_key(plan.id, plan.model_review_completed_at),
+                                aggregate_type="review_run", aggregate_id=run.id,
+                                event_type="review.coverage.exclusions_acknowledged",
+                                payload={"actor": actor, "head_sha": run.head_sha, "review_plan_id": plan.id,
+                                         "file_decisions": dict(coverage.file_decisions), "excluded_file_count": coverage.excluded_count},
+                                occurred_at=now, publish_attempts=0,
+                            ))
                     automatic_status = next_automatic_stage(result.after)
                     if automatic_status is None:
                         raise ReviewActionConflictError("批准后的工作流状态无效")
@@ -447,6 +468,7 @@ def apply_action(
                         aggregate_id=review_run_id,
                         event_type=f"review.workflow.{action.value}",
                         payload={
+                            "acknowledge_exclusions": acknowledge_exclusions,
                             "action": action.value,
                             "actor": actor,
                             "previous_status": workflow_current.value,
@@ -771,6 +793,7 @@ def _existing_action_result(
     agent: str | None = None,
     batch_number: int | None = None,
     capture_model_outputs: bool = False,
+    acknowledge_exclusions: bool = False,
     review_profile_id: str | None = None,
     scope: ResourceScope | None = None,
 ) -> tuple[str, str, ExecutionStatus] | None:
@@ -800,6 +823,8 @@ def _existing_action_result(
     ).scalar_one_or_none()
     if existing_event is None:
         return None
+    if bool(existing_event.get("acknowledge_exclusions", False)) != acknowledge_exclusions:
+        raise ReviewActionConflictError("同一幂等键不能用于不同的未审查文件确认选项")
     if bool(existing_event.get("capture_model_outputs", False)) != capture_model_outputs:
         raise ReviewActionConflictError("同一幂等键不能用于不同的评测输出留存选项")
     if existing_event.get("review_profile_id") != review_profile_id:

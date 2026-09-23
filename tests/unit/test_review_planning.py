@@ -104,7 +104,7 @@ def test_planner_assigns_every_file_once_and_orders_applicable_rules() -> None:
         _file("dist/bundle.js"),
         _file("assets/logo.png", patch_state=PatchState.BINARY),
         _file("src/app.py"),
-        _file("assets/manual.pdf"),
+        _file("assets/manual.pdf", patch_state=PatchState.BINARY),
         _file("locked/secret.py"),
         _file("src/huge.ts", patch_state=PatchState.TOO_LARGE),
     )
@@ -117,7 +117,7 @@ def test_planner_assigns_every_file_once_and_orders_applicable_rules() -> None:
     assert plan.plan_fingerprint == repeated.plan_fingerprint
     assert {item.file: item.decision for item in plan.files} == {
         "assets/logo.png": ReviewFileDecision.BINARY,
-        "assets/manual.pdf": ReviewFileDecision.UNSUPPORTED,
+        "assets/manual.pdf": ReviewFileDecision.BINARY,
         "dist/bundle.js": ReviewFileDecision.GENERATED,
         "locked/secret.py": ReviewFileDecision.RULES_INCOMPLETE,
         "src/app.py": ReviewFileDecision.PLANNED,
@@ -143,6 +143,33 @@ def test_contract_tables_are_included_in_review(suffix):
     assert plan.files[0].decision is ReviewFileDecision.PLANNED
     assert plan.units[0].language == suffix
     assert plan.units[0].patch == source.patch
+
+
+@pytest.mark.parametrize("path,language", [
+    ("deploy/nginx/container.conf.template", "configuration"),
+    ("config/application.yaml.template", "yaml"),
+    ("src/example.unregistered", "text"),
+    (".env.example", "text"),
+    ("LICENSE", "text"),
+    ("notes.TXT", "text"),
+])
+def test_available_text_never_requires_a_language_allowlist(path, language):
+    source = _file(path)
+    plan = DeterministicReviewPlanner().plan(_target(), (source,), _snapshot())
+    assert plan.files[0].decision is ReviewFileDecision.PLANNED
+    assert plan.units[0].language == language
+    assert plan.units[0].patch == source.patch
+
+
+@pytest.mark.parametrize("state,decision", [
+    (PatchState.MISSING, ReviewFileDecision.PATCH_MISSING),
+    (PatchState.TOO_LARGE, ReviewFileDecision.PATCH_TOO_LARGE),
+    (PatchState.BINARY, ReviewFileDecision.BINARY),
+])
+def test_unknown_types_keep_unavailable_content_distinct(state, decision):
+    plan = DeterministicReviewPlanner().plan(_target(), (_file("source.unknown", patch_state=state),), _snapshot())
+    assert not plan.units
+    assert plan.files[0].decision is decision
 
 
 @pytest.mark.parametrize("path", [".gitignore", "backend/.gitignore"])

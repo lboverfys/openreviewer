@@ -2052,6 +2052,33 @@
         "title": "CursorPage[ReviewEventResponse]",
         "type": "object"
       },
+      "CursorPage_ReviewFilePlan_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewFilePlan"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[ReviewFilePlan]",
+        "type": "object"
+      },
       "CursorPage_ReviewFindingResponse_": {
         "properties": {
           "items": {
@@ -8086,6 +8113,11 @@
       "ReviewActionRequest": {
         "additionalProperties": false,
         "properties": {
+          "acknowledge_exclusions": {
+            "default": false,
+            "title": "Acknowledge Exclusions",
+            "type": "boolean"
+          },
           "action": {
             "$ref": "#/components/schemas/ReviewAction"
           },
@@ -8450,6 +8482,16 @@
               }
             ],
             "title": "Coverage Block Reason"
+          },
+          "coverage_exclusions_acknowledged": {
+            "default": false,
+            "title": "Coverage Exclusions Acknowledged",
+            "type": "boolean"
+          },
+          "coverage_requires_acknowledgement": {
+            "default": false,
+            "title": "Coverage Requires Acknowledgement",
+            "type": "boolean"
           },
           "coverage_status": {
             "title": "Coverage Status",
@@ -15867,6 +15909,83 @@
           }
         },
         "summary": "List Events"
+      }
+    },
+    "/api/v1/reviews/{review_run_id}/excluded-files": {
+      "get": {
+        "operationId": "excluded_files_api_v1_reviews__review_run_id__excluded_files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_run_id",
+            "required": true,
+            "schema": {
+              "title": "Review Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "title": "Plan Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_ReviewFilePlan_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Excluded Files"
       }
     },
     "/api/v1/reviews/{review_run_id}/findings": {

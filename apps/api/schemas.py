@@ -327,6 +327,8 @@ class ReviewDetailsResponse(BaseModel):
     plan_file_decisions: dict[str, int]
     excluded_file_examples: tuple[ReviewFilePlan, ...] = ()
     coverage_block_reason: str | None = None
+    coverage_requires_acknowledgement: bool = False
+    coverage_exclusions_acknowledged: bool = False
     model_review_completed_at: datetime | None
     model_call_id: str | None
     model_provider: str | None
@@ -458,6 +460,7 @@ class ReviewActionRequest(BaseModel):
     state_version: str | None = Field(default=None, min_length=1, max_length=128)
     head_sha: str | None = Field(default=None, min_length=40, max_length=64)
     capture_model_outputs: bool = False
+    acknowledge_exclusions: bool = False
     review_profile_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from domain.enums import ExecutionStatus
 from domain.github import PullRequestSnapshot
 from domain.pagination import CursorPage
+from domain.review_planning import ReviewFilePlan
 from domain.review_progress import BatchSnapshot
 from persistence.management import actions as _store_actions
 from persistence.management import findings as _store_findings
@@ -66,6 +67,9 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
     def batch_page(self, review_run_id: str, agent: str, *, after: int=0, limit: int=10, scope: ResourceScope | None=None) -> CursorPage[BatchSnapshot]:
         return _store_queries.batch_page(self, review_run_id, agent, after=after, limit=limit, scope=scope)
 
+    def excluded_file_page(self, review_run_id: str, *, plan_id: str, limit: int=10, cursor: str | None=None, scope: ResourceScope | None=None) -> CursorPage[ReviewFilePlan]:
+        return _store_queries.excluded_file_page(self, review_run_id, plan_id=plan_id, limit=limit, cursor=cursor, scope=scope)
+
     def finding_page(self, review_run_id: str, *, limit: int=10, cursor: str | None=None, severity: str | None=None, adjudication_status: str | None=None, query: str='', scope: ResourceScope | None=None) -> CursorPage[StoredFinding]:
         return _store_queries.finding_page(self, review_run_id, limit=limit, cursor=cursor, severity=severity, adjudication_status=adjudication_status, query=query, scope=scope)
 
@@ -108,8 +112,8 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
     def _load_events(session: Session, review_run_id: str) -> tuple[StoredReviewEvent, ...]:
         return _store_queries._load_events(session, review_run_id)
 
-    def apply_action(self, review_run_id: str, action: ReviewAction, *, actor: str, request_id: str, target_stage: str | None=None, retry_scope: str | None=None, agent: str | None=None, batch_number: int | None=None, state_version: str | None=None, head_sha: str | None=None, capture_model_outputs: bool=False, review_profile_id: str | None=None, scope: ResourceScope | None=None) -> tuple[str, str, ExecutionStatus]:
-        return _store_actions.apply_action(self, review_run_id, action, actor=actor, request_id=request_id, target_stage=target_stage, retry_scope=retry_scope, agent=agent, batch_number=batch_number, state_version=state_version, head_sha=head_sha, capture_model_outputs=capture_model_outputs, review_profile_id=review_profile_id, scope=scope)
+    def apply_action(self, review_run_id: str, action: ReviewAction, *, actor: str, request_id: str, target_stage: str | None=None, retry_scope: str | None=None, agent: str | None=None, batch_number: int | None=None, state_version: str | None=None, head_sha: str | None=None, capture_model_outputs: bool=False, acknowledge_exclusions: bool=False, review_profile_id: str | None=None, scope: ResourceScope | None=None) -> tuple[str, str, ExecutionStatus]:
+        return _store_actions.apply_action(self, review_run_id, action, actor=actor, request_id=request_id, target_stage=target_stage, retry_scope=retry_scope, agent=agent, batch_number=batch_number, state_version=state_version, head_sha=head_sha, capture_model_outputs=capture_model_outputs, acknowledge_exclusions=acknowledge_exclusions, review_profile_id=review_profile_id, scope=scope)
 
     @staticmethod
     def _existing_action_result(session: Session, review_run_id: str, action: ReviewAction, *, event_key: str, target_stage: str | None, retry_scope: str | None=None, agent: str | None=None, batch_number: int | None=None, scope: ResourceScope | None=None) -> tuple[str, str, ExecutionStatus] | None:

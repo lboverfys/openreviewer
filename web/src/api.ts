@@ -272,6 +272,7 @@ export const api = {
       stateVersion?: string;
       headSha?: string;
       captureModelOutputs?: boolean;
+      acknowledgeExclusions?: boolean;
       reviewProfileId?: string;
     },
   ) =>
@@ -293,9 +294,16 @@ export const api = {
         ...(options?.stateVersion ? { state_version: options.stateVersion } : {}),
         ...(options?.headSha ? { head_sha: options.headSha } : {}),
         ...(options?.captureModelOutputs ? { capture_model_outputs: true } : {}),
+        ...(options?.acknowledgeExclusions ? { acknowledge_exclusions: true } : {}),
         ...(options?.reviewProfileId ? { review_profile_id: options.reviewProfileId } : {}),
       }),
     })),
+  excludedFilePage: (reviewRunId: string, planId: string, cursor?: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({plan_id:planId, limit:"10"});
+    if (cursor) params.set("cursor", cursor);
+    return request<{items: ReviewDetails["excluded_file_examples"]; next_cursor: string | null}>(
+      `/api/v1/reviews/${encodeURIComponent(reviewRunId)}/excluded-files?${params}`, {signal});
+  },
   decideFinding: (
     reviewRunId: string,
     findingId: string,
