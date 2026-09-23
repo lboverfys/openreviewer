@@ -19,6 +19,7 @@ from domain.workflow import (
 )
 from persistence.management.common import _review_change_token
 from persistence.management.context import ManagementStorage
+from persistence.management.coverage import load_coverage_block_reason
 from persistence.management.retry import (
     _paused_execution_status,
     _prepare_failed_node_retry,
@@ -342,10 +343,9 @@ def apply_action(
                 final_workflow_status = result.after
                 automatic_occurred_at: datetime | None = None
                 if action is ReviewAction.APPROVE:
-                    if run.coverage_status in {"partial", "stale"}:
-                        raise ReviewActionConflictError(
-                            "当前审查覆盖不完整，完成失败节点后才能批准"
-                        )
+                    coverage_reason = load_coverage_block_reason(session, run.id, run.coverage_status)
+                    if coverage_reason:
+                        raise ReviewActionConflictError(coverage_reason)
                     unreviewed_count = int(
                         session.scalar(
                             select(func.count())

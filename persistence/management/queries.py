@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from domain.enums import ExecutionStatus
 from domain.pagination import CursorPage, decode_cursor, encode_cursor
 from domain.repository_policy import RepositoryPolicySnapshot
+from domain.review_planning import ReviewFilePlan
 from domain.review_progress import BatchSnapshot
 from domain.security import redact_sensitive
 from persistence.management.common import (
@@ -435,6 +436,14 @@ def get(
                 session,
                 row["review_plan_id"],
             )
+            excluded_file_examples: tuple[ReviewFilePlan, ...] = ()
+            if any(count for decision, count in plan_file_decisions.items() if decision != "planned"):
+                excluded_file_examples = tuple(ReviewFilePlan.model_validate(dict(item)) for item in session.execute(
+                    select(ReviewFilePlanRecord.file, ReviewFilePlanRecord.decision).where(
+                        ReviewFilePlanRecord.review_plan_id == row["review_plan_id"],
+                        ReviewFilePlanRecord.decision != "planned",
+                    ).order_by(ReviewFilePlanRecord.ordinal).limit(10)
+                ).mappings())
             events = (
                 _load_events(session, review_run_id)
                 if view == "full"
@@ -462,6 +471,7 @@ def get(
                 model_completed=row["model_review_completed_at"] is not None,
             )
             return StoredReviewDetails(
+                excluded_file_examples=excluded_file_examples,
                 snapshot_review=row["snapshot_review"],
                 repository_policy=(
                     RepositoryPolicySnapshot.model_validate(row["repository_policy"])

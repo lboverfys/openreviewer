@@ -145,6 +145,33 @@ def test_contract_tables_are_included_in_review(suffix):
     assert plan.units[0].patch == source.patch
 
 
+@pytest.mark.parametrize("path", [".gitignore", "backend/.gitignore"])
+def test_gitignore_is_reviewed_as_configuration_by_all_agents(path: str) -> None:
+    source = _file(path, patch="@@ -1 +1 @@\n-*.log\n+.env\n")
+    planner = DeterministicReviewPlanner()
+    plan = planner.plan(_target(), (source,), _snapshot())
+    assert plan == planner.plan(_target(), (source,), _snapshot())
+    assert plan.files[0].decision is ReviewFileDecision.PLANNED
+    assert plan.units[0].language == "configuration"
+    assert plan.units[0].patch == source.patch
+    assert set(plan.units[0].review_domains) == {
+        ReviewAgent.SECURITY, ReviewAgent.CONVENTION, ReviewAgent.LOGIC,
+    }
+
+
+@pytest.mark.parametrize("state, decision", [
+    (PatchState.BINARY, ReviewFileDecision.BINARY),
+    (PatchState.MISSING, ReviewFileDecision.PATCH_MISSING),
+    (PatchState.TOO_LARGE, ReviewFileDecision.PATCH_TOO_LARGE),
+])
+def test_gitignore_does_not_bypass_patch_validation(state, decision) -> None:
+    plan = DeterministicReviewPlanner().plan(
+        _target(), (_file(".gitignore", patch_state=state),), _snapshot(),
+    )
+    assert plan.files[0].decision is decision
+    assert plan.units == ()
+
+
 def test_planner_keeps_all_reviewable_files_and_defers_batching_to_model_stage() -> None:
     files = (
         _file("b.py", patch="b" * 3000),

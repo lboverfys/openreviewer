@@ -73,6 +73,7 @@ _LANGUAGE_BY_SUFFIX = {
     ".yml": "yaml",
 }
 _LANGUAGE_BY_NAME = {
+    ".gitignore": "configuration",
     "dockerfile": "dockerfile",
     "jenkinsfile": "groovy",
     "makefile": "makefile",

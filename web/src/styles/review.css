@@ -544,6 +544,12 @@
   font-size: 12px;
   margin-top: 2px;
 }
+.review-excluded-files {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.review-excluded-files p { margin-top: 4px; }
+.review-excluded-files small { color: var(--text-muted); }
 
 /* ---------------- 指标条 ---------------- */
 .review-summary-strip {

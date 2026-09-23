@@ -13,6 +13,8 @@ from domain.enums import ExecutionStatus, VerificationStatus
 from domain.github import PullRequestSnapshot
 from domain.pagination import CursorPage
 from domain.repository_policy import RepositoryPolicySnapshot
+from domain.review_coverage import coverage_block_reason
+from domain.review_planning import ReviewFilePlan
 from domain.review_progress import BatchProgress, BatchSnapshot
 from services.rbac import ResourceScope
 from services.task_queue import ReviewTarget
@@ -327,6 +329,17 @@ class StoredReviewDetails:
     repository_policy: RepositoryPolicySnapshot | None = None
     model_request_count: int | None = None
     snapshot_review: bool = False
+
+    excluded_file_examples: tuple[ReviewFilePlan, ...] = ()
+
+    @property
+    def coverage_block_reason(self) -> str | None:
+        return coverage_block_reason(
+            self.coverage_status,
+            model_completed=self.model_review_completed_at is not None,
+            excluded_file_count=sum(count for decision, count in self.plan_file_decisions.items() if decision != "planned"),
+            rules_complete=self.plan_rules_complete,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -774,10 +787,14 @@ class ReviewManagementService:
                 return "planning", "planning_failed"
             return "context", "context_failed"
         if status is ExecutionStatus.AWAITING_PUBLISH:
+            if item.coverage_block_reason:
+                return "publish", "coverage_incomplete"
             return "publish", "awaiting_publish"
         if status is ExecutionStatus.PUBLISHING:
             return "publish", "publishing"
         if status is ExecutionStatus.AWAITING_APPROVAL:
+            if item.coverage_block_reason:
+                return "approval", "coverage_incomplete"
             return (
                 "approval",
                 "awaiting_finding_adjudication"
@@ -879,6 +896,8 @@ class ReviewManagementService:
         if status is ExecutionStatus.TIMED_OUT:
             return (ReviewAction.RETRY, ReviewAction.RERUN)
         if status is ExecutionStatus.AWAITING_APPROVAL:
+            if item.coverage_block_reason:
+                return (ReviewAction.NEW_REVIEW, ReviewAction.REJECT, ReviewAction.PAUSE)
             if unreviewed_findings:
                 approval_actions: tuple[ReviewAction, ...] = (
                     ReviewAction.REJECT,
@@ -894,6 +913,8 @@ class ReviewManagementService:
                 return (ReviewAction.RETRY_FAILED_NODE, *approval_actions)
             return approval_actions
         if status is ExecutionStatus.AWAITING_PUBLISH:
+            if item.coverage_block_reason:
+                return (ReviewAction.NEW_REVIEW, ReviewAction.REJECT)
             return (ReviewAction.PUBLISH, ReviewAction.REJECT)
         if status is ExecutionStatus.REJECTED:
             return (ReviewAction.RETRY_STAGE, *snapshot_actions, ReviewAction.RERUN)

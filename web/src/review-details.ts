@@ -307,6 +307,7 @@ export function workflowReadout(
   if (details.phase === "cancelled") return "已取消";
   if (details.phase === "superseded") return "已被新提交替代";
   if (details.phase === "completed") return "已完成";
+  if (details.phase === "coverage_incomplete") return "覆盖待补齐";
   if (details.phase === "awaiting_finding_adjudication") return "待核对问题";
   if (details.phase === "awaiting_approval" || details.phase === "awaiting_publish") {
     return "等待人工操作";

@@ -17,7 +17,7 @@ import {
   ModelBatchPanel,
   StageTimeline,
 } from "./ReviewProgressPanels";
-import { ciDisplayStatus, ReviewSidebar } from "./ReviewSidebarPanels";
+import { ciDisplayStatus, ExcludedFileExamples, ReviewSidebar } from "./ReviewSidebarPanels";
 import {
   actionKey,
   agentDefinitions,
@@ -763,12 +763,14 @@ function ReviewDetailPage({
           本次分析已保存的提交 {shortSha(details.head_sha)}，使用当前审查配置。不会重新运行 CI 或发布到 GitHub，原任务与结果保留。
         </section>}
 
-        {details.coverage_status === "partial" && (
+        {(details.coverage_status === "partial" || details.coverage_status === "stale") && (
           <section className="review-coverage-warning" role="status">
             <DetailIcon>!</DetailIcon>
-            <div><strong>{details.model_review_completed_at ? "部分文件未进入审查" : "部分覆盖"}</strong><p>{details.model_review_completed_at
+            <div><strong>{details.coverage_status === "stale" ? "审查版本已过期" : details.model_review_completed_at ? "审查覆盖待补齐" : "部分覆盖"}</strong><p>{details.coverage_block_reason ?? (details.model_review_completed_at
               ? "AI 已完成当前范围。有文件因格式不支持或上下文不完整被排除，请在运行信息的文件覆盖中查看原因。"
-              : "已有结果可以查看，但仍有 Agent 或批次待重试；完成前不能批准或发布。"}</p></div>
+              : "已有结果可以查看，但仍有 Agent 或批次待重试；完成前不能批准或发布。")}</p>
+              <ExcludedFileExamples details={details} />
+            </div>
           </section>
         )}
 

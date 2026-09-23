@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDate, shortSha, statusLabels } from "./utils";
+import { formatDate, reviewDisplayLabel, shortSha, statusLabels } from "./utils";
 
 describe("dashboard formatting", () => {
   // 每个用例只验证一个展示契约，避免把日期、SHA 和状态标签失败混在一起。
@@ -20,5 +20,14 @@ describe("dashboard formatting", () => {
     expect(statusLabels.waiting_for_ci).toBe("等待 CI");
     expect(statusLabels.ready_for_review).toBe("等待 AI");
     expect(statusLabels.failed).toBe("失败");
+  });
+
+  it("人工节点的覆盖缺口与详情使用相同状态，暂停和失败不被覆盖", () => {
+    const base = {execution_status:"completed" as const, model_review_completed_at:"2026-09-23T04:00:00Z"};
+    expect(reviewDisplayLabel({...base, workflow_status:"awaiting_approval", coverage_status:"partial"})).toBe("覆盖待补齐");
+    expect(reviewDisplayLabel({...base, workflow_status:"awaiting_publish", coverage_status:"stale"})).toBe("覆盖待补齐");
+    expect(reviewDisplayLabel({...base, workflow_status:"awaiting_approval", coverage_status:"complete"})).toBe("待核对结果");
+    expect(reviewDisplayLabel({...base, workflow_status:"paused", coverage_status:"partial"})).toBe("已暂停");
+    expect(reviewDisplayLabel({...base, execution_status:"failed", workflow_status:"agent_batches", coverage_status:"partial"})).toBe("失败");
   });
 });

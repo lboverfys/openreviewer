@@ -14,6 +14,7 @@ from persistence.management.common import (
     _review_change_token,
 )
 from persistence.management.context import ManagementStorage
+from persistence.management.coverage import load_coverage_block_reason
 from persistence.management.queries import get
 from persistence.models import OutboxEventRecord, ReviewRunRecord, ReviewTaskRecord
 from persistence.resource_scope import resource_predicate
@@ -93,10 +94,9 @@ def publish(
                 raise ReviewActionConflictError("历史版本复查只在平台内查看，不能发布到 GitHub")
             if self._publisher is None:
                 raise ReviewPublishUnavailableError("GitHub 人工发布器尚未配置")
-            if run.coverage_status in {"partial", "stale"}:
-                raise ReviewActionConflictError(
-                    "当前审查覆盖不完整，完成失败节点后才能发布"
-                )
+            coverage_reason = load_coverage_block_reason(session, run.id, run.coverage_status)
+            if coverage_reason:
+                raise ReviewActionConflictError(coverage_reason)
             existing_started = session.execute(
                 select(OutboxEventRecord.payload).where(
                     OutboxEventRecord.event_key == event_key

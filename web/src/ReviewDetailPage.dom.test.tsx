@@ -121,8 +121,29 @@ it("文件范围不足不会被显示成 Agent 未完成或汇总未执行", asy
     events:[{id:"summary",event_type:"review.model.summary_skipped",occurred_at:"2026-09-14T00:00:00Z",payload:{agent:"summary"}}],
   });
   render(<ReviewDetailPage user={user} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
-  await screen.findByText("部分文件未进入审查");
+  await screen.findByText("审查覆盖待补齐");
   fireEvent.click(screen.getByRole("button", {name:/AI 检查过程/}));
   expect(await screen.findByText("已完成程序汇总")).toBeInTheDocument();
   expect(screen.queryByText("上游 Agent 未完成，汇总未执行")).not.toBeInTheDocument();
+});
+
+it("覆盖缺口显示具体文件和恢复入口，不再提供批准或发布按钮", async () => {
+  const reason = "AI 已完成当前范围，但有 1 个变更文件未进入审查，暂不能批准或发布。请创建新审查。";
+  vi.mocked(api.reviewDetails).mockResolvedValue({...details,
+    phase:"coverage_incomplete", coverage_status:"partial", workflow_status:"awaiting_approval",
+    model_review_completed_at:"2026-09-14T00:00:00Z", coverage_block_reason:reason,
+    plan_file_count:130, plan_unit_count:129, plan_file_decisions:{planned:129, unsupported:1},
+    excluded_file_examples:[{file:".gitignore",decision:"unsupported",unit_key:null}],
+    available_actions:["new_review","reject","pause"],
+  });
+  render(<ReviewDetailPage user={{...user,permissions:["reviews:view","reviews:manage","reviews:approve","reviews:publish"]}} reviewRunId={details.review_run_id} onBack={vi.fn()} onOpenReview={vi.fn()} onSignedOut={vi.fn()} />);
+  await screen.findByText(reason);
+  expect(within(screen.getByRole("region",{name:"任务关键指标"})).getByText("覆盖待补齐")).toBeInTheDocument();
+  expect(screen.getByText(".gitignore")).toBeInTheDocument();
+  expect(screen.getByRole("button",{name:"检查最新提交"})).toBeEnabled();
+  expect(screen.queryByRole("button",{name:"批准审查"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button",{name:"发布到 GitHub"})).not.toBeInTheDocument();
+  expect(screen.queryByText(/仍有 Agent 或批次待重试/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button",{name:"运行信息（高级）"}));
+  expect(within(await screen.findByRole("dialog")).getByText(".gitignore")).toBeInTheDocument();
 });

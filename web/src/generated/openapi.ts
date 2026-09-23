@@ -4766,6 +4766,8 @@ export interface components {
             claimed_from_status: string | null;
             /** Context Fetched At */
             context_fetched_at: string | null;
+            /** Coverage Block Reason */
+            coverage_block_reason?: string | null;
             /** Coverage Status */
             coverage_status: string;
             /**
@@ -4783,6 +4785,11 @@ export interface components {
             evaluation_gates: components["schemas"]["ReviewEvaluationGateResponse"][];
             /** Events */
             events: components["schemas"]["ReviewEventResponse"][];
+            /**
+             * Excluded File Examples
+             * @default []
+             */
+            excluded_file_examples: components["schemas"]["ReviewFilePlan"][];
             execution_status: components["schemas"]["ExecutionStatus"];
             /**
              * Failed Agents
@@ -5009,6 +5016,23 @@ export interface components {
             payload: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * ReviewFileDecision
+         * @description 模型调用前，规划器为每个 changed file 给出的明确去向。
+         * @enum {string}
+         */
+        ReviewFileDecision: "planned" | "binary" | "generated" | "unsupported" | "patch_missing" | "patch_too_large" | "rules_incomplete" | "omitted_by_budget";
+        /**
+         * ReviewFilePlan
+         * @description changed file 的唯一规划结果；非 planned 文件不会伪造 unit_key。
+         */
+        ReviewFilePlan: {
+            decision: components["schemas"]["ReviewFileDecision"];
+            /** File */
+            file: string;
+            /** Unit Key */
+            unit_key?: string | null;
         };
         /** ReviewFindingDecisionRequest */
         ReviewFindingDecisionRequest: {

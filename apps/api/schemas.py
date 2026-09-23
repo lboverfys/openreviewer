@@ -18,6 +18,7 @@ from domain.enums import (
     WorkerStatus,
 )
 from domain.repository_policy import RepositoryPolicySnapshot
+from domain.review_planning import ReviewFilePlan
 from domain.review_progress import BatchProgress
 from services.agent_settings import AgentConfigDraft, AgentSettingsView
 from services.ai_settings import (
@@ -324,6 +325,8 @@ class ReviewDetailsResponse(BaseModel):
     plan_input_bytes: int | None
     plan_rules_complete: bool | None
     plan_file_decisions: dict[str, int]
+    excluded_file_examples: tuple[ReviewFilePlan, ...] = ()
+    coverage_block_reason: str | None = None
     model_review_completed_at: datetime | None
     model_call_id: str | None
     model_provider: str | None

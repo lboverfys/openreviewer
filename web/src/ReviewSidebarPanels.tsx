@@ -37,6 +37,18 @@ export const fileDecisionLabels: Record<string, string> = {
   omitted_by_budget: "历史范围记录",
 };
 
+export function ExcludedFileExamples({ details }: { details: ReviewDetails }) {
+  const examples = details.excluded_file_examples ?? [];
+  if (!examples.length) return null;
+  const total = Object.entries(details.plan_file_decisions)
+    .filter(([decision]) => decision !== "planned")
+    .reduce((sum, [, count]) => sum + count, 0);
+  return <div className="review-excluded-files">
+    {examples.map(item => <p key={item.file}><code>{item.file}</code> · {fileDecisionLabels[item.decision] ?? item.decision}</p>)}
+    {total > examples.length && <small>这里只列出前 {examples.length} 个文件，完整数量见文件覆盖统计。</small>}
+  </div>;
+}
+
 interface ReviewSidebarProps {
   details: ReviewDetails;
   retryPending: boolean;
@@ -126,7 +138,7 @@ export function ReviewSidebar({
         {details.ci_checks.length > PAGE_SIZE && <Pagination page={ciPage} count={Math.min(PAGE_SIZE, details.ci_checks.length - (ciPage - 1) * PAGE_SIZE)} total={details.ci_checks.length} hasNext={ciPage * PAGE_SIZE < details.ci_checks.length} onPrevious={() => setCiPage(value => value - 1)} onNext={() => setCiPage(value => value + 1)} label="CI检查分页" />}
       </section>
 
-      {details.review_plan_id && <section className="review-panel review-plan-panel"><div className="review-panel-heading"><div><span className="review-eyebrow">REVIEW COVERAGE</span><h2>文件覆盖</h2></div></div><div className="review-plan-stats"><div><strong>{details.plan_file_count ?? 0}</strong><span>变更文件</span></div><div><strong>{details.plan_unit_count ?? 0}</strong><span>送入 AI</span></div><div><strong>{details.plan_rule_count ?? 0}</strong><span>规则</span></div></div><div className="review-decision-list">{Object.entries(details.plan_file_decisions).map(([decision, count]) => <div key={decision}><span>{fileDecisionLabels[decision] ?? decision}</span><strong>{count}</strong></div>)}</div><div className="review-plan-bytes">可审查输入 {formatBytes(details.plan_input_bytes)} · 超长内容自动分批</div></section>}
+      {details.review_plan_id && <section className="review-panel review-plan-panel"><div className="review-panel-heading"><div><span className="review-eyebrow">REVIEW COVERAGE</span><h2>文件覆盖</h2></div></div><div className="review-plan-stats"><div><strong>{details.plan_file_count ?? 0}</strong><span>变更文件</span></div><div><strong>{details.plan_unit_count ?? 0}</strong><span>送入 AI</span></div><div><strong>{details.plan_rule_count ?? 0}</strong><span>规则</span></div></div><div className="review-decision-list">{Object.entries(details.plan_file_decisions).map(([decision, count]) => <div key={decision}><span>{fileDecisionLabels[decision] ?? decision}</span><strong>{count}</strong></div>)}</div><ExcludedFileExamples details={details} /><div className="review-plan-bytes">可审查输入 {formatBytes(details.plan_input_bytes)} · 超长内容自动分批</div></section>}
     </aside>
   );
 }

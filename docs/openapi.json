@@ -8375,6 +8375,17 @@
             ],
             "title": "Context Fetched At"
           },
+          "coverage_block_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Block Reason"
+          },
           "coverage_status": {
             "title": "Coverage Status",
             "type": "string"
@@ -8415,6 +8426,14 @@
               "$ref": "#/components/schemas/ReviewEventResponse"
             },
             "title": "Events",
+            "type": "array"
+          },
+          "excluded_file_examples": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ReviewFilePlan"
+            },
+            "title": "Excluded File Examples",
             "type": "array"
           },
           "execution_status": {
@@ -9257,6 +9276,54 @@
           "occurred_at"
         ],
         "title": "ReviewEventResponse",
+        "type": "object"
+      },
+      "ReviewFileDecision": {
+        "description": "\u6a21\u578b\u8c03\u7528\u524d\uff0c\u89c4\u5212\u5668\u4e3a\u6bcf\u4e2a changed file \u7ed9\u51fa\u7684\u660e\u786e\u53bb\u5411\u3002",
+        "enum": [
+          "planned",
+          "binary",
+          "generated",
+          "unsupported",
+          "patch_missing",
+          "patch_too_large",
+          "rules_incomplete",
+          "omitted_by_budget"
+        ],
+        "title": "ReviewFileDecision",
+        "type": "string"
+      },
+      "ReviewFilePlan": {
+        "additionalProperties": false,
+        "description": "changed file \u7684\u552f\u4e00\u89c4\u5212\u7ed3\u679c\uff1b\u975e planned \u6587\u4ef6\u4e0d\u4f1a\u4f2a\u9020 unit_key\u3002",
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ReviewFileDecision"
+          },
+          "file": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "File",
+            "type": "string"
+          },
+          "unit_key": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Key"
+          }
+        },
+        "required": [
+          "file",
+          "decision"
+        ],
+        "title": "ReviewFilePlan",
         "type": "object"
       },
       "ReviewFindingDecisionRequest": {
