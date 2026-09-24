@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const nginxConfig = readFileSync(new URL("../nginx.conf", import.meta.url), "utf8");
+const openapi = JSON.parse(readFileSync(new URL("../../docs/openapi.json", import.meta.url), "utf8")) as {paths: Record<string, unknown>};
 
 function regexProxyLocations(config: string): RegExp[] {
   return Array.from(
@@ -95,8 +96,17 @@ describe("Nginx API allowlist", () => {
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/events",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/batches",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/excluded-files",
   ])("proxies the supported review detail route %s", (path) => {
     expect(isProxied(path)).toBe(true);
+  });
+
+  it("代理所有已公开的审查详情接口，避免后端新增接口在线上返回 404", () => {
+    const paths = Object.keys(openapi.paths).filter(path => path.startsWith("/api/v1/reviews/{review_run_id}"));
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) {
+      expect(isProxied(path.replace(/\{[^}]+\}/g, "789cd0af-e771-4fbe-a544-c36ce9592e64")), path).toBe(true);
+    }
   });
 
   it.each([
@@ -142,6 +152,7 @@ describe("Nginx API allowlist", () => {
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/unknown",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/batches/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/events/delete",
+    "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/excluded-files/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/identity/delete",
     "/api/v1/reviews/789cd0af-e771-4fbe-a544-c36ce9592e64/findings/finding-1/delete",
   ])("does not proxy the unsupported settings route %s", (path) => {
