@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const nginxConfig = readFileSync(new URL("../nginx.conf", import.meta.url), "utf8");
-const openapi = JSON.parse(readFileSync(new URL("../../docs/openapi.json", import.meta.url), "utf8")) as {paths: Record<string, unknown>};
 
 function regexProxyLocations(config: string): RegExp[] {
   return Array.from(
@@ -102,7 +102,21 @@ describe("Nginx API allowlist", () => {
   });
 
   it("代理所有已公开的审查详情接口，避免后端新增接口在线上返回 404", () => {
-    const paths = Object.keys(openapi.paths).filter(path => path.startsWith("/api/v1/reviews/{review_run_id}"));
+    const openapi = ts.createSourceFile(
+      "openapi.ts",
+      readFileSync(new URL("./generated/openapi.ts", import.meta.url), "utf8"),
+      ts.ScriptTarget.Latest,
+    );
+    const pathDeclaration = openapi.statements
+      .filter(ts.isInterfaceDeclaration)
+      .find(declaration => declaration.name.text === "paths");
+    expect(pathDeclaration).toBeDefined();
+    const paths = pathDeclaration!.members
+      .filter(ts.isPropertySignature)
+      .map(member => member.name)
+      .filter(ts.isStringLiteral)
+      .map(name => name.text)
+      .filter(path => path.startsWith("/api/v1/reviews/{review_run_id}"));
     expect(paths.length).toBeGreaterThan(0);
     for (const path of paths) {
       expect(isProxied(path.replace(/\{[^}]+\}/g, "789cd0af-e771-4fbe-a544-c36ce9592e64")), path).toBe(true);
