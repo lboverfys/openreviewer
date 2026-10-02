@@ -88,7 +88,7 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
           </div>
         </div>
       </TableCell>
-      <TableCell className="review-branch-column">
+      <TableCell className="review-branch-column" data-label="合并方向">
         {hasBranchRoute ? (
           <div className="review-branch-route" title={`${headRepository}:${review.head_ref ?? "?"} → ${baseRepository}:${review.base_ref ?? "?"}`}>
             <div className="review-branch-endpoint is-head">
@@ -105,7 +105,7 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
           <span className="review-branch-missing">历史任务未记录分支</span>
         )}
       </TableCell>
-      <TableCell>
+      <TableCell className="review-status-column" data-label="当前状态">
         <StatusBadge status={reviewDisplayStatus(review)} label={reviewDisplayLabel(review)} />
         {review.last_error && reviewDisplayStatus(review) === "failed" && (
           <small className="dash-row-error" title={review.last_error}>
@@ -113,17 +113,17 @@ function ReviewRow({ review, onOpen }: { review: ReviewItem; onOpen: (reviewRunI
           </small>
         )}
       </TableCell>
-      <TableCell className="review-result-column">
+      <TableCell className="review-result-column" data-label="审查结果">
         {review.model_review_completed_at ? <><strong>{review.finding_count} 条候选问题</strong>
           <small>{review.unreviewed_finding_count > 0 ? review.unreviewed_finding_count + " 条待核对" : "查看详情核对检查范围"}</small></>
           : <span className="is-muted">{review.execution_status === "cancelled" ? "已停止" : reviewDisplayStatus(review) === "completed" ? "旧记录未保存 AI 结果" : "尚未产出结果"}</span>}
       </TableCell>
-      <TableCell>
+      <TableCell className="review-updated-column" data-label="更新时间">
         <span className="dash-time-badge">
           {formatDate(review.updated_at)}
         </span>
       </TableCell>
-      <TableCell>
+      <TableCell className="review-action-column">
         <Button variant="outline"
           type="button"
           className="review-open-row-btn"
@@ -355,8 +355,9 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
 
         <section className="dash-hero">
           <div className="dash-hero-copy">
+            <span className="page-eyebrow">OVERVIEW <span aria-hidden="true">/</span> 审查工作空间</span>
             <h1>审查任务</h1>
-            <p>共 {snapshot?.total_reviews ?? 0} 条审查记录。打开任务查看进度、问题和处理结果。</p>
+            <p>每一处变更，都值得认真看见。跟进审查，核对证据，再决定下一步。</p>
           </div>
           <div className="dash-hero-actions">
             {canManageReviews && <Button type="button" className="dash-create-button" onClick={() => setCreatingReview(true)}><span aria-hidden="true">＋</span>管理员补录</Button>}
@@ -392,6 +393,19 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
           </div>
         </section>
 
+        <dl className="dash-overview" aria-label="审查概览">
+          <div className="dash-overview-total">
+            <dt><span>累计审查</span><span aria-hidden="true">ALL REVIEWS ↗</span></dt>
+            <dd>{snapshot ? snapshot.total_reviews.toLocaleString() : "—"}<span>条记录</span>
+              <svg className="overview-branch-art" viewBox="0 0 140 100" fill="none" aria-hidden="true"><path d="M25 5v90M105 5v30c0 25-80 25-80 50" stroke="currentColor" strokeWidth="1" /><circle cx="25" cy="24" r="7" /><circle cx="105" cy="22" r="7" /><circle cx="25" cy="83" r="7" /></svg>
+            </dd>
+            <dd className="metric-note">保留每一次审查记录。</dd>
+          </div>
+          <div><dt><span className="metric-dot is-running" />执行中</dt><dd>{snapshot ? (snapshot.status_counts.running ?? 0).toLocaleString() : "—"}</dd><dd className="metric-note">正在进行 AI 审查</dd></div>
+          <div><dt><span className="metric-dot is-queued" />队列中</dt><dd>{snapshot ? (snapshot.status_counts.queued ?? 0).toLocaleString() : "—"}</dd><dd className="metric-note">等待开始执行</dd></div>
+          <div><dt><span className="metric-dot is-completed" />AI 已结束</dt><dd>{snapshot ? (snapshot.status_counts.completed ?? 0).toLocaleString() : "—"}</dd><dd className="metric-note">处理结论请以详情为准</dd></div>
+        </dl>
+
         <section className="dash-status-filters" aria-label="任务状态筛选">
           {([["all", "全部"], ["running", "执行中"], ["awaiting_approval", "待核对"], ["awaiting_publish", "待发布"],
             ["paused", "已暂停"], ["failed", "失败"], ["cancelled", "已取消"], ["completed", "AI 已结束"]] as const).map(([value, label]) =>
@@ -399,12 +413,11 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
           {canInspectWorkers && <a href="#platform?tab=diagnostics">{loading ? "正在连接后台…" : onlineCount > 0 ? "后台可用" : "后台暂无在线节点"} →</a>}
         </section>
 
-        {/* 主区域：表格 + 右侧栏（Worker + 发起审查） */}
         <div className={`dash-columns ${canManageReviews ? "" : "is-read-only"}`}>
           <section className="dash-table-card panel-card">
             <div className="dash-table-toolbar">
               <div className="toolbar-left-group">
-                <h3>PR 审查记录</h3>
+                <span className="section-index" aria-hidden="true">01</span><h2>PR 审查记录</h2>
               </div>
 
               <div className="toolbar-right-group">
@@ -442,11 +455,11 @@ function Dashboard({ user, onSignedOut, onOpenReview }: DashboardProps) {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Pull Request</TableHead>
-                    <TableHead>合并方向</TableHead>
-                    <TableHead>当前状态</TableHead>
-                    <TableHead>审查结果</TableHead>
-                    <TableHead>更新时间</TableHead>
-                    <TableHead>操作</TableHead>
+                    <TableHead className="review-branch-column">合并方向</TableHead>
+                    <TableHead className="review-status-column">当前状态</TableHead>
+                    <TableHead className="review-result-column">审查结果</TableHead>
+                    <TableHead className="review-updated-column">更新时间</TableHead>
+                    <TableHead className="review-action-column">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

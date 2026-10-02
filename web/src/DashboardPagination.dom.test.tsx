@@ -42,6 +42,21 @@ beforeEach(() => {
 });
 afterEach(() => {cleanup(); clearSettingsCache(); vi.unstubAllGlobals();});
 
+it("审查概览复用全局快照，翻页不改变统计口径", async () => {
+  render(<DashboardPage user={user} onSignedOut={vi.fn()} onOpenReview={vi.fn()} />);
+  await screen.findByText("PR #1");
+  const overview = screen.getByLabelText("审查概览");
+  expect(overview).toHaveTextContent("13条记录");
+  fireEvent.click(within(screen.getByRole("navigation", {name: "审查任务分页"})).getByRole("button", {name: "下一页"}));
+  await screen.findByText("PR #11");
+  expect(overview).toHaveTextContent("13条记录");
+  act(() => Stream.current.emit({...snapshot, generated_at: "2026-09-12T00:00:01Z", total_reviews: 16,
+    status_counts: {running: 2, queued: 5, completed: 9}}));
+  expect(overview).toHaveTextContent("16条记录");
+  expect(Array.from(overview.querySelectorAll("dd:not(.metric-note)")).map(element => element.textContent)).toEqual(["16条记录", "2", "5", "9"]);
+  expect(screen.getByText("PR #11")).toBeInTheDocument();
+});
+
 it("任务列表显示结果状态，不把尝试次数画成完成进度", async () => {
   const modelFailure = {...review(92), execution_status: "failed", workflow_status: "failed",
     attempt_count: 0, model_attempt_count: 3};

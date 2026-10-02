@@ -1,48 +1,93 @@
-/* 登录页样式与页面一起维护，不依赖已登录工作区的外壳。 */
-.simple-login { min-height: 100dvh; display: grid; place-items: center; padding: 48px 32px; background: #f4f6fa; }
-.login-layout { display: grid; grid-template-columns: 1.08fr 1fr; width: min(1040px, 100%); min-height: 656px; overflow: hidden; background: #fff; border: 1px solid #e1e6ee; border-radius: 20px; box-shadow: 0 12px 48px -24px #0f172a30; }
-.login-intro { display: flex; flex-direction: column; padding: 44px; background: #121d36; color: #fff; }
-.login-intro .brand-name-group strong { font-size: 19px; letter-spacing: -.5px; }
-.login-intro .brand-name-group small { color: #a8b5d0; font-size: 11px; }
-.login-intro .brand-sunburst-badge { background: #5b5ce2; border-radius: 10px; box-shadow: none; }
-.login-intro-copy { margin-top: 62px; }
-.login-eyebrow { color: #b1b8ff; font-size: 12px; font-weight: 600; letter-spacing: .1em; }
-.login-intro-copy h2 { margin: 16px 0; font-size: clamp(25px, 2.8vw, 34px); line-height: 1.5; letter-spacing: -.7px; font-weight: 650; }
-.login-intro-copy p { max-width: 370px; font-size: 13px; line-height: 1.9; color: #b2bdd1; }
-.login-capabilities { display: grid; gap: 22px; margin: 34px 0 40px; padding: 0; list-style: none; }
-.login-capabilities li { display: flex; gap: 14px; align-items: flex-start; }
-.login-capabilities svg { flex-shrink: 0; width: 19px; height: 19px; margin-top: 3px; color: #9da6ff; }
-.login-capabilities strong { display: block; font-size: 13px; font-weight: 550; }
-.login-capabilities span { display: block; margin-top: 4px; font-size: 12px; color: #a8b5ca; }
-.login-intro-footer { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 20px; border-top: 1px solid #ffffff14; font-size: 11px; color: #8e9db8; }
-.login-status-dot { width: 6px; height: 6px; border-radius: 50%; background: #8e9cff; }
-.simple-login-content { align-self: center; width: 100%; min-width: 0; padding: 48px 52px; }
+.loading-card { max-width: 100%; padding: 36px 24px; }
+.simple-login { min-height: 100dvh; padding: 28px; background: #eeeee7; display: grid; place-items: center; }
+.login-layout { width: min(1440px, 100%); display: grid; grid-template-columns: 1.15fr 1fr; background: #fbfbf7; border: 1px solid #d9ddd2; border-radius: 18px; overflow: hidden; box-shadow: 0 24px 80px -44px #223a2c50; }
+.login-intro { position: relative; overflow: hidden; display: flex; flex-direction: column; padding: clamp(32px, 4.4vw, 68px); background: #183c30; color: #f4f5eb; }
+.login-intro::before { position: absolute; content: ""; pointer-events: none; inset: 0; background-image: linear-gradient(#e6f0cb05 1px, transparent 1px), linear-gradient(90deg, #e6f0cb05 1px, transparent 1px); background-size: 52px 52px; mask-image: linear-gradient(transparent, #000); }
+.login-intro > * { position: relative; }
+.login-intro .brand-logo-unit { gap: 12px; }
+.login-intro .brand-sunburst-badge { width: 40px; height: 40px; border: 1px solid #e5edc844; border-radius: 10px; color: #deedb2; background: transparent; box-shadow: none; }
+.login-intro .brand-name-group strong { color: #f4f5eb; font-size: 21px; letter-spacing: -.7px; }
+.login-intro .brand-name-group small { color: #a9bdb0; font-size: 10px; letter-spacing: .12em; }
+.login-intro-copy { margin-top: 64px; animation: editorial-enter .65s var(--ease-smooth) both; }
+.login-eyebrow { display: flex; align-items: center; gap: 9px; color: #c0ceb7; font-size: 11px; letter-spacing: .12em; }
+.login-eyebrow > span { width: 5px; height: 5px; background: #d5e99e; border-radius: 50%; }
+.login-intro-copy h2 { margin: 20px 0; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; font-size: clamp(32px, 3.5vw, 52px); line-height: 1.42; font-weight: 500; letter-spacing: -.055em; }
+.login-intro-copy h2 > span { color: #d5e99e; }
+.login-intro-copy > p { max-width: 370px; font-size: 13px; color: #b6c7ba; line-height: 1.95; }
+.login-review-art { width: 100%; max-width: 460px; margin: 36px 0 0; animation: editorial-enter .7s var(--ease-smooth) .12s both; }
+.review-art-caption { display: flex; justify-content: space-between; padding: 0 2px 12px; font-size: 10px; letter-spacing: .12em; color: #a1b7a9; }
+.review-art-caption > span:last-child { font-family: Consolas, monospace; }
+.review-art-code { border: 1px solid #e0ebc923; border-radius: 9px; background: #102c25; padding-bottom: 12px; }
+.review-art-file { display: flex; gap: 9px; align-items: center; padding: 12px 16px; margin-bottom: 9px; border-bottom: 1px solid #c8d7b218; color: #bfd2c3; font-family: Consolas, monospace; font-size: 11px; }
+.review-art-file svg { width: 14px; height: 14px; color: #d5e99e; }
+.review-art-dots { margin-left: auto; letter-spacing: .25em; }
+.review-art-line { display: flex; gap: 18px; padding: 3px 16px; font-family: Consolas, monospace; font-size: 12px; color: #b4c7b9; }
+.review-art-line > span { color: #708c7b; font-size: 10px; min-width: 16px; }
+.review-art-line code { color: inherit; }
+.review-art-line i { color: #b8bedd; font-style: normal; }
+.review-art-line em { color: #d5e99e; font-style: normal; }
+.review-art-line.is-added { background: #d5e99e09; }
+.review-art-verdict { position: relative; display: flex; align-items: center; gap: 12px; padding: 14px 16px; margin: -8px -14px 0 28px; border: 1px solid #dbe6c8; border-radius: 9px; background: #e5edce; color: #234331; box-shadow: 0 12px 32px -16px #081f20; }
+.review-art-check { display: grid; place-items: center; width: 30px; height: 30px; background: #183c30; border-radius: 50%; color: #d5e99e; flex-shrink: 0; }
+.review-art-check svg { width: 16px; height: 16px; }
+.review-art-verdict strong { display: block; font-size: 12px; font-weight: 600; }
+.review-art-verdict div > span { display: block; margin-top: 3px; color: #536d4d; font-size: 10px; }
+.review-art-arrow { margin-left: auto; font-size: 21px; }
+.login-capabilities { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin: 38px 0 36px; padding: 0; list-style: none; }
+.login-capabilities li { display: flex; gap: 9px; align-items: flex-start; }
+.login-capability-number { font-family: Consolas, monospace; font-size: 10px; color: #adc192; padding-top: 2px; }
+.login-capabilities strong { display: block; font-size: 12px; font-weight: 500; }
+.login-capabilities div > span { display: block; margin-top: 5px; font-size: 10px; color: #a6bcad; }
+.login-intro-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 20px; border-top: 1px solid #cedfb71c; color: #9fb3a4; font-size: 10px; letter-spacing: .025em; }
+.simple-login-content { position: relative; align-self: center; width: 100%; max-width: 510px; margin: 0 auto; padding: 56px clamp(30px, 4.5vw, 68px); min-width: 0; animation: editorial-enter .65s var(--ease-smooth) .08s both; }
 .login-mobile-brand { display: none; }
-.login-welcome { color: #6366c7; font-size: 12px; font-weight: 600; }
-.login-heading h1 { margin: 9px 0 10px; font-size: 25px; line-height: 1.4; font-weight: 650; letter-spacing: -.5px; color: #111c30; }
-.login-heading p { font-size: 13px; color: #718096; line-height: 1.7; }
-.auth-card { display: grid; gap: 22px; margin-top: 32px; padding: 0; background: none; border: 0; border-radius: 0; box-shadow: none; }
-.simple-login-field { display: grid; gap: 8px; font-size: 13px; font-weight: 550; color: #344256; }
-.simple-login-field [data-slot="input"] { height: 44px; padding: 10px 13px; font-size: 14px; border-radius: 7px; background: #fff; }
-.login-remember-group { display: grid; gap: 7px; }
-.simple-login-remember { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; color: #475569; line-height: 1.6; }
-.simple-login-remember input { width: 15px; height: 15px; margin-top: 2px; flex-shrink: 0; accent-color: #4f46e5; }
-.login-remember-group small { font-size: 11px; color: #8490a0; padding-left: 24px; }
-.auth-submit-btn { width: 100%; min-height: 44px; justify-content: space-between; font-size: 13px; }
-.login-message { display: flex; align-items: flex-start; gap: 8px; padding: 11px 12px; color: #b42338; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 7px; font-size: 12px; line-height: 1.6; }
-.login-message svg { flex-shrink: 0; width: 16px; height: 16px; margin-top: 2px; }
-.simple-login-note { display: flex; align-items: flex-start; gap: 9px; margin-top: 28px; padding-top: 22px; border-top: 1px solid #edf0f5; color: #8a95a5; font-size: 11px; line-height: 1.8; }
-.simple-login-note svg { width: 15px; height: 15px; margin-top: 2px; flex-shrink: 0; }
+.login-welcome { font-family: Consolas, monospace; color: #68765e; font-size: 10px; letter-spacing: .14em; }
+.login-heading h1 { margin: 16px 0 12px; font-size: clamp(25px, 2.5vw, 32px); line-height: 1.5; font-weight: 600; letter-spacing: -.06em; color: #20392d; }
+.login-heading p { font-size: 13px; color: #65705f; line-height: 1.8; }
+.auth-card { display: grid; gap: 23px; margin-top: 36px; padding: 0; background: none; border: 0; border-radius: 0; box-shadow: none; }
+.simple-login-field { display: grid; gap: 10px; font-size: 12px; font-weight: 600; color: #344a3d; }
+.simple-login-field [data-slot="input"] { height: 48px; padding: 12px 14px; font-size: 14px; border-radius: 7px; background: #fff; border-color: #d6dccf; box-shadow: 0 2px 2px #24351b02; }
+.login-remember-group { display: grid; gap: 6px; }
+.simple-login-remember { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; color: #53624f; line-height: 1.65; }
+.simple-login-remember input { width: 15px; height: 15px; margin-top: 2px; flex-shrink: 0; accent-color: #285640; }
+.login-remember-group small { padding-left: 24px; font-size: 11px; color: #65705f; }
+.auth-submit-btn { width: 100%; min-height: 48px; justify-content: space-between; font-size: 13px; border-radius: 7px; }
+.auth-submit-btn > svg { transition: transform .2s ease; }
+.auth-submit-btn:hover > svg { transform: translateX(4px); }
+.login-message { display: flex; align-items: flex-start; gap: 8px; padding: 12px; color: #b42338; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 7px; font-size: 12px; line-height: 1.6; }
+.login-message svg { width: 16px; height: 16px; margin-top: 2px; flex-shrink: 0; }
+.simple-login-note { display: flex; align-items: flex-start; gap: 9px; margin-top: 32px; padding-top: 24px; border-top: 1px solid #e2e5da; color: #65705f; font-size: 11px; line-height: 1.9; }
+.simple-login-note svg { width: 14px; height: 14px; margin-top: 3px; flex-shrink: 0; }
+@keyframes editorial-enter { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@media (min-width: 1500px) { .login-layout { min-height: 840px; } }
+@media (max-width: 1100px) {
+  .simple-login { padding: 18px; }
+  .login-intro { padding: 36px; }
+  .login-intro-copy { margin-top: 48px; }
+  .login-capabilities { gap: 8px; }
+  .login-capabilities li { display: block; }
+  .login-capability-number { display: block; margin-bottom: 5px; }
+}
 @media (max-width: 800px) {
-  .simple-login { padding: 32px 20px; }
-  .login-layout { grid-template-columns: minmax(0, 1fr); max-width: 460px; min-height: 0; }
-  .login-intro { display: none; }
-  .simple-login-content { padding: 36px; }
-  .login-mobile-brand { display: block; margin-bottom: 36px; }
+  .simple-login { padding: 28px 20px; }
+  .login-layout { grid-template-columns: minmax(0, 1fr); max-width: 480px; }
+  .login-intro { padding: 24px 30px 30px; }
+  .login-intro-copy { margin-top: 26px; }
+  .login-intro-copy h2 { margin: 14px 0 0; font-size: 32px; }
+  .login-intro-copy h2 br { display: none; }
+  .login-intro-copy > p, .login-review-art, .login-capabilities, .login-intro-footer, .login-eyebrow { display: none; }
+  .login-intro .brand-name-group small { display: none; }
+  .simple-login-content { padding: 32px 30px; }
+  .login-heading h1 { font-size: 26px; margin-top: 12px; }
+  .auth-card { margin-top: 26px; gap: 20px; }
+  .simple-login-note { margin-top: 26px; }
 }
 @media (max-width: 420px) {
-  .simple-login { padding: 20px 14px; }
+  .simple-login { padding: 12px; }
+  .login-layout { border-radius: 12px; }
+  .login-intro { padding: 22px; }
+  .login-intro-copy h2 { font-size: 27px; }
+  .login-intro-copy h2 br { display: initial; }
   .simple-login-content { padding: 28px 24px; }
-  .login-heading h1 { font-size: 23px; }
-  .login-mobile-brand { margin-bottom: 30px; }
+  .login-welcome { font-size: 9px; letter-spacing: .1em; }
 }

@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "./api";
 import App from "./App";
+import AppShell from "./AppShell";
 import PageBoundary from "./PageBoundary";
 import type { AuthUser } from "./types";
 
@@ -42,6 +43,7 @@ afterEach(() => {
   cleanup();
   window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 it("登录与权限判断后才加载页面，并保留深链接导航", async () => {
@@ -87,4 +89,26 @@ it("页面资源加载失败后展示刷新入口，不自动反复请求", asyn
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("页面加载失败"));
   expect(screen.getByRole("button", { name: "刷新页面" })).toBeEnabled();
   expect(loader).toHaveBeenCalledTimes(1);
+});
+
+it("移动导航关闭后恢复焦点与滚动，切换到桌面不会残留遮罩", () => {
+  const desktop = { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() };
+  vi.stubGlobal("matchMedia", vi.fn(() => desktop));
+  render(<AppShell user={user} view={{kind: "dashboard"}} onSignedOut={vi.fn()}><main>工作台内容</main></AppShell>);
+  const toggle = screen.getByRole("button", {name: "展开导航菜单"});
+  toggle.focus();
+  fireEvent.click(toggle);
+  expect(screen.getByRole("dialog", {name: "导航菜单"})).toHaveAttribute("aria-modal", "true");
+  expect(screen.getByRole("button", {name: "收起导航菜单"})).toHaveFocus();
+  expect(document.body.style.overflow).toBe("hidden");
+  expect(document.getElementById("workspace-content")).toHaveAttribute("inert");
+  fireEvent.keyDown(window, {key: "Escape"});
+  expect(toggle).toHaveFocus();
+  expect(document.body.style.overflow).toBe("");
+  expect(document.getElementById("workspace-content")).not.toHaveAttribute("inert");
+  fireEvent.click(toggle);
+  act(() => { desktop.matches = true; desktop.addEventListener.mock.calls.at(-1)![1](); });
+  expect(screen.queryByRole("dialog", {name: "导航菜单"})).not.toBeInTheDocument();
+  expect(document.body.style.overflow).toBe("");
+  expect(desktop.removeEventListener).toHaveBeenCalledTimes(2);
 });
