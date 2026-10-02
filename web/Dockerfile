@@ -22,6 +22,7 @@ RUN npm run typecheck \
 FROM nginx:1.30.4-alpine3.24-slim
 
 RUN apk upgrade --no-cache \
+    && apk add --no-cache "pcre2>=10.49-r0" \
     && rm -f /etc/nginx/conf.d/default.conf \
     && mkdir -p /tmp/nginx/client_temp /tmp/nginx/proxy_temp \
     && mkdir -p /etc/nginx/tls \
