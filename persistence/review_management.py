@@ -124,7 +124,7 @@ class SqlAlchemyReviewManagementRepository(ReviewManagementRepository):
         return _store_retry._prepare_stage_retry(session, run, task, plan, target_stage)
 
     @staticmethod
-    def _prepare_failed_node_retry(session: Session, run: ReviewRunRecord, task: ReviewTaskRecord, plan: ReviewPlanRecord | None, *, agent: str | None, batch_number: int | None, now: datetime) -> None:
+    def _prepare_failed_node_retry(session: Session, run: ReviewRunRecord, task: ReviewTaskRecord, plan: ReviewPlanRecord | None, *, agent: str | None, batch_number: int | None, now: datetime) -> dict[str, object]:
         return _store_retry._prepare_failed_node_retry(session, run, task, plan, agent=agent, batch_number=batch_number, now=now)
 
     @staticmethod

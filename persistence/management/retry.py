@@ -2,11 +2,12 @@
 
 from datetime import datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from domain.enums import ExecutionStatus, ModelBatchStatus, ReviewAgent
-from persistence.management.common import _as_utc, _latest_summary_failed
+from persistence.management.common import _as_utc, _latest_summary_failed, _required_utc
+from persistence.management.retry_configuration import retry_impacts
 from persistence.models import (
     ModelCallRecord,
     ModelReviewBatchRecord,
@@ -107,19 +108,19 @@ def _prepare_failed_node_retry(
     agent: str | None,
     batch_number: int | None,
     now: datetime,
-) -> None:
-    """只恢复失败/未完成批次，保留所有成功批次和 Finding。
+) -> dict[str, object]:
+    """按当前配置补跑失败节点，配置变化时重建该 Agent 的全部批次。
 
-    失败节点重试必须与阶段重试区分：阶段重试会清理后续产物，而这里仅
-    对目标 Agent/批次做一次有界读取和一次批量 UPDATE。没有已持久化批次
-    时也允许继续，让 Worker 首次规划该 Agent；这覆盖了请求在批次表写入
-    前失败的情况。
+    配置一致时批量恢复未完成批次；配置改变时只重建目标 Agent，并使旧汇总
+    失效。没有已持久化批次时也允许继续，让 Worker 首次规划失败的 Agent。
     """
 
     if plan is None:
         raise ReviewActionConflictError("失败节点重试需要已有审查计划")
     if run.coverage_status == "stale" and not run.snapshot_review:
         raise ReviewActionConflictError("该任务已被新提交替代")
+    if task.execution_status == ExecutionStatus.RUNNING.value and task.lease_owner is not None and task.lease_expires_at is not None and _required_utc(task.lease_expires_at, "lease_expires_at") > _required_utc(now, "now"):
+        raise ReviewActionConflictError("任务正在执行，请等待其完成后重试")
     summary_retry = agent == ReviewAgent.SUMMARY.value and batch_number is None
     summary_failed = _latest_summary_failed(session, run.id)
     if agent == ReviewAgent.SUMMARY.value and batch_number is not None:
@@ -161,22 +162,30 @@ def _prepare_failed_node_retry(
         and (agent is None or agent == ReviewAgent.SUMMARY.value)
         and not selected
     )
-    unplanned_failure = False
-    if agent in {"security", "convention", "logic"} and batch_number is None and not any(row.agent == agent for row in rows):
-        last = session.execute(select(OutboxEventRecord.event_type, OutboxEventRecord.payload).where(
-            OutboxEventRecord.aggregate_type == "review_run",
-            OutboxEventRecord.aggregate_id == run.id,
-            OutboxEventRecord.payload["agent"].as_string() == agent,
-            OutboxEventRecord.event_type.in_(("review.model.agent_failed", "review.model.agent_completed", "review.model.agent_not_applicable", "review.model.agent_started")),
-        ).order_by(OutboxEventRecord.occurred_at.desc(), OutboxEventRecord.id.desc()).limit(1)).one_or_none()
-        unplanned_failure = bool(last and last.event_type == "review.model.agent_failed"
-            and last.payload.get("status") == "failed"
-            and last.payload.get("model_attempt_count") == task.model_attempt_count)
-    if not selected and rows and not summary_only_retry and not unplanned_failure:
+    ranked = select(OutboxEventRecord.event_type, OutboxEventRecord.payload,
+        func.row_number().over(partition_by=OutboxEventRecord.payload["agent"].as_string(),
+            order_by=(OutboxEventRecord.occurred_at.desc(), OutboxEventRecord.id.desc())).label("position")
+    ).where(OutboxEventRecord.aggregate_id == run.id,
+        OutboxEventRecord.event_type.in_(("review.model.agent_failed", "review.model.agent_completed",
+            "review.model.agent_not_applicable", "review.model.agent_started"))).subquery()
+    failed_agents = {payload["agent"] for event_type, payload in session.execute(
+        select(ranked.c.event_type, ranked.c.payload).where(ranked.c.position == 1).limit(4))
+        if event_type == "review.model.agent_failed" and payload.get("status") == "failed"
+        and payload.get("model_attempt_count", task.model_attempt_count) == task.model_attempt_count
+        and payload.get("agent") in {"security", "convention", "logic"}}
+    target_agents = ({agent} if agent is not None else failed_agents | {row.agent for row in selected})
+    agent_failure = bool(target_agents & failed_agents) and batch_number is None
+    summary_only_retry = summary_only_retry and not agent_failure
+    if not selected and rows and not summary_only_retry and not agent_failure:
         raise ReviewActionConflictError("指定节点没有可重试的失败批次")
+    impacts = retry_impacts(session, plan.id, tuple(sorted(target_agents)))
+    restarted_agents = {name for name, impact in impacts.items() if impact.restart}
     live_running = []
     now_utc = _as_utc(now)
-    for row in selected:
+    selected_row_ids = {row.id for row in selected}
+    for row in rows:
+        if row.id not in selected_row_ids and row.agent not in restarted_agents:
+            continue
         lease_expires_at = row.lease_expires_at
         normalized_expires_at = (
             _as_utc(lease_expires_at) if lease_expires_at is not None else None
@@ -190,7 +199,13 @@ def _prepare_failed_node_retry(
             live_running.append(row)
     if live_running:
         raise ReviewActionConflictError("指定批次正在执行，请等待其完成")
-    selected_ids = tuple(row.id for row in selected)
+    if restarted_agents:
+        _prepare_stage_retry(session, run, task, plan, ExecutionStatus.AGGREGATING)
+        session.execute(delete(ModelReviewBatchRecord).where(
+            ModelReviewBatchRecord.review_plan_id == plan.id,
+            ModelReviewBatchRecord.agent.in_(restarted_agents),
+        ).execution_options(synchronize_session=False))
+    selected_ids = tuple(row.id for row in selected if row.agent not in restarted_agents)
     if selected_ids:
         session.execute(
             update(ModelReviewBatchRecord)
@@ -213,8 +228,12 @@ def _prepare_failed_node_retry(
             )
             .execution_options(synchronize_session=False)
         )
-    if summary_only_retry:
-        plan.model_review_completed_at = None
+    # 上游变化后汇总输入已失效；前三路中不在本次恢复范围的成功批次保留。
+    session.execute(delete(ModelReviewBatchRecord).where(
+        ModelReviewBatchRecord.review_plan_id == plan.id,
+        ModelReviewBatchRecord.agent == ReviewAgent.SUMMARY.value,
+    ).execution_options(synchronize_session=False))
+    plan.model_review_completed_at = None
     task.execution_status = ExecutionStatus.READY_FOR_REVIEW.value
     task.workflow_status = ExecutionStatus.AGENT_BATCHES.value
     task.workflow_paused_from = None
@@ -235,6 +254,13 @@ def _prepare_failed_node_retry(
     # 只有确实存在失败/未完成批次时才显示部分覆盖。
     run.coverage_status = "complete" if summary_only_retry else "partial"
     run.updated_at = now
+    previous_profile = (run.repository_policy or {}).get("review_profile_id")
+    if previous_profile is not None:
+        run.repository_policy = {**(run.repository_policy or {}), "review_profile_id": None}
+    return {"configuration_source": "current", "previous_review_profile_id": previous_profile,
+        "target_agents": sorted(target_agents),
+        "restarted_agents": sorted(restarted_agents),
+        "retry_impacts": {name: impact.model_dump(mode="json") for name, impact in impacts.items()}}
 
 
 def _paused_execution_status(

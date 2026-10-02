@@ -66,6 +66,7 @@ def _latest_summary_failed(session: Session, review_run_id: str) -> bool:
             OutboxEventRecord.event_type.in_(
                 (
                     "review.model.summary_completed",
+                    "review.model.summary_failed",
                     "review.model.summary_skipped",
                 )
             ),
@@ -80,7 +81,7 @@ def _latest_summary_failed(session: Session, review_run_id: str) -> bool:
         return False
     event_type, payload = row
     return (
-        event_type == "review.model.summary_completed"
+        event_type in {"review.model.summary_completed", "review.model.summary_failed"}
         and isinstance(payload, dict)
         and payload.get("agent_status") == "failed"
     )
@@ -132,6 +133,7 @@ def _project_agent_progress(
     attempts = [
         value
         for event in events
+        if event.event_type != "review.model.retry_requested"
         for value in (event.payload.get("model_attempt_count"),)
         if isinstance(value, int) and not isinstance(value, bool)
     ]
@@ -220,6 +222,20 @@ def _project_agent_progress(
         ):
             if statuses.get(agent) not in {"completed", "failed"}:
                 statuses[agent] = "running"
+    requested = next((event for event in reversed(events) if event.event_type == "review.model.retry_requested"), None)
+    requested_attempt = requested.payload.get("model_attempt_count") if requested else None
+    if requested is not None and isinstance(requested_attempt, int) and requested_attempt > (latest_attempt or 0):
+        targets = requested.payload.get("target_agents")
+        if isinstance(targets, list):
+            for target in targets:
+                if isinstance(target, str) and target in statuses:
+                    statuses[target] = "planned"
+                    failed_agents.discard(target)
+                    summaries.pop(target, None)
+            failed_batches = {key: value for key, value in failed_batches.items() if key[0] not in targets}
+            statuses["summary"] = "not_executed"
+            summary_status = "not_executed"
+            aggregation_status = "not_started"
     if summary_status == "not_executed" and model_completed:
         summary_status = "skipped"
     if aggregation_status == "not_started" and model_completed:

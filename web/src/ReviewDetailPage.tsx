@@ -13,6 +13,8 @@ import RetrievalTracePanel from "./RetrievalTracePanel";
 import StaticAnalysisPanel from "./StaticAnalysisPanel";
 import SnapshotReviewDialog from "./SnapshotReviewDialog";
 import CoverageFilesDialog from "./CoverageFilesDialog";
+import ReviewRetryDialog from "./ReviewRetryDialog";
+import type { RetryTargetStage } from "./ReviewRetryDialog";
 import {
   DetailIcon,
   ModelBatchPanel,
@@ -80,7 +82,6 @@ const actionLabels: Record<ReviewAction, string> = {
   review_snapshot: "复查此版本",
 };
 
-type RetryTargetStage = "ci" | "planning" | "agent_batches" | "aggregating";
 type ReviewDetailTab = "overview" | "agents" | "findings" | "logs";
 type ReviewEventFilter = "all" | "model" | "workflow" | "errors";
 
@@ -93,26 +94,6 @@ const terminalReviewStatuses = new Set([
   "cancelled",
   "superseded",
 ]);
-
-const retryTargetOptions: ReadonlyArray<[RetryTargetStage, string]> = [
-  ["ci", "CI 检查"],
-  ["planning", "审查规划"],
-  ["agent_batches", "三路 Agent"],
-  ["aggregating", "结果汇总"],
-];
-
-function retryStageNotice(targetStage: RetryTargetStage): string {
-  switch (targetStage) {
-    case "ci":
-      return "将清理 CI 之后的规划、Agent 批次、Finding 和汇总结果；保留任务身份、提交 SHA 与审计日志。";
-    case "planning":
-      return "将清理当前规划及后续 Agent 批次、Finding 和汇总结果；保留任务身份、CI 结果、提交 SHA 与审计日志。";
-    case "agent_batches":
-      return "将清理全部模型批次、模型 Finding 与汇总结果；保留任务身份、CI 结果、审查计划、提交 SHA 与审计日志。";
-    case "aggregating":
-      return "将清理当前汇总快照；保留安全、规范、逻辑 Agent 的成功批次，Finding 会在重试时由这些批次重新生成，并保留任务身份及审计日志。";
-  }
-}
 
 const actionIcons: Record<ReviewAction, string> = {
   start: "▶",
@@ -232,6 +213,8 @@ function ReviewDetailPage({
   const [findingBusy, setFindingBusy] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [retryTargetStage, setRetryTargetStage] = useState<RetryTargetStage>("agent_batches");
+  const [retryDialog, setRetryDialog] = useState<{ action: ReviewAction; agent?: string; batchNumber?: number } | null>(null);
+  useEffect(() => setRetryDialog(null), [reviewRunId]);
   const [findingSeverity, setFindingSeverity] = useState("all");
   const [findingStatus, setFindingStatus] = useState("all");
   const [findingQuery, setFindingQuery] = useState("");
@@ -373,15 +356,17 @@ function ReviewDetailPage({
     [details],
   );
 
-  async function runAction(action: ReviewAction, acknowledgeExclusions = false) {
-    if (!details || !allowedReviewActions(user, [action]).length) return;
+  async function runAction(action: ReviewAction, acknowledgeExclusions = false, retryConfirmed = false) {
+    if (!details || actionBusy !== null || !allowedReviewActions(user, [action]).length) return;
+    if (!retryConfirmed && (action === "retry_stage" || ((action === "retry_failed_node" || action === "retry") && Object.values(details.retry_impacts ?? {}).some(item => item.restart)))) {
+      setActionError(""); setRetryDialog({ action }); return;
+    }
     if (action === "cancel" && !window.confirm("取消后停止后续执行并保留已有记录。已发出的模型请求无法撤回，可能仍会计费。确定取消吗？")) return;
     if (action === "approve" && details.coverage_requires_acknowledgement && !acknowledgeExclusions) {
       setActionError(""); setCoverageDialogOpen(true); return;
     }
     if (action === "approve" && !acknowledgeExclusions && !window.confirm("批准后才会开放人工 GitHub 发布，继续吗？")) return;
     if (action === "reject" && !window.confirm("确定驳回本次审查结果吗？")) return;
-    if (action === "retry_stage" && !window.confirm(`${retryStageNotice(retryTargetStage)}\n\n确定从${retryTargetOptions.find(([value]) => value === retryTargetStage)?.[1] ?? "所选阶段"}重新审查吗？`)) return;
     if (action === "publish" && !window.confirm("确定把已批准结果人工发布到 GitHub 吗？")) return;
     if ((action === "rerun" || action === "new_review") && !window.confirm(`将先从 GitHub 读取这个 PR 的最新提交，再创建一条新的审查记录，当前任务和结果不会被覆盖。继续吗？`)) return;
     setActionBusy(action);
@@ -421,6 +406,7 @@ function ReviewDetailPage({
       );
       if (action === "review_snapshot") setSnapshotDialogOpen(false);
       if (action === "approve") setCoverageDialogOpen(false);
+      setRetryDialog(null);
       if ((action === "rerun" || action === "new_review" || action === "review_snapshot") && result.review_run_id !== details.review_run_id) {
         onOpenReview(result.review_run_id);
       } else {
@@ -437,8 +423,11 @@ function ReviewDetailPage({
     }
   }
 
-  async function retryNode(agent: string, batchNumber?: number) {
+  async function retryNode(agent: string, batchNumber?: number, retryConfirmed = false) {
     if (!details || !canManageReviews || actionBusy !== null) return;
+    if (!retryConfirmed && details.retry_impacts?.[agent]?.restart) {
+      setActionError(""); setRetryDialog({ action: "retry_failed_node", agent, batchNumber }); return;
+    }
     const action = "retry_failed_node" as ReviewAction;
     setActionBusy(action);
     setActionError("");
@@ -460,6 +449,7 @@ function ReviewDetailPage({
           headSha: details.head_sha,
         },
       );
+      setRetryDialog(null);
       await loadDetails();
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
@@ -668,7 +658,7 @@ function ReviewDetailPage({
           </div>
         </div>
         {error && <Notice kind="error" onDismiss={() => setError("")}>{error}</Notice>}
-        {actionError && <Notice onDismiss={() => setActionError("")}>{actionError}</Notice>}
+        {actionError && !retryDialog && <Notice onDismiss={() => setActionError("")}>{actionError}</Notice>}
         <section className={`review-hero review-hero-${details.phase}`}>
           <div className="review-hero-copy">
             <div className="review-hero-kicker"><span className="review-hero-pulse" />{details.repository} · PR #{details.pull_request_number}</div>
@@ -747,12 +737,13 @@ function ReviewDetailPage({
                 >
                   <DetailIcon>{actionIcons[action]}</DetailIcon>{actionBusy === action ? "处理中…" : action === "expedite" && retryPending ? "立即重试" : actionLabels[action]}
                 </Button>
-                {action === "retry_failed_node" && <small>不会重复调用已成功的模型请求</small>}
-                {action === "retry" && <small>{details.coverage_status === "partial" ? "保留已经成功的批次" : "重新执行 AI 阶段，可能再次产生费用"}</small>}
+                {action === "retry_failed_node" && <small>使用当前配置；配置变化时重跑对应节点</small>}
+                {action === "retry" && <small>{details.coverage_status === "partial" ? "使用当前配置补跑失败节点" : "重新执行 AI 阶段，可能再次产生费用"}</small>}
                 {(action === "new_review" || action === "rerun") && <small>创建新记录，不覆盖当前任务</small>}
                 {action === "review_snapshot" && <small>使用已保存代码，另存检查结果</small>}
               </div>
             )) : <span className="review-no-actions">当前节点无需手动操作</span>}
+            {availableActions.includes("retry_stage") && <Button variant="outline" type="button" className="review-advanced-retry" disabled={actionBusy !== null} onClick={() => void runAction("retry_stage")}>重新执行…</Button>}
           </div>
         </section>
 
@@ -761,14 +752,11 @@ function ReviewDetailPage({
           capture={captureModelOutputs} onCaptureChange={setCaptureModelOutputs} busy={actionBusy !== null} onError={handleTrialError}
           onConfirm={() => void runAction("review_snapshot")} />
 
-        {availableActions.includes("retry_stage") && <DetailDialog className="review-advanced-actions">
-          <summary>高级重试：从指定步骤重新执行</summary>
-          <label className="review-retry-target">重审起点<NativeSelect value={retryTargetStage} disabled={actionBusy !== null}
-            onChange={event => setRetryTargetStage(event.target.value as RetryTargetStage)}>
-            {retryTargetOptions.filter(([value]) => !details.snapshot_review || value !== "ci").map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </NativeSelect></label>
-          <p>{retryStageNotice(retryTargetStage)}</p><Button variant="outline" type="button" disabled={actionBusy !== null} onClick={() => void runAction("retry_stage")}>从所选步骤重试</Button>
-        </DetailDialog>}
+        <ReviewRetryDialog open={retryDialog !== null} onClose={() => {setRetryDialog(null); setActionError("");}}
+          details={details} stage={retryTargetStage} onStageChange={setRetryTargetStage} agent={retryDialog?.agent}
+          stageRetry={retryDialog?.action === "retry_stage"} busy={actionBusy !== null} error={actionError}
+          onConfirm={() => {if (retryDialog?.agent) void retryNode(retryDialog.agent, retryDialog.batchNumber, true);
+            else if (retryDialog) void runAction(retryDialog.action, false, true);}} />
         {details.snapshot_review && <section className="review-snapshot-banner"><strong>历史版本复查</strong>
           本次分析已保存的提交 {shortSha(details.head_sha)}，使用当前审查配置。不会重新运行 CI 或发布到 GitHub，原任务与结果保留。
         </section>}

@@ -313,6 +313,7 @@ class ModelReviewResult(ModelContract):
     provenance: ReviewExecutionProvenance | None = None
     reused_from_run_id: str | None = Field(default=None, max_length=36)
     reused_input_tokens: int = Field(default=0, ge=0)
+    configuration_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_status_shape(self) -> Self:

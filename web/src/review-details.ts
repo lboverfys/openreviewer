@@ -247,7 +247,9 @@ function latestAgentEvents(
   agent: ReviewAgentKey,
 ): ReviewEvent[] {
   const matching = currentReviewEvents(events).filter((event) => (
-    event.event_type.startsWith("review.model.") && eventAgent(event) === agent
+    event.event_type.startsWith("review.model.") && (eventAgent(event) === agent
+      || (event.event_type === "review.model.retry_requested"
+        && (agent === "summary" || stringArrayPayload(event, "target_agents").includes(agent))))
   ));
   if (matching.length === 0) return [];
   const attempts = matching
@@ -398,7 +400,7 @@ export function agentProgress(events: ReviewEvent[], agent: ReviewAgentKey, summ
             ? "failed"
             : scoped.some((event) => event.event_type === "review.model.request_started")
               ? "running"
-              : planned
+              : planned || scoped.some(event => event.event_type === "review.model.retry_requested")
                 ? "planned"
                 : scoped.some(event => event.event_type === "review.model.agent_started")
                   ? "preparing" : "waiting";

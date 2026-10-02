@@ -19,7 +19,7 @@ from domain.enums import (
 )
 from domain.repository_policy import RepositoryPolicySnapshot
 from domain.review_planning import ReviewFilePlan
-from domain.review_progress import BatchProgress
+from domain.review_progress import AgentRetryImpact, BatchProgress
 from services.agent_settings import AgentConfigDraft, AgentSettingsView
 from services.ai_settings import (
     AiProviderDraft,
@@ -372,6 +372,7 @@ class ReviewDetailsResponse(BaseModel):
     agent_statuses: dict[str, str] = Field(default_factory=dict)
     agent_summaries: dict[str, dict[str, object]] = Field(default_factory=dict)
     batch_progress: dict[str, BatchProgress] = Field(default_factory=dict)
+    retry_impacts: dict[str, AgentRetryImpact] = Field(default_factory=dict)
     aggregation_status: str = "not_started"
     summary_status: str = "not_executed"
     partial_result: bool = False

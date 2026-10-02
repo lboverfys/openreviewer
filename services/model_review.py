@@ -41,6 +41,7 @@ from domain.model_review import (
 )
 from domain.retrieval import ContextEvidence
 from domain.review_planning import RepositoryRule, ReviewUnit, ordered_review_units
+from domain.security import ErrorCode, SafeApplicationError, SafeError
 from services.token_estimation import (
     estimate_prompt_input_tokens,
     estimated_utf8_bytes_per_token,
@@ -1044,6 +1045,46 @@ def plan_model_review_batches(
     )
 
 
+def model_configuration(settings: ModelServiceSettings) -> dict[str, str]:
+    """只比较影响结果及分批的配置；更换凭据、价格或超时不使成功结果失效。"""
+    prompt = StructuredReviewPromptBuilder(settings.prompt_snapshot)
+    identity = {
+        "provider": settings.provider.value,
+        "api_protocol": settings.resolved_api_protocol.value,
+        "model": settings.model,
+        "base_url": settings.resolved_api_base_url,
+        "reasoning_effort": settings.reasoning_effort.value,
+        "context_window_tokens": settings.context_window_tokens,
+        "max_output_tokens": settings.max_output_tokens,
+        "max_batch_input_tokens": settings.max_batch_input_tokens,
+        "prompt_content_sha256": prompt.content_sha256,
+    }
+    return {
+        "provider": settings.provider.value,
+        "api_protocol": settings.resolved_api_protocol.value,
+        "model": settings.model,
+        "prompt_version": PROMPT_VERSION,
+        "prompt_content_sha256": prompt.content_sha256,
+        "configuration_fingerprint": sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "reasoning_effort": settings.reasoning_effort.value,
+        "context_window_tokens": str(settings.context_window_tokens),
+        "max_batch_input_tokens": str(settings.max_batch_input_tokens),
+    }
+
+
+def model_configuration_matches(result: Mapping[str, object], configuration: Mapping[str, str]) -> bool:
+    if any(result.get(key) != configuration[key] for key in ("provider", "api_protocol", "model", "prompt_version")):
+        return False
+    fingerprint = result.get("configuration_fingerprint")
+    if fingerprint is not None:
+        return fingerprint == configuration["configuration_fingerprint"]
+    provenance = result.get("provenance")
+    # 历史批次没有完整配置指纹，仍核对已经保存的模型和提示词信息。
+    return not isinstance(provenance, dict) or not provenance.get("prompt_content_sha256") or provenance["prompt_content_sha256"] == configuration["prompt_content_sha256"]
+
+
 def combine_model_review_results(
     review_input: ModelReviewInput,
     results: tuple[ModelReviewResult, ...],
@@ -1067,10 +1108,17 @@ def combine_model_review_results(
         or result.api_protocol is not first.api_protocol
         or result.model != first.model
         or result.prompt_version != first.prompt_version
+        or (result.configuration_fingerprint is not None and first.configuration_fingerprint is not None
+            and result.configuration_fingerprint != first.configuration_fingerprint)
         or result.status is not ModelCallStatus.SUCCEEDED
         for result in results
     ):
-        raise ValueError("model batch results do not share one successful configuration")
+        raise SafeApplicationError(SafeError(
+            code=ErrorCode.MODEL_CONFIGURATION_CHANGED,
+            safe_message="批次使用的模型或提示词配置不一致，无法合并。请使用当前配置重跑该审查节点的全部批次。",
+            retryable=False,
+            details={"failure_stage": "result_merge", "recovery_action": "retry_failed_node"},
+        ))
     units_by_key = {unit.unit_key: unit for unit in review_input.units}
     candidates_by_identity: dict[str, ModelFindingCandidate] = {}
     for result in results:
@@ -1130,6 +1178,7 @@ def combine_model_review_results(
         provider=first.provider,
         api_protocol=first.api_protocol,
         model=first.model,
+        configuration_fingerprint=first.configuration_fingerprint,
         status=ModelCallStatus.SUCCEEDED,
         prompt_version=first.prompt_version,
         request_fingerprint=combined_fingerprint,

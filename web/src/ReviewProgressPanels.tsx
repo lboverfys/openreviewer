@@ -109,7 +109,8 @@ export function ModelBatchPanel({
                     ? "已规划"
                     : progress.status === "preparing" ? "准备输入"
                     : "等待开始";
-          const displayStatusLabel = stopped && progress.status !== "completed" && !programSummary ? details.phase === "paused" ? "已暂停" : "已停止" : progress.status === "failed"
+          const mergeFailed = progress.status === "failed" && completeCount > 0 && completeCount === progress.batchCount;
+          const displayStatusLabel = stopped && progress.status !== "completed" && !programSummary ? details.phase === "paused" ? "已暂停" : "已停止" : mergeFailed ? "结果合并失败" : progress.status === "failed"
             && completeCount > 0
             ? "部分完成"
             : statusLabel;
@@ -159,8 +160,9 @@ export function ModelBatchPanel({
               )}
               {progress.errorMessage && progress.status === "failed" && (
                 <div className="review-agent-error">
-                  <strong>{progress.errorCode ? `错误码 ${progress.errorCode}` : "Agent 执行失败"}</strong>
+                  <strong>{mergeFailed ? "批次已完成，结果合并失败" : "审查节点执行失败"}</strong>
                   <p>{progress.errorMessage}</p>
+                  {progress.errorCode && <small>错误码：{progress.errorCode}</small>}
                 </div>
               )}
               {progress.status === "not_executed" && key === "summary" && (
@@ -181,7 +183,7 @@ export function ModelBatchPanel({
               {progress.status === "failed"
                 && onRetry
                 && canRetry
-                && (key === "summary" || progress.batchCount === 0 || failedCount > 1) && (
+                && (mergeFailed || key === "summary" || progress.batchCount === 0 || failedCount > 1) && (
                   <Button variant="outline"
                     type="button"
                     className="review-agent-retry-btn"
@@ -190,7 +192,7 @@ export function ModelBatchPanel({
                   >
                     {retryBusy
                       ? "处理中…"
-                      : key === "summary"
+                      : details.retry_impacts?.[key]?.restart ? `重跑${label}` : key === "summary"
                         ? "重试汇总"
                         : failedCount > 1
                           ? `重试失败批次（${failedCount}）`

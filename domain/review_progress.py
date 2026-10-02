@@ -16,6 +16,14 @@ class BatchProgress(BaseModel):
     duration_ms: int | None = None
 
 
+class AgentRetryImpact(BaseModel):
+    agent: str
+    model: str
+    previous_models: tuple[str, ...] = ()
+    batch_count: int
+    restart: bool
+
+
 class BatchSnapshot(BaseModel):
     batch_number: int
     status: str

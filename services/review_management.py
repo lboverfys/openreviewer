@@ -15,7 +15,8 @@ from domain.pagination import CursorPage
 from domain.repository_policy import RepositoryPolicySnapshot
 from domain.review_coverage import ReviewCoverage
 from domain.review_planning import ReviewFilePlan
-from domain.review_progress import BatchProgress, BatchSnapshot
+from domain.review_progress import AgentRetryImpact, BatchProgress, BatchSnapshot
+from domain.workflow import can_retry_stage
 from services.rbac import ResourceScope
 from services.task_queue import ReviewTarget
 
@@ -326,6 +327,7 @@ class StoredReviewDetails:
     failed_agents: tuple[str, ...] = ()
     failed_batches: tuple[Mapping[str, object], ...] = ()
     batch_progress: Mapping[str, BatchProgress] = field(default_factory=dict)
+    retry_impacts: Mapping[str, AgentRetryImpact] = field(default_factory=dict)
     repository_policy: RepositoryPolicySnapshot | None = None
     model_request_count: int | None = None
     snapshot_review: bool = False
@@ -915,7 +917,7 @@ class ReviewManagementService:
         ):
             return (
                 ReviewAction.RETRY_FAILED_NODE,
-                ReviewAction.RETRY_STAGE,
+                *((ReviewAction.RETRY_STAGE,) if can_retry_stage(status, item.execution_status) else ()),
                 ReviewAction.NEW_REVIEW,
             )
         if status is ExecutionStatus.FAILED:

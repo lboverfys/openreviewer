@@ -71,11 +71,18 @@ class WorkflowTransition:
     target_stage: ExecutionStatus | None = None
 
 
+def can_retry_stage(current: ExecutionStatus, execution_status: ExecutionStatus | None = None) -> bool:
+    return current in {ExecutionStatus.FAILED, ExecutionStatus.REJECTED, ExecutionStatus.AWAITING_APPROVAL} or (
+        execution_status is ExecutionStatus.FAILED and current in RETRYABLE_STAGES
+    )
+
+
 def transition(
     current: ExecutionStatus,
     action: WorkflowAction,
     *,
     target_stage: ExecutionStatus | None = None,
+    execution_status: ExecutionStatus | None = None,
 ) -> WorkflowTransition:
     """计算一次人工或编排动作的目标节点，不访问数据库或外部服务。"""
 
@@ -95,11 +102,7 @@ def transition(
             raise WorkflowTransitionError("继续目标节点无效")
         return WorkflowTransition(current, stage, action, stage)
     if action is WorkflowAction.RETRY_STAGE:
-        if current not in {
-            ExecutionStatus.FAILED,
-            ExecutionStatus.REJECTED,
-            ExecutionStatus.AWAITING_APPROVAL,
-        }:
+        if not can_retry_stage(current, execution_status):
             raise WorkflowTransitionError("当前节点不能重试")
         stage = target_stage or ExecutionStatus.AGENT_BATCHES
         if stage not in RETRYABLE_STAGES:

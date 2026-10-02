@@ -11,6 +11,42 @@
         "title": "AccessRole",
         "type": "string"
       },
+      "AgentRetryImpact": {
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "batch_count": {
+            "title": "Batch Count",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "previous_models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous Models",
+            "type": "array"
+          },
+          "restart": {
+            "title": "Restart",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent",
+          "model",
+          "batch_count",
+          "restart"
+        ],
+        "title": "AgentRetryImpact",
+        "type": "object"
+      },
       "AiAgentEnabledRequest": {
         "additionalProperties": false,
         "properties": {
@@ -9102,6 +9138,13 @@
                 "type": "null"
               }
             ]
+          },
+          "retry_impacts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AgentRetryImpact"
+            },
+            "title": "Retry Impacts",
+            "type": "object"
           },
           "review_conclusion": {
             "anyOf": [

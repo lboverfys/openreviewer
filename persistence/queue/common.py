@@ -84,6 +84,7 @@ def _latest_summary_failed(session: Session, review_run_id: str) -> bool:
             OutboxEventRecord.event_type.in_(
                 (
                     "review.model.summary_completed",
+                    "review.model.summary_failed",
                     "review.model.summary_skipped",
                 )
             ),
@@ -98,7 +99,7 @@ def _latest_summary_failed(session: Session, review_run_id: str) -> bool:
         return False
     event_type, payload = row
     return (
-        event_type == "review.model.summary_completed"
+        event_type in {"review.model.summary_completed", "review.model.summary_failed"}
         and isinstance(payload, dict)
         and payload.get("agent_status") == "failed"
     )

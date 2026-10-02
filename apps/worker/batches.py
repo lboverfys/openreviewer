@@ -28,6 +28,8 @@ from services.model_review import (
     ModelReviewer,
     ModelServiceSettings,
     combine_model_review_results,
+    model_configuration,
+    model_configuration_matches,
     plan_model_review_batches,
     remap_model_review_result,
 )
@@ -145,6 +147,35 @@ class _PersistentBatchedReviewer:
 
     def _review_batches(self, review_input: ModelReviewInput) -> ModelReviewResult:
         _raise_if_lease_lost(self._lease_cursor)
+        saved_loader = getattr(self._queue, "load_model_batches", None)
+        saved_batches = saved_loader(self._lease_cursor.lease, agent=self._agent.value) if saved_loader else ()
+        if (saved_batches and len(saved_batches) == saved_batches[0].batch_count
+                and all(item.status.value == "succeeded" and item.result is not None for item in saved_batches)):
+            # 不在本次重试范围的完整 Agent 保持原结果；不能按新配置重新切片。
+            restored = []
+            for item in saved_batches:
+                result = item.result
+                assert result is not None
+                self._queue.record_model_progress(self._lease_cursor.lease, "batch_completed", {
+                    "agent": self._agent.value, "batch_number": item.batch_number,
+                    "batch_count": item.batch_count, "resumed": True,
+                    "input_tokens": result.usage.total_input_tokens, "output_tokens": result.usage.output_tokens,
+                    "reasoning_tokens": result.usage.reasoning_output_tokens, "duration_ms": result.duration_ms,
+                    "finding_count": len(result.output.findings), "provider_request_id": result.provider_request_id,
+                }, agent=self._agent.value)
+                restored.append(result)
+            return self._combine_results(review_input, tuple(restored))
+        configuration = model_configuration(self._settings)
+        previous_results = [item.result for item in saved_batches if item.result is not None]
+        for item in saved_batches:
+            checkpoint_results, _ = _load_truncation_checkpoint(item.checkpoint)
+            previous_results.extend(checkpoint_results.values())
+        if any(not model_configuration_matches(result.model_dump(mode="json"), configuration) for result in previous_results):
+            raise SafeApplicationError(SafeError(
+                code=ErrorCode.MODEL_CONFIGURATION_CHANGED,
+                safe_message="当前配置与已完成批次不一致，请重试该审查节点，使用当前配置重新执行其全部批次。",
+                retryable=False, details={"failure_stage": "batch_preparation", "recovery_action": "retry_failed_node"},
+            ))
         # 正式批次的截断恢复由 Worker 缩小输入；供应商适配器不得把同一
         # 大请求改成 8K 后再次发送。旧的直接适配器调用仍保留兼容行为。
         review_input = review_input.model_copy(update={"allow_truncation_retry": False})
@@ -183,6 +214,7 @@ class _PersistentBatchedReviewer:
                 "provider": self._settings.provider.value,
                 "api_protocol": self._settings.resolved_api_protocol.value,
                 "model": self._settings.model,
+                "configuration_fingerprint": configuration["configuration_fingerprint"],
             },
             agent=self._agent.value,
         )
@@ -479,6 +511,7 @@ class _PersistentBatchedReviewer:
                     "error_code": safe_error.code.value,
                     "error_message": safe_error.safe_message,
                     "error_retryable": safe_error.retryable,
+                    "error_details": dict(safe_error.details),
                 }
                 for name in (
                     "status_code",
@@ -588,7 +621,19 @@ class _PersistentBatchedReviewer:
             )
             results.append(result)
             completed_batches.append(batch.number)
-        return combine_model_review_results(review_input, tuple(results))
+        return self._combine_results(review_input, tuple(results))
+
+    @staticmethod
+    def _combine_results(review_input: ModelReviewInput, results: tuple[ModelReviewResult, ...]) -> ModelReviewResult:
+        try:
+            return combine_model_review_results(review_input, results)
+        except ValueError as exc:
+            raise SafeApplicationError(SafeError(
+                code=ErrorCode.MODEL_RESULT_MERGE_FAILED,
+                safe_message="批次已完成，但结果合并失败。请重跑该审查节点。",
+                retryable=False,
+                details={"failure_stage": "result_merge", "exception_type": type(exc).__name__, "recovery_action": "retry_failed_node"},
+            )) from exc
 
     def _review_with_truncation_split(
         self,

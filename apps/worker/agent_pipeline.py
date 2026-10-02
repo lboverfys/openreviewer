@@ -207,6 +207,9 @@ def _run_fixed_agent_workflow(
                 "applicable_unit_count": item.applicable_unit_count,
                 "references": list(item.references),
                 "error": item.error,
+                **({"error_code": item.safe_error.code.value, "error_message": item.safe_error.safe_message,
+                    "error_retryable": item.safe_error.retryable, "error_details": dict(item.safe_error.details)}
+                    if item.safe_error is not None else {}),
                 **_agent_conclusion_payload(item),
             },
             agent=item.agent.value,
@@ -256,6 +259,9 @@ def _run_fixed_agent_workflow(
                 "finding_count": item.finding_count,
                 "references": list(item.references),
                 "error": item.error,
+                **({"error_code": item.safe_error.code.value, "error_message": item.safe_error.safe_message,
+                    "error_retryable": item.safe_error.retryable, "error_details": dict(item.safe_error.details)}
+                    if item.safe_error is not None else {}),
                 **_agent_conclusion_payload(item),
             },
             agent=item.agent.value,

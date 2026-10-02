@@ -104,6 +104,8 @@ def apply_action(
     allowed_scopes = retry_scope_by_action.get(action, frozenset({None}))
     if retry_scope not in allowed_scopes:
         raise ReviewActionConflictError("重试范围与当前操作不匹配")
+    if action is ReviewAction.RETRY_FAILED_NODE and retry_scope is None:
+        retry_scope = "failed_node"
     failed_node_action = action is ReviewAction.RETRY_FAILED_NODE or (
         action is ReviewAction.RETRY and retry_scope == "failed_node"
     )
@@ -257,7 +259,7 @@ def apply_action(
                 raise ReviewActionConflictError("历史版本复查不包含 CI，请从规划或 AI 步骤重试")
 
             if failed_node_action:
-                _prepare_failed_node_retry(
+                retry_impact = _prepare_failed_node_retry(
                     session,
                     run,
                     task,
@@ -288,6 +290,7 @@ def apply_action(
                             # 模型代次在下一次 claim 时才原子递增；这里
                             # 提前记录目标代次，便于事件流按代次归组。
                             "model_attempt_count": task.model_attempt_count + 1,
+                            **retry_impact,
                         },
                         occurred_at=now,
                         publish_attempts=0,
@@ -309,6 +312,7 @@ def apply_action(
                             "head_sha": run.head_sha,
                             "previous_status": current.value,
                             "new_status": ExecutionStatus.READY_FOR_REVIEW.value,
+                            **retry_impact,
                         },
                         occurred_at=now,
                         publish_attempts=0,
@@ -346,6 +350,7 @@ def apply_action(
                         workflow_current,
                         WorkflowAction(action.value),
                         target_stage=target,
+                        execution_status=current,
                     )
                 except (TypeError, ValueError, WorkflowTransitionError) as exc:
                     raise ReviewActionConflictError(str(exc)) from exc
@@ -448,6 +453,9 @@ def apply_action(
                         else ExecutionStatus.READY_FOR_REVIEW.value
                     )
                     run.execution_status = task.execution_status
+                    previous_profile = (run.repository_policy or {}).get("review_profile_id")
+                    if previous_profile is not None:
+                        run.repository_policy = {**run.repository_policy, "review_profile_id": None}
                     task.available_at = now
                     task.last_error = None
                     task.last_error_code = None
@@ -474,6 +482,8 @@ def apply_action(
                             "previous_status": workflow_current.value,
                             "new_status": result.after.value,
                             "target_stage": target_stage,
+                            **({"configuration_source": "current", "previous_review_profile_id": previous_profile}
+                                if action is ReviewAction.RETRY_STAGE else {}),
                             "retry_scope": retry_scope,
                             "agent": agent,
                             "batch_number": batch_number,
@@ -705,6 +715,9 @@ def apply_action(
                     raise ReviewActionConflictError(
                         "该任务已经生成审查结果，请使用重新审查"
                     )
+                previous_profile = (run.repository_policy or {}).get("review_profile_id")
+                if previous_profile is not None:
+                    run.repository_policy = {**(run.repository_policy or {}), "review_profile_id": None}
                 if plan is not None:
                     # 通用重试会把任务/模型尝试次数归零；旧批次若仍保留
                     # FAILED/attempt_count，Worker 会在领取前直接判定达到
@@ -760,6 +773,8 @@ def apply_action(
                         "actor": actor,
                         "previous_status": current.value,
                         "new_status": new_status.value,
+                        **({"configuration_source": "current", "previous_review_profile_id": previous_profile}
+                            if action is ReviewAction.RETRY else {}),
                     },
                     occurred_at=now,
                     publish_attempts=0,

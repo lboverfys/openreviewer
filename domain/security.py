@@ -54,6 +54,8 @@ class ErrorCode(StrEnum):
     MODEL_OUTPUT_TRUNCATED = "model_output_truncated"
     MODEL_REVIEW_INPUT_INVALID = "model_review_input_invalid"
     MODEL_REVIEW_CONFLICT = "model_review_conflict"
+    MODEL_CONFIGURATION_CHANGED = "model_configuration_changed"
+    MODEL_RESULT_MERGE_FAILED = "model_result_merge_failed"
     MODEL_BATCH_BUSY = "model_batch_busy"
     RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"
     RETRIEVAL_INDEX_PENDING = "retrieval_index_pending"

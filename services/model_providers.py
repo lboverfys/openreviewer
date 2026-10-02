@@ -50,6 +50,7 @@ from services.model_review import (
     ModelServiceSettings,
     ReviewPrompt,
     StructuredReviewPromptBuilder,
+    model_configuration,
     validate_model_api_endpoint,
 )
 from services.pinned_http import PublicDnsPinnedHTTPTransport
@@ -476,6 +477,7 @@ class _StructuredModelReviewer(ModelReviewer):
         )
         return ModelReviewResult(
             provenance=provenance,
+            configuration_fingerprint=model_configuration(self._settings)["configuration_fingerprint"],
             provider=self.provider,
             api_protocol=self.api_protocol,
             model=self._settings.model,

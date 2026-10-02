@@ -24,6 +24,7 @@ from persistence.management.findings import (
     _load_finding_counts,
     _load_findings,
 )
+from persistence.management.retry_configuration import retry_impacts
 from persistence.models import (
     FindingLifecycleRecord,
     ModelCallRecord,
@@ -494,6 +495,8 @@ def get(
                 model_completed=row["model_review_completed_at"] is not None,
             )
             return StoredReviewDetails(
+                retry_impacts=(retry_impacts(session, row["review_plan_id"], failed_agents)
+                    if row["review_plan_id"] and row["execution_status"] == "failed" else {}),
                 coverage_exclusions_acknowledged=(
                     exclusions_acknowledged(session, row["review_plan_id"], row["model_review_completed_at"])
                     if row["coverage_status"] == "partial" else False

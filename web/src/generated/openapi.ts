@@ -1695,6 +1695,22 @@ export interface components {
          * @enum {string}
          */
         AccessRole: "viewer" | "adjudicator" | "publisher" | "administrator";
+        /** AgentRetryImpact */
+        AgentRetryImpact: {
+            /** Agent */
+            agent: string;
+            /** Batch Count */
+            batch_count: number;
+            /** Model */
+            model: string;
+            /**
+             * Previous Models
+             * @default []
+             */
+            previous_models: string[];
+            /** Restart */
+            restart: boolean;
+        };
         /** AiAgentEnabledRequest */
         AiAgentEnabledRequest: {
             /** Enabled */
@@ -5017,6 +5033,10 @@ export interface components {
             /** Repository Id */
             repository_id: number;
             repository_policy?: components["schemas"]["RepositoryPolicySnapshot"] | null;
+            /** Retry Impacts */
+            retry_impacts?: {
+                [key: string]: components["schemas"]["AgentRetryImpact"];
+            };
             /** Review Conclusion */
             review_conclusion: string | null;
             /** Review Plan Id */
